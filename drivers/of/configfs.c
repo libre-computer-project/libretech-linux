@@ -40,7 +40,7 @@ struct cfs_overlay_item {
 	int			dtbo_size;
 };
 
-static int create_overlay(struct cfs_overlay_item *overlay, void *blob)
+static int create_overlay(struct cfs_overlay_item *overlay, const void *blob)
 {
 	int err;
 
@@ -114,7 +114,7 @@ static ssize_t cfs_overlay_item_path_store(struct config_item *item,
 	if (err != 0)
 		goto out_err;
 
-	err = create_overlay(overlay, (void *)overlay->fw->data);
+	err = create_overlay(overlay, overlay->fw->data);
 	if (err < 0)
 		goto out_err;
 
