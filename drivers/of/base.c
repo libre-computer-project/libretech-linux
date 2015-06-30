@@ -1708,6 +1708,24 @@ void of_alias_create(struct property *pp,
 	of_alias_add(ap, np, id, start, len);
 }
 
+#ifdef CONFIG_OF_DYNAMIC
+LIST_HEAD(dead_aliases_lookup);
+
+void of_alias_destroy(const char *name)
+{
+	struct alias_prop *ap;
+
+	list_for_each_entry(ap, &aliases_lookup, link) {
+		if (strcmp(ap->alias, name))
+			continue;
+
+		list_del(&ap->link);
+		list_add_tail(&ap->link, &dead_aliases_lookup);
+		return;
+	}
+}
+#endif
+
 /**
  * of_alias_scan - Scan all properties of the 'aliases' node
  *
