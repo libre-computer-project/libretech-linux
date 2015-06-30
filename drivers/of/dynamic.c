@@ -534,6 +534,11 @@ static void __of_changeset_entry_invert(struct of_changeset_entry *ce,
 	}
 }
 
+static void *alias_alloc(u64 size, u64 align)
+{
+	return kzalloc(size, GFP_KERNEL);
+}
+
 static void __of_changeset_entry_notify(struct of_changeset_entry *ce, bool revert)
 {
 	struct of_reconfig_data rd;
@@ -545,6 +550,22 @@ static void __of_changeset_entry_notify(struct of_changeset_entry *ce, bool reve
 		ce = &ce_inverted;
 	}
 
+	// FIXME register a notifier
+	// FIXME handle aliases node itself
+	if (ce->np == of_aliases) {
+		switch (ce->action) {
+		case OF_RECONFIG_ADD_PROPERTY:
+			of_alias_create(ce->prop, alias_alloc);
+			break;
+		case OF_RECONFIG_REMOVE_PROPERTY:
+			of_alias_destroy(ce->prop->name);
+			break;
+		case OF_RECONFIG_UPDATE_PROPERTY:
+			of_alias_destroy(ce->old_prop->name);
+			of_alias_create(ce->prop, alias_alloc);
+			break;
+		}
+	}
 	switch (ce->action) {
 	case OF_RECONFIG_ATTACH_NODE:
 	case OF_RECONFIG_DETACH_NODE:
