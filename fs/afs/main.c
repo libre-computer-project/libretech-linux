@@ -14,6 +14,7 @@
 #include <linux/init.h>
 #include <linux/completion.h>
 #include <linux/sched.h>
+#include <linux/ktime.h>
 #include "internal.h"
 
 MODULE_DESCRIPTION("AFS Client File System");
@@ -37,7 +38,6 @@ struct workqueue_struct *afs_wq;
  */
 static int __init afs_get_client_UUID(void)
 {
-	struct timespec ts;
 	u64 uuidtime;
 	u16 clockseq;
 	int ret;
@@ -48,9 +48,7 @@ static int __init afs_get_client_UUID(void)
 	if (ret < 0)
 		return ret;
 
-	getnstimeofday(&ts);
-	uuidtime = (u64) ts.tv_sec * 1000 * 1000 * 10;
-	uuidtime += ts.tv_nsec / 100;
+	uuidtime = ktime_divns(ktime_get_real(), 100);
 	uuidtime += AFS_UUID_TO_UNIX_TIME;
 	afs_uuid.time_low = uuidtime;
 	afs_uuid.time_mid = uuidtime >> 32;
