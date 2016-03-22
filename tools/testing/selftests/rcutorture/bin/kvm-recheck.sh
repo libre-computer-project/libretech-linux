@@ -48,7 +48,7 @@ do
 				cat $i/Make.oldconfig.err
 			fi
 			parse-build.sh $i/Make.out $configfile
-			if test "$TORTURE_SUITE" != rcuperf
+			if test "$TORTURE_SUITE" != rcuperf -a "$TORTURE_SUITE" != wake
 			then
 				parse-torture.sh $i/console.log $configfile
 			fi
