@@ -81,7 +81,9 @@ static unsigned long *waiter_iter;	/* Number of wait iterations. */
 static bool *waiter_cts;		/* Waiter already checked. */
 static unsigned long *waiter_kicks;	/* Number of waiter starvations. */
 static unsigned long *waiter_ts;	/* Jiffies last run. */
-DEFINE_MUTEX(waiter_mutex);
+static DEFINE_MUTEX(waiter_mutex);
+static DEFINE_PER_CPU(u64, waiter_cputime); /* Nanoseconds. */
+static u64 starttime;
 
 static int torture_runnable = IS_ENABLED(MODULE);
 module_param(torture_runnable, int, 0444);
@@ -133,16 +135,23 @@ static int wake_torture_waiter(void *arg)
 {
 	int i;
 	long me = (long)arg;
+	u64 ts;
 
 	VERBOSE_TOROUT_STRING("wake_torture_waiter task started");
 	set_user_nice(current, MAX_NICE);
 
+	preempt_disable();
+	ts = trace_clock_local();
 	do {
 		waiter_ts[me] = jiffies;
 		smp_mb(); /* Ensure waiter_ts[] written before waiter_cts[]. */
 			  /* Pairs with [A]. */
 		waiter_cts[me] = false;
+		__this_cpu_add(waiter_cputime, trace_clock_local() - ts);
+		preempt_enable();
 		cur_ops->wait(wait_duration);
+		preempt_disable();
+		ts = trace_clock_local();
 		waiter_iter[me]++;
 		for (i = 0; i < nrealwaiters; i++) {
 			if (waiter_done[i] ||
@@ -164,8 +173,14 @@ static int wake_torture_waiter(void *arg)
 				mutex_unlock(&waiter_mutex);
 			}
 		}
+		__this_cpu_add(waiter_cputime, trace_clock_local() - ts);
+		preempt_enable();
 		torture_shutdown_absorb("wake_torture_waiter");
+		preempt_disable();
+		ts = trace_clock_local();
 	} while (!torture_must_stop());
+	__this_cpu_add(waiter_cputime, trace_clock_local() - ts);
+	preempt_enable();
 	mutex_lock(&waiter_mutex);
 	waiter_done[me] = true;
 	mutex_unlock(&waiter_mutex);
@@ -189,6 +204,8 @@ wake_torture_stats_print(void)
 {
 	int i;
 	bool tardy = false;
+	u64 timediff;
+	u64 timetot;
 
 	if (!waiter_done || !waiter_iter || !waiter_cts ||
 	    !waiter_kicks || !waiter_ts) {
@@ -212,6 +229,15 @@ wake_torture_stats_print(void)
 		pr_cont("\n");
 	else
 		TOROUT_STRING(" No tardy kthreads");
+	timediff = (trace_clock_global() - starttime) / 1000;
+	timetot = 0;
+	for_each_possible_cpu(i)
+		timetot += READ_ONCE(per_cpu(waiter_cputime, i));
+	timetot /= nr_cpu_ids;
+	timetot /= timediff;
+	pr_alert("%s" TORTURE_FLAG " timediff: %llu utilization: %llu.%llu nr_cpu_ids: %d\n",
+		 torture_type, timediff,
+		 timetot / 1000ULL, timetot % 1000ULL, nr_cpu_ids);
 }
 
 /*
@@ -290,6 +316,7 @@ wake_torture_init(void)
 
 	if (!torture_init_begin(torture_type, verbose, &torture_runnable))
 		return -EBUSY;
+	starttime = trace_clock_global();
 
 	/* Process args and tell the world that the torturer is on the job. */
 	for (i = 0; i < ARRAY_SIZE(torture_ops); i++) {
