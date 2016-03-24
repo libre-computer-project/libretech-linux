@@ -62,12 +62,12 @@ torture_param(int, stat_interval, 60,
 	     "Number of seconds between stats printk()s");
 torture_param(bool, verbose, true,
 	     "Enable verbose debugging printk()s");
-torture_param(int, wait_duration, 3,
-	     "Number of jiffies to wait each iteration");
+torture_param(int, wait_duration, 127,
+	     "Number of microseconds to wait each iteration");
 torture_param(int, wait_grace, 20,
 	     "Number of jiffies before complaining about long wait");
 
-static char *torture_type = "sti";
+static char *torture_type = "sh";
 module_param(torture_type, charp, 0444);
 MODULE_PARM_DESC(torture_type, "Type of wait to torture (sti, stui, ...)");
 
@@ -94,18 +94,40 @@ MODULE_PARM_DESC(torture_runnable, "Start waketorture at boot");
  */
 
 struct wake_torture_ops {
-	signed long (*wait)(signed long timeout);
+	void (*wait)(void);
 	const char *name;
 };
 
 static struct wake_torture_ops *cur_ops;
 
 /*
+ * Definitions for schedule_hrtimeout() torture testing.
+ */
+
+static void wait_schedule_hrtimeout(void)
+{
+	ktime_t wait = ns_to_ktime(wait_duration * 1000);
+
+	set_current_state(TASK_UNINTERRUPTIBLE);
+	schedule_hrtimeout(&wait, HRTIMER_MODE_REL);
+}
+
+static struct wake_torture_ops sh_ops = {
+	.wait		= wait_schedule_hrtimeout,
+	.name		= "sh"
+};
+
+/*
  * Definitions for schedule_timeout_interruptible() torture testing.
  */
 
+static void wait_schedule_timeout_interruptible(void)
+{
+	schedule_timeout_interruptible((wait_duration + 999) / 1000);
+}
+
 static struct wake_torture_ops sti_ops = {
-	.wait		= schedule_timeout_interruptible,
+	.wait		= wait_schedule_timeout_interruptible,
 	.name		= "sti"
 };
 
@@ -113,8 +135,13 @@ static struct wake_torture_ops sti_ops = {
  * Definitions for schedule_timeout_uninterruptible() torture testing.
  */
 
+static void wait_schedule_timeout_uninterruptible(void)
+{
+	schedule_timeout_uninterruptible((wait_duration + 999) / 1000);
+}
+
 static struct wake_torture_ops stui_ops = {
-	.wait		= schedule_timeout_uninterruptible,
+	.wait		= wait_schedule_timeout_uninterruptible,
 	.name		= "stui"
 };
 
@@ -149,7 +176,7 @@ static int wake_torture_waiter(void *arg)
 		waiter_cts[me] = false;
 		__this_cpu_add(waiter_cputime, trace_clock_local() - ts);
 		preempt_enable();
-		cur_ops->wait(wait_duration);
+		cur_ops->wait();
 		preempt_disable();
 		ts = trace_clock_local();
 		waiter_iter[me]++;
@@ -167,7 +194,10 @@ static int wake_torture_waiter(void *arg)
 			} else {
 				waiter_cts[i] = true;
 				waiter_kicks[i]++;
-				pr_alert("%s%s wake_torture_waiter(): P%d failing to awaken!\n", torture_type, TORTURE_FLAG, waiter_tasks[i]->pid);
+				pr_alert("%s%s wake_torture_waiter(): P%d (%#lx) failing to awaken!\n",
+					 torture_type, TORTURE_FLAG,
+					 waiter_tasks[i]->pid,
+					 waiter_tasks[i]->state);
 				rcu_ftrace_dump(DUMP_ALL);
 				wake_up_process(waiter_tasks[i]);
 				mutex_unlock(&waiter_mutex);
@@ -312,7 +342,9 @@ wake_torture_init(void)
 {
 	int i;
 	int firsterr = 0;
-	static struct wake_torture_ops *torture_ops[] = { &sti_ops, &stui_ops };
+	static struct wake_torture_ops *torture_ops[] = {
+		&sh_ops, &sti_ops, &stui_ops
+	};
 
 	if (!torture_init_begin(torture_type, verbose, &torture_runnable))
 		return -EBUSY;
