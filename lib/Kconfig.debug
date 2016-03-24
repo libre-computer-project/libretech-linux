@@ -1417,6 +1417,7 @@ config WAKE_TORTURE_TEST
 	tristate "Torture test for wakeups and CPU hotplug"
 	depends on DEBUG_KERNEL
 	depends on 64BIT
+	depends on TRACE_CLOCK
 	select TORTURE_TEST
 	default n
 	help
