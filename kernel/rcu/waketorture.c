@@ -74,6 +74,7 @@ MODULE_PARM_DESC(torture_type, "Type of wait to torture (sti, stui, ...)");
 static int nrealwaiters;
 static struct task_struct **waiter_tasks;
 static struct task_struct *stats_task;
+static struct task_struct *onoff_task;
 
 /* Yes, these cache-thrash, and it is inherent to the concurrency design. */
 static bool *waiter_done;		/* Waiter is done, don't wake. */
@@ -84,6 +85,18 @@ static unsigned long *waiter_ts;	/* Jiffies last run. */
 static DEFINE_MUTEX(waiter_mutex);
 static DEFINE_PER_CPU(u64, waiter_cputime); /* Nanoseconds. */
 static u64 starttime;
+
+static int onoff_cpu = -1;
+static long n_offline_attempts;
+static long n_offline_successes;
+static unsigned long sum_offline;
+static int min_offline = -1;
+static int max_offline;
+static long n_online_attempts;
+static long n_online_successes;
+static unsigned long sum_online;
+static int min_online = -1;
+static int max_online;
 
 static int torture_runnable = IS_ENABLED(MODULE);
 module_param(torture_runnable, int, 0444);
@@ -219,6 +232,67 @@ static int wake_torture_waiter(void *arg)
 }
 
 /*
+ * Find a hotpluggable CPU and repeatedly take it online and offline.
+ */
+static int wake_torture_onoff(void *args)
+{
+	int cpu;
+
+	VERBOSE_TOROUT_STRING("wake_torture_onoff task started");
+	if (onoff_holdoff > 0) {
+		VERBOSE_TOROUT_STRING("wake_torture_onoff begin holdoff");
+		schedule_timeout_interruptible(onoff_holdoff * HZ);
+		VERBOSE_TOROUT_STRING("wake_torture_onoff end holdoff");
+	}
+	for_each_online_cpu(cpu) {
+		if (cpu_is_hotpluggable(cpu))
+			onoff_cpu = cpu;
+	}
+	pr_alert("%s" TORTURE_FLAG " wake_torture_onoff: onoff_cpu: %d\n", torture_type, onoff_cpu);
+	if (onoff_cpu < 0)
+		VERBOSE_TOROUT_STRING("wake_torture_onoff: no hotpluggable CPUs!");
+	while (!torture_must_stop() && onoff_cpu >= 0) {
+		if (!torture_offline(onoff_cpu,
+				    &n_offline_attempts, &n_offline_successes,
+				    &sum_offline, &min_offline, &max_offline))
+			torture_online(onoff_cpu,
+				       &n_online_attempts, &n_online_successes,
+				       &sum_online, &min_online, &max_online);
+		schedule_timeout_interruptible(onoff_interval);
+	}
+	torture_kthread_stopping("wake_torture_onoff");
+	return 0;
+}
+
+/*
+ * Initiate waketorture-specific online-offline handling, which
+ * focuses on a single CPU.
+ */
+static int wake_torture_onoff_init(void)
+{
+	int ret = 0;
+
+	if (!IS_ENABLED(CONFIG_HOTPLUG_CPU))
+		return ret;
+	if (onoff_interval <= 0)
+		return 0;
+	ret = torture_create_kthread(wake_torture_onoff, NULL, onoff_task);
+	return ret;
+}
+
+/*
+ * Clean up after waketorture-specific online-offline handling.
+ */
+static void wake_torture_onoff_cleanup(void)
+{
+	if (!IS_ENABLED(CONFIG_HOTPLUG_CPU))
+		return;
+	VERBOSE_TOROUT_STRING("Stopping wake_torture_onoff task");
+	kthread_stop(onoff_task);
+	onoff_task = NULL;
+}
+
+/*
  * Print torture statistics.  Caller must ensure that there is only one
  * call to this function at a given time!!!  This is normally accomplished
  * by relying on the module system to only have one copy of the module
@@ -265,9 +339,14 @@ wake_torture_stats_print(void)
 		timetot += READ_ONCE(per_cpu(waiter_cputime, i));
 	timetot /= nr_cpu_ids;
 	timetot /= timediff;
-	pr_alert("%s" TORTURE_FLAG " timediff: %llu utilization: %llu.%llu nr_cpu_ids: %d\n",
+	pr_alert("%s" TORTURE_FLAG " timediff: %llu utilization: %llu.%llu nr_cpu_ids: %d onoff: %ld/%ld:%ld/%ld %d,%d:%d,%d %lu:%lu (HZ=%d)\n",
 		 torture_type, timediff,
-		 timetot / 1000ULL, timetot % 1000ULL, nr_cpu_ids);
+		 timetot / 1000ULL, timetot % 1000ULL, nr_cpu_ids,
+		 n_online_successes, n_online_attempts,
+		 n_offline_successes, n_offline_attempts,
+		 min_online, max_online,
+		 min_offline, max_offline,
+		 sum_online, sum_offline, HZ);
 }
 
 /*
@@ -306,6 +385,9 @@ wake_torture_cleanup(void)
 	bool success;
 
 	(void)torture_cleanup_begin();
+
+	if (onoff_task)
+		wake_torture_onoff_cleanup();
 
 	if (waiter_tasks) {
 		for (i = 0; i < nrealwaiters; i++)
@@ -414,7 +496,7 @@ wake_torture_init(void)
 	firsterr = torture_shutdown_init(shutdown_secs, wake_torture_cleanup);
 	if (firsterr)
 		goto unwind;
-	firsterr = torture_onoff_init(onoff_holdoff * HZ, onoff_interval);
+	firsterr = wake_torture_onoff_init();
 	if (firsterr)
 		goto unwind;
 	torture_init_end();
