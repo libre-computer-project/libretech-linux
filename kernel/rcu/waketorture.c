@@ -236,7 +236,9 @@ static int wake_torture_waiter(void *arg)
  */
 static int wake_torture_onoff(void *args)
 {
+	cpumask_var_t cm;
 	int cpu;
+	int i;
 
 	VERBOSE_TOROUT_STRING("wake_torture_onoff task started");
 	if (onoff_holdoff > 0) {
@@ -244,6 +246,11 @@ static int wake_torture_onoff(void *args)
 		schedule_timeout_interruptible(onoff_holdoff * HZ);
 		VERBOSE_TOROUT_STRING("wake_torture_onoff end holdoff");
 	}
+
+	/*
+	 * Find the last hotpluggable CPU, and affinity the waiter
+	 * tasks elsewhere.
+	 */
 	for_each_online_cpu(cpu) {
 		if (cpu_is_hotpluggable(cpu))
 			onoff_cpu = cpu;
@@ -257,6 +264,18 @@ static int wake_torture_onoff(void *args)
 		}
 	}
 	pr_alert("%s" TORTURE_FLAG " wake_torture_onoff: onoff_cpu: %d\n", torture_type, onoff_cpu);
+	if (!zalloc_cpumask_var(&cm, GFP_KERNEL)) {
+		VERBOSE_TOROUT_STRING("wake_torture_onoff: Out of memory, no affinity");
+	} else {
+		cpumask_copy(cm, cpu_online_mask);
+		cpumask_clear_cpu(onoff_cpu, cm);
+		if (cpumask_weight(cm) == 0)
+			cpumask_setall(cm);
+		for (i = 0; i < nrealwaiters; i++)
+			set_cpus_allowed_ptr(waiter_tasks[i], cm);
+	}
+
+	/* Cycle the victim CPU online and offline! */
 	while (!torture_must_stop() && onoff_cpu >= 0) {
 		if (!torture_offline(onoff_cpu,
 				    &n_offline_attempts, &n_offline_successes,
