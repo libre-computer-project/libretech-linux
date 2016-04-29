@@ -248,9 +248,15 @@ static int wake_torture_onoff(void *args)
 		if (cpu_is_hotpluggable(cpu))
 			onoff_cpu = cpu;
 	}
-	pr_alert("%s" TORTURE_FLAG " wake_torture_onoff: onoff_cpu: %d\n", torture_type, onoff_cpu);
-	if (onoff_cpu < 0)
+	if (onoff_cpu < 0) {
 		VERBOSE_TOROUT_STRING("wake_torture_onoff: no hotpluggable CPUs!");
+		if (shutdown_secs > 0) {
+			VERBOSE_TOROUT_STRING("wake_torture_onoff: Shutting down");
+			kernel_power_off();
+			VERBOSE_TOROUT_STRING("wake_torture_onoff: Survived kernel_power_off()?");
+		}
+	}
+	pr_alert("%s" TORTURE_FLAG " wake_torture_onoff: onoff_cpu: %d\n", torture_type, onoff_cpu);
 	while (!torture_must_stop() && onoff_cpu >= 0) {
 		if (!torture_offline(onoff_cpu,
 				    &n_offline_attempts, &n_offline_successes,
