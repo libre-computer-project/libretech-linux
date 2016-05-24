@@ -167,6 +167,14 @@
 			};
 		};
 
+		mailbox: mailbox@c883c400 {
+			compatible = "amlogic,meson-gxbb-mhu";
+			reg = <0 0xc883c400 0 0x4c>;
+			interrupts = <0 209 IRQ_TYPE_EDGE_RISING>,
+				     <0 210 IRQ_TYPE_EDGE_RISING>;
+			#mbox-cells = <1>;
+		};
+
 		apb: apb@d0000000 {
 			compatible = "simple-bus";
 			reg = <0x0 0xd0000000 0x0 0x200000>;
