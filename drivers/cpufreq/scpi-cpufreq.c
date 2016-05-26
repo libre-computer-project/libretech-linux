@@ -25,6 +25,7 @@
 #include <linux/pm_opp.h>
 #include <linux/scpi_protocol.h>
 #include <linux/types.h>
+#include <linux/of.h>
 
 #include "arm_big_little.h"
 
@@ -88,9 +89,14 @@ static struct cpufreq_arm_bL_ops scpi_cpufreq_ops = {
 
 static int scpi_cpufreq_probe(struct platform_device *pdev)
 {
-	scpi_ops = get_scpi_ops();
-	if (!scpi_ops)
-		return -EIO;
+	struct device *parent = pdev->dev.parent;
+
+	if (!parent)
+		return -EINVAL;
+
+	scpi_ops = of_scpi_ops_get(of_get_parent(parent->of_node));
+	if (IS_ERR(scpi_ops))
+		return PTR_ERR(scpi_ops);
 
 	return bL_cpufreq_register(&scpi_cpufreq_ops);
 }

@@ -148,7 +148,8 @@ static const struct of_device_id scpi_clk_match[] = {
 
 static struct clk *
 scpi_clk_ops_init(struct device *dev, const struct of_device_id *match,
-		  struct scpi_clk *sclk, const char *name)
+		  struct scpi_clk *sclk, const char *name,
+		  struct scpi_ops *scpi_ops)
 {
 	struct clk_init_data init;
 	struct clk *clk;
@@ -159,7 +160,7 @@ scpi_clk_ops_init(struct device *dev, const struct of_device_id *match,
 	init.num_parents = 0;
 	init.ops = match->data;
 	sclk->hw.init = &init;
-	sclk->scpi_ops = get_scpi_ops();
+	sclk->scpi_ops = scpi_ops;
 
 	if (init.ops == &scpi_dvfs_ops) {
 		sclk->info = sclk->scpi_ops->dvfs_get_info(sclk->id);
@@ -200,7 +201,8 @@ scpi_of_clk_src_get(struct of_phandle_args *clkspec, void *data)
 }
 
 static int scpi_clk_add(struct device *dev, struct device_node *np,
-			const struct of_device_id *match)
+			const struct of_device_id *match,
+			struct scpi_ops *scpi_ops)
 {
 	struct clk **clks;
 	int idx, count;
@@ -249,7 +251,7 @@ static int scpi_clk_add(struct device *dev, struct device_node *np,
 
 		sclk->id = val;
 
-		clks[idx] = scpi_clk_ops_init(dev, match, sclk, name);
+		clks[idx] = scpi_clk_ops_init(dev, match, sclk, name, scpi_ops);
 		if (IS_ERR_OR_NULL(clks[idx]))
 			dev_err(dev, "failed to register clock '%s'\n", name);
 		else
@@ -281,15 +283,17 @@ static int scpi_clocks_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *child, *np = dev->of_node;
 	const struct of_device_id *match;
+	struct scpi_ops *scpi_ops;
 
-	if (!get_scpi_ops())
-		return -ENXIO;
+	scpi_ops = of_scpi_ops_get(of_get_parent(np));
+	if (IS_ERR(scpi_ops))
+		return PTR_ERR(scpi_ops);
 
 	for_each_available_child_of_node(np, child) {
 		match = of_match_node(scpi_clk_match, child);
 		if (!match)
 			continue;
-		ret = scpi_clk_add(dev, child, match);
+		ret = scpi_clk_add(dev, child, match, scpi_ops);
 		if (ret) {
 			scpi_clocks_remove(pdev);
 			of_node_put(child);
@@ -297,8 +301,9 @@ static int scpi_clocks_probe(struct platform_device *pdev)
 		}
 	}
 	/* Add the virtual cpufreq device */
-	cpufreq_dev = platform_device_register_simple("scpi-cpufreq",
-						      -1, NULL, 0);
+	cpufreq_dev = platform_device_register_resndata(&pdev->dev,
+				"scpi-cpufreq", -1, NULL, 0,
+				NULL, 0);
 	if (IS_ERR(cpufreq_dev))
 		pr_warn("unable to register cpufreq device");
 

@@ -120,9 +120,9 @@ static int scpi_hwmon_probe(struct platform_device *pdev)
 	struct scpi_sensors *scpi_sensors;
 	int ret, idx;
 
-	scpi_ops = get_scpi_ops();
-	if (!scpi_ops)
-		return -EPROBE_DEFER;
+	scpi_ops = of_scpi_ops_get(of_get_parent(dev->of_node));
+	if (IS_ERR(scpi_ops))
+		return PTR_ERR(scpi_ops);
 
 	ret = scpi_ops->sensor_get_capability(&nr_sensors);
 	if (ret)

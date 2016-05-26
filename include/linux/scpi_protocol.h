@@ -72,8 +72,37 @@ struct scpi_ops {
 	int (*sensor_get_value)(u16, u64 *);
 };
 
+struct scpi_driver {
+	struct device_node *node;
+	struct scpi_ops *ops;
+	struct list_head list;
+};
+
 #if IS_REACHABLE(CONFIG_ARM_SCPI_PROTOCOL)
-struct scpi_ops *get_scpi_ops(void);
+struct scpi_ops *of_scpi_ops_get(struct device_node *node);
+
+int scpi_driver_register(struct scpi_driver *drv);
+
+void scpi_driver_unregister(struct scpi_driver *drv);
+
+int devm_scpi_driver_register(struct device *dev,
+				struct scpi_driver *drv);
 #else
-static inline struct scpi_ops *get_scpi_ops(void) { return NULL; }
+struct scpi_ops *of_scpi_ops_get(struct device_node *node)
+{
+	return ERR_PTR(-ENOTSUPP);
+}
+
+int scpi_driver_register(struct scpi_driver *drv)
+{
+	return -ENOTSUPP;
+}
+
+void scpi_driver_unregister(struct scpi_driver *drv) { }
+
+int devm_scpi_driver_register(struct device *dev,
+				struct scpi_driver *drv)
+{
+	return -ENOTSUPP;
+}
 #endif
