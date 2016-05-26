@@ -8,9 +8,13 @@ menu "Firmware Drivers"
 config ARM_PSCI_FW
 	bool
 
+config SCPI_FW
+	bool
+
 config ARM_SCPI_PROTOCOL
 	tristate "ARM System Control and Power Interface (SCPI) Message Protocol"
 	depends on ARM_MHU
+	select SCPI_FW
 	help
 	  System Control and Power Interface (SCPI) Message Protocol is
 	  defined for the purpose of communication between the Application
