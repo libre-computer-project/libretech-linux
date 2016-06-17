@@ -1,0 +1,95 @@
+Qualcomm's MDM9615 USB HISC transceiver controller
+
+- compatible:
+    Usage: required
+    Value type: <string>
+    Definition: Should contain "qcom,usb-hsic-phy".
+
+- reg:
+    Usage: required
+    Value type: <prop-encoded-array>
+    Definition: USB PHY base address and length of the register map
+
+- clocks:
+    Usage: required
+    Value type: <prop-encoded-array>
+    Definition: See clock-bindings.txt section "consumers". List of
+                5 clock specifiers for interface and core controller
+                clocks.
+
+- clock-names:
+    Usage: required
+    Value type: <string>
+    Definition: Must contain "core", "alt-core", "phy", "cal" and "iface" strings.
+
+- vddcx-supply:
+    Usage: required
+    Value type: <phandle>
+    Definition: phandle to the regulator VDCCX supply node.
+
+- resets:
+    Usage: required
+    Value type: <prop-encoded-array>
+    Definition: See reset.txt section "consumers". PHY reset specifier.
+
+- reset-names:
+    Usage: required
+    Value type: <string>
+    Definition: Must contain "link" string.
+
+- interrupts:
+    Usage: required
+    Value type: <prop-encoded-array>
+    Definition: Interrupt line definition for the PHY
+
+- dr_mode:
+    Usage: required
+    Value type: <prop-encoded-array>
+    Definition: Setup the PHY mode, either "host", "gadget" or "dual"
+
+- qcom,vdd-levels:
+    Usage: required for MDM9615
+    Value type: <prop-encoded-array>
+    Definition: Setup the valid vdd levers for the vddx-supply
+
+- phy_type:
+    Usage: required
+    Value type: <prop-encoded-array>
+    Definition: Shall be "hisc"
+
+- qcom,tlmm:
+    Usage: required for MDM961
+    Value type: <prop-encoded-array>
+    Definition: TLMM syscon phandle to setup the HSIC lines
+
+- qcom,tlmm-cfg:
+    Usage: required for MDM961
+    Value type: <prop-encoded-array>
+    Definition: Shall be two entries of offset, data of the HSIC lines setup
+
+Example:
+	usb_phy: phy@12540000 {
+		compatible = "qcom,usb-hsic-phy";
+		reg = <0x78d9000 0x400>;
+		interrupts      = <GIC_SPI 232 IRQ_TYPE_NONE>;
+		dr_mode         = "host";
+
+		vddcx-supply = <&pm8018_vdd_dig_corner>;
+
+		clocks = <&gcc USB_HSIC_SYSTEM_CLK>,
+		         <&gcc USB_HSIC_XCVR_FS_CLK>,
+			 <&gcc USB_HSIC_HSIC_CLK>,
+			 <&gcc USB_HSIC_HSIO_CAL_CLK>,
+			 <&gcc USB_HSIC_H_CLK>;
+		clock-names = "core", "alt-core", "phy", "cal", "iface";
+
+		resets = <&gcc USB_HSIC_RESET>;
+		reset-names = "link";
+		qcom,vdd-levels = <1 2 4>;
+		phy_type        = "hsic";
+
+		qcom,tlmm       = <&msmgpio>;
+		qcom,tlmm-cfg   = <0x20CC 0x034A4E10
+				   0x20C8 0x034A4E10>;
+	};
+
