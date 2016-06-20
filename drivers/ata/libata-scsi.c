@@ -1477,7 +1477,10 @@ static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
 
 	qc->scsidone(cmd);
 
-	ata_qc_free(qc);
+	if (ap->ops->qc_free)
+        ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 
 /**
@@ -1552,13 +1555,19 @@ static int ata_scsi_translate(struct ata_device *dev, struct scsi_cmnd *cmd,
 	return 0;
 
 early_finish:
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	qc->scsidone(cmd);
 	DPRINTK("EXIT - early finish (good or error)\n");
 	return 0;
 
 err_did:
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	cmd->result = (DID_ERROR << 16);
 	qc->scsidone(cmd);
 err_mem:
@@ -1566,7 +1575,10 @@ err_mem:
 	return 0;
 
 defer:
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	DPRINTK("EXIT - defer\n");
 	if (rc == ATA_DEFER_LINK)
 		return SCSI_MLQUEUE_DEVICE_BUSY;
@@ -1675,6 +1687,47 @@ void ata_scsi_rbuf_fill(struct ata_scsi_args *args,
 		if ((idx) < buflen) rbuf[(idx)] = (u8)(val); \
 	} while (0)
 
+        
+/**
+ * ata_scsi_split_model_and_vendor  
+ * 
+ * This function assumes that in some drives the vendor name is present in 
+ * the model string, with the vendor name first sepparated from the model by
+ * a single space. This function returns 0 if the space is not present in the
+ * first eight characters (the maximum that SCSI allows for a vendor name) 
+ * if the space is present, this function returns the length in the string that
+ * the model info starts. 
+ *  
+ * @param orig model string
+ * @return the length to the model part in the input string, 0 if not present.
+ */
+
+static unsigned int ata_scsi_split_model_and_vendor(unsigned char* orig) {
+    unsigned int i = 0;
+    unsigned int len = 0;
+    
+    /* look for a space */
+    while(i < 8) {
+        if (orig[i] == ' ') {
+            len = i;
+            break;
+        }
+        i++;
+    }
+    
+    /* look for a character */
+    while(i < 8) {
+        if( ((orig[i] > '0') && (orig[i] < '9')) ||
+            ((orig[i] > 'A') && (orig[i] < 'Z')) ||
+            ((orig[i] > 'a') && (orig[i] < 'z')) ) {
+            return len;
+        }
+        i++;
+    }
+    
+    return 0;
+}
+        
 /**
  *	ata_scsiop_inq_std - Simulate INQUIRY command
  *	@args: device IDENTIFY data / SCSI command of interest.
@@ -1691,7 +1744,7 @@ void ata_scsi_rbuf_fill(struct ata_scsi_args *args,
 unsigned int ata_scsiop_inq_std(struct ata_scsi_args *args, u8 *rbuf,
 			       unsigned int buflen)
 {
-	u8 hdr[] = {
+    u8 hdr[] = {
 		TYPE_DISK,
 		0,
 		0x5,	/* claim SPC-3 version compatibility */
@@ -1707,13 +1760,22 @@ unsigned int ata_scsiop_inq_std(struct ata_scsi_args *args, u8 *rbuf,
 
 	memcpy(rbuf, hdr, sizeof(hdr));
 
-	if (buflen > 35) {
-		memcpy(&rbuf[8], "ATA     ", 8);
-		ata_id_string(args->id, &rbuf[16], ATA_ID_PROD, 16);
-		ata_id_string(args->id, &rbuf[32], ATA_ID_FW_REV, 4);
-		if (rbuf[32] == 0 || rbuf[32] == ' ')
-			memcpy(&rbuf[32], "n/a ", 4);
-	}
+    if (buflen > 35) {
+        unsigned int len = 0;
+        ata_id_string(args->id, &rbuf[16], ATA_ID_PROD, 16);
+        len = ata_scsi_split_model_and_vendor(&rbuf[16]);
+    
+        if (len > 0) {
+            /* clear, then copy the vendor */
+            memcpy(&rbuf[8], "        ", 8);
+            memcpy(&rbuf[8], &rbuf[16], len);
+        } else {
+            memcpy(&rbuf[8], "ATA     ", 8);
+        }
+        ata_id_string(args->id, &rbuf[32], ATA_ID_FW_REV, 4);
+        if (rbuf[32] == 0 || rbuf[32] == ' ')
+            memcpy(&rbuf[32], "n/a ", 4);
+    }
 
 	if (buflen > 63) {
 		const u8 versions[] = {
@@ -1824,16 +1886,29 @@ unsigned int ata_scsiop_inq_83(struct ata_scsi_args *args, u8 *rbuf,
 		num += ATA_ID_SERNO_LEN;
 	}
 	if (buflen > (sat_model_serial_desc_len + num + 3)) {
+        unsigned int len = 0;
+        
 		/* SAT defined lu model and serial numbers descriptor */
 		/* piv=0, assoc=lu, code_set=ACSII, designator=t10 vendor id */
 		rbuf[num + 0] = 2;
 		rbuf[num + 1] = 1;
 		rbuf[num + 3] = sat_model_serial_desc_len;
 		num += 4;
-		memcpy(rbuf + num, "ATA     ", 8);
-		num += 8;
-		ata_id_string(args->id, (unsigned char *) rbuf + num,
+
+        /* write in the model first so we can parse it for manufacturer */
+		ata_id_string(args->id, (unsigned char *) rbuf + num + 8,
 			      ATA_ID_PROD, ATA_ID_PROD_LEN);
+
+        len = ata_scsi_split_model_and_vendor(rbuf + num + 8);
+        if (len > 0) {
+            /* clear, then copy the vendor */
+            memcpy(rbuf + num, "        ", 8);
+            memcpy(rbuf + num, rbuf + num + 8, len);
+        } else {
+            memcpy(rbuf + num, "ATA     ", 8);
+        }
+        
+		num += 8;
 		num += ATA_ID_PROD_LEN;
 		ata_id_string(args->id, (unsigned char *) rbuf + num,
 			      ATA_ID_SERNO, ATA_ID_SERNO_LEN);
@@ -2314,7 +2389,10 @@ static void atapi_sense_complete(struct ata_queued_cmd *qc)
 	}
 
 	qc->scsidone(qc->scsicmd);
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 
 /* is it pointless to prefer PIO for "safety reasons"? */
@@ -2403,7 +2481,10 @@ static void atapi_qc_complete(struct ata_queued_cmd *qc)
 
 		qc->scsicmd->result = SAM_STAT_CHECK_CONDITION;
 		qc->scsidone(cmd);
-		ata_qc_free(qc);
+        if (qc->ap->ops->qc_free)
+            qc->ap->ops->qc_free(qc);
+        else
+            ata_qc_free(qc);
 		return;
 	}
 
@@ -2448,7 +2529,10 @@ static void atapi_qc_complete(struct ata_queued_cmd *qc)
 	}
 
 	qc->scsidone(cmd);
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 /**
  *	atapi_xlat - Initialize PACKET taskfile
@@ -2693,6 +2777,12 @@ static unsigned int ata_scsi_pass_thru(struct ata_queued_cmd *qc)
 	/* We may not issue DMA commands if no DMA mode is set */
 	if (tf->protocol == ATA_PROT_DMA && dev->dma_mode == 0)
 		goto invalid_fld;
+
+    /** @NOTE: OX800/OX810 driver needs polling for PIO and no data commands */
+    if ((tf->protocol == ATA_PROT_PIO) ||
+        (tf->protocol == ATA_PROT_NODATA)) {
+        tf->flags |= ATA_TFLAG_POLLING;
+    }
 
 	/*
 	 * 12 and 16 byte CDBs use different offsets to

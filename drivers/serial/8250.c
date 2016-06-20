@@ -2036,7 +2036,6 @@ serial8250_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (termios->c_cflag & CMSPAR)
 		cval |= UART_LCR_SPAR;
 #endif
-
 	/*
 	 * Ask the core to calculate the divisor for us.
 	 */
@@ -2153,7 +2152,35 @@ serial8250_set_termios(struct uart_port *port, struct ktermios *termios,
 		serial_outp(up, UART_LCR, cval | UART_LCR_DLAB);/* set DLAB */
 	}
 
-	serial_dl_write(up, quot);
+    if ((up->port.type == PORT_16550A) &&
+        (serial_in(up, UART_XON_CHAR)  == 0x11) &&
+        (serial_in(up, UART_XOFF_CHAR) == 0x13))
+    {
+        /* We should now be dealing with an extended 16550A-type UART from
+         * the Oxsemi 0x800 */
+
+        /* Calculate values for DLM,DLL,DLF divisor registers from clock
+         * frequency in Hz and Baud rate in bits per second, and program them
+         * into the UART */
+        u32  tmp;
+        u8 lcr, dlm, dll, dlf;
+
+        tmp = port->uartclk / baud;
+        tmp = (tmp + 1) / 2;
+        dlm = tmp >> (8 + 3);
+        dll = (tmp >> 3) & 0xFF;
+        dlf = (tmp & 7) << 5;
+
+        lcr = serial_in(up, UART_LSR);  /* Store LCR */
+
+        serial_outp(up, UART_LCR, 0x80); /* Enable access to DLM DLL */ 
+        serial_outp(up, UART_DLL, dll);  /* LS of divisor */
+        serial_outp(up, UART_DLM, dlm);  /* MS of divisor */
+        serial_outp(up, UART_DLF, dlf);  /* Set non-standard fractional divisor */
+        serial_outp(up, UART_LCR, lcr);  /* Restore LCR */
+    } else {
+        serial_dl_write(up, quot);
+    }
 
 	/*
 	 * LCR DLAB must be set to enable 64-byte FIFO mode. If the FCR
@@ -2519,7 +2546,8 @@ serial8250_console_write(struct console *co, const char *s, unsigned int count)
 static int __init serial8250_console_setup(struct console *co, char *options)
 {
 	struct uart_port *port;
-	int baud = 9600;
+    int baud = 115200;
+//    int baud = 9600;
 	int bits = 8;
 	int parity = 'n';
 	int flow = 'n';

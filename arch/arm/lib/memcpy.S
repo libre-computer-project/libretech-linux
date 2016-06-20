@@ -13,6 +13,8 @@
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 
+	.section ".text.memcpy"
+
 	.macro ldr1w ptr reg abort
 	ldr \reg, [\ptr], #4
 	.endm

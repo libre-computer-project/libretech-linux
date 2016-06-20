@@ -625,6 +625,11 @@ asmlinkage int printk(const char *fmt, ...)
 	return r;
 }
 
+#if defined(CONFIG_DEBUG_LL) && defined(CONFIG_OXNAS_EARLY_PRINTK)
+/* Declare the printascii function that is specific to ARM platforms */
+extern void printascii(const char *);
+#endif
+
 /* cpu currently holding logbuf_lock */
 static volatile unsigned int printk_cpu = UINT_MAX;
 
@@ -652,6 +657,11 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 
 	/* Emit the output into the temporary buffer */
 	printed_len = vscnprintf(printk_buf, sizeof(printk_buf), fmt, args);
+
+#if defined(CONFIG_DEBUG_LL) && defined(CONFIG_OXNAS_EARLY_PRINTK)
+    /* Send output down the early UART */
+    printascii(printk_buf);
+#endif
 
 	/*
 	 * Copy the output into log_buf.  If the caller didn't provide

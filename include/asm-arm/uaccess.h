@@ -383,9 +383,30 @@ do {									\
 
 
 #ifdef CONFIG_MMU
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+extern unsigned long __must_check __copy_from_user_alt(void *to, const void __user *from, unsigned long n);
+static inline unsigned long __must_check __copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+	if (n >= CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) printk("__copy_from_user() %lu bytes\n", n);
+	return __copy_from_user_alt(to, from , n);
+}
+extern unsigned long __must_check __copy_to_user_alt(void __user *to, const void *from, unsigned long n);
+static inline unsigned long __must_check __copy_to_user(void __user *to, const void *from, unsigned long n)
+{
+	if (n >= CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) printk("__copy_to_user() %lu bytes\n", n);
+	return __copy_to_user_alt(to, from , n);
+}
+extern unsigned long __must_check __clear_user_alt(void __user *addr, unsigned long n);
+static inline unsigned long __must_check __clear_user(void __user *addr, unsigned long n)
+{
+	if (n >= CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) printk("__clear_user() %lu bytes\n", n);
+	return __clear_user_alt(addr, n);
+}
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 extern unsigned long __must_check __copy_from_user(void *to, const void __user *from, unsigned long n);
 extern unsigned long __must_check __copy_to_user(void __user *to, const void *from, unsigned long n);
 extern unsigned long __must_check __clear_user(void __user *addr, unsigned long n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 #else
 #define __copy_from_user(to,from,n)	(memcpy(to, (void __force *)from, n), 0)
 #define __copy_to_user(to,from,n)	(memcpy((void __force *)to, from, n), 0)
@@ -397,8 +418,15 @@ extern unsigned long __must_check __strnlen_user(const char __user *s, long n);
 
 static inline unsigned long __must_check copy_from_user(void *to, const void __user *from, unsigned long n)
 {
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+	if (n >= CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) printk("copy_from_user() %lu bytes\n", n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	if (access_ok(VERIFY_READ, from, n))
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+		n = __copy_from_user_alt(to, from, n);
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 		n = __copy_from_user(to, from, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	else /* security hole - plug it */
 		memzero(to, n);
 	return n;
@@ -406,8 +434,15 @@ static inline unsigned long __must_check copy_from_user(void *to, const void __u
 
 static inline unsigned long __must_check copy_to_user(void __user *to, const void *from, unsigned long n)
 {
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+	if (n >= CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) printk("copy_to_user() %lu bytes\n", n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	if (access_ok(VERIFY_WRITE, to, n))
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+		n = __copy_to_user_alt(to, from, n);
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 		n = __copy_to_user(to, from, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	return n;
 }
 
@@ -416,8 +451,15 @@ static inline unsigned long __must_check copy_to_user(void __user *to, const voi
 
 static inline unsigned long __must_check clear_user(void __user *to, unsigned long n)
 {
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+	if (n >= CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) printk("clear_user() %lu bytes\n", n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	if (access_ok(VERIFY_WRITE, to, n))
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+		n = __clear_user_alt(to, n);
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 		n = __clear_user(to, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	return n;
 }
 

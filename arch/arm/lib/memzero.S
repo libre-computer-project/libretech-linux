@@ -10,9 +10,11 @@
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 
-	.text
+	.section ".text.__memzero"
+
 	.align	5
 	.word	0
+
 /*
  * Align the pointer in r0.  r3 contains the number of bytes that we are
  * mis-aligned by, and r1 is the number of bytes.  If r1 < 4, then we

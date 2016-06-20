@@ -18,7 +18,11 @@
  *          : sz   - number of bytes to clear
  * Returns  : number of bytes NOT cleared
  */
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+ENTRY(__clear_user_alt)
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 ENTRY(__clear_user)
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 		stmfd	sp!, {r1, lr}
 		mov	r2, #0
 		cmp	r1, #4

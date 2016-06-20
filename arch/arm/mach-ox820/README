@@ -1,0 +1,85 @@
+
+usb-test-modes 
+
+This is best built as a module which may be inserted into a running
+Linux system only when needed.
+The module can be built as part of the standard kernel module build
+if the correct options are chosen in the config. 
+
+
+How to use:
+
+copy the usb-test-mode.ko file somewhere convenient on the NAS and
+insert the module into the system using
+'modprobe usb-test-mode.ko'
+
+It should report successfull loading or an error message. Assuming it is
+successful /proc will have an 'usb_test_mode' entry (verify with ls).
+
+Actions:
+read the current port status:
+cat /proc/usb_test_mode/read
+
+set port 1 into test mode 4:
+echo 4 > /proc/usb_test_mode/write1
+
+
+When testing is completed the module can be removed from the linux
+system using:
+rmmod usb_test_mode
+
+ahb_mon 
+
+This should be built as a module. 
+
+How to use:
+
+insert the module into a working system by typing 
+'modprobe oxnas-ahb-monitor'
+
+When successfully installed a directory  entry will appear in /proc for
+oxnas-ahb-monitor. In the directory will be a writeable file for each
+AHB monitor and a control file. There will also be a readable file for
+obtaining the counts stored in all the ahb monitors.
+
+
+Actions:
+set a monitor to a limited range, burst mode etc using
+low addres, high address, mode, burst mode, burst mask, hprot, hprot mask
+
+Use the echo command to set data into the /proc/oxnas-ahb-monitor an example is
+the following script to observe the activities of the ARM processor on the GMAC
+core when pinging a remote machine:
+---------------------------
+#!/bin/sh -x
+#
+
+# start montoring of ARM data bus to MAC
+# format is "low high mode burst mask hprot mask"
+# mode - 1 write 2 read 3 read write.
+
+echo 2 > /proc/oxnas-test/control
+
+echo 0 > /proc/oxnas-test/control
+
+
+echo "0x40400000,0x405fffff,3,0,0,0,0" > /proc/oxnas-test/ARM_Data
+echo "0x40400000,0x405fffff,3,0,0,0,0" > /proc/oxnas-test/Arm_Inst
+echo "0,4,3,0,0,0,0" > /proc/oxnas-test/CoPro
+echo "0,4,3,0,0,0,0" > /proc/oxnas-test/DMA_A
+echo "0,4,3,0,0,0,0" > /proc/oxnas-test/DMA_B
+echo "0,4,3,0,0,0,0" > /proc/oxnas-test/GMAC
+echo "0,4,3,0,0,0,0" > /proc/oxnas-test/PCI
+echo "0,4,3,0,0,0,0" > /proc/oxnas-test/USBHS
+
+echo 1 > /proc/oxnas-test/control
+
+ping -c 1 172.31.0.102
+
+echo 0 > /proc/oxnas-test/control
+--------------------------------------
+
+When testing is commplete the module can be removed using 
+rmmod oxnas-ahb-monitor
+
+

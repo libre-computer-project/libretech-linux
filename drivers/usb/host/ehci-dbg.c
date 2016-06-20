@@ -28,11 +28,11 @@
 	dev_warn (ehci_to_hcd(ehci)->self.controller , fmt , ## args )
 
 #ifdef EHCI_VERBOSE_DEBUG
-#	define vdbg dbg
-#	define ehci_vdbg ehci_dbg
+	#define vdbg dbg
+	#define ehci_vdbg ehci_dbg
 #else
-#	define vdbg(fmt,args...) do { } while (0)
-#	define ehci_vdbg(ehci, fmt, args...) do { } while (0)
+	#define vdbg(fmt,args...) do { } while (0)
+	#define ehci_vdbg(ehci, fmt, args...) do { } while (0)
 #endif
 
 #ifdef	DEBUG
@@ -242,6 +242,10 @@ dbg_command_buf (char *buf, unsigned len, const char *label, u32 command)
 		);
 }
 
+#define PORT_SPD_HIGH    (2 << 26)
+#define PORT_SPD_FULL    (1 << 26)
+
+
 static int
 dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 {
@@ -256,7 +260,7 @@ dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 	}
 
 	return scnprintf (buf, len,
-		"%s%sport %d status %06x%s%s sig=%s%s%s%s%s%s%s%s%s%s",
+		"%s%sport %d status %06x%s%s sig=%s %s%s%s%s%s%s%s%s%s %s",
 		label, label [0] ? " " : "", port, status,
 		(status & PORT_POWER) ? " POWER" : "",
 		(status & PORT_OWNER) ? " OWNER" : "",
@@ -269,7 +273,9 @@ dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 		(status & PORT_PEC) ? " PEC" : "",
 		(status & PORT_PE) ? " PE" : "",
 		(status & PORT_CSC) ? " CSC" : "",
-		(status & PORT_CONNECT) ? " CONNECT" : "");
+		(status & PORT_CONNECT) ? " CONNECT" : "",
+		(status & PORT_SPD_HIGH) ? ((status & PORT_SPD_FULL) ? "??" : "HIGH" ) : (status & PORT_SPD_FULL) ? "LOW" : "FULL"
+	    );
 }
 
 #else
@@ -783,13 +789,38 @@ show_registers (struct class_device *class_dev, char *buf)
 	size -= temp;
 	next += temp;
 #endif
-
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT
+        long unsigned tt_status =readl((u32)ehci->regs +TT_STATUS);
+        temp = scnprintf (next, size,
+                "tt status %08lx \n",
+                tt_status);
+        size -= temp;
+        next += temp;
+#endif
 done:
 	spin_unlock_irqrestore (&ehci->lock, flags);
 
 	return PAGE_SIZE - size;
 }
 static CLASS_DEVICE_ATTR (registers, S_IRUGO, show_registers, NULL);
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT
+static ssize_t
+reset_tt (struct class_device *class_dev, const char *buf, size_t len)
+{
+        struct usb_bus          *bus;
+        struct usb_hcd          *hcd;
+        struct ehci_hcd         *ehci;
+ 
+        bus = class_get_devdata(class_dev);
+        hcd = bus->hcpriv;
+        ehci = hcd_to_ehci (hcd);
+
+       *((u32 *) ((u32)ehci->regs +TT_STATUS)) = 2;
+        return len;
+}
+
+static CLASS_DEVICE_ATTR (tt_reset, S_IWUGO, NULL, reset_tt );
+#endif
 
 static inline void create_debug_files (struct ehci_hcd *ehci)
 {
@@ -799,6 +830,9 @@ static inline void create_debug_files (struct ehci_hcd *ehci)
 	retval = class_device_create_file(cldev, &class_device_attr_async);
 	retval = class_device_create_file(cldev, &class_device_attr_periodic);
 	retval = class_device_create_file(cldev, &class_device_attr_registers);
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT	
+        class_device_create_file(cldev, &class_device_attr_tt_reset);
+#endif        
 }
 
 static inline void remove_debug_files (struct ehci_hcd *ehci)
@@ -808,6 +842,9 @@ static inline void remove_debug_files (struct ehci_hcd *ehci)
 	class_device_remove_file(cldev, &class_device_attr_async);
 	class_device_remove_file(cldev, &class_device_attr_periodic);
 	class_device_remove_file(cldev, &class_device_attr_registers);
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT	
+        class_device_remove_file(cldev, &class_device_attr_tt_reset);
+#endif        
 }
 
 #endif /* STUB_DEBUG_FILES */

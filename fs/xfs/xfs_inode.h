@@ -495,6 +495,11 @@ xfs_iflags_test_and_clear(xfs_inode_t *ip, unsigned short flags)
 #define XFS_INHERIT_GID(pip)	\
 	(((pip)->i_mount->m_flags & XFS_MOUNT_GRPID) || \
 	 ((pip)->i_d.di_mode & S_ISGID))
+#ifdef CONFIG_OXNAS_SUID_INHERIT
+/* Modification to propagate SUID down directory hierarchy */
+#define XFS_INHERIT_UID(pip)	\
+	((pip)->i_d.di_mode & S_ISUID)
+#endif // CONFIG_OXNAS_SUID_INHERIT
 
 /*
  * Flags for xfs_iget()

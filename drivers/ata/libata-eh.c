@@ -89,6 +89,8 @@ static void ata_eh_handle_port_resume(struct ata_port *ap)
 static void __ata_ehi_pushv_desc(struct ata_eh_info *ehi, const char *fmt,
 				 va_list args)
 {
+    VPRINTK("\n");
+
 	ehi->desc_len += vscnprintf(ehi->desc + ehi->desc_len,
 				     ATA_EH_DESC_LEN - ehi->desc_len,
 				     fmt, args);
@@ -107,6 +109,8 @@ static void __ata_ehi_pushv_desc(struct ata_eh_info *ehi, const char *fmt,
 void __ata_ehi_push_desc(struct ata_eh_info *ehi, const char *fmt, ...)
 {
 	va_list args;
+
+    VPRINTK("\n");
 
 	va_start(args, fmt);
 	__ata_ehi_pushv_desc(ehi, fmt, args);
@@ -128,6 +132,8 @@ void ata_ehi_push_desc(struct ata_eh_info *ehi, const char *fmt, ...)
 {
 	va_list args;
 
+    VPRINTK("\n");
+
 	if (ehi->desc_len)
 		__ata_ehi_push_desc(ehi, ", ");
 
@@ -147,6 +153,8 @@ void ata_ehi_push_desc(struct ata_eh_info *ehi, const char *fmt, ...)
  */
 void ata_ehi_clear_desc(struct ata_eh_info *ehi)
 {
+    VPRINTK("\n");
+
 	ehi->desc[0] = '\0';
 	ehi->desc_len = 0;
 }
@@ -167,6 +175,8 @@ void ata_ehi_clear_desc(struct ata_eh_info *ehi)
 void ata_port_desc(struct ata_port *ap, const char *fmt, ...)
 {
 	va_list args;
+
+    VPRINTK("\n");
 
 	WARN_ON(!(ap->pflags & ATA_PFLAG_INITIALIZING));
 
@@ -202,6 +212,8 @@ void ata_port_pbar_desc(struct ata_port *ap, int bar, ssize_t offset,
 	char *type = "";
 	unsigned long long start, len;
 
+    VPRINTK("\n");
+
 	if (pci_resource_flags(pdev, bar) & IORESOURCE_MEM)
 		type = "m";
 	else if (pci_resource_flags(pdev, bar) & IORESOURCE_IO)
@@ -223,6 +235,8 @@ static void ata_ering_record(struct ata_ering *ering, int is_io,
 {
 	struct ata_ering_entry *ent;
 
+    VPRINTK("\n");
+
 	WARN_ON(!err_mask);
 
 	ering->cursor++;
@@ -236,6 +250,8 @@ static void ata_ering_record(struct ata_ering *ering, int is_io,
 
 static void ata_ering_clear(struct ata_ering *ering)
 {
+    VPRINTK("\n");
+
 	memset(ering, 0, sizeof(*ering));
 }
 
@@ -245,6 +261,8 @@ static int ata_ering_map(struct ata_ering *ering,
 {
 	int idx, rc = 0;
 	struct ata_ering_entry *ent;
+
+    VPRINTK("\n");
 
 	idx = ering->cursor;
 	do {
@@ -264,6 +282,8 @@ static unsigned int ata_eh_dev_action(struct ata_device *dev)
 {
 	struct ata_eh_context *ehc = &dev->link->eh_context;
 
+    VPRINTK("\n");
+
 	return ehc->i.action | ehc->i.dev_action[dev->devno];
 }
 
@@ -271,6 +291,8 @@ static void ata_eh_clear_action(struct ata_link *link, struct ata_device *dev,
 				struct ata_eh_info *ehi, unsigned int action)
 {
 	struct ata_device *tdev;
+
+    VPRINTK("\n");
 
 	if (!dev) {
 		ehi->action &= ~action;
@@ -537,7 +559,10 @@ void ata_scsi_error(struct Scsi_Host *host)
 void ata_port_wait_eh(struct ata_port *ap)
 {
 	unsigned long flags;
+
 	DEFINE_WAIT(wait);
+
+    VPRINTK("\n");
 
  retry:
 	spin_lock_irqsave(ap->lock, flags);
@@ -564,6 +589,8 @@ static int ata_eh_nr_in_flight(struct ata_port *ap)
 	unsigned int tag;
 	int nr = 0;
 
+    VPRINTK("\n");
+
 	/* count only non-internal commands */
 	for (tag = 0; tag < ATA_MAX_QUEUE - 1; tag++)
 		if (ata_qc_from_tag(ap, tag))
@@ -577,6 +604,8 @@ void ata_eh_fastdrain_timerfn(unsigned long arg)
 	struct ata_port *ap = (void *)arg;
 	unsigned long flags;
 	int cnt;
+
+    VPRINTK("\n");
 
 	spin_lock_irqsave(ap->lock, flags);
 
@@ -627,6 +656,8 @@ static void ata_eh_set_pending(struct ata_port *ap, int fastdrain)
 {
 	int cnt;
 
+    VPRINTK("\n");
+
 	/* already scheduled? */
 	if (ap->pflags & ATA_PFLAG_EH_PENDING)
 		return;
@@ -661,6 +692,8 @@ void ata_qc_schedule_eh(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
 
+    VPRINTK("\n");
+
 	WARN_ON(!ap->ops->error_handler);
 
 	qc->flags |= ATA_QCFLAG_FAILED;
@@ -686,6 +719,8 @@ void ata_qc_schedule_eh(struct ata_queued_cmd *qc)
  */
 void ata_port_schedule_eh(struct ata_port *ap)
 {
+    VPRINTK("\n");
+
 	WARN_ON(!ap->ops->error_handler);
 
 	if (ap->pflags & ATA_PFLAG_INITIALIZING)
@@ -700,6 +735,8 @@ void ata_port_schedule_eh(struct ata_port *ap)
 static int ata_do_link_abort(struct ata_port *ap, struct ata_link *link)
 {
 	int tag, nr_aborted = 0;
+
+    VPRINTK("\n");
 
 	WARN_ON(!ap->ops->error_handler);
 
@@ -736,6 +773,8 @@ static int ata_do_link_abort(struct ata_port *ap, struct ata_link *link)
  */
 int ata_link_abort(struct ata_link *link)
 {
+    VPRINTK("\n");
+
 	return ata_do_link_abort(link->ap, link);
 }
 
@@ -753,6 +792,8 @@ int ata_link_abort(struct ata_link *link)
  */
 int ata_port_abort(struct ata_port *ap)
 {
+    VPRINTK("\n");
+
 	return ata_do_link_abort(ap, NULL);
 }
 
@@ -776,6 +817,8 @@ int ata_port_abort(struct ata_port *ap)
  */
 static void __ata_port_freeze(struct ata_port *ap)
 {
+    VPRINTK("\n");
+
 	WARN_ON(!ap->ops->error_handler);
 
 	if (ap->ops->freeze)
@@ -802,6 +845,8 @@ int ata_port_freeze(struct ata_port *ap)
 {
 	int nr_aborted;
 
+    VPRINTK("\n");
+
 	WARN_ON(!ap->ops->error_handler);
 
 	nr_aborted = ata_port_abort(ap);
@@ -827,6 +872,8 @@ int sata_async_notification(struct ata_port *ap)
 {
 	u32 sntf;
 	int rc;
+
+    VPRINTK("\n");
 
 	if (!(ap->flags & ATA_FLAG_AN))
 		return 0;
@@ -896,6 +943,8 @@ void ata_eh_freeze_port(struct ata_port *ap)
 {
 	unsigned long flags;
 
+    VPRINTK("\n");
+
 	if (!ap->ops->error_handler)
 		return;
 
@@ -916,6 +965,8 @@ void ata_eh_freeze_port(struct ata_port *ap)
 void ata_eh_thaw_port(struct ata_port *ap)
 {
 	unsigned long flags;
+
+    VPRINTK("\n");
 
 	if (!ap->ops->error_handler)
 		return;
@@ -943,6 +994,8 @@ static void __ata_eh_qc_complete(struct ata_queued_cmd *qc)
 	struct scsi_cmnd *scmd = qc->scsicmd;
 	unsigned long flags;
 
+    VPRINTK("\n");
+
 	spin_lock_irqsave(ap->lock, flags);
 	qc->scsidone = ata_eh_scsidone;
 	__ata_qc_complete(qc);
@@ -962,6 +1015,8 @@ static void __ata_eh_qc_complete(struct ata_queued_cmd *qc)
 void ata_eh_qc_complete(struct ata_queued_cmd *qc)
 {
 	struct scsi_cmnd *scmd = qc->scsicmd;
+    VPRINTK("\n");
+
 	scmd->retries = scmd->allowed;
 	__ata_eh_qc_complete(qc);
 }
@@ -980,6 +1035,8 @@ void ata_eh_qc_complete(struct ata_queued_cmd *qc)
 void ata_eh_qc_retry(struct ata_queued_cmd *qc)
 {
 	struct scsi_cmnd *scmd = qc->scsicmd;
+    VPRINTK("\n");
+
 	if (!qc->err_mask && scmd->retries)
 		scmd->retries--;
 	__ata_eh_qc_complete(qc);
@@ -999,6 +1056,8 @@ void ata_eh_detach_dev(struct ata_device *dev)
 	struct ata_link *link = dev->link;
 	struct ata_port *ap = link->ap;
 	unsigned long flags;
+
+    VPRINTK("\n");
 
 	ata_dev_disable(dev);
 
@@ -1038,6 +1097,8 @@ void ata_eh_about_to_do(struct ata_link *link, struct ata_device *dev,
 	struct ata_eh_info *ehi = &link->eh_info;
 	struct ata_eh_context *ehc = &link->eh_context;
 	unsigned long flags;
+
+    VPRINTK("\n");
 
 	spin_lock_irqsave(ap->lock, flags);
 
@@ -1079,6 +1140,8 @@ void ata_eh_done(struct ata_link *link, struct ata_device *dev,
 {
 	struct ata_eh_context *ehc = &link->eh_context;
 
+    VPRINTK("\n");
+
 	/* if reset is complete, clear all reset actions & reset modifier */
 	if (action & ATA_EH_RESET_MASK) {
 		action |= ATA_EH_RESET_MASK;
@@ -1104,6 +1167,8 @@ void ata_eh_done(struct ata_link *link, struct ata_device *dev,
  */
 static const char *ata_err_string(unsigned int err_mask)
 {
+    VPRINTK("\n");
+
 	if (err_mask & AC_ERR_HOST_BUS)
 		return "host bus error";
 	if (err_mask & AC_ERR_ATA_BUS)
@@ -1183,6 +1248,8 @@ static int ata_eh_read_log_10h(struct ata_device *dev,
 	unsigned int err_mask;
 	u8 csum;
 	int i;
+
+    VPRINTK("\n");
 
 	err_mask = ata_read_log_page(dev, ATA_LOG_SATA_NCQ, buf, 1);
 	if (err_mask)
@@ -1289,6 +1356,8 @@ static void ata_eh_analyze_serror(struct ata_link *link)
 	unsigned int err_mask = 0, action = 0;
 	u32 hotplug_mask;
 
+    VPRINTK("\n");
+
 	if (serror & SERR_PERSISTENT) {
 		err_mask |= AC_ERR_ATA_BUS;
 		action |= ATA_EH_HARDRESET;
@@ -1346,6 +1415,8 @@ static void ata_eh_analyze_ncq_error(struct ata_link *link)
 	struct ata_queued_cmd *qc;
 	struct ata_taskfile tf;
 	int tag, rc;
+
+    VPRINTK("\n");
 
 	/* if frozen, we can't do much */
 	if (ap->pflags & ATA_PFLAG_FROZEN)
@@ -1408,6 +1479,8 @@ static unsigned int ata_eh_analyze_tf(struct ata_queued_cmd *qc,
 	unsigned int tmp, action = 0;
 	u8 stat = tf->command, err = tf->feature;
 
+    VPRINTK("\n");
+
 	if ((stat & (ATA_BUSY | ATA_DRQ | ATA_DRDY)) != ATA_DRDY) {
 		qc->err_mask |= AC_ERR_HSM;
 		return ATA_EH_SOFTRESET;
@@ -1453,6 +1526,8 @@ static unsigned int ata_eh_analyze_tf(struct ata_queued_cmd *qc,
 
 static int ata_eh_categorize_error(int is_io, unsigned int err_mask)
 {
+    VPRINTK("\n");
+
 	if (err_mask & AC_ERR_ATA_BUS)
 		return 1;
 
@@ -1479,6 +1554,8 @@ static int speed_down_verdict_cb(struct ata_ering_entry *ent, void *void_arg)
 {
 	struct speed_down_verdict_arg *arg = void_arg;
 	int cat = ata_eh_categorize_error(ent->is_io, ent->err_mask);
+
+    VPRINTK("\n");
 
 	if (ent->timestamp < arg->since)
 		return -1;
@@ -1525,6 +1602,8 @@ static unsigned int ata_eh_speed_down_verdict(struct ata_device *dev)
 	struct speed_down_verdict_arg arg;
 	unsigned int verdict = 0;
 
+    VPRINTK("\n");
+
 	/* scan past 10 mins of error history */
 	memset(&arg, 0, sizeof(arg));
 	arg.since = j64 - min(j64, j10mins);
@@ -1568,6 +1647,8 @@ static unsigned int ata_eh_speed_down(struct ata_device *dev, int is_io,
 {
 	unsigned int verdict;
 	unsigned int action = 0;
+
+    VPRINTK("\n");
 
 	/* don't bother if Cat-0 error */
 	if (ata_eh_categorize_error(is_io, err_mask) == 0)
@@ -1763,6 +1844,8 @@ void ata_eh_autopsy(struct ata_port *ap)
 {
 	struct ata_link *link;
 
+    VPRINTK("\n");
+
 	ata_port_for_each_link(link, ap)
 		ata_eh_link_autopsy(link);
 
@@ -1789,6 +1872,8 @@ static void ata_eh_link_report(struct ata_link *link)
 	const char *frozen, *desc;
 	char tries_buf[6];
 	int tag, nr_failed = 0;
+
+    VPRINTK("\n");
 
 	if (ehc->i.flags & ATA_EHI_QUIET)
 		return;
@@ -1954,6 +2039,8 @@ void ata_eh_report(struct ata_port *ap)
 {
 	struct ata_link *link;
 
+    VPRINTK("\n");
+
 	__ata_port_for_each_link(link, ap)
 		ata_eh_link_report(link);
 }
@@ -1963,6 +2050,8 @@ static int ata_do_reset(struct ata_link *link, ata_reset_fn_t reset,
 {
 	struct ata_device *dev;
 	int rc;
+
+    VPRINTK("\n");
 
 	ata_link_for_each_dev(dev, link)
 		classes[dev->devno] = ATA_DEV_UNKNOWN;
@@ -1993,6 +2082,8 @@ static int ata_eh_followup_srst_needed(struct ata_link *link,
 				       int rc, int classify,
 				       const unsigned int *classes)
 {
+    VPRINTK("\n");
+
 	if (link->flags & ATA_LFLAG_NO_SRST)
 		return 0;
 	if (rc == -EAGAIN)
@@ -2025,6 +2116,8 @@ int ata_eh_reset(struct ata_link *link, int classify,
 	unsigned long flags;
 	u32 sstatus;
 	int rc;
+
+    VPRINTK("\n");
 
 	/* about to reset */
 	spin_lock_irqsave(ap->lock, flags);
@@ -2334,6 +2427,8 @@ static int ata_link_nr_enabled(struct ata_link *link)
 	struct ata_device *dev;
 	int cnt = 0;
 
+    VPRINTK("\n");
+
 	ata_link_for_each_dev(dev, link)
 		if (ata_dev_enabled(dev))
 			cnt++;
@@ -2345,6 +2440,8 @@ static int ata_link_nr_vacant(struct ata_link *link)
 	struct ata_device *dev;
 	int cnt = 0;
 
+    VPRINTK("\n");
+
 	ata_link_for_each_dev(dev, link)
 		if (dev->class == ATA_DEV_UNKNOWN)
 			cnt++;
@@ -2355,6 +2452,8 @@ static int ata_eh_skip_recovery(struct ata_link *link)
 {
 	struct ata_eh_context *ehc = &link->eh_context;
 	struct ata_device *dev;
+
+    VPRINTK("\n");
 
 	/* skip disabled links */
 	if (link->flags & ATA_LFLAG_DISABLED)
@@ -2378,6 +2477,8 @@ static int ata_eh_skip_recovery(struct ata_link *link)
 static int ata_eh_handle_dev_fail(struct ata_device *dev, int err)
 {
 	struct ata_eh_context *ehc = &dev->link->eh_context;
+
+    VPRINTK("\n");
 
 	ehc->tries[dev->devno]--;
 
@@ -2638,6 +2739,8 @@ void ata_eh_finish(struct ata_port *ap)
 {
 	int tag;
 
+    VPRINTK("\n");
+
 	/* retry or finish qcs */
 	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
 		struct ata_queued_cmd *qc = __ata_qc_from_tag(ap, tag);
@@ -2697,6 +2800,8 @@ void ata_do_eh(struct ata_port *ap, ata_prereset_fn_t prereset,
 	struct ata_device *dev;
 	int rc;
 
+    VPRINTK("\n");
+
 	ata_eh_autopsy(ap);
 	ata_eh_report(ap);
 
@@ -2724,6 +2829,8 @@ static void ata_eh_handle_port_suspend(struct ata_port *ap)
 {
 	unsigned long flags;
 	int rc = 0;
+
+    VPRINTK("\n");
 
 	/* are we suspending? */
 	spin_lock_irqsave(ap->lock, flags);
@@ -2780,6 +2887,8 @@ static void ata_eh_handle_port_resume(struct ata_port *ap)
 {
 	unsigned long flags;
 	int rc = 0;
+
+    VPRINTK("\n");
 
 	/* are we resuming? */
 	spin_lock_irqsave(ap->lock, flags);

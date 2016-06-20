@@ -114,9 +114,15 @@ EXPORT_SYMBOL(__strnlen_user);
 EXPORT_SYMBOL(__strncpy_from_user);
 
 #ifdef CONFIG_MMU
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+EXPORT_SYMBOL(__copy_from_user_alt);
+EXPORT_SYMBOL(__copy_to_user_alt);
+EXPORT_SYMBOL(__clear_user_alt);
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 EXPORT_SYMBOL(__copy_from_user);
 EXPORT_SYMBOL(__copy_to_user);
 EXPORT_SYMBOL(__clear_user);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 
 EXPORT_SYMBOL(__get_user_1);
 EXPORT_SYMBOL(__get_user_2);

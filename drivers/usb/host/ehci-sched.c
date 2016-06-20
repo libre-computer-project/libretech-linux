@@ -2109,6 +2109,7 @@ scan_periodic (struct ehci_hcd *ehci)
 {
 	unsigned	frame, clock, now_uframe, mod;
 	unsigned	modified;
+	u8		uncompleted_td = 0;
 
 	mod = ehci->periodic_size << 3;
 
@@ -2188,8 +2189,10 @@ restart:
 					q = *q_p;
 					break;
 				}
-				if (uf != 8)
+				if (uf != 8){
+					uncompleted_td = 1;
 					break;
+				}
 
 				/* this one's ready ... HC won't cache the
 				 * pointer for much longer, if at all.
@@ -2214,6 +2217,7 @@ restart:
 				*q_p = q.sitd->sitd_next;
 				*hw_p = q.sitd->hw_next;
 				type = Q_NEXT_TYPE(ehci, q.sitd->hw_next);
+				uncompleted_td = 1;
 				wmb();
 				modified = sitd_complete (ehci, q.sitd);
 				q = *q_p;
@@ -2239,6 +2243,12 @@ restart:
 		// don't exceed periodic_size msec (default 1.024 sec).
 
 		// FIXME:  likewise assumes HC doesn't halt mid-scan
+		
+		/* We must stat the next scan cycle at the first
+		 * uncompleted TD so that TDs are not lost.
+		 */
+		 if ((!uncompleted_td) && (ehci_to_hcd(ehci)->state == HC_STATE_RUNNING))
+		 	ehci->next_uframe = now_uframe;
 
 		if (now_uframe == clock) {
 			unsigned	now;

@@ -238,7 +238,7 @@ enum {
 	/* various lengths of time */
 	ATA_TMOUT_BOOT		= 30 * HZ,	/* heuristic */
 	ATA_TMOUT_BOOT_QUICK	= 7 * HZ,	/* heuristic */
-	ATA_TMOUT_INTERNAL	= 30 * HZ,
+	ATA_TMOUT_INTERNAL	= 10 * HZ,
 	ATA_TMOUT_INTERNAL_QUICK = 5 * HZ,
 
 	/* FIXME: GoVault needs 2s but we can't afford that without
@@ -662,7 +662,7 @@ struct ata_port {
 };
 
 struct ata_port_operations {
-	void (*dev_config) (struct ata_device *);
+	void (*dev_config) (struct ata_port *, struct ata_device *);
 
 	void (*set_piomode) (struct ata_port *, struct ata_device *);
 	void (*set_dmamode) (struct ata_port *, struct ata_device *);
@@ -675,6 +675,7 @@ struct ata_port_operations {
 	u8   (*check_status)(struct ata_port *ap);
 	u8   (*check_altstatus)(struct ata_port *ap);
 	void (*dev_select)(struct ata_port *ap, unsigned int device);
+    unsigned int (*dev_chk)(struct ata_port *ap, unsigned int device);
 
 	void (*phy_reset) (struct ata_port *ap); /* obsolete */
 	int  (*set_mode) (struct ata_link *link, struct ata_device **r_failed_dev);
@@ -689,6 +690,8 @@ struct ata_port_operations {
 	void (*data_xfer) (struct ata_device *, unsigned char *, unsigned int, int);
 
 	int (*qc_defer) (struct ata_queued_cmd *qc);
+    struct ata_queued_cmd* (*qc_new)(struct ata_port *ap);
+    void (*qc_free)(struct ata_queued_cmd *qc);
 	void (*qc_prep) (struct ata_queued_cmd *qc);
 	unsigned int (*qc_issue) (struct ata_queued_cmd *qc);
 
@@ -724,6 +727,7 @@ struct ata_port_operations {
 
 	void (*bmdma_stop) (struct ata_queued_cmd *qc);
 	u8   (*bmdma_status) (struct ata_port *ap);
+    void (*pio_task)(struct work_struct *work);
 };
 
 struct ata_port_info {

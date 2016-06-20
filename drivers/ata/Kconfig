@@ -182,14 +182,55 @@ config PATA_ACPI
 	  firmware in the BIOS. This driver can sometimes handle
 	  otherwise unsupported hardware.
 
+config SATA_OX800
+	bool "Oxford Semiconductor OX800 SATA support"
+	depends on ARCH_OXNAS && OXNAS_VERSION_0X800
+	default n
+	help
+	  This option enables support for the 924 based sata core
+
+config SATA_OX810
+	bool "Oxford Semiconductor OX810 SATA support"
+	depends on ARCH_OXNAS && OXNAS_VERSION_0X810
+	default n
+	help
+	  This option enables support for the 934 based sata core
+
+config SATA_OX820
+	bool "Oxford Semiconductor OX810 SATA support"
+	depends on ARCH_OX820 && OXNAS_VERSION_0X820
+	default n
+	help
+	  This option enables support for the 934 based sata core
+
 config SATA_FSL
 	tristate "Freescale 3.0Gbps SATA support"
 	depends on PPC_MPC837x
 	help
 	  This option enables support for Freescale 3.0Gbps SATA controller.
 	  It can be found on MPC837x and MPC8315.
-
 	  If unsure, say N.
+
+config SATA_OXNAS_SINGLE_SATA
+	bool "Force OXNAS family devices to only use one SATA port"
+	depends on SATA_OX800 || SATA_OX810
+	default n
+	help 
+  	  Prevents the ox800sata module from registering its second sata port, this
+	  reduces startup time on systems where only one port is physically present
+	  on the board/chip periphery.
+
+config SATA_OXNAS_DISK_LIGHT
+	bool "Whether OXNAS family device should use a SATA disk activity light"
+	depends on SATA_OX800 || SATA_OX810
+	default n
+
+config SATA_OXNAS_DISK_LIGHT_GPIO_LINE
+	int  "GPIO line of the disk light"
+	depends on SATA_OXNAS_DISK_LIGHT
+	default 29
+	help
+  	  Selects the GPIO line of the disk activity light.
 
 config PATA_ALI
 	tristate "ALi PATA support (Experimental)"

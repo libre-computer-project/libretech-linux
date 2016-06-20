@@ -173,9 +173,19 @@ static inline void map_memory_bank(struct membank *bank)
 #ifdef CONFIG_MMU
 	struct map_desc map;
 
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	/*
+	 * Assume only a single bank and stop the overwrite of the first section
+	 * descriptor
+	 */
+	map.pfn = __phys_to_pfn(bank->start + 1024*1024);
+	map.virtual = __phys_to_virt(bank->start) + 1024*1024;
+	map.length = bank->size - 1024*1024;
+#else // CONFIG_OXNAS_MAP_SRAM
 	map.pfn = __phys_to_pfn(bank->start);
 	map.virtual = __phys_to_virt(bank->start);
 	map.length = bank->size;
+#endif // CONFIG_OXNAS_MAP_SRAM
 	map.type = MT_MEMORY;
 
 	create_mapping(&map);

@@ -41,6 +41,7 @@ config USB_EHCI_SPLIT_ISO
 config USB_EHCI_ROOT_HUB_TT
 	bool "Root Hub Transaction Translators (EXPERIMENTAL)"
 	depends on USB_EHCI_HCD && EXPERIMENTAL
+	default y if ARCH_OXNAS
 	---help---
 	  Some EHCI chips have vendor-specific extensions to integrate
 	  transaction translators, so that no OHCI or UHCI companion

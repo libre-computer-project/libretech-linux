@@ -229,6 +229,22 @@ config DM_CRYPT
 
 	  If unsure, say N.
 
+config DM_OX_CRYPT
+	tristate "OX800 Hardware Cryptograpy target support"
+	depends on BLK_DEV_DM && EXPERIMENTAL && CRYPTO_OXAESLRW
+	---help---
+      Based on dm-crypt by Fruhwirth & Saout it has been modified
+      to work with the LRW-AES core in the OX800 NAS chip from
+      Oxford Semiconductor Ltd.
+      
+	  This device-mapper target allows you to create a device that
+	  transparently encrypts the data on it.
+      
+	  To compile this code as a module, choose M here: the module will
+	  be called dm-ox-crypt.
+
+	  If unsure, say N.
+
 config DM_SNAPSHOT
        tristate "Snapshot target (EXPERIMENTAL)"
        depends on BLK_DEV_DM && EXPERIMENTAL

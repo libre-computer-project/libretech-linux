@@ -117,7 +117,7 @@ void arm_machine_restart(char mode)
 void (*pm_idle)(void);
 EXPORT_SYMBOL(pm_idle);
 
-void (*pm_power_off)(void);
+void (*pm_power_off)(void) = arch_poweroff;
 EXPORT_SYMBOL(pm_power_off);
 
 void (*arm_pm_restart)(char str) = arm_machine_restart;

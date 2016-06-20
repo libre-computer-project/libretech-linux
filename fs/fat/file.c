@@ -134,6 +134,7 @@ const struct file_operations fat_file_operations = {
 	.release	= fat_file_release,
 	.ioctl		= fat_generic_ioctl,
 	.fsync		= file_fsync,
+	.sendfile	= generic_file_sendfile,
 	.splice_read	= generic_file_splice_read,
 };
 

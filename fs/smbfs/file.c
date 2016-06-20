@@ -283,6 +283,27 @@ out:
 	return status;
 }
 
+static ssize_t
+smb_file_sendfile(struct file *file, loff_t *ppos,
+		  size_t count, read_actor_t actor, void *target)
+{
+	struct dentry *dentry = file->f_path.dentry;
+	ssize_t status;
+
+	VERBOSE("file %s/%s, pos=%Ld, count=%d\n",
+		DENTRY_PATH(dentry), *ppos, count);
+
+	status = smb_revalidate_inode(dentry);
+	if (status) {
+		PARANOIA("%s/%s validation failed, error=%Zd\n",
+			 DENTRY_PATH(dentry), status);
+		goto out;
+	}
+	status = generic_file_sendfile(file, ppos, count, actor, target);
+out:
+	return status;
+}
+
 /*
  * This does the "real" work of the write. The generic routine has
  * allocated the page, locked it, done all the page alignment stuff
@@ -434,6 +455,7 @@ const struct file_operations smb_file_operations =
 	.open		= smb_file_open,
 	.release	= smb_file_release,
 	.fsync		= smb_fsync,
+	.sendfile	= smb_file_sendfile,
 	.splice_read	= smb_file_splice_read,
 };
 

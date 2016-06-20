@@ -123,5 +123,11 @@ struct gpio_led_platform_data {
 	struct gpio_led *leds;
 };
 
+/* Trigger specific functions */
+#ifdef CONFIG_WDC_LEDS_TRIGGER_SATA_DISK
+extern void wdc_ledtrig_sata_activity(void);
+#else
+#define wdc_ledtrig_sata_activity() do {} while(0)
+#endif
 
 #endif		/* __LINUX_LEDS_H_INCLUDED */

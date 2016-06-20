@@ -48,8 +48,10 @@
 
 /*
  * Data preload for architectures that support it
+ * OXNAS altered to >= 6 from >= 5 as 926 supports pld, but implements it as
+ * nop, so wastes instruction cycles to include pld support
  */
-#if __LINUX_ARM_ARCH__ >= 5
+#if __LINUX_ARM_ARCH__ >= 6
 #define PLD(code...)	code
 #else
 #define PLD(code...)

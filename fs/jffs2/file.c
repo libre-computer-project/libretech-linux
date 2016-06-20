@@ -49,7 +49,8 @@ const struct file_operations jffs2_file_operations =
 	.ioctl =	jffs2_ioctl,
 	.mmap =		generic_file_readonly_mmap,
 	.fsync =	jffs2_fsync,
-	.splice_read =	generic_file_splice_read,
+	.sendfile =	generic_file_sendfile
+  	.splice_read =	generic_file_splice_read,
 };
 
 /* jffs2_file_inode_operations */

@@ -29,6 +29,10 @@ else
 endif
 endif
 
+ifeq ($(CONFIG_OXNAS_DMA_COPIES),y)
+  lib-y	+= oxnas_copies.o
+endif
+
 lib-$(CONFIG_MMU) += $(mmu-y)
 
 ifeq ($(CONFIG_CPU_32v3),y)

@@ -12,6 +12,7 @@
 
 #include <linux/compiler.h>
 
+// These start at 0x0100 and are alaised at 0x200 + (0x100 * CPU_Number)
 #define GIC_CPU_CTRL			0x00
 #define GIC_CPU_PRIMASK			0x04
 #define GIC_CPU_BINPOINT		0x08
@@ -20,6 +21,8 @@
 #define GIC_CPU_RUNNINGPRI		0x14
 #define GIC_CPU_HIGHPRI			0x18
 
+
+// These start at 0x1000 + ...
 #define GIC_DIST_CTRL			0x000
 #define GIC_DIST_CTR			0x004
 #define GIC_DIST_ENABLE_SET		0x100
@@ -37,6 +40,7 @@ void gic_dist_init(unsigned int gic_nr, void __iomem *base, unsigned int irq_sta
 void gic_cpu_init(unsigned int gic_nr, void __iomem *base);
 void gic_cascade_irq(unsigned int gic_nr, unsigned int irq);
 void gic_raise_softirq(cpumask_t cpumask, unsigned int irq);
+void gic_legacy_mode(unsigned int legacy_mode_on, void __iomem *base);
 #endif
 
 #endif

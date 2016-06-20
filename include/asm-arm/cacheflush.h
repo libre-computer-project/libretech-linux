@@ -260,6 +260,26 @@ extern void dmac_flush_range(const void *, const void *);
 
 #endif
 
+#if defined(CONFIG_SMP) && defined(CONFIG_CPU_V6) 
+enum smp_dma_cache_type {
+	SMP_DMA_CACHE_INV,
+	SMP_DMA_CACHE_CLEAN,
+	SMP_DMA_CACHE_FLUSH,
+};
+extern void smp_dma_cache_op(int type, const void *start, const void* end);
+
+#define smp_dma_inv_range(s, e) smp_dma_cache_op(SMP_DMA_CACHE_INV, s, e)
+#define smp_dma_clean_range(s, e) smp_dma_cache_op(SMP_DMA_CACHE_CLEAN, s, e)
+#define smp_dma_flush_range(s, e) smp_dma_cache_op(SMP_DMA_CACHE_FLUSH, s, e)
+
+#else
+
+#define smp_dma_inv_range		dmac_inv_range
+#define smp_dma_clean_range		dmac_clean_range
+#define smp_dma_flush_range		dmac_flush_range
+
+#endif
+
 #ifdef CONFIG_OUTER_CACHE
 
 extern struct outer_cache_fns outer_cache;
@@ -401,6 +421,14 @@ extern void flush_ptrace_access(struct vm_area_struct *vma, struct page *page,
 extern void flush_dcache_page(struct page *);
 
 extern void __flush_dcache_page(struct address_space *mapping, struct page *page);
+
+static inline void __flush_icache_all(void)
+{
+	asm("mcr	p15, 0, %0, c7, c5, 0	@ invalidate I-cache\n"
+	    "mcr	p15, 0, %0, c7, c5, 6	@ flush BTAC/BTB\n"
+	    :
+	    : "r" (0));
+}
 
 #define ARCH_HAS_FLUSH_ANON_PAGE
 static inline void flush_anon_page(struct vm_area_struct *vma,

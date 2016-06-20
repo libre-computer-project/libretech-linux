@@ -611,6 +611,7 @@ asmlinkage long sys_timerfd(int ufd, int clockid, int flags,
 			    const struct itimerspec __user *utmr);
 asmlinkage long sys_eventfd(unsigned int count);
 asmlinkage long sys_fallocate(int fd, int mode, loff_t offset, loff_t len);
+asmlinkage long sys_samba_reserve(int fd, void __user *info);
 
 int kernel_execve(const char *filename, char *const argv[], char *const envp[]);
 

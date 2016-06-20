@@ -172,6 +172,8 @@ struct proto_ops {
 				      struct vm_area_struct * vma);
 	ssize_t		(*sendpage)  (struct socket *sock, struct page *page,
 				      int offset, size_t size, int flags);
+	ssize_t		(*sendpages)  (struct socket *sock, struct page **page,
+				      int offset, size_t size, int flags);
 };
 
 struct net_proto_family {

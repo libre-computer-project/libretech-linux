@@ -245,6 +245,7 @@ ENTRY(arm926_flush_kern_dcache_page)
  *
  * (same as v4wb)
  */
+.section ".text.arm926_dma_clean_range"
 ENTRY(arm926_dma_inv_range)
 #ifndef CONFIG_CPU_DCACHE_WRITETHROUGH
 	tst	r0, #CACHE_DLINESIZE - 1
@@ -259,6 +260,7 @@ ENTRY(arm926_dma_inv_range)
 	blo	1b
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
 	mov	pc, lr
+.section ".text.other"
 
 /*
  *	dma_clean_range(start, end)
@@ -270,6 +272,7 @@ ENTRY(arm926_dma_inv_range)
  *
  * (same as v4wb)
  */
+.section ".text.arm926_dma_clean_range"
 ENTRY(arm926_dma_clean_range)
 #ifndef CONFIG_CPU_DCACHE_WRITETHROUGH
 	bic	r0, r0, #CACHE_DLINESIZE - 1
@@ -280,6 +283,7 @@ ENTRY(arm926_dma_clean_range)
 #endif
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
 	mov	pc, lr
+.section ".text.other"
 
 /*
  *	dma_flush_range(start, end)
@@ -289,6 +293,7 @@ ENTRY(arm926_dma_clean_range)
  *	- start	- virtual start address
  *	- end	- virtual end address
  */
+.section ".text.arm926_dma_flush_range"
 ENTRY(arm926_dma_flush_range)
 	bic	r0, r0, #CACHE_DLINESIZE - 1
 1:
@@ -302,6 +307,7 @@ ENTRY(arm926_dma_flush_range)
 	blo	1b
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
 	mov	pc, lr
+.section ".text.other"
 
 ENTRY(arm926_cache_fns)
 	.long	arm926_flush_kern_cache_all

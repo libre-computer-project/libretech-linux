@@ -4,7 +4,7 @@
 
 menuconfig DMADEVICES
 	bool "DMA Engine support"
-	depends on (PCI && X86) || ARCH_IOP32X || ARCH_IOP33X || ARCH_IOP13XX
+	depends on (PCI && X86) || ARCH_IOP32X || ARCH_IOP33X || ARCH_IOP13XX || ARCH_OXNAS
 	help
 	  DMA engines can do asynchronous data transfers without
 	  involving the host CPU.  Currently, this framework can be
@@ -35,6 +35,14 @@ config INTEL_IOP_ADMA
 	select DMA_ENGINE
 	help
 	  Enable support for the Intel(R) IOP Series RAID engines.
+
+config OXNAS_ADMA
+        tristate "Oxford Semiconductor ADAM support"
+        depends on ARCH_OXNAS
+	select ASYNC_CORE
+	select DMA_ENGINE
+        help
+          Enable support for the Oxford Semiconductor async. DMA engine
 
 config DMA_ENGINE
 	bool

@@ -72,7 +72,7 @@ static void __local_bh_disable(unsigned long ip)
 {
 	unsigned long flags;
 
-	WARN_ON_ONCE(in_irq());
+	//WARN_ON_ONCE(in_irq());
 
 	raw_local_irq_save(flags);
 	add_preempt_count(SOFTIRQ_OFFSET);
@@ -134,9 +134,9 @@ void local_bh_enable(void)
 #ifdef CONFIG_TRACE_IRQFLAGS
 	unsigned long flags;
 
-	WARN_ON_ONCE(in_irq());
+	//WARN_ON_ONCE(in_irq());
 #endif
-	WARN_ON_ONCE(irqs_disabled());
+	//WARN_ON_ONCE(irqs_disabled());
 
 #ifdef CONFIG_TRACE_IRQFLAGS
 	local_irq_save(flags);

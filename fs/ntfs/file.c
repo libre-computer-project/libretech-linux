@@ -2274,16 +2274,11 @@ const struct file_operations ntfs_file_ops = {
 						    mounted filesystem. */
 	.mmap		= generic_file_mmap,	 /* Mmap file. */
 	.open		= ntfs_file_open,	 /* Open file. */
-	.splice_read	= generic_file_splice_read /* Zero-copy data send with
+	.sendfile	= generic_file_sendfile, /* Zero-copy data send with
 						    the data source being on
 						    the ntfs partition.  We do
 						    not need to care about the
 						    data destination. */
-	/*.sendpage	= ,*/			 /* Zero-copy data send with
-						    the data destination being
-						    on the ntfs partition.  We
-						    do not need to care about
-						    the data source. */
 };
 
 const struct inode_operations ntfs_file_inode_ops = {

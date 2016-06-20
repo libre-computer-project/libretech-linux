@@ -62,6 +62,20 @@ config LEDS_S3C24XX
 	  This option enables support for LEDs connected to GPIO lines
 	  on Samsung S3C24XX series CPUs, such as the S3C2410 and S3C2440.
 
+config WDC_LEDS_OXNAS800
+	tristate "LED Support for WDC OXNAS800 GPIO LEDs"
+	depends on LEDS_CLASS && ARCH_OXNAS
+	help
+	  This option enables support for LEDs connected to GPIO lines on
+	  Oxford Semiconductor NAS800 in the Western Digital My Book NAS.
+
+config OXNAS_WD810_LEDS
+	tristate "LED Support for 810 based WD NAS"
+	depends on LEDS_CLASS && ARCH_OXNAS
+	help
+	  This option enables support for LEDs connected to GPIO lines on the
+	  Oxford Semiconductor OX810 in the Western Digital NAS
+
 config LEDS_AMS_DELTA
 	tristate "LED Support for the Amstrad Delta (E3)"
 	depends on LEDS_CLASS && MACH_AMS_DELTA
@@ -135,6 +149,13 @@ config LEDS_TRIGGER_IDE_DISK
 	depends on LEDS_TRIGGERS && BLK_DEV_IDEDISK
 	help
 	  This allows LEDs to be controlled by IDE disk activity.
+	  If unsure, say Y.
+
+config WDC_LEDS_TRIGGER_SATA_DISK
+	bool "WDC LED SATA Disk Trigger"
+	depends on LEDS_TRIGGERS
+	help
+	  This allows WDC LEDs to be controlled by SATA disk activity.
 	  If unsure, say Y.
 
 config LEDS_TRIGGER_HEARTBEAT

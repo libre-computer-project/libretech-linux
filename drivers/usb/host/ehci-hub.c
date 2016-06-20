@@ -769,6 +769,11 @@ static int ehci_hub_control (
 		dbg_port (ehci, "GetStatus", wIndex + 1, temp);
 		put_unaligned(cpu_to_le32 (status), (__le32 *) buf);
 		break;
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT
+        case ResetHubTT :
+                *((u32 *) ((u32)ehci->regs +TT_STATUS)) = 2;
+                break;
+#endif                
 	case SetHubFeature:
 		switch (wValue) {
 		case C_HUB_LOCAL_POWER:
@@ -825,6 +830,23 @@ static int ehci_hub_control (
 				temp |= PORT_RESET;
 				temp &= ~PORT_PE;
 
+#if defined(CONFIG_USB_EHCI_ROOT_HUB_TT) & defined (CONFIG_ARCH_OXNAS) & 0 
+		printk(KERN_ERR "port using status raw %lx\n",temp);
+		temp &= 0x0fffffffL; /* remove default data source */
+		if (temp & (1 << 27 ))
+		{ 
+			/* set the input to the UTMI input */
+			temp |= 0x20000000L;
+			printk(KERN_ERR "port using UTMI %d\n",wIndex);
+		}
+		else
+		{
+			/* set the input to the serial PHY input */
+			temp |= 0xE0000000L; 
+			printk(KERN_ERR "port using serial PHY %d\n",wIndex);
+		}
+		writel(temp, &ehci->regs->port_status [wIndex]);
+#endif	
 				/*
 				 * caller must wait, then call GetPortStatus
 				 * usb 2.0 spec says 50 ms resets on root

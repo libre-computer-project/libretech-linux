@@ -269,6 +269,8 @@
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
 
+#include <linux/pagemap.h>
+
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
 DEFINE_SNMP_STAT(struct tcp_mib, tcp_statistics) __read_mostly;
@@ -533,6 +535,12 @@ static ssize_t do_tcp_sendpages(struct sock *sk, struct page **pages, int poffse
 		int size = min_t(size_t, psize, PAGE_SIZE - offset);
 
 		if (!tcp_send_head(sk) || (copy = size_goal - skb->len) <= 0) {
+// Seems to be a little slower if we do this
+// /* Push any skb languishing at the head of the send queue */
+// if (tcp_send_head(sk) && (skb == tcp_send_head(sk))) {
+// 	tcp_push_one(sk, mss_now);
+// }
+
 new_segment:
 			if (!sk_stream_memory_free(sk))
 				goto wait_for_sndbuf;
@@ -589,8 +597,7 @@ new_segment:
 		if (forced_push(tp)) {
 			tcp_mark_push(tp, skb);
 			__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
-		} else if (skb == tcp_send_head(sk))
-			tcp_push_one(sk, mss_now);
+		}
 		continue;
 
 wait_for_sndbuf:
@@ -634,6 +641,48 @@ ssize_t tcp_sendpage(struct socket *sock, struct page *page, int offset,
 	TCP_CHECK_TIMER(sk);
 	release_sock(sk);
 	return res;
+}
+
+ssize_t tcp_sendpages(struct socket *sock, struct page **page, int offset,
+ 		     size_t size, int flags)
+{
+ 	ssize_t res;
+ 	struct sock *sk = sock->sk;
+ 
+#define TCP_ZC_CSUM_FLAGS (NETIF_F_IP_CSUM | NETIF_F_NO_CSUM | NETIF_F_HW_CSUM)
+
+	if (!(sk->sk_route_caps & NETIF_F_SG) ||
+	    !(sk->sk_route_caps & TCP_ZC_CSUM_FLAGS)) {
+        // Iterate through each page
+        ssize_t ret = 0;
+
+        while (size) {
+            unsigned long psize = PAGE_CACHE_SIZE - offset;
+            struct page *page_it;
+        
+            psize = PAGE_CACHE_SIZE - offset;
+            if (size <= psize) {
+                psize = size;                
+            }
+            page_it = *page;
+            ret += sock_no_sendpage(sock, page_it, offset, psize, flags);
+            size -= psize;            
+            page++;
+            offset += psize;
+            offset &= (PAGE_CACHE_SIZE - 1);
+        }
+		return ret;        
+    }
+    
+#undef TCP_ZC_CSUM_FLAGS
+
+ 	lock_sock(sk);
+ 	TCP_CHECK_TIMER(sk);
+ 	res = do_tcp_sendpages(sk, page, offset, size, flags);
+ 	TCP_CHECK_TIMER(sk);
+     
+ 	release_sock(sk);
+ 	return res;
 }
 
 #define TCP_PAGE(sk)	(sk->sk_sndmsg_page)

@@ -33,9 +33,10 @@ config GENERIC_CLOCKEVENTS
 	bool
 	default n
 
-config MMU
+config GENERIC_CLOCKEVENTS_BROADCAST
 	bool
-	default y
+	depends on GENERIC_CLOCKEVENTS
+	default y if SMP && !LOCAL_TIMERS
 
 config NO_IOPORT
 	bool
@@ -142,6 +143,13 @@ source "init/Kconfig"
 
 menu "System Type"
 
+config MMU
+	bool "MMU-based Paged Memory Management Support"
+	default y
+	help
+	  Select if you want MMU-based virtualised addressing space
+	  support by paged memory management. If unsure, say 'Y'.
+
 choice
 	prompt "ARM system type"
 	default ARCH_VERSATILE
@@ -163,6 +171,8 @@ config ARCH_REALVIEW
 	bool "ARM Ltd. RealView family"
 	select ARM_AMBA
 	select ICST307
+	select GENERIC_TIME
+	select GENERIC_CLOCKEVENTS
 	help
 	  This enables support for ARM Ltd RealView boards.
 
@@ -409,6 +419,18 @@ config ARCH_OMAP
 	help
 	  Support for TI's OMAP platform (OMAP1 and OMAP2).
 
+config ARCH_OXNAS
+	bool "Oxford Semiconductor NAS SoC"
+	help
+	  This enables support for Oxsemi NAS SoC
+
+config ARCH_OX820
+	bool "Oxford Semiconductor OX820"
+    select ARM_GIC
+    select GENERIC_CLOCKEVENTS_BUILD
+	help
+	  This enables support for Oxsemi OX820 SoC
+      
 endchoice
 
 source "arch/arm/mach-clps711x/Kconfig"
@@ -461,6 +483,12 @@ source "arch/arm/mach-h720x/Kconfig"
 
 source "arch/arm/mach-versatile/Kconfig"
 
+source "arch/arm/mach-oxnas/Kconfig"
+
+source "arch/arm/mach-ox820/Kconfig"
+
+source "arch/arm/plat-oxnas/Kconfig"
+
 source "arch/arm/mach-aaec2000/Kconfig"
 
 source "arch/arm/mach-realview/Kconfig"
@@ -504,6 +532,18 @@ if !MMU
 source "arch/arm/Kconfig-nommu"
 endif
 
+config ARM_ERRATA_351422
+	bool "Spinlocks using LDREX and STREX instructions can livelock"
+	depends on CPU_V6 && SMP
+	default n
+	help
+	  According to the ARM11MPCore Erratum 351422 (r0p0), under
+	  extremely rare conditions, in an MPCore node consisting of
+	  at least 3 CPUs, two CPUs trying to perform a STREX to data
+	  on the same shared cache line can enter a livelock
+	  situation. This option adds variable spinning time to the
+	  locking routines.
+
 endmenu
 
 source "arch/arm/common/Kconfig"
@@ -537,7 +577,7 @@ config ISA_DMA_API
 	bool
 
 config PCI
-	bool "PCI support" if ARCH_INTEGRATOR_AP || ARCH_VERSATILE_PB || ARCH_IXP4XX || ARCH_KS8695 || MACH_ARMCORE
+	bool "PCI support" if ARCH_INTEGRATOR_AP || ARCH_VERSATILE_PB || ARCH_IXP4XX || ARCH_KS8695 || MACH_ARMCORE || ARCH_OXNAS || ARCH_OX820
 	help
 	  Find out whether you have a PCI motherboard. PCI is the name of a
 	  bus system, i.e. the way the CPU talks to the other stuff inside
@@ -576,7 +616,7 @@ source "kernel/time/Kconfig"
 
 config SMP
 	bool "Symmetric Multi-Processing (EXPERIMENTAL)"
-	depends on EXPERIMENTAL && REALVIEW_MPCORE
+	depends on EXPERIMENTAL && (REALVIEW_MPCORE || ARCH_OX820)
 	help
 	  This enables support for systems with more than one CPU. If you have
 	  a system with only one CPU, like most personal computers, say N. If
@@ -610,7 +650,7 @@ config HOTPLUG_CPU
 
 config LOCAL_TIMERS
 	bool "Use local timer interrupts"
-	depends on SMP && REALVIEW_MPCORE
+	depends on SMP && (REALVIEW_MPCORE || ARCH_OX820)
 	default y
 	help
 	  Enable support for local timers on SMP platforms, rather then the
@@ -653,11 +693,13 @@ config NO_IDLE_HZ
 	  to have accurate timekeeping with dynamic tick.
 
 config HZ
-	int
+	int "Kernel timer tick rate"
 	default 128 if ARCH_L7200
 	default 200 if ARCH_EBSA110 || ARCH_S3C2410
 	default OMAP_32K_TIMER_HZ if ARCH_OMAP && OMAP_32K_TIMER
 	default 100
+	help
+		Sets the number of timer tick interrupts per second
 
 config AEABI
 	bool "Use the ARM EABI to compile the kernel"
@@ -773,6 +815,8 @@ config ALIGNMENT_TRAP
 	  here, which has a severe performance impact. This is necessary for
 	  correct operation of some network protocols. With an IP-only
 	  configuration it is safe to say N, otherwise say Y.
+
+source "drivers/wixevent/Kconfig"
 
 endmenu
 
@@ -1010,7 +1054,7 @@ source "drivers/misc/Kconfig"
 if PCMCIA || ARCH_CLPS7500 || ARCH_IOP32X || ARCH_IOP33X || ARCH_IXP4XX \
 	|| ARCH_L7200 || ARCH_LH7A40X || ARCH_PXA || ARCH_RPC \
 	|| ARCH_S3C2410 || ARCH_SA1100 || ARCH_SHARK || FOOTBRIDGE \
-	|| ARCH_IXP23XX
+	|| ARCH_IXP23XX || ARCH_OXNAS
 source "drivers/ide/Kconfig"
 endif
 

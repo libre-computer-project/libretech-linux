@@ -113,6 +113,9 @@ static int sock_fasync(int fd, struct file *filp, int on);
 static ssize_t sock_sendpage(struct file *file, struct page *page,
 			     int offset, size_t size, loff_t *ppos, int more);
 
+static ssize_t sock_sendpages(struct file *file, struct page **page,
+			     int offset, size_t size, loff_t *ppos, int more);
+
 /*
  *	Socket files have a set of 'special' operations as well as the generic file ones. These don't appear
  *	in the operation structures but are done directly via the socketcall() multiplexor.
@@ -133,6 +136,7 @@ static const struct file_operations socket_file_ops = {
 	.release =	sock_close,
 	.fasync =	sock_fasync,
 	.sendpage =	sock_sendpage,
+	.sendpages =	sock_sendpages,
 	.splice_write = generic_splice_sendpage,
 };
 
@@ -689,6 +693,21 @@ static ssize_t sock_sendpage(struct file *file, struct page *page,
 		flags |= MSG_MORE;
 
 	return sock->ops->sendpage(sock, page, offset, size, flags);
+}
+
+static ssize_t sock_sendpages(struct file *file, struct page **page,
+			     int offset, size_t size, loff_t *ppos, int more)
+{
+	struct socket *sock;
+	int flags;
+
+	sock = file->private_data;
+
+	flags = !(file->f_flags & O_NONBLOCK) ? 0 : MSG_DONTWAIT;
+	if (more)
+		flags |= MSG_MORE;
+
+	return sock->ops->sendpages(sock, page, offset, size, flags);
 }
 
 static struct sock_iocb *alloc_sock_iocb(struct kiocb *iocb,

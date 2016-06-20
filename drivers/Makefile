@@ -6,6 +6,7 @@
 #
 
 obj-$(CONFIG_PCI)		+= pci/
+obj-$(CONFIG_WIX_EVENT)	+= wixevent/
 obj-$(CONFIG_PARISC)		+= parisc/
 obj-$(CONFIG_RAPIDIO)		+= rapidio/
 obj-y				+= video/

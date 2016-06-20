@@ -238,6 +238,7 @@ const struct file_operations coda_file_operations = {
 	.open		= coda_open,
 	.release	= coda_release,
 	.fsync		= coda_fsync,
+	.sendfile	= coda_file_sendfile,
 	.splice_read	= coda_file_splice_read,
 };
 

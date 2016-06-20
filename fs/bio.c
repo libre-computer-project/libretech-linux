@@ -133,6 +133,7 @@ void bio_init(struct bio *bio)
 	memset(bio, 0, sizeof(*bio));
 	bio->bi_flags = 1 << BIO_UPTODATE;
 	atomic_set(&bio->bi_cnt, 1);
+	bio->bi_raid = 0;
 }
 
 /**
@@ -260,6 +261,7 @@ void __bio_clone(struct bio *bio, struct bio *bio_src)
 	bio->bi_vcnt = bio_src->bi_vcnt;
 	bio->bi_size = bio_src->bi_size;
 	bio->bi_idx = bio_src->bi_idx;
+    bio->bi_raid = bio_src->bi_raid;
 	bio_phys_segments(q, bio);
 	bio_hw_segments(q, bio);
 }

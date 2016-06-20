@@ -246,6 +246,8 @@ const struct file_operations udf_file_operations = {
 	.aio_write		= udf_file_aio_write,
 	.release		= udf_release_file,
 	.fsync			= udf_fsync_file,
+	.sendfile		= generic_file_sendfile,
+	.sendfile		= generic_file_sendfile,
 	.splice_read		= generic_file_splice_read,
 };
 

@@ -9,8 +9,9 @@
 #define _ASM_MUTEX_H
 
 #if __LINUX_ARM_ARCH__ < 6
+
 /* On pre-ARMv6 hardware the swp based implementation is the most efficient. */
-# include <asm-generic/mutex-xchg.h>
+#include <asm-generic/mutex-xchg.h>
 #else
 
 /*

@@ -114,6 +114,15 @@ struct bio {
 	void			*bi_private;
 
 	bio_destructor_t	*bi_destructor;	/* destructor */
+
+	/*
+	 * The raid settings for the bio, this should only be used by the oxsemi
+	 * sata driver to control raid hardware and the request merging code in 
+	 * ll_rw_blk.c to prevent merging of requests to hwraid and non-hwraid 
+	 *partitions.
+	 */ 
+  	u32                 bi_raid;
+   
 };
 
 /*

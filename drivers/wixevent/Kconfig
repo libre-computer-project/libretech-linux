@@ -1,0 +1,7 @@
+config WIX_EVENT
+        tristate "EVENT queue support"
+        default y
+        ---help---
+          If you want to use the event queue under Linux, say Y. If not, say N.
+          The msg device will receiver the msg from the kernel and send it to
+          the file, "/proc/wixevent".

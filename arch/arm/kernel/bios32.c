@@ -616,7 +616,7 @@ void __init pci_common_init(struct hw_pci *hw)
 	}
 }
 
-char * __init pcibios_setup(char *str)
+char * __devinit pcibios_setup(char *str)
 {
 	if (!strcmp(str, "debug")) {
 		debug_pci = 1;

@@ -1,0 +1,1 @@
+../plat-oxnas/hardware.h

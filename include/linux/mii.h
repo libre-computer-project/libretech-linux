@@ -21,18 +21,18 @@
 #define MII_EXPANSION       0x06        /* Expansion register          */
 #define MII_CTRL1000        0x09        /* 1000BASE-T control          */
 #define MII_STAT1000        0x0a        /* 1000BASE-T status           */
-#define MII_ESTATUS	    0x0f	/* Extended Status */
-#define MII_DCOUNTER        0x12        /* Disconnect counter          */
-#define MII_FCSCOUNTER      0x13        /* False carrier counter       */
-#define MII_NWAYTEST        0x14        /* N-way auto-neg test reg     */
-#define MII_RERRCOUNTER     0x15        /* Receive error counter       */
-#define MII_SREVISION       0x16        /* Silicon revision            */
-#define MII_RESV1           0x17        /* Reserved...                 */
-#define MII_LBRERROR        0x18        /* Lpback, rx, bypass error    */
-#define MII_PHYADDR         0x19        /* PHY address                 */
-#define MII_RESV2           0x1a        /* Reserved...                 */
-#define MII_TPISTATUS       0x1b        /* TPI status for 10mbps       */
-#define MII_NCONFIG         0x1c        /* Network interface config    */
+#define MII_ESTATUS         0x0f        /* Extended Status */
+//#define MII_DCOUNTER        0x12        /* Disconnect counter          */
+//#define MII_FCSCOUNTER      0x13        /* False carrier counter       */
+//#define MII_NWAYTEST        0x14        /* N-way auto-neg test reg     */
+//#define MII_RERRCOUNTER     0x15        /* Receive error counter       */
+//#define MII_SREVISION       0x16        /* Silicon revision            */
+//#define MII_RESV1           0x17        /* Reserved...                 */
+//#define MII_LBRERROR        0x18        /* Lpback, rx, bypass error    */
+//#define MII_PHYADDR         0x19        /* PHY address                 */
+//#define MII_RESV2           0x1a        /* Reserved...                 */
+//#define MII_TPISTATUS       0x1b        /* TPI status for 10mbps       */
+//#define MII_NCONFIG         0x1c        /* Network interface config    */
 
 /* Basic mode control register. */
 #define BMCR_RESV               0x003f  /* Unused...                   */
@@ -121,9 +121,9 @@
 #define ESTATUS_1000_THALF	0x1000	/* Can do 1000BT Half */
 
 /* N-way test register. */
-#define NWAYTEST_RESV1          0x00ff  /* Unused...                   */
-#define NWAYTEST_LOOPBACK       0x0100  /* Enable loopback for N-way   */
-#define NWAYTEST_RESV2          0xfe00  /* Unused...                   */
+//#define NWAYTEST_RESV1          0x00ff  /* Unused...                   */
+//#define NWAYTEST_LOOPBACK       0x0100  /* Enable loopback for N-way   */
+//#define NWAYTEST_RESV2          0xfe00  /* Unused...                   */
 
 /* 1000BASE-T Control register */
 #define ADVERTISE_1000FULL      0x0200  /* Advertise 1000BASE-T full duplex */
@@ -157,7 +157,9 @@ struct mii_if_info {
 
 	unsigned int full_duplex : 1;	/* is full duplex? */
 	unsigned int force_media : 1;	/* is autoneg. disabled? */
-	unsigned int supports_gmii : 1; /* are GMII registers supported? */
+	unsigned int using_1000 : 1;    /* the PHY is using 1000Mb rate */
+	unsigned int using_100 : 1;     /* the PHY is using 100Mb rate */
+	unsigned int using_pause : 1;	/* the PHY will generate pause frames */
 
 	struct net_device *dev;
 	int (*mdio_read) (struct net_device *dev, int phy_id, int location);
@@ -170,9 +172,16 @@ extern int mii_ethtool_gset(struct mii_if_info *mii, struct ethtool_cmd *ecmd);
 extern int mii_ethtool_sset(struct mii_if_info *mii, struct ethtool_cmd *ecmd);
 extern int mii_check_gmii_support(struct mii_if_info *mii);
 extern void mii_check_link (struct mii_if_info *mii);
-extern unsigned int mii_check_media (struct mii_if_info *mii,
-				     unsigned int ok_to_print,
-				     unsigned int init_media);
+extern unsigned int mii_check_media(struct mii_if_info *mii,
+                                    unsigned int ok_to_print,
+                                    unsigned int init_media);
+extern unsigned int mii_check_media_ex(struct mii_if_info *mii,
+                                    unsigned int ok_to_print,
+                                    unsigned int init_media,
+                                    int *has_gigabit_changed,
+									 int *has_pause_changed,
+									 void (*link_state_change_callback)(int link_state, void* arg),
+									 void *link_state_change_arg);
 extern int generic_mii_ioctl(struct mii_if_info *mii_if,
                       	     struct mii_ioctl_data *mii_data, int cmd,
 			     unsigned int *duplex_changed);
@@ -214,6 +223,23 @@ static inline unsigned int mii_nway_result (unsigned int negotiated)
 		ret = LPA_10HALF;
 
 	return ret;
+}
+
+static inline unsigned int mii_nway_result_1000(unsigned int lpa_1000, unsigned int advertised_1000)
+{
+	int full_negotiated = (lpa_1000 & LPA_1000FULL) &&
+						  (advertised_1000 & ADVERTISE_1000FULL);
+
+	int half_negotiated = (lpa_1000 & LPA_1000HALF) &&
+						  (advertised_1000 & ADVERTISE_1000HALF);
+	
+	if (full_negotiated) {
+		return LPA_1000FULL;
+	} else if (half_negotiated) {
+		return LPA_1000HALF;
+	} else {
+		return 0;
+	}
 }
 
 /**

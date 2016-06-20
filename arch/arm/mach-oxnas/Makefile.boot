@@ -1,0 +1,3 @@
+initrd_phys-$(CONFIG_ARCH_OXNAS)	:= 0x48200000
+params_phys-$(CONFIG_ARCH_OXNAS)	:= 0x48000100
+zreladdr-$(CONFIG_ARCH_OXNAS)		:= 0x48008000

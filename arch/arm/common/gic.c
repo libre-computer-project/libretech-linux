@@ -182,6 +182,7 @@ void __init gic_dist_init(unsigned int gic_nr, void __iomem *base,
 	if (gic_nr >= MAX_GIC_NR)
 		BUG();
 
+    /* make cpu mask repeat twice, then four times */
 	cpumask |= cpumask << 8;
 	cpumask |= cpumask << 16;
 
@@ -248,7 +249,10 @@ void __cpuinit gic_cpu_init(unsigned int gic_nr, void __iomem *base)
 
 	gic_data[gic_nr].cpu_base = base;
 
+    /* unmask all interrupts */
 	writel(0xf0, base + GIC_CPU_PRIMASK);
+    
+    /* disable legcy mode */
 	writel(1, base + GIC_CPU_CTRL);
 }
 
@@ -261,3 +265,10 @@ void gic_raise_softirq(cpumask_t cpumask, unsigned int irq)
 	writel(map << 16 | irq, gic_data[0].dist_base + GIC_DIST_SOFTINT);
 }
 #endif
+
+/*
+ * Enable or disable legacy interrupt mode on the current CPU 
+ */
+void gic_legacy_mode(unsigned int legacy_mode_on, void __iomem *base) {
+   writel((legacy_mode_on ? 0 : 1), base + GIC_CPU_CTRL);
+}

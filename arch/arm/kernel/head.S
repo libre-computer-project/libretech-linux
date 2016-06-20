@@ -59,6 +59,34 @@
 #define KERNEL_END	_end
 #endif
 
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	.macro	course_pgtbl, rd
+	ldr	\rd, =(__virt_to_phys(KERNEL_RAM_ADDR - 0x4400))
+	.endm
+
+	.globl	SMALL_AP
+	.equ	SMALL_AP, 0xAA
+
+	.globl	COURSE_DOMAIN
+	.equ	COURSE_DOMAIN, 0x04
+
+	.globl	SRAM_CODE_START
+	.globl	CODE_COPY_LEN
+
+#ifdef CONFIG_SUPPORT_LEON
+	/*
+	 * Allow 2 pages after GMAC/DMA descriptors for ARM/Leon TSO workspace
+	 * May have to change if Leon code is built to use more Tx descriptors, but
+	 * current 2 pages is easily enough for 54 descriptors
+	 */
+	.equ	SRAM_CODE_START, SRAM_PA+((CONFIG_DESCRIPTORS_PAGES+2)*4096)
+	.equ	CODE_COPY_LEN, ((CONFIG_SRAM_NUM_PAGES-CONFIG_LEON_PAGES-(CONFIG_DESCRIPTORS_PAGES+2))*4096)
+#else // CONFIG_SUPPORT_LEON
+	.equ	SRAM_CODE_START, SRAM_PA+(CONFIG_DESCRIPTORS_PAGES*4096)
+	.equ	CODE_COPY_LEN, ((CONFIG_SRAM_NUM_PAGES-CONFIG_DESCRIPTORS_PAGES)*4096)
+#endif // CONFIG_SUPPORT_LEON
+#endif // CONFIG_OXNAS_MAP_SRAM
+
 /*
  * Kernel startup entry point.
  * ---------------------------
@@ -82,6 +110,27 @@
 ENTRY(stext)
 	msr	cpsr_c, #PSR_F_BIT | PSR_I_BIT | SVC_MODE @ ensure svc mode
 						@ and irqs disabled
+
+#ifdef CONFIG_OXNAS_CACHE_LOCKDOWN	
+	/*
+	 * Lock down ICache - do not care what ends up in locked down ways - 
+	 * eventually context switch etc will flush out anything that gets loaded
+	 * next
+	 */
+	mrc p15,0,r2,c9,c0,1
+	orr r2,r2,#CONFIG_OXNAS_CACHE_I_MASK
+	mcr p15,0,r2,c9,c0,1
+
+	/*
+	 * Lock down DCache - do not care what ends up in locked down ways - 
+	 * eventually context switch etc will flush out anything that gets loaded
+	 * next
+	 */
+	mrc p15,0,r2,c9,c0,0
+	orr r2,r2,#CONFIG_OXNAS_CACHE_D_MASK
+	mcr p15,0,r2,c9,c0,0
+#endif // CONFIG_OXNAS_CACHE_LOCKDOWN	
+
 	mrc	p15, 0, r9, c0, c0		@ get processor id
 	bl	__lookup_processor_type		@ r5=procinfo r9=cpuid
 	movs	r10, r5				@ invalid processor (r5=0)?
@@ -196,7 +245,7 @@ __turn_mmu_on:
 	mcr	p15, 0, r0, c1, c0, 0		@ write control reg
 	mrc	p15, 0, r3, c0, c0, 0		@ read id reg
 	mov	r3, r3
-	mov	r3, r3
+/*	mov	r3, r3 */
 	mov	pc, r13
 
 
@@ -231,7 +280,33 @@ __create_page_tables:
 	teq	r0, r6
 	bne	1b
 
-	ldr	r7, [r10, #PROCINFO_MM_MMUFLAGS] @ mm_mmuflags
+	ldr	r7, [r10, #PROCINFO_MM_MMUFLAGS]	@ mmuflags
+                                                                                                                  
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	/*
+	 * Create the contents of the first descriptor in the course table which
+	 * is to describe the first MB of the kernel with 256 4K small descriptors.
+	 * The descriptors' are composed of the top 20 bits of the physical
+	 * address plus the appropriate AP, cacheable and bufferable flags
+	 */
+	mov	r3, #PHYS_OFFSET
+	mov	r3, r3, lsr #12
+	mov	r3, r3, lsl #12
+	mov	r6, #SMALL_AP		@ TBC: AP values
+	orr	r3, r3, r6, lsl #4
+	orr	r3, r3, #0xe		@ Cachable, bufferable and small desc
+
+	/*
+	 * Fill all 256 entries in the course page table with descriptors for
+	 * contiguous pages
+	 */
+	course_pgtbl	r0
+	add	r6, r0, #0x0400
+1:	str	r3, [r0], #4
+	add	r3, r3, #1 << 12
+	teq	r0, r6
+	bne	1b
+#endif // CONFIG_OXNAS_MAP_SRAM
 
 	/*
 	 * Create identity mapping for first MB of kernel to
@@ -243,12 +318,26 @@ __create_page_tables:
 	orr	r3, r7, r6, lsl #20		@ flags + kernel base
 	str	r3, [r4, r6, lsl #2]		@ identity mapping
 
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	/*
+	 * Write a course descriptor pointing to the small page mapping table
+	 * setup to map the first MB of kernel with 4K small pages
+	 */
+	course_pgtbl	r6
+	mov	r0, #COURSE_DOMAIN		@ TBC SBZ, Domain etc
+	orr	r6, r6, r0, lsl #2
+	orr	r6, r6, #1			@ Course descriptor identifier
+
+	add	r0, r4,  #(KERNEL_START & 0xff000000) >> 18
+	str	r6, [r0, #(KERNEL_START & 0x00f00000) >> 18]!
+#else // CONFIG_OXNAS_MAP_SRAM
 	/*
 	 * Now setup the pagetables for our kernel direct
 	 * mapped region.
 	 */
 	add	r0, r4,  #(KERNEL_START & 0xff000000) >> 18
 	str	r3, [r0, #(KERNEL_START & 0x00f00000) >> 18]!
+#endif // CONFIG_OXNAS_MAP_SRAM
 	ldr	r6, =(KERNEL_END - 1)
 	add	r0, r0, #4
 	add	r6, r4, r6, lsr #18
@@ -276,6 +365,64 @@ __create_page_tables:
 	bls	1b
 #endif
 
+#ifdef CONFIG_OXNAS_COPY_CODE_TO_SRAM
+	/*
+	 * Copy smallest/most-used kernel code into SRAM
+	 */
+
+	/* Get start of kernel code to copy */
+	ldr	r0, =(_text)
+	mvn	r3, #0xff000000
+	and	r0, r0, r3
+	mov	r6, #PHYS_OFFSET
+	mov	r3, #0xff000000
+	and	r6, r6, r3
+	orr	r0, r0, r6
+
+	/* Get start of SRAM region to copy into */
+	ldr	r3, =(SRAM_CODE_START)
+
+	/* Get amount of code to copy */
+	ldr	r6, =(CODE_COPY_LEN)
+
+	/* NB r7 is corrupted here, but opt. debug code below needs it */
+	add	r6, r0, r6
+1:	ldr	r7, [r0], #4
+	str	r7, [r3], #4
+	teq	r0, r6
+	bne	1b
+
+	/*
+	 * Map SRAM resident code into kernel virtual address space by altering
+	 * course page table entries covering the smallest/most-used code
+	 */
+
+	/* Get the address of the first page table entry to modify */
+	course_pgtbl r3
+	ldr	r0, =(_text)
+	sub r0, r0, #PAGE_OFFSET
+	add	r3, r3, r0, lsr #10
+
+	/* Get the address after the last entry in the page table to be altered */
+	ldr	r6, =(CODE_COPY_LEN)
+	add	r6, r3, r6, lsr #10
+
+	/* Form the first small descriptor contents */
+	ldr	r0, =(SRAM_CODE_START)
+	mov	r0, r0, lsr #12
+	mov	r0, r0, lsl #12
+	mov	r7, #SMALL_AP
+	orr	r0, r0, r7, lsl #4
+	orr	r0, r0, #0xe
+
+	/* Modify the page table entries for all SRAM pages filled with code */
+1:	str	r0, [r3], #4
+	add	r0, r0, #1 << 12
+	teq	r3, r6
+	bne	1b
+
+#else // CONFIG_OXNAS_COPY_CODE_TO_SRAM
+#ifndef CONFIG_ARCH_OXNAS
 	/*
 	 * Then map first 1MB of ram in case it contains our boot params.
 	 */
@@ -285,6 +432,8 @@ __create_page_tables:
 	orr	r6, r6, #(PHYS_OFFSET & 0x00f00000)
 	.endif
 	str	r6, [r0]
+#endif // !CONFIG_ARCH_OXNAS
+#endif // CONFIG_OXNAS_COPY_CODE_TO_SRAM
 
 #ifdef CONFIG_DEBUG_LL
 	ldr	r7, [r10, #PROCINFO_IO_MMUFLAGS] @ io_mmuflags

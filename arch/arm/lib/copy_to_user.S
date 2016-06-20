@@ -33,6 +33,8 @@
  *	Number of bytes NOT copied.
  */
 
+	.section ".text.__copy_to_user"
+
 	.macro ldr1w ptr reg abort
 	ldr \reg, [\ptr], #4
 	.endm
@@ -86,7 +88,11 @@
 
 	.text
 
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+ENTRY(__copy_to_user_alt)
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
 ENTRY(__copy_to_user)
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 
 #include "copy_template.S"
 

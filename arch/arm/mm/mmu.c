@@ -271,6 +271,13 @@ static void __init build_mem_type_table(void)
 		ecc_mask = 0;
 	}
 
+#ifdef CONFIG_SMP
+	/* To ensure the cache coherency between multiple ARMv6 cores,
+	 * the cache policy has to be write-allocate */
+	if (cpu_arch == CPU_ARCH_ARMv6 && cachepolicy >= CPOLICY_WRITEBACK)
+		cachepolicy = CPOLICY_WRITEALLOC;
+#endif
+
 	/*
 	 * ARMv5 and lower, bit 4 must be set for page tables.
 	 * (was: cache "update-able on write" bit on ARM610)
@@ -616,6 +623,15 @@ void __init reserve_node_zero(pg_data_t *pgdat)
 	 */
 	reserve_bootmem_node(pgdat, __pa(swapper_pg_dir),
 			     PTRS_PER_PGD * sizeof(pgd_t));
+
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	/*
+	 * Reserve the page table describing the first MB of address space in 4KB
+	 * pages so we can map SRAM over part of it. This didn't work for some reason
+	 * so instead reserve first 0x4000 as some other archs do
+	 */
+	 res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
+#endif // CONFIG_OXNAS_MAP_SRAM
 
 	/*
 	 * Hmm... This should go elsewhere, but we really really need to

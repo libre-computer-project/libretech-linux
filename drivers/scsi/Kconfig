@@ -556,6 +556,15 @@ config SCSI_ARCMSR
 	  To compile this driver as a module, choose M here: the
 	  module will be called arcmsr (modprobe arcmsr).
 
+config SCSI_SATA_DISK_DETECTION_TENACITY
+    int "The number of attempts to detect a disk."
+    default 1
+	depends on SCSI_SATA
+	help
+	  Sets the number of times taken to repeat a 700 ms process of detecting a disk. Some disks will not respond to detection until they have spun-up and they won't spin-up untill they receive some communication from the host.
+
+	  If unsure, use 1.
+
 config SCSI_ARCMSR_AER
 	bool "Enable PCI Error Recovery Capability in Areca Driver(ARCMSR)"
 	depends on SCSI_ARCMSR && PCIEAER

@@ -103,6 +103,32 @@ config SECURITY_ROOTPLUG
 	  
 	  If you are unsure how to answer this question, answer N.
 
+config SECURITY_TRUSTEES
+	bool "Linux Trustees ACLs"
+	depends on SECURITY
+	help
+	  Implements a system similar to Netware ACLs.  Trustees
+	  allows a global configuration of recursive ACLs via a
+	  centralized file.  ACLs can be added to an entire
+	  directory tree and masked out on subdirectories.
+
+	  Trustees allows complex permissions to be enforced
+	  system-wide without needing to touch every file or
+	  maintain thousands of ugly POSIX ACLs.  See
+	  http://trustees.sourceforge.net for more information on
+	  trustees and the associated user-space tools.
+
+	  If you are unsure how to answer this question, answer N.
+
+config SECURITY_TRUSTEES_DEBUG
+	bool "Enable debugging code and messages"
+	depends on SECURITY_TRUSTEES
+	help
+	  Turns on certain diagnostic messages and debugging code
+	  in trustees.
+
+	  If you are unsure how to answer this question, answer N.
+
 source security/selinux/Kconfig
 
 endmenu

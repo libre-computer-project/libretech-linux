@@ -321,6 +321,15 @@ config I2C_NFORCE2
 	  This driver can also be built as a module.  If so, the module
 	  will be called i2c-nforce2.
 
+config I2C_OXNAS_BITBASH
+	tristate "OXNAS bitbashed I2C interface"
+	depends on I2C_ALGOBIT
+	help
+	  Say Y here if you want to use I2C GPIO bit-bash interface
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called i2c-oxnas-bitbash.
+
 config I2C_OCORES
 	tristate "OpenCores I2C Controller"
 	depends on EXPERIMENTAL

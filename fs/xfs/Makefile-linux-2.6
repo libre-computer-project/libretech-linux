@@ -15,13 +15,20 @@
 # along with this program; if not, write the Free Software Foundation,
 # Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #
+CONFIG_XFS_DEBUG := n
+CONFIG_XFS_TRACE := n
 
 EXTRA_CFLAGS +=	 -Ifs/xfs -Ifs/xfs/linux-2.6 -funsigned-char
 
 XFS_LINUX := linux-2.6
 
+ifeq ($(CONFIG_XFS_TRACE),y)
+	EXTRA_CFLAGS += -DCONFIG_XFS_TRACE
+endif
+
 ifeq ($(CONFIG_XFS_DEBUG),y)
 	EXTRA_CFLAGS += -g
+	EXTRA_CFLAGS += -DCONFIG_XFS_DEBUG
 endif
 
 obj-$(CONFIG_XFS_FS)		+= xfs.o

@@ -2368,6 +2368,14 @@ config ATL1
 	  To compile this driver as a module, choose M here.  The module
 	  will be called atl1.
 
+config SYNOPSYS_GMAC
+	tristate "Synopsys Gigabit MAC"
+	select CRC32
+	select MII
+	depends on ARCH_OX820 || ARCH_OXNAS
+	help
+		Driver for the Synopsys Gigabit MAC
+
 endif # NETDEV_1000
 
 #

@@ -991,8 +991,18 @@ int pci_scan_slot(struct pci_bus *bus, int devfn)
 	for (func = 0; func < 8; func++, devfn++) {
 		struct pci_dev *dev;
 
-		dev = pci_scan_single_device(bus, devfn);
-		if (dev) {
+#ifdef CONFIG_PCI_OXNAS_CARDBUS
+        // printk(KERN_INFO "pci_scan_slot %u\n", PCI_SLOT(devfn) ); 
+        scan_all_fns = 1;
+        if (  PCI_SLOT(devfn) == 5 ) 
+            dev = pci_scan_single_device(bus, devfn);
+        else
+            dev = 0;
+#else  /* ifndef CONFIG_OXNAS_CARDBUS */
+        dev = pci_scan_single_device(bus, devfn);
+#endif /* CONFIG_OXNAS_CARDBUS */
+
+        if (dev) {
 			nr++;
 
 			/*

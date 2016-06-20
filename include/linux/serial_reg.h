@@ -133,6 +133,15 @@
 
 #define UART_SCR	7	/* I/O: Scratch Register */
 
+/* Oxsemi NAS UART extra registers */
+#define UART_DLF            0x09  /* Oxsemi 16550 fractional divider */
+#define UART_RX_FILL        0x0a
+#define UART_TX_SPACE       0x0b
+#define UART_WIDE_ACCESS    0x0c
+#define UART_XON_CHAR       0x10
+#define UART_XOFF_CHAR      0x11
+#define UART_DMA            0x12
+
 /*
  * DLAB=1
  */

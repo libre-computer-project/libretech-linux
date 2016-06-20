@@ -34,6 +34,12 @@
 #include "dm-bio-list.h"
 #include <linux/raid/raid1.h>
 #include <linux/raid/bitmap.h>
+#ifdef CONFIG_SATA_OX800
+#include <asm/arch/sata.h>
+#endif
+#ifdef CONFIG_SATA_OX810
+#include <asm/arch/ox810sata.h>
+#endif
 
 #define DEBUG 0
 #if DEBUG
@@ -65,6 +71,82 @@ static void * r1bio_pool_alloc(gfp_t gfp_flags, void *data)
 		unplug_slaves(pi->mddev);
 
 	return r1_bio;
+}
+
+/**
+ * Assesses if the current raid configuration is suitable for implementation
+ * by the raid HW, if so, will enable it 
+ */
+static void raid1_hw_raidable(mddev_t *mddev)
+{
+    mdk_rdev_t *rdev0;
+    mdk_rdev_t *rdev1;
+    conf_t *conf = mddev_to_conf(mddev);
+
+    /*default to SW RAID */
+    conf->hw_raid1_settings = 0;
+
+#if defined(CONFIG_SATA_OX800) || defined(CONFIG_SATA_OX810)
+    /* if this drive is suitable for HW raid then enable it */
+    if (mddev->raid_disks != 2) {
+        printk(KERN_NOTICE"raid1 not hw raidable %d disks (needs to be 2)\n",mddev->raid_disks);
+        return;
+    }
+    
+    rdev0 = rcu_dereference(conf->mirrors[0].rdev);
+    rdev1 = rcu_dereference(conf->mirrors[1].rdev);
+    
+    /* are there two working disks */
+    if (!rdev0 ||
+        !rdev1 ||
+        test_bit(Faulty, &rdev0->flags) ||
+        test_bit(Faulty, &rdev1->flags) ) {
+        printk(KERN_NOTICE"raid1 not hw raidable, needs two working disks.\n");
+        return;
+    }
+    
+    if (!rdev0->bdev ||
+        !rdev1->bdev ||
+        !rdev0->bdev->bd_part ||
+        !rdev1->bdev->bd_part ) {
+        printk(KERN_NOTICE"raid1 not hw raidable, mirrors not ready\n");
+        return;
+	}
+	
+	if (rdev0->bdev->bd_part->start_sect != rdev1->bdev->bd_part->start_sect) {
+#ifdef CONFIG_LBD
+        printk(KERN_NOTICE"raid1 not hw raidable, partition start sectors differ %llu, %llu\n",
+#else
+        printk(KERN_NOTICE"raid1 not hw raidable, partition start sectors differ %lu, %lu\n",
+#endif // CONFIG_LBD
+            rdev0->bdev->bd_part->start_sect,
+            rdev1->bdev->bd_part->start_sect);
+        return;
+    }
+
+    if (!rdev0->bdev->bd_disk || 
+		!rdev0->bdev->bd_disk->queue ||
+		(oxnassata_get_port_no(rdev0->bdev->bd_disk->queue) < 0)) {
+        printk(KERN_NOTICE"raid1 not hw raidable, RAID disk 0 not on internal SATA port.\n"); 
+        return;
+    }
+
+    if (!rdev1->bdev->bd_disk || 
+		!rdev1->bdev->bd_disk->queue ||
+		(oxnassata_get_port_no(rdev1->bdev->bd_disk->queue) < 0)) {
+        printk(KERN_NOTICE"raid1 not hw raidable, RAID disk 1 not on internal SATA port.\n"); 
+        return;
+    }
+
+	/* cannot mix 28 and 48-bit LBA devices */    
+	if (!oxnassata_LBA_schemes_compatible()) {
+        printk(KERN_NOTICE"raid0 not hw raidable, disks need to use same LBA size (28 vs 48)\n"); 
+		return;
+	}
+
+    conf->hw_raid1_settings = OXNASSATA_RAID1;
+    printk(KERN_NOTICE"raid1 using hardware RAID 0x%08x\n",conf->hw_raid1_settings);
+#endif /*CONFIG_SCSI_OX800SATA*/
 }
 
 static void r1bio_pool_free(void *r1_bio, void *data)
@@ -325,9 +407,29 @@ static void raid1_end_write_request(struct bio *bio, int error)
 		r1_bio->bios[mirror] = NULL;
 		to_put = bio;
 		if (!uptodate) {
+#if defined(CONFIG_SATA_OX800) || defined(CONFIG_SATA_OX810)
+            if ((mirror == 0) && (bio->bi_raid)) {
+                /* command was sent to part 0 for both drives, need to find 
+                * which drive caused the error */
+                int device = oxnassata_RAID_faults();
+
+                /* it's unlikely, but both disks could fail at once */
+                if (device & 1) md_error(r1_bio->mddev, conf->mirrors[0].rdev);
+                if (device & 2) md_error(r1_bio->mddev, conf->mirrors[1].rdev);
+
+                /* an I/O failed, we can't clear the bitmap */
+                set_bit(R1BIO_Degraded, &r1_bio->state);
+                
+                if (!(device & 3)) 
+                    set_bit(R1BIO_Uptodate, &r1_bio->state);
+            } else {
+#endif // CONFIG_SCSI_OX800SATA
 			md_error(r1_bio->mddev, conf->mirrors[mirror].rdev);
 			/* an I/O failed, we can't clear the bitmap */
 			set_bit(R1BIO_Degraded, &r1_bio->state);
+#if defined(CONFIG_SATA_OX800) || defined(CONFIG_SATA_OX810)
+            }
+#endif // CONFIG_SCSI_OX800SATA
 		} else
 			/*
 			 * Set R1BIO_Uptodate in our master bio, so that
@@ -824,6 +926,53 @@ static int make_request(struct request_queue *q, struct bio * bio)
 	}
 #endif
 	rcu_read_lock();
+
+    /* start of oxsemi hw raid code */
+    if ((rcu_dereference(conf->mirrors[0].rdev)) &&
+        (rcu_dereference(conf->mirrors[1].rdev)) &&
+        !test_bit(Faulty, &rcu_dereference(conf->mirrors[0].rdev)->flags) &&
+        !test_bit(Faulty, &rcu_dereference(conf->mirrors[1].rdev)->flags) &&
+        (conf->hw_raid1_settings) )
+    {
+        struct bio *mbio;
+
+        rdev = rcu_dereference(conf->mirrors[0].rdev);
+        atomic_inc(&rdev->nr_pending);
+        r1_bio->bios[0] = bio;
+        targets++;
+
+        rcu_read_unlock();
+
+        /* do behind I/O ? */
+        if (bitmap &&
+            atomic_read(&bitmap->behind_writes) < bitmap->max_write_behind &&
+            (behind_pages = alloc_behind_pages(bio)) != NULL)
+            set_bit(R1BIO_BehindIO, &r1_bio->state);
+
+        atomic_set(&r1_bio->remaining, 0);
+        atomic_set(&r1_bio->behind_remaining, 0);
+
+        do_barriers = bio_barrier(bio);
+        if (do_barriers)
+            set_bit(R1BIO_Barrier, &r1_bio->state);
+
+        bio_list_init(&bl);
+
+        mbio = bio_clone(bio, GFP_NOIO);
+        r1_bio->bios[0] = mbio;
+
+        mbio->bi_sector	= r1_bio->sector + conf->mirrors[0].rdev->data_offset;
+        mbio->bi_bdev = conf->mirrors[0].rdev->bdev;
+        mbio->bi_end_io	= raid1_end_write_request;
+        mbio->bi_rw = WRITE | do_barriers | do_sync;
+        mbio->bi_private = r1_bio;
+        mbio->bi_raid = conf->hw_raid1_settings ;
+
+        atomic_inc(&r1_bio->remaining);
+
+        bio_list_add(&bl, mbio);
+        /* end of hw_raid code */
+    } else {
 	for (i = 0;  i < disks; i++) {
 		if ((rdev=rcu_dereference(conf->mirrors[i].rdev)) != NULL &&
 		    !test_bit(Faulty, &rdev->flags)) {
@@ -896,6 +1045,8 @@ static int make_request(struct request_queue *q, struct bio * bio)
 
 		bio_list_add(&bl, mbio);
 	}
+    }
+    
 	kfree(behind_pages); /* the behind pages are attached to the bios now */
 
 	bitmap_startwrite(bitmap, bio->bi_sector, r1_bio->sectors,
@@ -969,6 +1120,9 @@ static void error(mddev_t *mddev, mdk_rdev_t *rdev)
 	printk(KERN_ALERT "raid1: Disk failure on %s, disabling device. \n"
 		"	Operation continuing on %d devices\n",
 		bdevname(rdev->bdev,b), conf->raid_disks - mddev->degraded);
+
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
 }
 
 static void print_conf(conf_t *conf)
@@ -1027,6 +1181,9 @@ static int raid1_spare_active(mddev_t *mddev)
 		}
 	}
 
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
+
 	print_conf(conf);
 	return 0;
 }
@@ -1064,6 +1221,9 @@ static int raid1_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
 			break;
 		}
 
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
+
 	print_conf(conf);
 	return found;
 }
@@ -1092,6 +1252,8 @@ static int raid1_remove_disk(mddev_t *mddev, int number)
 		}
 	}
 abort:
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
 
 	print_conf(conf);
 	return err;
@@ -1719,6 +1881,7 @@ static sector_t sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, i
 		bio->bi_size = 0;
 		bio->bi_end_io = NULL;
 		bio->bi_private = NULL;
+        bio->bi_raid = 0;
 
 		rdev = rcu_dereference(conf->mirrors[i].rdev);
 		if (rdev == NULL ||
@@ -1966,6 +2129,9 @@ static int run(mddev_t *mddev)
 	 */
 	mddev->array_size = mddev->size;
 
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
+
 	mddev->queue->unplug_fn = raid1_unplug;
 	mddev->queue->backing_dev_info.congested_fn = raid1_congested;
 	mddev->queue->backing_dev_info.congested_data = mddev;
@@ -2035,6 +2201,9 @@ static int raid1_resize(mddev_t *mddev, sector_t sectors)
 	}
 	mddev->size = mddev->array_size;
 	mddev->resync_max_sectors = sectors;
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
+
 	return 0;
 }
 
@@ -2138,6 +2307,9 @@ static int raid1_reshape(mddev_t *mddev)
 	mddev->delta_disks = 0;
 
 	conf->last_used = 0; /* just make sure it is in-range */
+    /* check to see if this new configuration is supported by hardware RAID */
+    raid1_hw_raidable(mddev);
+
 	lower_barrier(conf);
 
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);

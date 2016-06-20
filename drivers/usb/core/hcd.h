@@ -312,7 +312,9 @@ extern void usb_destroy_configuration(struct usb_device *dev);
 #define SetHubFeature		(0x2000 | USB_REQ_SET_FEATURE)
 #define SetPortFeature		(0x2300 | USB_REQ_SET_FEATURE)
 
-
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT
+#define ResetHubTT                 (0x2308)             
+#endif
 /*-------------------------------------------------------------------------*/
 
 /*
@@ -358,6 +360,11 @@ extern long usb_calc_bus_time (int speed, int is_input,
 			int isoc, int bytecount);
 
 /*-------------------------------------------------------------------------*/
+
+extern int usb_register_root_hub (struct usb_device *usb_dev,
+		struct device *parent_dev);
+
+extern void usb_hcd_release (struct usb_bus *);
 
 extern void usb_set_device_state(struct usb_device *udev,
 		enum usb_device_state new_state);
