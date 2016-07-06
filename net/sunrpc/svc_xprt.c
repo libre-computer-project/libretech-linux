@@ -498,30 +498,6 @@ out:
 	return xprt;
 }
 
-/**
- * svc_reserve - change the space reserved for the reply to a request.
- * @rqstp:  The request in question
- * @space: new max space to reserve
- *
- * Each request reserves some space on the output queue of the transport
- * to make sure the reply fits.  This function reduces that reserved
- * space to be the amount of space used already, plus @space.
- *
- */
-void svc_reserve(struct svc_rqst *rqstp, int space)
-{
-	space += rqstp->rq_res.head[0].iov_len;
-
-	if (space < rqstp->rq_reserved) {
-		struct svc_xprt *xprt = rqstp->rq_xprt;
-		atomic_sub((rqstp->rq_reserved - space), &xprt->xpt_reserved);
-		rqstp->rq_reserved = space;
-
-		svc_xprt_enqueue(xprt);
-	}
-}
-EXPORT_SYMBOL_GPL(svc_reserve);
-
 static void svc_xprt_release(struct svc_rqst *rqstp)
 {
 	struct svc_xprt	*xprt = rqstp->rq_xprt;
@@ -535,18 +511,7 @@ static void svc_xprt_release(struct svc_rqst *rqstp)
 	rqstp->rq_res.page_len = 0;
 	rqstp->rq_res.page_base = 0;
 
-	/* Reset response buffer and release
-	 * the reservation.
-	 * But first, check that enough space was reserved
-	 * for the reply, otherwise we have a bug!
-	 */
-	if ((rqstp->rq_res.len) >  rqstp->rq_reserved)
-		printk(KERN_ERR "RPC request reserved %d but used %d\n",
-		       rqstp->rq_reserved,
-		       rqstp->rq_res.len);
-
 	rqstp->rq_res.head[0].iov_len = 0;
-	svc_reserve(rqstp, 0);
 	svc_xprt_release_slot(rqstp);
 	rqstp->rq_xprt = NULL;
 	svc_xprt_put(xprt);
@@ -827,8 +792,6 @@ static int svc_handle_xprt(struct svc_rqst *rqstp, struct svc_xprt *xprt)
 		else
 			len = xprt->xpt_ops->xpo_recvfrom(rqstp);
 		dprintk("svc: got len=%d\n", len);
-		rqstp->rq_reserved = serv->sv_max_mesg;
-		atomic_add(rqstp->rq_reserved, &xprt->xpt_reserved);
 	}
 	/* clear XPT_BUSY: */
 	svc_xprt_received(xprt);

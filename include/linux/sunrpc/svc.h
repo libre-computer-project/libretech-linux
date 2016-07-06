@@ -278,9 +278,6 @@ struct svc_rqst {
 						 * should leave in head
 						 * for krb5i, krb5p.
 						 */
-	int			rq_reserved;	/* space on socket outq
-						 * reserved for this request
-						 */
 
 	struct cache_req	rq_chandle;	/* handle passed to caches for 
 						 * request delaying 
@@ -480,22 +477,9 @@ int		   svc_register(const struct svc_serv *, struct net *, const int,
 				const unsigned short, const unsigned short);
 
 void		   svc_wake_up(struct svc_serv *);
-void		   svc_reserve(struct svc_rqst *rqstp, int space);
 struct svc_pool *  svc_pool_for_cpu(struct svc_serv *serv, int cpu);
 char *		   svc_print_addr(struct svc_rqst *, char *, size_t);
 
 #define	RPC_MAX_ADDRBUFLEN	(63U)
-
-/*
- * When we want to reduce the size of the reserved space in the response
- * buffer, we need to take into account the size of any checksum data that
- * may be at the end of the packet. This is difficult to determine exactly
- * for all cases without actually generating the checksum, so we just use a
- * static value.
- */
-static inline void svc_reserve_auth(struct svc_rqst *rqstp, int space)
-{
-	svc_reserve(rqstp, space + rqstp->rq_auth_slack);
-}
 
 #endif /* SUNRPC_SVC_H */

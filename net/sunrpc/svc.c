@@ -1188,12 +1188,6 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	memset(rqstp->rq_argp, 0, procp->pc_argsize);
 	memset(rqstp->rq_resp, 0, procp->pc_ressize);
 
-	/* un-reserve some of the out-queue now that we have a
-	 * better idea of reply size
-	 */
-	if (procp->pc_xdrressize)
-		svc_reserve_auth(rqstp, procp->pc_xdrressize<<2);
-
 	/* Call the function that processes the request. */
 	if (!versp->vs_dispatch) {
 		/* Decode arguments */

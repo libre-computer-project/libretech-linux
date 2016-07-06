@@ -654,19 +654,8 @@ static void svc_udp_prep_reply_hdr(struct svc_rqst *rqstp)
 static int svc_udp_has_wspace(struct svc_xprt *xprt)
 {
 	struct svc_sock *svsk = container_of(xprt, struct svc_sock, sk_xprt);
-	struct svc_serv	*serv = xprt->xpt_server;
-	unsigned long required;
 
-	/*
-	 * Set the SOCK_NOSPACE flag before checking the available
-	 * sock space.
-	 */
-	set_bit(SOCK_NOSPACE, &svsk->sk_sock->flags);
-	required = atomic_read(&svsk->sk_xprt.xpt_reserved) + serv->sv_max_mesg;
-	if (required*2 > sock_wspace(svsk->sk_sk))
-		return 0;
-	clear_bit(SOCK_NOSPACE, &svsk->sk_sock->flags);
-	return 1;
+	return !test_bit(SOCK_NOSPACE, &svsk->sk_sock->flags);
 }
 
 static struct svc_xprt *svc_udp_accept(struct svc_xprt *xprt)
