@@ -2623,9 +2623,9 @@ static int create_dev_resources(struct mlx5_ib_resources *devr)
 	devr->s0->srq_context   = NULL;
 	devr->s0->srq_type      = IB_SRQT_XRC;
 	devr->s0->ext.xrc.xrcd	= devr->x0;
-	devr->s0->ext.xrc.cq	= devr->c0;
+	devr->s0->ext.cq	= devr->c0;
 	atomic_inc(&devr->s0->ext.xrc.xrcd->usecnt);
-	atomic_inc(&devr->s0->ext.xrc.cq->usecnt);
+	atomic_inc(&devr->s0->ext.cq->usecnt);
 	atomic_inc(&devr->p0->usecnt);
 	atomic_set(&devr->s0->usecnt, 0);
 
@@ -2644,9 +2644,9 @@ static int create_dev_resources(struct mlx5_ib_resources *devr)
 	devr->s1->event_handler = NULL;
 	devr->s1->srq_context   = NULL;
 	devr->s1->srq_type      = IB_SRQT_BASIC;
-	devr->s1->ext.xrc.cq	= devr->c0;
+	devr->s1->ext.cq	= devr->c0;
 	atomic_inc(&devr->p0->usecnt);
-	atomic_set(&devr->s0->usecnt, 0);
+	atomic_set(&devr->s1->usecnt, 0);
 
 	for (port = 0; port < ARRAY_SIZE(devr->ports); ++port) {
 		INIT_WORK(&devr->ports[port].pkey_change_work,
