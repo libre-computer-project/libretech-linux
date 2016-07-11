@@ -3899,7 +3899,7 @@ static int __uverbs_create_xsrq(struct ib_uverbs_file *file,
 	srq->srq_context   = attr.srq_context;
 
 	if (cmd->srq_type == IB_SRQT_XRC) {
-		srq->ext.xrc.cq   = attr.ext.xrc.cq;
+		srq->ext.cq       = attr.ext.xrc.cq;
 		srq->ext.xrc.xrcd = attr.ext.xrc.xrcd;
 		atomic_inc(&attr.ext.xrc.cq->usecnt);
 		atomic_inc(&attr.ext.xrc.xrcd->usecnt);
