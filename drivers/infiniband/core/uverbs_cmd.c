@@ -1831,7 +1831,7 @@ static int create_qp(struct ib_uverbs_file *file,
 			if (cmd->is_srq) {
 				srq = idr_read_srq(cmd->srq_handle,
 						   file->ucontext);
-				if (!srq || srq->srq_type != IB_SRQT_BASIC) {
+				if (!srq || srq->srq_type == IB_SRQT_XRC) {
 					ret = -EINVAL;
 					goto err_put;
 				}
@@ -3867,6 +3867,15 @@ static int __uverbs_create_xsrq(struct ib_uverbs_file *file,
 			ret = -EINVAL;
 			goto err_put_xrcd;
 		}
+	} else if (cmd->srq_type == IB_SRQT_TAG_MATCHING) {
+		attr.ext.tag_matching.cq  = idr_read_cq(cmd->cq_handle,
+							file->ucontext, 0);
+		if (!attr.ext.tag_matching.cq) {
+			ret = -EINVAL;
+			goto err;
+		}
+
+		attr.ext.tag_matching.list_size = cmd->tm_list_size;
 	}
 
 	pd  = idr_read_pd(cmd->pd_handle, file->ucontext);
@@ -3903,6 +3912,9 @@ static int __uverbs_create_xsrq(struct ib_uverbs_file *file,
 		srq->ext.xrc.xrcd = attr.ext.xrc.xrcd;
 		atomic_inc(&attr.ext.xrc.cq->usecnt);
 		atomic_inc(&attr.ext.xrc.xrcd->usecnt);
+	} else if (cmd->srq_type == IB_SRQT_TAG_MATCHING) {
+		srq->ext.cq = attr.ext.tag_matching.cq;
+		atomic_inc(&attr.ext.tag_matching.cq->usecnt);
 	}
 
 	atomic_inc(&pd->usecnt);
@@ -3929,6 +3941,8 @@ static int __uverbs_create_xsrq(struct ib_uverbs_file *file,
 	if (cmd->srq_type == IB_SRQT_XRC) {
 		put_uobj_read(xrcd_uobj);
 		put_cq_read(attr.ext.xrc.cq);
+	} else if (cmd->srq_type == IB_SRQT_TAG_MATCHING) {
+		put_cq_read(attr.ext.tag_matching.cq);
 	}
 	put_pd_read(pd);
 
@@ -3954,6 +3968,8 @@ err_put:
 err_put_cq:
 	if (cmd->srq_type == IB_SRQT_XRC)
 		put_cq_read(attr.ext.xrc.cq);
+	else if (cmd->srq_type == IB_SRQT_TAG_MATCHING)
+		put_cq_read(attr.ext.tag_matching.cq);
 
 err_put_xrcd:
 	if (cmd->srq_type == IB_SRQT_XRC) {
