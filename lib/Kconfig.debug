@@ -1307,6 +1307,7 @@ config TORTURE_TEST
 config RCU_PERF_TEST
 	tristate "performance tests for RCU"
 	depends on DEBUG_KERNEL
+	depends on !UML
 	select TORTURE_TEST
 	select SRCU
 	select TASKS_RCU
@@ -1324,6 +1325,7 @@ config RCU_PERF_TEST
 config RCU_TORTURE_TEST
 	tristate "torture tests for RCU"
 	depends on DEBUG_KERNEL
+	depends on !UML
 	select TORTURE_TEST
 	select SRCU
 	select TASKS_RCU
