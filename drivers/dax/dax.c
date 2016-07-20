@@ -644,8 +644,8 @@ static void unregister_dax_dev(void *dev)
 	device_unregister(dev);
 }
 
-int devm_create_dax_dev(struct dax_region *dax_region, struct resource *res,
-		int count)
+struct dax_dev *devm_create_dax_dev(struct dax_region *dax_region,
+		struct resource *res, int count)
 {
 	struct device *parent = dax_region->dev;
 	struct dax_dev *dax_dev;
@@ -656,7 +656,7 @@ int devm_create_dax_dev(struct dax_region *dax_region, struct resource *res,
 
 	dax_dev = kzalloc(sizeof(*dax_dev), GFP_KERNEL);
 	if (!dax_dev)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
 	dax_dev->res = kzalloc(sizeof(res) * count, GFP_KERNEL);
 	if (!dax_dev->res)
@@ -736,10 +736,14 @@ int devm_create_dax_dev(struct dax_region *dax_region, struct resource *res,
 	rc = device_add(dev);
 	if (rc) {
 		put_device(dev);
-		return rc;
+		return ERR_PTR(rc);
 	}
 
-	return devm_add_action_or_reset(dax_region->dev, unregister_dax_dev, dev);
+	rc = devm_add_action_or_reset(dax_region->dev, unregister_dax_dev, dev);
+	if (rc)
+		return ERR_PTR(rc);
+
+	return dax_dev;
 
  err_cdev:
 	iput(dax_dev->inode);
@@ -757,7 +761,7 @@ int devm_create_dax_dev(struct dax_region *dax_region, struct resource *res,
  err_res:
 	kfree(dax_dev);
 
-	return rc;
+	return ERR_PTR(rc);
 }
 EXPORT_SYMBOL_GPL(devm_create_dax_dev);
 
