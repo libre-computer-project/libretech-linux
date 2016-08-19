@@ -262,7 +262,8 @@
 					mux {
 						groups = "emmc_nand_d07",
 						       "emmc_cmd",
-						       "emmc_clk";
+						       "emmc_clk",
+						       "emmc_ds";
 						function = "emmc";
 					};
 				};
@@ -345,6 +346,39 @@
 			#address-cells = <2>;
 			#size-cells = <2>;
 			ranges = <0x0 0x0 0x0 0xd0000000 0x0 0x200000>;
+
+			sd_emmc_a: mmc@70000 {
+				compatible = "amlogic,meson-gxbb-mmc";
+				reg = <0x0 0x70000 0x0 0x2000>;
+				interrupts = <GIC_SPI 216 IRQ_TYPE_EDGE_RISING>;
+				clocks = <&clkc CLKID_SD_EMMC_A>,
+					 <&xtal>,
+					 <&clkc CLKID_FCLK_DIV2>;
+				clock-names = "core", "clkin0", "clkin1";
+				status = "disabled";
+			};
+
+			sd_emmc_b: mmc@72000 {
+				compatible = "amlogic,meson-gxbb-mmc";
+				reg = <0x0 0x72000 0x0 0x2000>;
+				interrupts = <GIC_SPI 217 IRQ_TYPE_EDGE_RISING>;
+				clocks = <&clkc CLKID_SD_EMMC_B>,
+					 <&xtal>,
+					 <&clkc CLKID_FCLK_DIV2>;
+				clock-names = "core", "clkin0", "clkin1";
+				status = "disabled";
+			};
+
+			sd_emmc_c: mmc@74000 {
+				compatible = "amlogic,meson-gxbb-mmc";
+				reg = <0x0 0x74000 0x0 0x2000>;
+				interrupts = <GIC_SPI 218 IRQ_TYPE_EDGE_RISING>;
+				clocks = <&clkc CLKID_SD_EMMC_C>,
+					 <&xtal>,
+					 <&clkc CLKID_FCLK_DIV2>;
+				clock-names = "core", "clkin0", "clkin1";
+				status = "disabled";
+			};
 		};
 
 		ethmac: ethernet@c9410000 {
