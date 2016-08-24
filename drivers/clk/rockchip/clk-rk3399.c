@@ -835,9 +835,9 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 
 	/* perihp */
 	GATE(0, "cpll_aclk_perihp_src", "cpll", CLK_IGNORE_UNUSED,
-			RK3399_CLKGATE_CON(5), 0, GFLAGS),
-	GATE(0, "gpll_aclk_perihp_src", "gpll", CLK_IGNORE_UNUSED,
 			RK3399_CLKGATE_CON(5), 1, GFLAGS),
+	GATE(0, "gpll_aclk_perihp_src", "gpll", CLK_IGNORE_UNUSED,
+			RK3399_CLKGATE_CON(5), 0, GFLAGS),
 	COMPOSITE(ACLK_PERIHP, "aclk_perihp", mux_aclk_perihp_p, CLK_IGNORE_UNUSED,
 			RK3399_CLKSEL_CON(14), 7, 1, MFLAGS, 0, 5, DFLAGS,
 			RK3399_CLKGATE_CON(5), 2, GFLAGS),
@@ -925,9 +925,9 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 			RK3399_CLKGATE_CON(6), 14, GFLAGS),
 
 	GATE(0, "cpll_aclk_emmc_src", "cpll", CLK_IGNORE_UNUSED,
-			RK3399_CLKGATE_CON(6), 12, GFLAGS),
-	GATE(0, "gpll_aclk_emmc_src", "gpll", CLK_IGNORE_UNUSED,
 			RK3399_CLKGATE_CON(6), 13, GFLAGS),
+	GATE(0, "gpll_aclk_emmc_src", "gpll", CLK_IGNORE_UNUSED,
+			RK3399_CLKGATE_CON(6), 12, GFLAGS),
 	COMPOSITE_NOGATE(ACLK_EMMC, "aclk_emmc", mux_aclk_emmc_p, CLK_IGNORE_UNUSED,
 			RK3399_CLKSEL_CON(21), 7, 1, MFLAGS, 0, 5, DFLAGS),
 	GATE(ACLK_EMMC_CORE, "aclk_emmccore", "aclk_emmc", CLK_IGNORE_UNUSED,
@@ -1073,7 +1073,7 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 	/* vio */
 	COMPOSITE(ACLK_VIO, "aclk_vio", mux_pll_src_cpll_gpll_ppll_p, CLK_IGNORE_UNUSED,
 			RK3399_CLKSEL_CON(42), 6, 2, MFLAGS, 0, 5, DFLAGS,
-			RK3399_CLKGATE_CON(11), 10, GFLAGS),
+			RK3399_CLKGATE_CON(11), 0, GFLAGS),
 	COMPOSITE_NOMUX(PCLK_VIO, "pclk_vio", "aclk_vio", 0,
 			RK3399_CLKSEL_CON(43), 0, 5, DFLAGS,
 			RK3399_CLKGATE_CON(11), 1, GFLAGS),
