@@ -97,7 +97,7 @@ void __init tegra_pmc_clk_init(void __iomem *pmc_base,
 		clk = clk_register_mux(NULL, data->mux_name, data->parents,
 				data->num_parents, CLK_SET_RATE_NO_REPARENT,
 				pmc_base + PMC_CLK_OUT_CNTRL, data->mux_shift,
-				3, 0, &clk_out_lock);
+				2, 0, &clk_out_lock);
 		*dt_clk = clk;
 
 
