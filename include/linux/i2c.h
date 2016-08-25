@@ -601,6 +601,20 @@ i2c_lock_bus(struct i2c_adapter *adapter, unsigned int flags)
 }
 
 /**
+ * i2c_trylock_bus - Try to get exclusive access to an I2C bus segment
+ * @adapter: Target I2C bus segment
+ * @flags: I2C_LOCK_ROOT_ADAPTER tries to locks the root i2c adapter,
+ *	I2C_LOCK_SEGMENT tries to lock only this branch in the adapter tree
+ *
+ * Return: true if the I2C bus segment is locked, false otherwise
+ */
+static inline int
+i2c_trylock_bus(struct i2c_adapter *adapter, unsigned int flags)
+{
+	return adapter->trylock_bus(adapter, flags);
+}
+
+/**
  * i2c_unlock_bus - Release exclusive access to an I2C bus segment
  * @adapter: Target I2C bus segment
  * @flags: I2C_LOCK_ROOT_ADAPTER unlocks the root i2c adapter, I2C_LOCK_SEGMENT
@@ -765,5 +779,14 @@ static inline struct i2c_adapter *of_get_i2c_adapter_by_node(struct device_node 
 	return NULL;
 }
 #endif /* CONFIG_OF */
+
+#if IS_ENABLED(CONFIG_ACPI)
+u32 i2c_acpi_find_bus_speed(struct device *dev);
+#else
+static inline u32 i2c_acpi_find_bus_speed(struct device *dev)
+{
+	return 0;
+}
+#endif /* CONFIG_ACPI */
 
 #endif /* _LINUX_I2C_H */
