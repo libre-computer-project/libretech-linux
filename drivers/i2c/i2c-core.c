@@ -930,7 +930,7 @@ static int i2c_device_probe(struct device *dev)
 			status = 0;
 
 		if (status)
-			dev_warn(&client->dev, "failed to set up wakeup irq");
+			dev_warn(&client->dev, "failed to set up wakeup irq\n");
 	}
 
 	dev_dbg(dev, "probe\n");
@@ -1285,8 +1285,9 @@ i2c_new_device(struct i2c_adapter *adap, struct i2c_board_info const *info)
 	return client;
 
 out_err:
-	dev_err(&adap->dev, "Failed to register i2c client %s at 0x%02x "
-		"(%d)\n", client->name, client->addr, status);
+	dev_err(&adap->dev,
+		"Failed to register i2c client %s at 0x%02x (%d)\n",
+		client->name, client->addr, status);
 out_err_silent:
 	kfree(client);
 	return NULL;
@@ -1755,8 +1756,8 @@ static int i2c_do_add_adapter(struct i2c_driver *driver,
 	if (driver->attach_adapter) {
 		dev_warn(&adap->dev, "%s: attach_adapter method is deprecated\n",
 			 driver->driver.name);
-		dev_warn(&adap->dev, "Please use another way to instantiate "
-			 "your i2c_client\n");
+		dev_warn(&adap->dev,
+			 "Please use another way to instantiate your i2c_client\n");
 		/* We ignore the return code; if it fails, too bad */
 		driver->attach_adapter(adap);
 	}
@@ -1767,6 +1768,12 @@ static int __process_new_adapter(struct device_driver *d, void *data)
 {
 	return i2c_do_add_adapter(to_i2c_driver(d), data);
 }
+
+static const struct i2c_lock_operations i2c_adapter_lock_ops = {
+	.lock_bus =    i2c_adapter_lock_bus,
+	.trylock_bus = i2c_adapter_trylock_bus,
+	.unlock_bus =  i2c_adapter_unlock_bus,
+};
 
 static int i2c_register_adapter(struct i2c_adapter *adap)
 {
@@ -1787,11 +1794,8 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 		goto out_list;
 	}
 
-	if (!adap->lock_bus) {
-		adap->lock_bus = i2c_adapter_lock_bus;
-		adap->trylock_bus = i2c_adapter_trylock_bus;
-		adap->unlock_bus = i2c_adapter_unlock_bus;
-	}
+	if (!adap->lock_ops)
+		adap->lock_ops = &i2c_adapter_lock_ops;
 
 	rt_mutex_init(&adap->bus_lock);
 	rt_mutex_init(&adap->mux_lock);
@@ -2528,9 +2532,10 @@ int i2c_transfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	if (adap->algo->master_xfer) {
 #ifdef DEBUG
 		for (ret = 0; ret < num; ret++) {
-			dev_dbg(&adap->dev, "master_xfer[%d] %c, addr=0x%02x, "
-				"len=%d%s\n", ret, (msgs[ret].flags & I2C_M_RD)
-				? 'R' : 'W', msgs[ret].addr, msgs[ret].len,
+			dev_dbg(&adap->dev,
+				"master_xfer[%d] %c, addr=0x%02x, len=%d%s\n",
+				ret, (msgs[ret].flags & I2C_M_RD) ? 'R' : 'W',
+				msgs[ret].addr, msgs[ret].len,
 				(msgs[ret].flags & I2C_M_RECV_LEN) ? "+" : "");
 		}
 #endif
@@ -2696,9 +2701,9 @@ static int i2c_detect_address(struct i2c_client *temp_client,
 
 	/* Consistency check */
 	if (info.type[0] == '\0') {
-		dev_err(&adapter->dev, "%s detection function provided "
-			"no name for 0x%x\n", driver->driver.name,
-			addr);
+		dev_err(&adapter->dev,
+			"%s detection function provided no name for 0x%x\n",
+			driver->driver.name, addr);
 	} else {
 		struct i2c_client *client;
 
@@ -2736,9 +2741,8 @@ static int i2c_detect(struct i2c_adapter *adapter, struct i2c_driver *driver)
 	/* Warn that the adapter lost class based instantiation */
 	if (adapter->class == I2C_CLASS_DEPRECATED) {
 		dev_dbg(&adapter->dev,
-			"This adapter dropped support for I2C classes and "
-			"won't auto-detect %s devices anymore. If you need it, check "
-			"'Documentation/i2c/instantiating-devices' for alternatives.\n",
+			"This adapter dropped support for I2C classes and won't auto-detect %s devices anymore. "
+			"If you need it, check 'Documentation/i2c/instantiating-devices' for alternatives.\n",
 			driver->driver.name);
 		return 0;
 	}
@@ -2754,8 +2758,9 @@ static int i2c_detect(struct i2c_adapter *adapter, struct i2c_driver *driver)
 	temp_client->adapter = adapter;
 
 	for (i = 0; address_list[i] != I2C_CLIENT_END; i += 1) {
-		dev_dbg(&adapter->dev, "found normal entry for adapter %d, "
-			"addr 0x%02x\n", adap_id, address_list[i]);
+		dev_dbg(&adapter->dev,
+			"found normal entry for adapter %d, addr 0x%02x\n",
+			adap_id, address_list[i]);
 		temp_client->addr = address_list[i];
 		err = i2c_detect_address(temp_client, driver);
 		if (unlikely(err))
@@ -2787,15 +2792,16 @@ i2c_new_probed_device(struct i2c_adapter *adap,
 	for (i = 0; addr_list[i] != I2C_CLIENT_END; i++) {
 		/* Check address validity */
 		if (i2c_check_7bit_addr_validity_strict(addr_list[i]) < 0) {
-			dev_warn(&adap->dev, "Invalid 7-bit address "
-				 "0x%02x\n", addr_list[i]);
+			dev_warn(&adap->dev, "Invalid 7-bit address 0x%02x\n",
+				 addr_list[i]);
 			continue;
 		}
 
 		/* Check address availability (7 bit, no need to encode flags) */
 		if (i2c_check_addr_busy(adap, addr_list[i])) {
-			dev_dbg(&adap->dev, "Address 0x%02x already in "
-				"use, not probing\n", addr_list[i]);
+			dev_dbg(&adap->dev,
+				"Address 0x%02x already in use, not probing\n",
+				addr_list[i]);
 			continue;
 		}
 
