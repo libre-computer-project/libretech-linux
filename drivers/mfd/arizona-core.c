@@ -1035,7 +1035,7 @@ int arizona_dev_init(struct arizona *arizona)
 	default:
 		dev_err(arizona->dev, "Unknown device type %d\n",
 			arizona->type);
-		return -EINVAL;
+		return -ENODEV;
 	}
 
 	/* Mark DCVDD as external, LDO1 driver will clear if internal */
@@ -1121,6 +1121,7 @@ int arizona_dev_init(struct arizona *arizona)
 		break;
 	default:
 		dev_err(arizona->dev, "Unknown device ID: %x\n", reg);
+		ret = -ENODEV;
 		goto err_reset;
 	}
 
@@ -1280,12 +1281,14 @@ int arizona_dev_init(struct arizona *arizona)
 		break;
 	default:
 		dev_err(arizona->dev, "Unknown device ID %x\n", reg);
+		ret = -ENODEV;
 		goto err_reset;
 	}
 
 	if (!subdevs) {
 		dev_err(arizona->dev,
 			"No kernel support for device ID %x\n", reg);
+		ret = -ENODEV;
 		goto err_reset;
 	}
 
