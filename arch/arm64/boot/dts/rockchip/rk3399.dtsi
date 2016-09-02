@@ -242,6 +242,45 @@
 		status = "disabled";
 	};
 
+	pcie0: pcie@f8000000 {
+		compatible = "rockchip,rk3399-pcie";
+		reg = <0x0 0xf8000000 0x0 0x2000000>,
+		      <0x0 0xfd000000 0x0 0x1000000>;
+		reg-names = "axi-base", "apb-base";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		#interrupt-cells = <1>;
+		bus-range = <0x0 0x1>;
+		clocks = <&cru ACLK_PCIE>, <&cru ACLK_PERF_PCIE>,
+			 <&cru PCLK_PCIE>, <&cru SCLK_PCIE_PM>;
+		clock-names = "aclk", "aclk-perf",
+			      "hclk", "pm";
+		interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 50 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH 0>;
+		interrupt-names = "sys", "legacy", "client";
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &pcie0_intc 0>,
+				<0 0 0 2 &pcie0_intc 1>,
+				<0 0 0 3 &pcie0_intc 2>,
+				<0 0 0 4 &pcie0_intc 3>;
+		msi-map = <0x0 &its 0x0 0x1000>;
+		phys = <&pcie_phy>;
+		phy-names = "pcie-phy";
+		ranges = <0x83000000 0x0 0xfa000000 0x0 0xfa000000 0x0 0x600000
+			  0x81000000 0x0 0xfa600000 0x0 0xfa600000 0x0 0x100000>;
+		resets = <&cru SRST_PCIE_CORE>, <&cru SRST_PCIE_MGMT>,
+			 <&cru SRST_PCIE_MGMT_STICKY>, <&cru SRST_PCIE_PIPE>;
+		reset-names = "core", "mgmt", "mgmt-sticky", "pipe";
+		status = "disabled";
+
+		pcie0_intc: interrupt-controller {
+			interrupt-controller;
+			#address-cells = <0>;
+			#interrupt-cells = <1>;
+		};
+	};
+
 	usb_host0_ehci: usb@fe380000 {
 		compatible = "generic-ehci";
 		reg = <0x0 0xfe380000 0x0 0x20000>;
@@ -611,6 +650,11 @@
 		status = "disabled";
 	};
 
+	qos_gmac: qos@ffa5c000 {
+		compatible = "syscon";
+		reg = <0x0 0xffa5c000 0x0 0x20>;
+	};
+
 	qos_hdcp: qos@ffa90000 {
 		compatible = "syscon";
 		reg = <0x0 0xffa90000 0x0 0x20>;
@@ -739,6 +783,11 @@
 			};
 
 			/* These power domains are grouped by VD_LOGIC */
+			pd_gmac@RK3399_PD_GMAC {
+				reg = <RK3399_PD_GMAC>;
+				clocks = <&cru ACLK_GMAC>;
+				pm_qos = <&qos_gmac>;
+			};
 			pd_vio@RK3399_PD_VIO {
 				reg = <RK3399_PD_VIO>;
 				#address-cells = <1>;
@@ -915,6 +964,35 @@
 		status = "disabled";
 	};
 
+	efuse0: efuse@ff690000 {
+		compatible = "rockchip,rk3399-efuse";
+		reg = <0x0 0xff690000 0x0 0x80>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		clocks = <&cru PCLK_EFUSE1024NS>;
+		clock-names = "pclk_efuse";
+
+		/* Data cells */
+		cpub_leakage: cpu-leakage@17 {
+			reg = <0x17 0x1>;
+		};
+		gpu_leakage: gpu-leakage@18 {
+			reg = <0x18 0x1>;
+		};
+		center_leakage: center-leakage@19 {
+			reg = <0x19 0x1>;
+		};
+		cpul_leakage: cpu-leakage@1a {
+			reg = <0x1a 0x1>;
+		};
+		logic_leakage: logic-leakage@1b {
+			reg = <0x1b 0x1>;
+		};
+		wafer_info: wafer-info@1c {
+			reg = <0x1c 0x1>;
+		};
+	};
+
 	pmucru: pmu-clock-controller@ff750000 {
 		compatible = "rockchip,rk3399-pmucru";
 		reg = <0x0 0xff750000 0x0 0x1000>;
@@ -998,6 +1076,16 @@
 			clocks = <&sdhci>;
 			clock-names = "emmcclk";
 			#phy-cells = <0>;
+			status = "disabled";
+		};
+
+		pcie_phy: pcie-phy {
+			compatible = "rockchip,rk3399-pcie-phy";
+			clocks = <&cru SCLK_PCIEPHY_REF>;
+			clock-names = "refclk";
+			#phy-cells = <0>;
+			resets = <&cru SRST_PCIEPHY>;
+			reset-names = "phy";
 			status = "disabled";
 		};
 	};
@@ -1181,6 +1269,12 @@
 		pcfg_pull_none_13ma: pcfg-pull-none-13ma {
 			bias-disable;
 			drive-strength = <13>;
+		};
+
+		clock {
+			clk_32k: clk-32k {
+				rockchip,pins = <0 0 RK_FUNC_2 &pcfg_pull_none>;
+			};
 		};
 
 		i2c0 {
@@ -1554,5 +1648,18 @@
 					<1 14 RK_FUNC_1 &pcfg_pull_none>;
 			};
 		};
+
+		pcie {
+			pcie_clkreqn: pci-clkreqn {
+				rockchip,pins =
+					<2 26 RK_FUNC_2 &pcfg_pull_none>;
+			};
+
+			pcie_clkreqnb: pci-clkreqnb {
+				rockchip,pins =
+					<4 24 RK_FUNC_1 &pcfg_pull_none>;
+			};
+		};
+
 	};
 };
