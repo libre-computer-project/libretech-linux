@@ -333,7 +333,7 @@
 
 	gic: interrupt-controller@fee00000 {
 		compatible = "arm,gic-v3";
-		#interrupt-cells = <3>;
+		#interrupt-cells = <4>;
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
