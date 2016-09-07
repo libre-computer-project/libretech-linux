@@ -9221,6 +9221,7 @@ static int btrfs_truncate(struct inode *inode)
 			break;
 		}
 
+		btrfs_block_rsv_release(root, rsv, -1);
 		ret = btrfs_block_rsv_migrate(&root->fs_info->trans_block_rsv,
 					      rsv, min_size, 0);
 		BUG_ON(ret);	/* shouldn't happen */
