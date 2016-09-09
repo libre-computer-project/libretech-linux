@@ -4133,18 +4133,35 @@ int btrfs_alloc_data_chunk_ondemand(struct inode *inode, u64 bytes)
 	int ret = 0;
 	int need_commit = 2;
 	int have_pinned_space;
+	int have_bg_delete_sem = 0;
+	bool free_space_inode = btrfs_is_free_space_inode(inode);
 
 	/* make sure bytes are sectorsize aligned */
 	bytes = ALIGN(bytes, root->sectorsize);
 
-	if (btrfs_is_free_space_inode(inode)) {
+	if (free_space_inode) {
 		need_commit = 0;
 		ASSERT(current->journal_info);
 	}
 
+	/*
+	 * Here we shouldn't call down_read(bg_delete_sem) for free space inode,
+	 * there is lock order between bg_delete_sem and "wait current trans
+	 * finished". Meanwhile because we only do the data space reservation
+	 * for free space cache in the transaction context,
+	 * btrfs_delete_unused_bgs() will either have finished its job, or start
+	 * a new transaction waiting current transaction to complete, there will
+	 * be no unused block groups to be deleted, so it's safe to not call
+	 * down_read(bg_delete_sem).
+	 */
 	data_sinfo = fs_info->data_sinfo;
-	if (!data_sinfo)
+	if (!data_sinfo) {
+		if (!free_space_inode) {
+			down_read(&root->fs_info->bg_delete_sem);
+			have_bg_delete_sem = 1;
+		}
 		goto alloc;
+	}
 
 again:
 	/* make sure we have enough space to handle the data first */
@@ -4155,6 +4172,17 @@ again:
 
 	if (used + bytes > data_sinfo->total_bytes) {
 		struct btrfs_trans_handle *trans;
+
+		/*
+		 * We may need to allocate new chunk, so we should block
+		 * btrfs_delete_unused_bgs()
+		 */
+		if (!have_bg_delete_sem && !free_space_inode) {
+			spin_unlock(&data_sinfo->lock);
+			down_read(&root->fs_info->bg_delete_sem);
+			have_bg_delete_sem = 1;
+			goto again;
+		}
 
 		/*
 		 * if we don't have enough free bytes in this space then we need
@@ -4178,8 +4206,10 @@ alloc:
 			 * the fs.
 			 */
 			trans = btrfs_join_transaction(root);
-			if (IS_ERR(trans))
-				return PTR_ERR(trans);
+			if (IS_ERR(trans)) {
+				ret = PTR_ERR(trans);
+				goto out;
+			}
 
 			ret = do_chunk_alloc(trans, root->fs_info->extent_root,
 					     alloc_target,
@@ -4187,7 +4217,7 @@ alloc:
 			btrfs_end_transaction(trans, root);
 			if (ret < 0) {
 				if (ret != -ENOSPC)
-					return ret;
+					goto out;
 				else {
 					have_pinned_space = 1;
 					goto commit_trans;
@@ -4222,15 +4252,17 @@ commit_trans:
 			}
 
 			trans = btrfs_join_transaction(root);
-			if (IS_ERR(trans))
-				return PTR_ERR(trans);
+			if (IS_ERR(trans)) {
+				ret = PTR_ERR(trans);
+				goto out;
+			}
 			if (have_pinned_space >= 0 ||
 			    test_bit(BTRFS_TRANS_HAVE_FREE_BGS,
 				     &trans->transaction->flags) ||
 			    need_commit > 0) {
 				ret = btrfs_commit_transaction(trans, root);
 				if (ret)
-					return ret;
+					goto out;
 				/*
 				 * The cleaner kthread might still be doing iput
 				 * operations. Wait for it to finish so that
@@ -4247,12 +4279,17 @@ commit_trans:
 		trace_btrfs_space_reservation(root->fs_info,
 					      "space_info:enospc",
 					      data_sinfo->flags, bytes, 1);
-		return -ENOSPC;
+		ret = -ENOSPC;
+		goto out;
 	}
 	data_sinfo->bytes_may_use += bytes;
 	trace_btrfs_space_reservation(root->fs_info, "space_info",
 				      data_sinfo->flags, bytes, 1);
 	spin_unlock(&data_sinfo->lock);
+
+out:
+	if (have_bg_delete_sem && !free_space_inode)
+		up_read(&root->fs_info->bg_delete_sem);
 
 	return ret;
 }
@@ -10845,7 +10882,7 @@ void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info)
 		}
 		spin_unlock(&fs_info->unused_bgs_lock);
 
-		mutex_lock(&fs_info->delete_unused_bgs_mutex);
+		down_write(&root->fs_info->bg_delete_sem);
 
 		/* Don't want to race with allocators so take the groups_sem */
 		down_write(&space_info->groups_sem);
@@ -10973,7 +11010,7 @@ void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info)
 end_trans:
 		btrfs_end_transaction(trans, root);
 next:
-		mutex_unlock(&fs_info->delete_unused_bgs_mutex);
+		up_write(&root->fs_info->bg_delete_sem);
 		btrfs_put_block_group(block_group);
 		spin_lock(&fs_info->unused_bgs_lock);
 	}
