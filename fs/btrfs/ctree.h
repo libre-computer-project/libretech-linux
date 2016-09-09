@@ -806,6 +806,7 @@ struct btrfs_fs_info {
 	struct mutex cleaner_mutex;
 	struct mutex chunk_mutex;
 	struct mutex volume_mutex;
+	struct rw_semaphore bg_delete_sem;
 
 	/*
 	 * this is taken to make sure we don't set block groups ro after
@@ -1070,7 +1071,6 @@ struct btrfs_fs_info {
 	spinlock_t unused_bgs_lock;
 	struct list_head unused_bgs;
 	struct mutex unused_bg_unpin_mutex;
-	struct mutex delete_unused_bgs_mutex;
 
 	/* For btrfs to record security options */
 	struct security_mnt_opts security_opts;
