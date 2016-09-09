@@ -15,7 +15,8 @@ VIDIOC_ENUMINPUT - Enumerate video inputs
 Synopsis
 ========
 
-.. cpp:function:: int ioctl( int fd, int request, struct v4l2_input *argp )
+.. c:function:: int ioctl( int fd, VIDIOC_ENUMINPUT, struct v4l2_input *argp )
+    :name: VIDIOC_ENUMINPUT
 
 
 Arguments
@@ -24,9 +25,6 @@ Arguments
 ``fd``
     File descriptor returned by :ref:`open() <func-open>`.
 
-``request``
-    VIDIOC_ENUMINPUT
-
 ``argp``
 
 
@@ -34,14 +32,16 @@ Description
 ===========
 
 To query the attributes of a video input applications initialize the
-``index`` field of struct :ref:`v4l2_input <v4l2-input>` and call the
+``index`` field of struct :c:type:`v4l2_input` and call the
 :ref:`VIDIOC_ENUMINPUT` ioctl with a pointer to this structure. Drivers
 fill the rest of the structure or return an ``EINVAL`` error code when the
 index is out of bounds. To enumerate all inputs applications shall begin
 at index zero, incrementing by one until the driver returns ``EINVAL``.
 
 
-.. _v4l2-input:
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
+
+.. c:type:: v4l2_input
 
 .. flat-table:: struct v4l2_input
     :header-rows:  0
@@ -104,7 +104,7 @@ at index zero, incrementing by one until the driver returns ``EINVAL``.
        -  Capture devices can have zero or more tuners (RF demodulators).
 	  When the ``type`` is set to ``V4L2_INPUT_TYPE_TUNER`` this is an
 	  RF connector and this field identifies the tuner. It corresponds
-	  to struct :ref:`v4l2_tuner <v4l2-tuner>` field ``index``. For
+	  to struct :c:type:`v4l2_tuner` field ``index``. For
 	  details on tuners see :ref:`tuner`.
 
     -  .. row 6
@@ -148,6 +148,8 @@ at index zero, incrementing by one until the driver returns ``EINVAL``.
 
 
 
+.. tabularcolumns:: |p{6.6cm}|p{2.2cm}|p{8.7cm}|
+
 .. _input-type:
 
 .. flat-table:: Input Types
@@ -173,7 +175,17 @@ at index zero, incrementing by one until the driver returns ``EINVAL``.
        -  Analog baseband input, for example CVBS / Composite Video,
 	  S-Video, RGB.
 
+    -  .. row 3
 
+       -  ``V4L2_INPUT_TYPE_TOUCH``
+
+       -  3
+
+       -  This input is a touch device for capturing raw touch data.
+
+
+
+.. tabularcolumns:: |p{4.8cm}|p{2.6cm}|p{10.1cm}|
 
 .. _input-status:
 
@@ -318,6 +330,8 @@ at index zero, incrementing by one until the driver returns ``EINVAL``.
 
 
 
+.. tabularcolumns:: |p{6.6cm}|p{2.2cm}|p{8.7cm}|
+
 .. _input-capabilities:
 
 .. flat-table:: Input capabilities
@@ -363,5 +377,5 @@ appropriately. The generic error codes are described at the
 :ref:`Generic Error Codes <gen-errors>` chapter.
 
 EINVAL
-    The struct :ref:`v4l2_input <v4l2-input>` ``index`` is out of
+    The struct :c:type:`v4l2_input` ``index`` is out of
     bounds.

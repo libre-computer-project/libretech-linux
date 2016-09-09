@@ -93,9 +93,9 @@ static u32 rvin_format_sizeimage(struct v4l2_pix_format *pix)
  */
 
 static int __rvin_try_format_source(struct rvin_dev *vin,
-					u32 which,
-					struct v4l2_pix_format *pix,
-					struct rvin_source_fmt *source)
+				    u32 which,
+				    struct v4l2_pix_format *pix,
+				    struct rvin_source_fmt *source)
 {
 	struct v4l2_subdev *sd;
 	struct v4l2_subdev_pad_config *pad_cfg;
@@ -106,7 +106,7 @@ static int __rvin_try_format_source(struct rvin_dev *vin,
 
 	sd = vin_to_source(vin);
 
-	v4l2_fill_mbus_format(&format.format, pix, vin->source.code);
+	v4l2_fill_mbus_format(&format.format, pix, vin->digital.code);
 
 	pad_cfg = v4l2_subdev_alloc_pad_config(sd);
 	if (pad_cfg == NULL)
@@ -114,10 +114,9 @@ static int __rvin_try_format_source(struct rvin_dev *vin,
 
 	format.pad = vin->src_pad_idx;
 
-	ret = v4l2_device_call_until_err(sd->v4l2_dev, 0, pad, set_fmt,
-					 pad_cfg, &format);
-	if (ret < 0)
-		goto cleanup;
+	ret = v4l2_subdev_call(sd, pad, set_fmt, pad_cfg, &format);
+	if (ret < 0 && ret != -ENOIOCTLCMD)
+		goto done;
 
 	v4l2_fill_pix_format(pix, &format.format);
 
@@ -127,15 +126,15 @@ static int __rvin_try_format_source(struct rvin_dev *vin,
 	vin_dbg(vin, "Source resolution: %ux%u\n", source->width,
 		source->height);
 
-cleanup:
+done:
 	v4l2_subdev_free_pad_config(pad_cfg);
-	return 0;
+	return ret;
 }
 
 static int __rvin_try_format(struct rvin_dev *vin,
-				 u32 which,
-				 struct v4l2_pix_format *pix,
-				 struct rvin_source_fmt *source)
+			     u32 which,
+			     struct v4l2_pix_format *pix,
+			     struct rvin_source_fmt *source)
 {
 	const struct rvin_video_format *info;
 	u32 rwidth, rheight, walign;
@@ -193,6 +192,11 @@ static int __rvin_try_format(struct rvin_dev *vin,
 	pix->sizeimage = max_t(u32, pix->sizeimage,
 			       rvin_format_sizeimage(pix));
 
+	if (vin->chip == RCAR_M1 && pix->pixelformat == V4L2_PIX_FMT_XBGR32) {
+		vin_err(vin, "pixel format XBGR32 not supported on M1\n");
+		return -EINVAL;
+	}
+
 	vin_dbg(vin, "Requested %ux%u Got %ux%u bpl: %d size: %d\n",
 		rwidth, rheight, pix->width, pix->height,
 		pix->bytesperline, pix->sizeimage);
@@ -219,7 +223,7 @@ static int rvin_try_fmt_vid_cap(struct file *file, void *priv,
 	struct rvin_source_fmt source;
 
 	return __rvin_try_format(vin, V4L2_SUBDEV_FORMAT_TRY, &f->fmt.pix,
-				     &source);
+				 &source);
 }
 
 static int rvin_s_fmt_vid_cap(struct file *file, void *priv,
@@ -233,7 +237,7 @@ static int rvin_s_fmt_vid_cap(struct file *file, void *priv,
 		return -EBUSY;
 
 	ret = __rvin_try_format(vin, V4L2_SUBDEV_FORMAT_ACTIVE, &f->fmt.pix,
-				    &source);
+				&source);
 	if (ret)
 		return ret;
 
@@ -334,8 +338,8 @@ static int rvin_s_selection(struct file *file, void *fh,
 		vin->crop = s->r = r;
 
 		vin_dbg(vin, "Cropped %dx%d@%d:%d of %dx%d\n",
-			 r.width, r.height, r.left, r.top,
-			 vin->source.width, vin->source.height);
+			r.width, r.height, r.left, r.top,
+			vin->source.width, vin->source.height);
 		break;
 	case V4L2_SEL_TGT_COMPOSE:
 		/* Make sure compose rect fits inside output format */
@@ -359,8 +363,8 @@ static int rvin_s_selection(struct file *file, void *fh,
 		vin->compose = s->r = r;
 
 		vin_dbg(vin, "Compose %dx%d@%d:%d in %dx%d\n",
-			 r.width, r.height, r.left, r.top,
-			 vin->format.width, vin->format.height);
+			r.width, r.height, r.left, r.top,
+			vin->format.width, vin->format.height);
 		break;
 	default:
 		return -EINVAL;
@@ -381,7 +385,7 @@ static int rvin_cropcap(struct file *file, void *priv,
 	if (crop->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
-	return v4l2_subdev_call(sd, video, cropcap, crop);
+	return v4l2_subdev_call(sd, video, g_pixelaspect, &crop->pixelaspect);
 }
 
 static int rvin_enum_input(struct file *file, void *priv,
@@ -483,7 +487,7 @@ static int rvin_subscribe_event(struct v4l2_fh *fh,
 }
 
 static int rvin_enum_dv_timings(struct file *file, void *priv_fh,
-				    struct v4l2_enum_dv_timings *timings)
+				struct v4l2_enum_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
 	struct v4l2_subdev *sd = vin_to_source(vin);
@@ -500,45 +504,44 @@ static int rvin_enum_dv_timings(struct file *file, void *priv_fh,
 }
 
 static int rvin_s_dv_timings(struct file *file, void *priv_fh,
-				    struct v4l2_dv_timings *timings)
+			     struct v4l2_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
 	struct v4l2_subdev *sd = vin_to_source(vin);
-	int err;
+	int ret;
 
-	err = v4l2_subdev_call(sd,
-			video, s_dv_timings, timings);
-	if (!err) {
-		vin->source.width = timings->bt.width;
-		vin->source.height = timings->bt.height;
-		vin->format.width = timings->bt.width;
-		vin->format.height = timings->bt.height;
-	}
-	return err;
+	ret = v4l2_subdev_call(sd, video, s_dv_timings, timings);
+	if (ret)
+		return ret;
+
+	vin->source.width = timings->bt.width;
+	vin->source.height = timings->bt.height;
+	vin->format.width = timings->bt.width;
+	vin->format.height = timings->bt.height;
+
+	return 0;
 }
 
 static int rvin_g_dv_timings(struct file *file, void *priv_fh,
-				    struct v4l2_dv_timings *timings)
+			     struct v4l2_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
 	struct v4l2_subdev *sd = vin_to_source(vin);
 
-	return v4l2_subdev_call(sd,
-			video, g_dv_timings, timings);
+	return v4l2_subdev_call(sd, video, g_dv_timings, timings);
 }
 
 static int rvin_query_dv_timings(struct file *file, void *priv_fh,
-				    struct v4l2_dv_timings *timings)
+				 struct v4l2_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
 	struct v4l2_subdev *sd = vin_to_source(vin);
 
-	return v4l2_subdev_call(sd,
-			video, query_dv_timings, timings);
+	return v4l2_subdev_call(sd, video, query_dv_timings, timings);
 }
 
 static int rvin_dv_timings_cap(struct file *file, void *priv_fh,
-				    struct v4l2_dv_timings_cap *cap)
+			       struct v4l2_dv_timings_cap *cap)
 {
 	struct rvin_dev *vin = video_drvdata(file);
 	struct v4l2_subdev *sd = vin_to_source(vin);
@@ -773,10 +776,7 @@ int rvin_v4l2_probe(struct rvin_dev *vin)
 	struct v4l2_mbus_framefmt *mf = &fmt.format;
 	struct video_device *vdev = &vin->vdev;
 	struct v4l2_subdev *sd = vin_to_source(vin);
-#if defined(CONFIG_MEDIA_CONTROLLER)
-	int pad_idx;
-#endif
-	int ret;
+	int pad_idx, ret;
 
 	v4l2_set_subdev_hostdata(sd, vin);
 
@@ -823,16 +823,13 @@ int rvin_v4l2_probe(struct rvin_dev *vin)
 		V4L2_CAP_READWRITE;
 
 	vin->src_pad_idx = 0;
-#if defined(CONFIG_MEDIA_CONTROLLER)
 	for (pad_idx = 0; pad_idx < sd->entity.num_pads; pad_idx++)
-		if (sd->entity.pads[pad_idx].flags
-				== MEDIA_PAD_FL_SOURCE)
+		if (sd->entity.pads[pad_idx].flags == MEDIA_PAD_FL_SOURCE)
 			break;
 	if (pad_idx >= sd->entity.num_pads)
 		return -EINVAL;
 
 	vin->src_pad_idx = pad_idx;
-#endif
 	fmt.pad = vin->src_pad_idx;
 
 	/* Try to improve our guess of a reasonable window format */
