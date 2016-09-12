@@ -288,7 +288,7 @@ void blk_sync_queue(struct request_queue *q)
 		int i;
 
 		queue_for_each_hw_ctx(q, hctx, i) {
-			cancel_delayed_work_sync(&hctx->run_work);
+			cancel_work_sync(&hctx->run_work);
 			cancel_delayed_work_sync(&hctx->delay_work);
 		}
 	} else {
@@ -3096,6 +3096,12 @@ int kblockd_schedule_work(struct work_struct *work)
 	return queue_work(kblockd_workqueue, work);
 }
 EXPORT_SYMBOL(kblockd_schedule_work);
+
+int kblockd_schedule_work_on(int cpu, struct work_struct *work)
+{
+	return queue_work_on(cpu, kblockd_workqueue, work);
+}
+EXPORT_SYMBOL(kblockd_schedule_work_on);
 
 int kblockd_schedule_delayed_work(struct delayed_work *dwork,
 				  unsigned long delay)
