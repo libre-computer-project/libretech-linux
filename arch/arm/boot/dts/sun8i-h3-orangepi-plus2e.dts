@@ -1,7 +1,5 @@
 /*
- * Device Tree Source for UniPhier PH1-Pro4 Ace Board
- *
- * Copyright (C) 2016 Masahiro Yamada <yamada.masahiro@socionext.com>
+ * Copyright (C) 2016 Hans de Goede <hdegoede@redhat.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -42,72 +40,14 @@
  *     OTHER DEALINGS IN THE SOFTWARE.
  */
 
-/dts-v1/;
-/include/ "uniphier-ph1-pro4.dtsi"
+/*
+ * The Orange Pi Plus 2E is an extended version of the Orange Pi PC Plus,
+ * with 2G RAM and an external gbit ethernet phy.
+ */
+
+#include "sun8i-h3-orangepi-pc-plus.dts"
 
 / {
-	model = "UniPhier PH1-Pro4 Ace Board";
-	compatible = "socionext,ph1-pro4-ace", "socionext,ph1-pro4";
-
-	memory {
-		device_type = "memory";
-		reg = <0x80000000 0x40000000>;
-	};
-
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
-	aliases {
-		serial0 = &serial0;
-		serial1 = &serial1;
-		serial2 = &serial2;
-		i2c0 = &i2c0;
-		i2c1 = &i2c1;
-		i2c2 = &i2c2;
-		i2c3 = &i2c3;
-		i2c5 = &i2c5;
-		i2c6 = &i2c6;
-	};
-};
-
-&serial0 {
-	status = "okay";
-};
-
-&serial1 {
-	status = "okay";
-};
-
-&serial2 {
-	status = "okay";
-};
-
-&i2c0 {
-	status = "okay";
-
-	eeprom@54 {
-		compatible = "st,24c64";
-		reg = <0x54>;
-	};
-};
-
-&i2c1 {
-	status = "okay";
-};
-
-&i2c2 {
-	status = "okay";
-};
-
-&i2c3 {
-	status = "okay";
-};
-
-&usb2 {
-	status = "okay";
-};
-
-&usb3 {
-	status = "okay";
+	model = "Xunlong Orange Pi Plus 2E";
+	compatible = "xunlong,orangepi-plus2e", "allwinner,sun8i-h3";
 };

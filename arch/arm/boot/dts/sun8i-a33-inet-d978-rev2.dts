@@ -1,7 +1,6 @@
 /*
- * Device Tree Source for UniPhier ProXstream2 Vodka Board
- *
- * Copyright (C) 2015 Masahiro Yamada <yamada.masahiro@socionext.com>
+ * Copyright 2015 Hans de Goede <hdegoede@redhat.com>
+ * Copyright 2016 Icenowy Zheng <icenowy@aosc.xyz>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -43,36 +42,47 @@
  */
 
 /dts-v1/;
-/include/ "uniphier-proxstream2.dtsi"
+#include "sun8i-a33.dtsi"
+#include "sun8i-reference-design-tablet.dtsi"
 
 / {
-	model = "UniPhier ProXstream2 Vodka Board";
-	compatible = "socionext,proxstream2-vodka", "socionext,proxstream2";
+	model = "INet-D978 Rev 02";
+	compatible = "primux,inet-d978-rev2", "allwinner,sun8i-a33";
 
-	memory {
-		device_type = "memory";
-		reg = <0x80000000 0x80000000>;
-	};
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&led_pin_d978>;
 
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
-	aliases {
-		serial0 = &serial2;
-		serial1 = &serial0;
-		serial2 = &serial1;
-		i2c0 = &i2c0;
-		i2c4 = &i2c4;
-		i2c5 = &i2c5;
-		i2c6 = &i2c6;
+		home {
+			label = "d978:blue:home";
+			gpios = <&r_pio 0 5 GPIO_ACTIVE_HIGH>; /* PL5 */
+		};
 	};
 };
 
-&serial2 {
-	status = "okay";
+&mmc1_pins_a {
+	allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
 };
 
-&i2c0 {
+&mmc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc1_pins_a>;
+	vmmc-supply = <&reg_dldo1>;
+	bus-width = <4>;
+	non-removable;
 	status = "okay";
+
+	rtl8723bs: sdio_wifi@1 {
+		reg = <1>;
+	};
+};
+
+&r_pio {
+	led_pin_d978: led_pin_d978@0 {
+		allwinner,pins = "PL5";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_20_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
 };

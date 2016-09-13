@@ -1,7 +1,5 @@
 /*
- * Device Tree Source for UniPhier ProXstream2 Gentil Board
- *
- * Copyright (C) 2015 Masahiro Yamada <yamada.masahiro@socionext.com>
+ * Copyright (C) 2016 James Pettigrew <james@innovum.com.au>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -43,46 +41,85 @@
  */
 
 /dts-v1/;
-/include/ "uniphier-proxstream2.dtsi"
+#include "sun8i-h3.dtsi"
+#include "sunxi-common-regulators.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/sun4i-a10.h>
 
 / {
-	model = "UniPhier ProXstream2 Gentil Board";
-	compatible = "socionext,proxstream2-gentil", "socionext,proxstream2";
+	model = "FriendlyARM NanoPi NEO";
+	compatible = "friendlyarm,nanopi-neo", "allwinner,sun8i-h3";
 
-	memory {
-		device_type = "memory";
-		reg = <0x80000000 0x80000000>;
+	aliases {
+		serial0 = &uart0;
 	};
 
 	chosen {
 		stdout-path = "serial0:115200n8";
 	};
 
-	aliases {
-		serial0 = &serial2;
-		serial1 = &serial0;
-		serial2 = &serial1;
-		i2c0 = &i2c0;
-		i2c2 = &i2c2;
-		i2c4 = &i2c4;
-		i2c5 = &i2c5;
-		i2c6 = &i2c6;
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&leds_opc>, <&leds_r_opc>;
+
+		pwr {
+			label = "nanopi:green:pwr";
+			gpios = <&r_pio 0 10 GPIO_ACTIVE_HIGH>; /* PL10 */
+			default-state = "on";
+		};
+
+		status {
+			label = "nanopi:blue:status";
+			gpios = <&pio 0 10 GPIO_ACTIVE_HIGH>; /* PA10 */
+		};
 	};
 };
 
-&serial2 {
+&ehci3 {
 	status = "okay";
 };
 
-&i2c0 {
+&mmc0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc0_pins_a>, <&mmc0_cd_pin>;
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <4>;
+	cd-gpios = <&pio 5 6 GPIO_ACTIVE_HIGH>; /* PF6 */
+	cd-inverted;
 	status = "okay";
+};
 
-	eeprom@54 {
-		compatible = "st,24c64";
-		reg = <0x54>;
+&ohci3 {
+	status = "okay";
+};
+
+&pio {
+	leds_opc: led-pins {
+		allwinner,pins = "PA10";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
 	};
 };
 
-&i2c2 {
+&r_pio {
+	leds_r_opc: led-pins {
+		allwinner,pins = "PL10";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
+};
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins_a>;
+	status = "okay";
+};
+
+&usbphy {
+	/* USB VBUS is always on */
 	status = "okay";
 };
