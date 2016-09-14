@@ -6,6 +6,10 @@ fixes
 		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-fixes-for-v4.8
 	<no branch> (78567f135d9bbbaf4538f63656d3e4d957c35fe9)
 		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-fixes-for-v4.8-rcs
+	patch
+		ARM: multi_v7_defconfig: update XILINX_VDMA
+	dt/irq-fix
+		Merge branch 'dt/irq-fix' into fixes
 
 next/fixes-non-critical
 
@@ -89,5 +93,27 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/clcd-nomadik
 
 next/dt64
-
-
+	uniphier/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/masahiroy/linux-uniphier tags/uniphier-dt64-v4.9
+	samsung/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.9
+	hisi/dt64
+		git://github.com/hisilicon/linux-hisi tags/hisi-soc-dt-for-4.9
+	qcom/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-arm64-for-4.9
+	mvebu/dt64
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.9-1
+	broadcom/dt64
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/devicetree-arm64
+	rockchip/dts64
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.9-rockchip-dts64-1
+	tegra/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.9-arm64-dt
+	imx/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-dt64-4.9
+	mediatek/dts64
+		https://github.com/mbgg/linux-mediatek tags/v4.8-next-dts64
+	xilinx/dt64
+		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-4.9
+	dt/irq-fix
+		Merge branch 'dt/irq-fix' into next/dt64
