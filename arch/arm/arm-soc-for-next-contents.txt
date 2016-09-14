@@ -28,8 +28,37 @@ next/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.9/soc
 	samsung/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-4.9
+	qcom/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-soc-for-4.9
+	broadcom/soc
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/soc
+	renesas/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-soc-for-v4.9
+	pxa/soc
+		https://github.com/rjarzmik/linux tags/pxa-for-4.9
+	sunxi/soc
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-core-for-4.9
 
 next/arm64
+	hisi/defconfig-arm64
+		git://github.com/hisilicon/linux-hisi tags/hisi-defconfig-for-4.9
+	patch
+		arm64: defconfig: enable HW random as module
+		arm64: defconfig: enable meson WDT as modules
+		arm64: defconfig: enable meson SPI as module
+		arm64: defconfig: enable meson I2C
+	qcom/defconfig64
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-arm64-defconfig-for-4.9
+	mvebu/defconfig64
+		git://git.infradead.org/linux-mvebu tags/mvebu-defconfig64-4.9-1
+	patch
+		arm64: defconfig: enable common modules for power management
+	renesas/arm64-defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-defconfig-for-v4.9
+	broadcom/arm64
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/soc-arm64
+	sunxi/arm64
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-config64-for-4.9
 
 next/defconfig
 	patch
@@ -41,6 +70,12 @@ next/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-defconfig-4.9
 	omap/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.9/defconfig-signed
+	keystone/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/ssantosh/linux-keystone tags/keystone_config_for_4.9
+	mvebu/defconfig
+		git://git.infradead.org/linux-mvebu tags/mvebu-defconfig-4.9-1
+	imx/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-defconfig-4.9
 
 next/drivers
 	omap/gpmc
@@ -49,6 +84,18 @@ next/drivers
 		git://git.pengutronix.de/git/pza/linux tags/reset-for-4.9
 	omap/gpmc-fix
 		Merge commit 'http://github.com/rogerq/linux gpmc-omap-v4.8-rc1' into next/drivers
+	amlogic/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-drivers
+	rockchip/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.9-rockchip-drivers1
+	at91/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.9-drivers
+	qcom/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-drivers-for-4.9
+	tegra/bus
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.9-bus
+	tegra/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.9-soc
 
 next/dt
 	renesas/dt
@@ -91,6 +138,8 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-dt-4.9
 	nomadik/clcd
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/clcd-nomadik
+	broadcom/dt
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/devicetree
 
 next/dt64
 	uniphier/dt64
@@ -117,3 +166,5 @@ next/dt64
 		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-4.9
 	dt/irq-fix
 		Merge branch 'dt/irq-fix' into next/dt64
+
+
