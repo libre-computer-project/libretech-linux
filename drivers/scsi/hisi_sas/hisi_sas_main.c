@@ -97,7 +97,7 @@ void hisi_sas_slot_task_free(struct hisi_hba *hisi_hba, struct sas_task *task,
 	slot->task = NULL;
 	slot->port = NULL;
 	hisi_sas_slot_index_free(hisi_hba, slot->idx);
-	memset(slot, 0, sizeof(*slot));
+	/* slot memory is fully zeroed when it is reused */
 }
 EXPORT_SYMBOL_GPL(hisi_sas_slot_task_free);
 
@@ -205,26 +205,12 @@ static int hisi_sas_task_prep(struct sas_task *task, struct hisi_hba *hisi_hba,
 	}
 	port = device->port->lldd_port;
 	if (port && !port->port_attached) {
-		if (sas_protocol_ata(task->task_proto)) {
-			struct task_status_struct *ts = &task->task_status;
+		dev_info(dev, "task prep: %s port%d not attach device\n",
+			 (sas_protocol_ata(task->task_proto)) ?
+			 "SATA/STP" : "SAS",
+			 device->port->id);
 
-			dev_info(dev,
-				 "task prep: SATA/STP port%d not attach device\n",
-				 device->port->id);
-			ts->resp = SAS_TASK_COMPLETE;
-			ts->stat = SAS_PHY_DOWN;
-			task->task_done(task);
-		} else {
-			struct task_status_struct *ts = &task->task_status;
-
-			dev_info(dev,
-				 "task prep: SAS port%d does not attach device\n",
-				 device->port->id);
-			ts->resp = SAS_TASK_UNDELIVERED;
-			ts->stat = SAS_PHY_DOWN;
-			task->task_done(task);
-		}
-		return 0;
+		return SAS_PHY_DOWN;
 	}
 
 	if (!sas_protocol_ata(task->task_proto)) {
@@ -1239,10 +1225,15 @@ static int hisi_sas_alloc(struct hisi_hba *hisi_hba, struct Scsi_Host *shost)
 
 	for (i = 0; i < hisi_hba->queue_count; i++) {
 		struct hisi_sas_cq *cq = &hisi_hba->cq[i];
+		struct hisi_sas_dq *dq = &hisi_hba->dq[i];
 
 		/* Completion queue structure */
 		cq->id = i;
 		cq->hisi_hba = hisi_hba;
+
+		/* Delivery queue structure */
+		dq->id = i;
+		dq->hisi_hba = hisi_hba;
 
 		/* Delivery queue */
 		s = sizeof(struct hisi_sas_cmd_hdr) * HISI_SAS_QUEUE_SLOTS;
@@ -1304,7 +1295,7 @@ static int hisi_sas_alloc(struct hisi_hba *hisi_hba, struct Scsi_Host *shost)
 	memset(hisi_hba->breakpoint, 0, s);
 
 	hisi_hba->slot_index_count = max_command_entries;
-	s = hisi_hba->slot_index_count / sizeof(unsigned long);
+	s = hisi_hba->slot_index_count / BITS_PER_BYTE;
 	hisi_hba->slot_index_tags = devm_kzalloc(dev, s, GFP_KERNEL);
 	if (!hisi_hba->slot_index_tags)
 		goto err_out;
@@ -1448,6 +1439,12 @@ static struct Scsi_Host *hisi_sas_shost_alloc(struct platform_device *pdev,
 				     &hisi_hba->queue_count))
 		goto err_out;
 
+	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64)) &&
+	    dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))) {
+		dev_err(dev, "No usable DMA addressing method\n");
+		goto err_out;
+	}
+
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	hisi_hba->regs = devm_ioremap_resource(dev, res);
 	if (IS_ERR(hisi_hba->regs))
@@ -1494,13 +1491,6 @@ int hisi_sas_probe(struct platform_device *pdev,
 	sha = SHOST_TO_SAS_HA(shost);
 	hisi_hba = shost_priv(shost);
 	platform_set_drvdata(pdev, sha);
-
-	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64)) &&
-	    dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))) {
-		dev_err(dev, "No usable DMA addressing method\n");
-		rc = -EIO;
-		goto err_out_ha;
-	}
 
 	phy_nr = port_nr = hisi_hba->n_phy;
 
