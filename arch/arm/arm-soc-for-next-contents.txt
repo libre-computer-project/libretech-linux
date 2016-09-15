@@ -10,6 +10,8 @@ fixes
 		ARM: multi_v7_defconfig: update XILINX_VDMA
 	dt/irq-fix
 		Merge branch 'dt/irq-fix' into fixes
+	patch
+		ARM: keystone: defconfig: Fix USB configuration
 
 next/fixes-non-critical
 
@@ -140,6 +142,8 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/clcd-nomadik
 	broadcom/dt
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/devicetree
+	davinci/dts
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.9/dts
 
 next/dt64
 	uniphier/dt64
@@ -167,4 +171,14 @@ next/dt64
 	dt/irq-fix
 		Merge branch 'dt/irq-fix' into next/dt64
 
-
+next/late
+	sunxi/dt2
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt-for-4.9-2
+		contains sunxi/clk
+		contains sunxi/dt
+	amlogic/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-dt64
+	renesas/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-dt-for-v4.9
+	integrator/dts
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-integrator tags/integrator-armsoc-1
