@@ -1,3 +1,7 @@
+fixes
+
+next/fixes-non-critical
+
 next/cleanup
 	realview/broomstick
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-integrator tags/realview-broomstick-sweep
@@ -48,6 +52,10 @@ next/arm64
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/soc-arm64
 	sunxi/arm64
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-config64-for-4.9
+	zte/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/zte-soc64-4.9
+	zte/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/zte-defconfig64-4.9
 
 next/defconfig
 	patch
@@ -183,6 +191,12 @@ next/dt64
 		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-4.9
 	dt/irq-fix
 		Merge branch 'dt/irq-fix' into next/dt64
+	mvebu/dt64-2
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.9-2
+	xgene/dt64
+		https://github.com/AppliedMicro/xgene-next tags/xgene-dts-for-v4.9
+	zte/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/zte-dt64-4.9
 
 next/late
 	sunxi/dt2
@@ -197,6 +211,6 @@ next/late
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-integrator tags/integrator-armsoc-1
 	amlogic/drivers-2
 		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-drivers-2
+		contains amlogic/drivers
 	amlogic/dt-3
 		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-dt64-2
-
