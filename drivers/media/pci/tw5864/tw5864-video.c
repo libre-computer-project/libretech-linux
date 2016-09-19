@@ -465,7 +465,7 @@ static void tw5864_stop_streaming(struct vb2_queue *q)
 	spin_unlock_irqrestore(&input->slock, flags);
 }
 
-static struct vb2_ops tw5864_video_qops = {
+static const struct vb2_ops tw5864_video_qops = {
 	.queue_setup = tw5864_queue_setup,
 	.buf_queue = tw5864_buf_queue,
 	.start_streaming = tw5864_start_streaming,
@@ -912,7 +912,7 @@ static const struct v4l2_ioctl_ops video_ioctl_ops = {
 #endif
 };
 
-static struct video_device tw5864_video_template = {
+static const struct video_device tw5864_video_template = {
 	.name = "tw5864_video",
 	.fops = &video_fops,
 	.ioctl_ops = &video_ioctl_ops,

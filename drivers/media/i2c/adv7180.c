@@ -633,7 +633,7 @@ static int adv7180_enum_mbus_code(struct v4l2_subdev *sd,
 	if (code->index != 0)
 		return -EINVAL;
 
-	code->code = MEDIA_BUS_FMT_YUYV8_2X8;
+	code->code = MEDIA_BUS_FMT_UYVY8_2X8;
 
 	return 0;
 }
@@ -643,7 +643,7 @@ static int adv7180_mbus_fmt(struct v4l2_subdev *sd,
 {
 	struct adv7180_state *state = to_state(sd);
 
-	fmt->code = MEDIA_BUS_FMT_YUYV8_2X8;
+	fmt->code = MEDIA_BUS_FMT_UYVY8_2X8;
 	fmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
 	fmt->width = 720;
 	fmt->height = state->curr_norm & V4L2_STD_525_60 ? 480 : 576;
@@ -711,6 +711,7 @@ static int adv7180_set_pad_format(struct v4l2_subdev *sd,
 {
 	struct adv7180_state *state = to_state(sd);
 	struct v4l2_mbus_framefmt *framefmt;
+	int ret;
 
 	switch (format->format.field) {
 	case V4L2_FIELD_NONE:
@@ -722,8 +723,9 @@ static int adv7180_set_pad_format(struct v4l2_subdev *sd,
 		break;
 	}
 
+	ret = adv7180_mbus_fmt(sd,  &format->format);
+
 	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
-		framefmt = &format->format;
 		if (state->field != format->format.field) {
 			state->field = format->format.field;
 			adv7180_set_power(state, false);
@@ -735,7 +737,7 @@ static int adv7180_set_pad_format(struct v4l2_subdev *sd,
 		*framefmt = format->format;
 	}
 
-	return adv7180_mbus_fmt(sd, framefmt);
+	return ret;
 }
 
 static int adv7180_g_mbus_config(struct v4l2_subdev *sd,

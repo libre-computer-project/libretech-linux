@@ -283,10 +283,11 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int rpf_index,
 		cfg->pixelformat, cfg->pitch, &cfg->mem[0], &cfg->mem[1],
 		&cfg->mem[2], cfg->zpos);
 
-	/* Store the format, stride, memory buffer address, crop and compose
+	/*
+	 * Store the format, stride, memory buffer address, crop and compose
 	 * rectangles and Z-order position and for the input.
 	 */
-	fmtinfo = vsp1_get_format_info(cfg->pixelformat);
+	fmtinfo = vsp1_get_format_info(vsp1, cfg->pixelformat);
 	if (!fmtinfo) {
 		dev_dbg(vsp1->dev, "Unsupport pixel format %08x for RPF\n",
 			cfg->pixelformat);
@@ -492,16 +493,13 @@ void vsp1_du_atomic_flush(struct device *dev)
 		vsp1_entity_route_setup(entity, pipe->dl);
 
 		if (entity->ops->configure) {
-			entity->ops->configure(entity, pipe, pipe->dl, true);
-			entity->ops->configure(entity, pipe, pipe->dl, false);
+			entity->ops->configure(entity, pipe, pipe->dl,
+					       VSP1_ENTITY_PARAMS_INIT);
+			entity->ops->configure(entity, pipe, pipe->dl,
+					       VSP1_ENTITY_PARAMS_RUNTIME);
+			entity->ops->configure(entity, pipe, pipe->dl,
+					       VSP1_ENTITY_PARAMS_PARTITION);
 		}
-
-		/* The memory buffer address must be applied after configuring
-		 * the RPF to make sure the crop offset are computed.
-		 */
-		if (entity->type == VSP1_ENTITY_RPF)
-			vsp1_rwpf_set_memory(to_rwpf(&entity->subdev),
-					     pipe->dl);
 	}
 
 	vsp1_dl_list_commit(pipe->dl);

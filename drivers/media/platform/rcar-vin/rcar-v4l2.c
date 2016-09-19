@@ -92,6 +92,68 @@ static u32 rvin_format_sizeimage(struct v4l2_pix_format *pix)
  * V4L2
  */
 
+static void rvin_reset_crop_compose(struct rvin_dev *vin)
+{
+	vin->crop.top = vin->crop.left = 0;
+	vin->crop.width = vin->source.width;
+	vin->crop.height = vin->source.height;
+
+	vin->compose.top = vin->compose.left = 0;
+	vin->compose.width = vin->format.width;
+	vin->compose.height = vin->format.height;
+}
+
+static int rvin_reset_format(struct rvin_dev *vin)
+{
+	struct v4l2_subdev_format fmt = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
+	struct v4l2_mbus_framefmt *mf = &fmt.format;
+	int ret;
+
+	fmt.pad = vin->src_pad_idx;
+
+	ret = v4l2_subdev_call(vin_to_source(vin), pad, get_fmt, NULL, &fmt);
+	if (ret)
+		return ret;
+
+	vin->format.width	= mf->width;
+	vin->format.height	= mf->height;
+	vin->format.colorspace	= mf->colorspace;
+	vin->format.field	= mf->field;
+
+	/*
+	 * If the subdevice uses ALTERNATE field mode and G_STD is
+	 * implemented use the VIN HW to combine the two fields to
+	 * one INTERLACED frame. The ALTERNATE field mode can still
+	 * be requested in S_FMT and be respected, this is just the
+	 * default which is applied at probing or when S_STD is called.
+	 */
+	if (vin->format.field == V4L2_FIELD_ALTERNATE &&
+	    v4l2_subdev_has_op(vin_to_source(vin), video, g_std))
+		vin->format.field = V4L2_FIELD_INTERLACED;
+
+	switch (vin->format.field) {
+	case V4L2_FIELD_TOP:
+	case V4L2_FIELD_BOTTOM:
+	case V4L2_FIELD_ALTERNATE:
+		vin->format.height /= 2;
+		break;
+	case V4L2_FIELD_NONE:
+	case V4L2_FIELD_INTERLACED_TB:
+	case V4L2_FIELD_INTERLACED_BT:
+	case V4L2_FIELD_INTERLACED:
+		break;
+	default:
+		vin->format.field = V4L2_FIELD_NONE;
+		break;
+	}
+
+	rvin_reset_crop_compose(vin);
+
+	return 0;
+}
+
 static int __rvin_try_format_source(struct rvin_dev *vin,
 				    u32 which,
 				    struct v4l2_pix_format *pix,
@@ -102,6 +164,7 @@ static int __rvin_try_format_source(struct rvin_dev *vin,
 	struct v4l2_subdev_format format = {
 		.which = which,
 	};
+	enum v4l2_field field;
 	int ret;
 
 	sd = vin_to_source(vin);
@@ -114,11 +177,15 @@ static int __rvin_try_format_source(struct rvin_dev *vin,
 
 	format.pad = vin->src_pad_idx;
 
+	field = pix->field;
+
 	ret = v4l2_subdev_call(sd, pad, set_fmt, pad_cfg, &format);
 	if (ret < 0 && ret != -ENOIOCTLCMD)
 		goto done;
 
 	v4l2_fill_pix_format(pix, &format.format);
+
+	pix->field = field;
 
 	source->width = pix->width;
 	source->height = pix->height;
@@ -143,6 +210,10 @@ static int __rvin_try_format(struct rvin_dev *vin,
 	rwidth = pix->width;
 	rheight = pix->height;
 
+	/* Keep current field if no specific one is asked for */
+	if (pix->field == V4L2_FIELD_ANY)
+		pix->field = vin->format.field;
+
 	/*
 	 * Retrieve format information and select the current format if the
 	 * requested format isn't supported.
@@ -163,6 +234,23 @@ static int __rvin_try_format(struct rvin_dev *vin,
 	/* Limit to source capabilities */
 	__rvin_try_format_source(vin, which, pix, source);
 
+	switch (pix->field) {
+	case V4L2_FIELD_TOP:
+	case V4L2_FIELD_BOTTOM:
+	case V4L2_FIELD_ALTERNATE:
+		pix->height /= 2;
+		source->height /= 2;
+		break;
+	case V4L2_FIELD_NONE:
+	case V4L2_FIELD_INTERLACED_TB:
+	case V4L2_FIELD_INTERLACED_BT:
+	case V4L2_FIELD_INTERLACED:
+		break;
+	default:
+		pix->field = V4L2_FIELD_NONE;
+		break;
+	}
+
 	/* If source can't match format try if VIN can scale */
 	if (source->width != rwidth || source->height != rheight)
 		rvin_scale_try(vin, pix, rwidth, rheight);
@@ -173,19 +261,6 @@ static int __rvin_try_format(struct rvin_dev *vin,
 	/* Limit to VIN capabilities */
 	v4l_bound_align_image(&pix->width, 2, RVIN_MAX_WIDTH, walign,
 			      &pix->height, 4, RVIN_MAX_HEIGHT, 2, 0);
-
-	switch (pix->field) {
-	case V4L2_FIELD_NONE:
-	case V4L2_FIELD_TOP:
-	case V4L2_FIELD_BOTTOM:
-	case V4L2_FIELD_INTERLACED_TB:
-	case V4L2_FIELD_INTERLACED_BT:
-	case V4L2_FIELD_INTERLACED:
-		break;
-	default:
-		pix->field = V4L2_FIELD_NONE;
-		break;
-	}
 
 	pix->bytesperline = max_t(u32, pix->bytesperline,
 				  rvin_format_bytesperline(pix));
@@ -245,6 +320,8 @@ static int rvin_s_fmt_vid_cap(struct file *file, void *priv,
 	vin->source.height = source.height;
 
 	vin->format = f->fmt.pix;
+
+	rvin_reset_crop_compose(vin);
 
 	return 0;
 }
@@ -437,35 +514,14 @@ static int rvin_querystd(struct file *file, void *priv, v4l2_std_id *a)
 static int rvin_s_std(struct file *file, void *priv, v4l2_std_id a)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
-	struct v4l2_subdev_format fmt = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-	};
-	struct v4l2_mbus_framefmt *mf = &fmt.format;
-	int ret = v4l2_subdev_call(sd, video, s_std, a);
+	int ret;
 
+	ret = v4l2_subdev_call(vin_to_source(vin), video, s_std, a);
 	if (ret < 0)
 		return ret;
 
 	/* Changing the standard will change the width/height */
-	ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, &fmt);
-	if (ret) {
-		vin_err(vin, "Failed to get initial format\n");
-		return ret;
-	}
-
-	vin->format.width = mf->width;
-	vin->format.height = mf->height;
-
-	vin->crop.top = vin->crop.left = 0;
-	vin->crop.width = mf->width;
-	vin->crop.height = mf->height;
-
-	vin->compose.top = vin->compose.left = 0;
-	vin->compose.width = mf->width;
-	vin->compose.height = mf->height;
-
-	return 0;
+	return rvin_reset_format(vin);
 }
 
 static int rvin_g_std(struct file *file, void *priv, v4l2_std_id *a)
@@ -494,7 +550,7 @@ static int rvin_enum_dv_timings(struct file *file, void *priv_fh,
 	int pad, ret;
 
 	pad = timings->pad;
-	timings->pad = vin->src_pad_idx;
+	timings->pad = vin->sink_pad_idx;
 
 	ret = v4l2_subdev_call(sd, pad, enum_dv_timings, timings);
 
@@ -548,11 +604,49 @@ static int rvin_dv_timings_cap(struct file *file, void *priv_fh,
 	int pad, ret;
 
 	pad = cap->pad;
-	cap->pad = vin->src_pad_idx;
+	cap->pad = vin->sink_pad_idx;
 
 	ret = v4l2_subdev_call(sd, pad, dv_timings_cap, cap);
 
 	cap->pad = pad;
+
+	return ret;
+}
+
+static int rvin_g_edid(struct file *file, void *fh, struct v4l2_edid *edid)
+{
+	struct rvin_dev *vin = video_drvdata(file);
+	struct v4l2_subdev *sd = vin_to_source(vin);
+	int input, ret;
+
+	if (edid->pad)
+		return -EINVAL;
+
+	input = edid->pad;
+	edid->pad = vin->sink_pad_idx;
+
+	ret = v4l2_subdev_call(sd, pad, get_edid, edid);
+
+	edid->pad = input;
+
+	return ret;
+}
+
+static int rvin_s_edid(struct file *file, void *fh, struct v4l2_edid *edid)
+{
+	struct rvin_dev *vin = video_drvdata(file);
+	struct v4l2_subdev *sd = vin_to_source(vin);
+	int input, ret;
+
+	if (edid->pad)
+		return -EINVAL;
+
+	input = edid->pad;
+	edid->pad = vin->sink_pad_idx;
+
+	ret = v4l2_subdev_call(sd, pad, set_edid, edid);
+
+	edid->pad = input;
 
 	return ret;
 }
@@ -578,6 +672,9 @@ static const struct v4l2_ioctl_ops rvin_ioctl_ops = {
 	.vidioc_g_dv_timings		= rvin_g_dv_timings,
 	.vidioc_s_dv_timings		= rvin_s_dv_timings,
 	.vidioc_query_dv_timings	= rvin_query_dv_timings,
+
+	.vidioc_g_edid			= rvin_g_edid,
+	.vidioc_s_edid			= rvin_s_edid,
 
 	.vidioc_querystd		= rvin_querystd,
 	.vidioc_g_std			= rvin_g_std,
@@ -770,10 +867,6 @@ static void rvin_notify(struct v4l2_subdev *sd,
 
 int rvin_v4l2_probe(struct rvin_dev *vin)
 {
-	struct v4l2_subdev_format fmt = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-	};
-	struct v4l2_mbus_framefmt *mf = &fmt.format;
 	struct video_device *vdev = &vin->vdev;
 	struct v4l2_subdev *sd = vin_to_source(vin);
 	int pad_idx, ret;
@@ -830,31 +923,16 @@ int rvin_v4l2_probe(struct rvin_dev *vin)
 		return -EINVAL;
 
 	vin->src_pad_idx = pad_idx;
-	fmt.pad = vin->src_pad_idx;
 
-	/* Try to improve our guess of a reasonable window format */
-	ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, &fmt);
-	if (ret) {
-		vin_err(vin, "Failed to get initial format\n");
-		return ret;
-	}
+	vin->sink_pad_idx = 0;
+	for (pad_idx = 0; pad_idx < sd->entity.num_pads; pad_idx++)
+		if (sd->entity.pads[pad_idx].flags == MEDIA_PAD_FL_SINK) {
+			vin->sink_pad_idx = pad_idx;
+			break;
+		}
 
-	/* Set default format */
-	vin->format.width	= mf->width;
-	vin->format.height	= mf->height;
-	vin->format.colorspace	= mf->colorspace;
-	vin->format.field	= mf->field;
 	vin->format.pixelformat	= RVIN_DEFAULT_FORMAT;
-
-
-	/* Set initial crop and compose */
-	vin->crop.top = vin->crop.left = 0;
-	vin->crop.width = mf->width;
-	vin->crop.height = mf->height;
-
-	vin->compose.top = vin->compose.left = 0;
-	vin->compose.width = mf->width;
-	vin->compose.height = mf->height;
+	rvin_reset_format(vin);
 
 	ret = video_register_device(&vin->vdev, VFL_TYPE_GRABBER, -1);
 	if (ret) {

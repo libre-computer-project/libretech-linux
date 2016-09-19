@@ -924,10 +924,16 @@ static int isc_open(struct file *file)
 		goto unlock;
 
 	ret = v4l2_subdev_call(sd, core, s_power, 1);
-	if (ret < 0 && ret != -ENOIOCTLCMD)
+	if (ret < 0 && ret != -ENOIOCTLCMD) {
 		v4l2_fh_release(file);
-	else
-		ret = 0;
+		goto unlock;
+	}
+
+	ret = isc_set_fmt(isc, &isc->fmt);
+	if (ret) {
+		v4l2_subdev_call(sd, core, s_power, 0);
+		v4l2_fh_release(file);
+	}
 
 unlock:
 	mutex_unlock(&isc->lock);
@@ -1118,8 +1124,16 @@ static int isc_set_default_fmt(struct isc_device *isc)
 			.pixelformat	= isc->user_formats[0]->fourcc,
 		},
 	};
+	int ret;
 
-	return isc_set_fmt(isc, &f);
+	ret = isc_try_fmt(isc, &f, NULL);
+	if (ret)
+		return ret;
+
+	isc->current_fmt = isc->user_formats[0];
+	isc->fmt = f;
+
+	return 0;
 }
 
 static int isc_async_complete(struct v4l2_async_notifier *notifier)
@@ -1172,19 +1186,11 @@ static int isc_async_complete(struct v4l2_async_notifier *notifier)
 		return ret;
 	}
 
-	ret = v4l2_subdev_call(sd_entity->sd, core, s_power, 1);
-	if (ret < 0 && ret != -ENOIOCTLCMD)
-		return ret;
-
 	ret = isc_set_default_fmt(isc);
 	if (ret) {
 		v4l2_err(&isc->v4l2_dev, "Could not set default format\n");
 		return ret;
 	}
-
-	ret = v4l2_subdev_call(sd_entity->sd, core, s_power, 0);
-	if (ret < 0 && ret != -ENOIOCTLCMD)
-		return ret;
 
 	/* Register video device */
 	strlcpy(vdev->name, ATMEL_ISC_NAME, sizeof(vdev->name));
@@ -1464,7 +1470,7 @@ static int atmel_isc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int isc_runtime_suspend(struct device *dev)
+static int __maybe_unused isc_runtime_suspend(struct device *dev)
 {
 	struct isc_device *isc = dev_get_drvdata(dev);
 
@@ -1474,7 +1480,7 @@ static int isc_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int isc_runtime_resume(struct device *dev)
+static int __maybe_unused isc_runtime_resume(struct device *dev)
 {
 	struct isc_device *isc = dev_get_drvdata(dev);
 	int ret;

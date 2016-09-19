@@ -26,7 +26,6 @@
 #include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/time.h>
-#include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/sched.h>
@@ -967,7 +966,7 @@ static void pxa_camera_wakeup(struct pxa_camera_dev *pcdev,
 	vbuf->sequence = pcdev->buf_sequence++;
 	vbuf->field = V4L2_FIELD_NONE;
 	vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
-	dev_dbg(pcdev_to_dev(pcdev), "%s dequeud buffer (buf=0x%p)\n",
+	dev_dbg(pcdev_to_dev(pcdev), "%s dequeued buffer (buf=0x%p)\n",
 		__func__, buf);
 
 	if (list_empty(&pcdev->capture)) {
@@ -2402,6 +2401,7 @@ static int pxa_camera_probe(struct platform_device *pdev)
 						 &params, &pdev->dev, "CI_U");
 	if (!pcdev->dma_chans[1]) {
 		dev_err(&pdev->dev, "Can't request DMA for Y\n");
+		err = -ENODEV;
 		goto exit_free_dma_y;
 	}
 
@@ -2411,6 +2411,7 @@ static int pxa_camera_probe(struct platform_device *pdev)
 						 &params, &pdev->dev, "CI_V");
 	if (!pcdev->dma_chans[2]) {
 		dev_err(&pdev->dev, "Can't request DMA for V\n");
+		err = -ENODEV;
 		goto exit_free_dma_u;
 	}
 
@@ -2461,8 +2462,10 @@ static int pxa_camera_probe(struct platform_device *pdev)
 
 		pcdev->mclk_clk = v4l2_clk_register(&pxa_camera_mclk_ops,
 						    clk_name, NULL);
-		if (IS_ERR(pcdev->mclk_clk))
-			return PTR_ERR(pcdev->mclk_clk);
+		if (IS_ERR(pcdev->mclk_clk)) {
+			err = PTR_ERR(pcdev->mclk_clk);
+			goto exit_free_v4l2dev;
+		}
 	}
 
 	err = v4l2_async_notifier_register(&pcdev->v4l2_dev, &pcdev->notifier);
