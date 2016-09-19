@@ -1,5 +1,3 @@
-fixes
-
 next/cleanup
 	realview/broomstick
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-integrator tags/realview-broomstick-sweep
@@ -141,6 +139,24 @@ next/dt
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/devicetree
 	davinci/dts
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.9/dts
+	at91/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.9-dt1
+	mvebu/dt-2
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.9-2
+	amlogic/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-dt
+	sti/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.9-2
+	sti/dt-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.9-3
+	davinci/dts-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.9/dts-p2
+	omap/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.9/dt-pt2-signed
+	samsung/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-4.9-2
+	samsung/dt-pinctrl
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-pinctrl-4.9
 
 next/dt64
 	uniphier/dt64
@@ -179,3 +195,8 @@ next/late
 		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-dt-for-v4.9
 	integrator/dts
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-integrator tags/integrator-armsoc-1
+	amlogic/drivers-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-drivers-2
+	amlogic/dt-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-dt64-2
+
