@@ -151,8 +151,8 @@ config MACH_MSS2_DT
 	  Say 'Y' here if you want your kernel to support the
 	  Maxtor Shared Storage II platform.
 
-config MACH_WNR854T
-	bool "Netgear WNR854T"
+config MACH_WNR854T_DT
+	bool "Netgear WNR854T (Flattened Device Tree)"
 	help
 	  Say 'Y' here if you want your kernel to support the
 	  Netgear WNR854T platform.
