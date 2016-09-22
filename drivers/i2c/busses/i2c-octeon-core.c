@@ -215,7 +215,16 @@ static int octeon_i2c_hlc_wait(struct octeon_i2c *i2c)
 
 static int octeon_i2c_check_status(struct octeon_i2c *i2c, int final_read)
 {
-	u8 stat = octeon_i2c_stat_read(i2c);
+	u8 stat;
+
+	/*
+	 * This is ugly... in HLC mode the status is not in the status register
+	 * but in the lower 8 bits of SW_TWSI.
+	 */
+	if (i2c->hlc_enabled)
+		stat = __raw_readq(i2c->twsi_base + SW_TWSI(i2c));
+	else
+		stat = octeon_i2c_stat_read(i2c);
 
 	switch (stat) {
 	/* Everything is fine */
@@ -453,7 +462,7 @@ static int octeon_i2c_hlc_read(struct octeon_i2c *i2c, struct i2c_msg *msgs)
 
 	cmd = __raw_readq(i2c->twsi_base + SW_TWSI(i2c));
 	if ((cmd & SW_TWSI_R) == 0)
-		return -EAGAIN;
+		return octeon_i2c_check_status(i2c, false);
 
 	for (i = 0, j = msgs[0].len - 1; i  < msgs[0].len && i < 4; i++, j--)
 		msgs[0].buf[j] = (cmd >> (8 * i)) & 0xff;
@@ -506,9 +515,7 @@ static int octeon_i2c_hlc_write(struct octeon_i2c *i2c, struct i2c_msg *msgs)
 
 	cmd = __raw_readq(i2c->twsi_base + SW_TWSI(i2c));
 	if ((cmd & SW_TWSI_R) == 0)
-		return -EAGAIN;
-
-	ret = octeon_i2c_check_status(i2c, false);
+		return octeon_i2c_check_status(i2c, false);
 
 err:
 	return ret;
@@ -553,7 +560,7 @@ static int octeon_i2c_hlc_comp_read(struct octeon_i2c *i2c, struct i2c_msg *msgs
 
 	cmd = __raw_readq(i2c->twsi_base + SW_TWSI(i2c));
 	if ((cmd & SW_TWSI_R) == 0)
-		return -EAGAIN;
+		return octeon_i2c_check_status(i2c, false);
 
 	for (i = 0, j = msgs[1].len - 1; i  < msgs[1].len && i < 4; i++, j--)
 		msgs[1].buf[j] = (cmd >> (8 * i)) & 0xff;
@@ -617,9 +624,7 @@ static int octeon_i2c_hlc_comp_write(struct octeon_i2c *i2c, struct i2c_msg *msg
 
 	cmd = __raw_readq(i2c->twsi_base + SW_TWSI(i2c));
 	if ((cmd & SW_TWSI_R) == 0)
-		return -EAGAIN;
-
-	ret = octeon_i2c_check_status(i2c, false);
+		return octeon_i2c_check_status(i2c, false);
 
 err:
 	return ret;
@@ -767,7 +772,7 @@ static void octeon_i2c_set_scl(struct i2c_adapter *adap, int val)
 {
 	struct octeon_i2c *i2c = i2c_get_adapdata(adap);
 
-	octeon_i2c_write_int(i2c, TWSI_INT_SCL_OVR);
+	octeon_i2c_write_int(i2c, val ? 0 : TWSI_INT_SCL_OVR);
 }
 
 static int octeon_i2c_get_sda(struct i2c_adapter *adap)
@@ -783,13 +788,14 @@ static void octeon_i2c_prepare_recovery(struct i2c_adapter *adap)
 {
 	struct octeon_i2c *i2c = i2c_get_adapdata(adap);
 
-	/*
-	 * The stop resets the state machine, does not _transmit_ STOP unless
-	 * engine was active.
-	 */
-	octeon_i2c_stop(i2c);
-
 	octeon_i2c_hlc_disable(i2c);
+
+	/*
+	 * Bring control register to a good state regardless
+	 * of HLC state.
+	 */
+	octeon_i2c_ctl_write(i2c, TWSI_CTL_ENAB);
+
 	octeon_i2c_write_int(i2c, 0);
 }
 
@@ -797,6 +803,15 @@ static void octeon_i2c_unprepare_recovery(struct i2c_adapter *adap)
 {
 	struct octeon_i2c *i2c = i2c_get_adapdata(adap);
 
+	/*
+	 * Generate STOP to finish the unfinished transaction.
+	 * Can't generate STOP via the TWSI CTL register
+	 * since it could bring the TWSI controller into an inoperable state.
+	 */
+	octeon_i2c_write_int(i2c, TWSI_INT_SDA_OVR | TWSI_INT_SCL_OVR);
+	udelay(5);
+	octeon_i2c_write_int(i2c, TWSI_INT_SDA_OVR);
+	udelay(5);
 	octeon_i2c_write_int(i2c, 0);
 }
 
