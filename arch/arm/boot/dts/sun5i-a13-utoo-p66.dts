@@ -118,14 +118,12 @@
 	i2c_lcd_pins: i2c_lcd_pin@0 {
 		allwinner,pins = "PG10", "PG12";
 		allwinner,function = "gpio_out";
-		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
 		allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
 	};
 
 	ts_wake_pin_p66: ts_wake_pin@0 {
 		allwinner,pins = "PB3";
 		allwinner,function = "gpio_out";
-		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
 		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
 	};
 
