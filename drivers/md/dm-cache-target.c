@@ -179,6 +179,7 @@ enum cache_io_mode {
 struct cache_features {
 	enum cache_metadata_mode mode;
 	enum cache_io_mode io_mode;
+	struct dm_cache_metadata_features metadata_features;
 };
 
 struct cache_stats {
@@ -2541,13 +2542,14 @@ static void init_features(struct cache_features *cf)
 {
 	cf->mode = CM_WRITE;
 	cf->io_mode = CM_IO_WRITEBACK;
+	cf->metadata_features.separate_dirty_bits = false;
 }
 
 static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 			  char **error)
 {
 	static struct dm_arg _args[] = {
-		{0, 1, "Invalid number of cache feature arguments"},
+		{0, 2, "Invalid number of cache feature arguments"},
 	};
 
 	int r;
@@ -2572,6 +2574,12 @@ static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 
 		else if (!strcasecmp(arg, "passthrough"))
 			cf->io_mode = CM_IO_PASSTHROUGH;
+
+		else if (!strcasecmp(arg, "combined_dirty_bits"))
+			cf->metadata_features.separate_dirty_bits = false;
+
+		else if (!strcasecmp(arg, "separate_dirty_bits"))
+			cf->metadata_features.separate_dirty_bits = true;
 
 		else {
 			*error = "Unrecognised cache feature requested";
@@ -2827,7 +2835,8 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 
 	cmd = dm_cache_metadata_open(cache->metadata_dev->bdev,
 				     ca->block_size, may_format,
-				     dm_cache_policy_get_hint_size(cache->policy));
+				     dm_cache_policy_get_hint_size(cache->policy),
+				     &ca->features.metadata_features);
 	if (IS_ERR(cmd)) {
 		*error = "Error creating metadata object";
 		r = PTR_ERR(cmd);
@@ -3172,21 +3181,16 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 
 static int write_dirty_bitset(struct cache *cache)
 {
-	unsigned i, r;
+	int r;
 
 	if (get_cache_mode(cache) >= CM_READ_ONLY)
 		return -EINVAL;
 
-	for (i = 0; i < from_cblock(cache->cache_size); i++) {
-		r = dm_cache_set_dirty(cache->cmd, to_cblock(i),
-				       is_dirty(cache, to_cblock(i)));
-		if (r) {
-			metadata_operation_failed(cache, "dm_cache_set_dirty", r);
-			return r;
-		}
-	}
+	r = dm_cache_set_dirty_bits(cache->cmd, from_cblock(cache->cache_size), cache->dirty_bitset);
+	if (r)
+		metadata_operation_failed(cache, "dm_cache_set_dirty_bits", r);
 
-	return 0;
+	return r;
 }
 
 static int write_discard_bitset(struct cache *cache)
@@ -3563,19 +3567,24 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned long) atomic_read(&cache->nr_dirty));
 
 		if (writethrough_mode(&cache->features))
-			DMEMIT("1 writethrough ");
+			DMEMIT("2 writethrough ");
 
 		else if (passthrough_mode(&cache->features))
-			DMEMIT("1 passthrough ");
+			DMEMIT("2 passthrough ");
 
 		else if (writeback_mode(&cache->features))
-			DMEMIT("1 writeback ");
+			DMEMIT("2 writeback ");
 
 		else {
 			DMERR("%s: internal error: unknown io mode: %d",
 			      cache_device_name(cache), (int) cache->features.io_mode);
 			goto err;
 		}
+
+		if (cache->features.metadata_features.separate_dirty_bits)
+			DMEMIT("separate_dirty_bits ");
+		else
+			DMEMIT("combined_dirty_bits ");
 
 		DMEMIT("2 migration_threshold %llu ", (unsigned long long) cache->migration_threshold);
 
@@ -3817,7 +3826,7 @@ static void cache_io_hints(struct dm_target *ti, struct queue_limits *limits)
 
 static struct target_type cache_target = {
 	.name = "cache",
-	.version = {1, 9, 0},
+	.version = {1, 10, 0},
 	.module = THIS_MODULE,
 	.ctr = cache_ctr,
 	.dtr = cache_dtr,

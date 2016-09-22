@@ -25,7 +25,7 @@
  * defines a range of metadata versions that this module can handle.
  */
 #define MIN_CACHE_VERSION 1
-#define MAX_CACHE_VERSION 1
+#define MAX_CACHE_VERSION 2
 
 #define CACHE_METADATA_CACHE_SIZE 64
 
@@ -55,6 +55,7 @@ enum mapping_bits {
 
 	/*
 	 * The data on the cache is different from that on the origin.
+	 * This flag is only used by metadata format 1.
 	 */
 	M_DIRTY = 2
 };
@@ -93,6 +94,11 @@ struct cache_disk_superblock {
 	__le32 write_misses;
 
 	__le32 policy_version[CACHE_POLICY_VERSION_SIZE];
+
+	/*
+	 * Metadata format 2 fields.
+	 */
+	__le64 dirty_root;
 } __packed;
 
 struct dm_cache_metadata {
@@ -141,12 +147,21 @@ struct dm_cache_metadata {
 	 */
 	bool fail_io:1;
 
+	struct dm_cache_metadata_features features;
+
+	/*
+	 * Metadata format 2 fields.
+	 */
+	dm_block_t dirty_root;
+	struct dm_disk_bitset dirty_info;
+
 	/*
 	 * These structures are used when loading metadata.  They're too
 	 * big to put on the stack.
 	 */
 	struct dm_array_cursor mapping_cursor;
 	struct dm_array_cursor hint_cursor;
+	struct dm_bitset_cursor dirty_cursor;
 };
 
 /*-------------------------------------------------------------------
@@ -170,6 +185,7 @@ static void sb_prepare_for_write(struct dm_block_validator *v,
 static int check_metadata_version(struct cache_disk_superblock *disk_super)
 {
 	uint32_t metadata_version = le32_to_cpu(disk_super->version);
+
 	if (metadata_version < MIN_CACHE_VERSION || metadata_version > MAX_CACHE_VERSION) {
 		DMERR("Cache metadata version %u found, but only versions between %u and %u supported.",
 		      metadata_version, MIN_CACHE_VERSION, MAX_CACHE_VERSION);
@@ -310,6 +326,11 @@ static void __copy_sm_root(struct dm_cache_metadata *cmd,
 	       sizeof(cmd->metadata_space_map_root));
 }
 
+static bool separate_dirty_bits(struct dm_cache_metadata *cmd)
+{
+	return cmd->features.separate_dirty_bits;
+}
+
 static int __write_initial_superblock(struct dm_cache_metadata *cmd)
 {
 	int r;
@@ -362,6 +383,11 @@ static int __write_initial_superblock(struct dm_cache_metadata *cmd)
 	disk_super->write_hits = cpu_to_le32(0);
 	disk_super->write_misses = cpu_to_le32(0);
 
+	if (separate_dirty_bits(cmd)) {
+		disk_super->dirty_root = cpu_to_le64(cmd->dirty_root);
+		disk_super->incompat_flags |= cpu_to_le32(DM_CACHE_FEATURE_INCOMPAT_SEP_DIRTY_BITS);
+	}
+
 	return dm_tm_commit(cmd->tm, sblock);
 }
 
@@ -381,6 +407,13 @@ static int __format_metadata(struct dm_cache_metadata *cmd)
 	r = dm_array_empty(&cmd->info, &cmd->root);
 	if (r < 0)
 		goto bad;
+
+	if (separate_dirty_bits(cmd)) {
+		dm_disk_bitset_init(cmd->tm, &cmd->dirty_info);
+		r = dm_bitset_empty(&cmd->dirty_info, &cmd->dirty_root);
+		if (r < 0)
+			goto bad;
+	}
 
 	dm_disk_bitset_init(cmd->tm, &cmd->discard_info);
 	r = dm_bitset_empty(&cmd->discard_info, &cmd->discard_root);
@@ -407,12 +440,21 @@ bad:
 static int __check_incompat_features(struct cache_disk_superblock *disk_super,
 				     struct dm_cache_metadata *cmd)
 {
-	uint32_t features;
+	bool flag;
+	uint32_t incompat_flags, features;
 
-	features = le32_to_cpu(disk_super->incompat_flags) & ~DM_CACHE_FEATURE_INCOMPAT_SUPP;
+	incompat_flags = le32_to_cpu(disk_super->incompat_flags);
+	features = incompat_flags & ~DM_CACHE_FEATURE_INCOMPAT_SUPP;
 	if (features) {
 		DMERR("could not access metadata due to unsupported optional features (%lx).",
 		      (unsigned long)features);
+		return -EINVAL;
+	}
+
+	flag = incompat_flags & DM_CACHE_FEATURE_INCOMPAT_SEP_DIRTY_BITS;
+	if (flag != cmd->features.separate_dirty_bits) {
+		DMERR("could not access metadata due to conflicting separate dirty bits config (disk=%u vs incore=%u)",
+		      (unsigned)flag, (unsigned)cmd->features.separate_dirty_bits);
 		return -EINVAL;
 	}
 
@@ -470,6 +512,7 @@ static int __open_metadata(struct dm_cache_metadata *cmd)
 	}
 
 	__setup_mapping_info(cmd);
+	dm_disk_bitset_init(cmd->tm, &cmd->dirty_info);
 	dm_disk_bitset_init(cmd->tm, &cmd->discard_info);
 	sb_flags = le32_to_cpu(disk_super->flags);
 	cmd->clean_when_opened = test_bit(CLEAN_SHUTDOWN, &sb_flags);
@@ -567,6 +610,11 @@ static void read_superblock_fields(struct dm_cache_metadata *cmd,
 	cmd->stats.write_hits = le32_to_cpu(disk_super->write_hits);
 	cmd->stats.write_misses = le32_to_cpu(disk_super->write_misses);
 
+	if (disk_super->incompat_flags & cpu_to_le32(DM_CACHE_FEATURE_INCOMPAT_SEP_DIRTY_BITS)) {
+		cmd->dirty_root = le64_to_cpu(disk_super->dirty_root);
+		cmd->features.separate_dirty_bits = true;
+	}
+
 	cmd->changed = false;
 }
 
@@ -625,6 +673,13 @@ static int __commit_transaction(struct dm_cache_metadata *cmd,
 	 */
 	BUILD_BUG_ON(sizeof(struct cache_disk_superblock) > 512);
 
+	if (separate_dirty_bits(cmd)) {
+		r = dm_bitset_flush(&cmd->dirty_info, cmd->dirty_root,
+				    &cmd->dirty_root);
+		if (r)
+			return r;
+	}
+
 	r = dm_bitset_flush(&cmd->discard_info, cmd->discard_root,
 			    &cmd->discard_root);
 	if (r)
@@ -649,6 +704,8 @@ static int __commit_transaction(struct dm_cache_metadata *cmd,
 		update_flags(disk_super, mutator);
 
 	disk_super->mapping_root = cpu_to_le64(cmd->root);
+	if (separate_dirty_bits(cmd))
+		disk_super->dirty_root = cpu_to_le64(cmd->dirty_root);
 	disk_super->hint_root = cpu_to_le64(cmd->hint_root);
 	disk_super->discard_root = cpu_to_le64(cmd->discard_root);
 	disk_super->discard_block_size = cpu_to_le64(cmd->discard_block_size);
@@ -695,10 +752,19 @@ static void unpack_value(__le64 value_le, dm_oblock_t *block, unsigned *flags)
 
 /*----------------------------------------------------------------*/
 
+static void copy_metadata_features(struct dm_cache_metadata *cmd,
+				   struct dm_cache_metadata_features *features)
+{
+	struct dm_cache_metadata_features *in_core_features = &cmd->features;
+
+	in_core_features->separate_dirty_bits = features->separate_dirty_bits;
+}
+
 static struct dm_cache_metadata *metadata_open(struct block_device *bdev,
 					       sector_t data_block_size,
 					       bool may_format_device,
-					       size_t policy_hint_size)
+					       size_t policy_hint_size,
+					       struct dm_cache_metadata_features *features)
 {
 	int r;
 	struct dm_cache_metadata *cmd;
@@ -717,6 +783,7 @@ static struct dm_cache_metadata *metadata_open(struct block_device *bdev,
 	cmd->policy_hint_size = policy_hint_size;
 	cmd->changed = true;
 	cmd->fail_io = false;
+	copy_metadata_features(cmd, features);
 
 	r = __create_persistent_data_objects(cmd, may_format_device);
 	if (r) {
@@ -757,7 +824,8 @@ static struct dm_cache_metadata *lookup(struct block_device *bdev)
 static struct dm_cache_metadata *lookup_or_open(struct block_device *bdev,
 						sector_t data_block_size,
 						bool may_format_device,
-						size_t policy_hint_size)
+						size_t policy_hint_size,
+						struct dm_cache_metadata_features *features)
 {
 	struct dm_cache_metadata *cmd, *cmd2;
 
@@ -768,7 +836,8 @@ static struct dm_cache_metadata *lookup_or_open(struct block_device *bdev,
 	if (cmd)
 		return cmd;
 
-	cmd = metadata_open(bdev, data_block_size, may_format_device, policy_hint_size);
+	cmd = metadata_open(bdev, data_block_size, may_format_device,
+			    policy_hint_size, features);
 	if (!IS_ERR(cmd)) {
 		mutex_lock(&table_lock);
 		cmd2 = lookup(bdev);
@@ -800,10 +869,11 @@ static bool same_params(struct dm_cache_metadata *cmd, sector_t data_block_size)
 struct dm_cache_metadata *dm_cache_metadata_open(struct block_device *bdev,
 						 sector_t data_block_size,
 						 bool may_format_device,
-						 size_t policy_hint_size)
+						 size_t policy_hint_size,
+						 struct dm_cache_metadata_features *features)
 {
-	struct dm_cache_metadata *cmd = lookup_or_open(bdev, data_block_size,
-						       may_format_device, policy_hint_size);
+	struct dm_cache_metadata *cmd = lookup_or_open(bdev, data_block_size, may_format_device,
+						       policy_hint_size, features);
 
 	if (!IS_ERR(cmd) && !same_params(cmd, data_block_size)) {
 		dm_cache_metadata_close(cmd);
@@ -829,8 +899,8 @@ void dm_cache_metadata_close(struct dm_cache_metadata *cmd)
 /*
  * Checks that the given cache block is either unmapped or clean.
  */
-static int block_unmapped_or_clean(struct dm_cache_metadata *cmd, dm_cblock_t b,
-				   bool *result)
+static int block_clean_combined_dirty(struct dm_cache_metadata *cmd, dm_cblock_t b,
+				      bool *result)
 {
 	int r;
 	__le64 value;
@@ -838,10 +908,8 @@ static int block_unmapped_or_clean(struct dm_cache_metadata *cmd, dm_cblock_t b,
 	unsigned flags;
 
 	r = dm_array_get_value(&cmd->info, cmd->root, from_cblock(b), &value);
-	if (r) {
-		DMERR("block_unmapped_or_clean failed");
+	if (r)
 		return r;
-	}
 
 	unpack_value(value, &ob, &flags);
 	*result = !((flags & M_VALID) && (flags & M_DIRTY));
@@ -849,17 +917,19 @@ static int block_unmapped_or_clean(struct dm_cache_metadata *cmd, dm_cblock_t b,
 	return 0;
 }
 
-static int blocks_are_unmapped_or_clean(struct dm_cache_metadata *cmd,
-					dm_cblock_t begin, dm_cblock_t end,
-					bool *result)
+static int blocks_are_clean_combined_dirty(struct dm_cache_metadata *cmd,
+					   dm_cblock_t begin, dm_cblock_t end,
+					   bool *result)
 {
 	int r;
 	*result = true;
 
 	while (begin != end) {
-		r = block_unmapped_or_clean(cmd, begin, result);
-		if (r)
+		r = block_clean_combined_dirty(cmd, begin, result);
+		if (r) {
+			DMERR("block_clean_combined_dirty failed");
 			return r;
+		}
 
 		if (!*result) {
 			DMERR("cache block %llu is dirty",
@@ -871,6 +941,48 @@ static int blocks_are_unmapped_or_clean(struct dm_cache_metadata *cmd,
 	}
 
 	return 0;
+}
+
+static int blocks_are_clean_separate_dirty(struct dm_cache_metadata *cmd,
+					   dm_cblock_t begin, dm_cblock_t end,
+					   bool *result)
+{
+	int r;
+	bool dirty_flag;
+	*result = true;
+
+	// FIXME: use a cursor so we can benefit from preloading metadata.
+	while (begin != end) {
+		/*
+		 * We assume that unmapped blocks have their dirty bit
+		 * cleared.
+		 */
+		r = dm_bitset_test_bit(&cmd->dirty_info, cmd->dirty_root,
+				       from_cblock(begin), &cmd->dirty_root, &dirty_flag);
+		if (r)
+			return r;
+
+		if (dirty_flag) {
+			DMERR("cache block %llu is dirty",
+			      (unsigned long long) from_cblock(begin));
+			*result = false;
+			return 0;
+		}
+
+		begin = to_cblock(from_cblock(begin) + 1);
+	}
+
+	return 0;
+}
+
+static int blocks_are_unmapped_or_clean(struct dm_cache_metadata *cmd,
+					dm_cblock_t begin, dm_cblock_t end,
+					bool *result)
+{
+	if (separate_dirty_bits(cmd))
+		return blocks_are_clean_separate_dirty(cmd, begin, end, result);
+	else
+		return blocks_are_clean_combined_dirty(cmd, begin, end, result);
 }
 
 static bool cmd_write_lock(struct dm_cache_metadata *cmd)
@@ -950,8 +1062,18 @@ int dm_cache_resize(struct dm_cache_metadata *cmd, dm_cblock_t new_cache_size)
 	r = dm_array_resize(&cmd->info, cmd->root, from_cblock(cmd->cache_blocks),
 			    from_cblock(new_cache_size),
 			    &null_mapping, &cmd->root);
-	if (!r)
-		cmd->cache_blocks = new_cache_size;
+	if (r)
+		goto out;
+
+	if (separate_dirty_bits(cmd)) {
+		r = dm_bitset_resize(&cmd->dirty_info, cmd->dirty_root,
+				     from_cblock(cmd->cache_blocks), from_cblock(new_cache_size),
+				     false, &cmd->dirty_root);
+		if (r)
+			goto out;
+	}
+
+	cmd->cache_blocks = new_cache_size;
 	cmd->changed = true;
 
 out:
@@ -1185,11 +1307,11 @@ static bool hints_array_available(struct dm_cache_metadata *cmd,
 		hints_array_initialized(cmd);
 }
 
-static int __load_mapping(struct dm_cache_metadata *cmd,
-			  uint64_t cb, bool hints_valid,
-			  struct dm_array_cursor *mapping_cursor,
-			  struct dm_array_cursor *hint_cursor,
-			  load_mapping_fn fn, void *context)
+static int __load_mapping_v1(struct dm_cache_metadata *cmd,
+			     uint64_t cb, bool hints_valid,
+			     struct dm_array_cursor *mapping_cursor,
+			     struct dm_array_cursor *hint_cursor,
+			     load_mapping_fn fn, void *context)
 {
 	int r = 0;
 
@@ -1213,6 +1335,45 @@ static int __load_mapping(struct dm_cache_metadata *cmd,
 		}
 
 		r = fn(context, oblock, to_cblock(cb), flags & M_DIRTY,
+		       le32_to_cpu(hint), hints_valid);
+		if (r)
+			DMERR("policy couldn't load cblock");
+	}
+
+	return r;
+}
+
+static int __load_mapping_v2(struct dm_cache_metadata *cmd,
+			     uint64_t cb, bool hints_valid,
+			     struct dm_array_cursor *mapping_cursor,
+			     struct dm_array_cursor *hint_cursor,
+			     struct dm_bitset_cursor *dirty_cursor,
+			     load_mapping_fn fn, void *context)
+{
+	int r = 0;
+
+	__le64 mapping;
+	__le32 hint = 0;
+
+	__le64 *mapping_value_le;
+	__le32 *hint_value_le;
+
+	dm_oblock_t oblock;
+	unsigned flags;
+	bool dirty;
+
+	dm_array_cursor_get_value(mapping_cursor, (void **) &mapping_value_le);
+	memcpy(&mapping, mapping_value_le, sizeof(mapping));
+	unpack_value(mapping, &oblock, &flags);
+
+	if (flags & M_VALID) {
+		if (hints_valid) {
+			dm_array_cursor_get_value(hint_cursor, (void **) &hint_value_le);
+			memcpy(&hint, hint_value_le, sizeof(hint));
+		}
+
+		dirty = dm_bitset_cursor_get_value(dirty_cursor);
+		r = fn(context, oblock, to_cblock(cb), dirty,
 		       le32_to_cpu(hint), hints_valid);
 		if (r)
 			DMERR("policy couldn't load cblock");
@@ -1246,10 +1407,28 @@ static int __load_mappings(struct dm_cache_metadata *cmd,
 		}
 	}
 
+	if (separate_dirty_bits(cmd)) {
+		r = dm_bitset_cursor_begin(&cmd->dirty_info, cmd->dirty_root,
+					   from_cblock(cmd->cache_blocks),
+					   &cmd->dirty_cursor);
+		if (r) {
+			dm_array_cursor_end(&cmd->hint_cursor);
+			dm_array_cursor_end(&cmd->mapping_cursor);
+			return r;
+		}
+	}
+
 	for (cb = 0; ; cb++) {
-		r = __load_mapping(cmd, cb, hints_valid,
-				   &cmd->mapping_cursor, &cmd->hint_cursor,
-				   fn, context);
+		if (separate_dirty_bits(cmd))
+			r = __load_mapping_v2(cmd, cb, hints_valid,
+					      &cmd->mapping_cursor,
+					      &cmd->hint_cursor,
+					      &cmd->dirty_cursor,
+					      fn, context);
+		else
+			r = __load_mapping_v1(cmd, cb, hints_valid,
+					      &cmd->mapping_cursor, &cmd->hint_cursor,
+					      fn, context);
 		if (r)
 			goto out;
 
@@ -1272,11 +1451,22 @@ static int __load_mappings(struct dm_cache_metadata *cmd,
 				goto out;
 			}
 		}
+
+		if (separate_dirty_bits(cmd)) {
+			r = dm_bitset_cursor_next(&cmd->dirty_cursor);
+			if (r) {
+				DMERR("dm_bitset_cursor_next for dirty failed");
+				goto out;
+			}
+		}
 	}
 out:
 	dm_array_cursor_end(&cmd->mapping_cursor);
 	if (hints_valid)
 		dm_array_cursor_end(&cmd->hint_cursor);
+
+	if (separate_dirty_bits(cmd))
+		dm_bitset_cursor_end(&cmd->dirty_cursor);
 
 	return r;
 }
@@ -1360,13 +1550,55 @@ static int __dirty(struct dm_cache_metadata *cmd, dm_cblock_t cblock, bool dirty
 
 }
 
-int dm_cache_set_dirty(struct dm_cache_metadata *cmd,
-		       dm_cblock_t cblock, bool dirty)
+static int __set_dirty_bits_v1(struct dm_cache_metadata *cmd, unsigned nr_bits, unsigned long *bits)
+{
+	int r;
+	unsigned i;
+	for (i = 0; i < nr_bits; i++) {
+		r = __dirty(cmd, to_cblock(i), test_bit(i, bits));
+		if (r)
+			return r;
+	}
+
+	return 0;
+}
+
+static int __set_dirty_bits_v2(struct dm_cache_metadata *cmd, unsigned nr_bits, unsigned long *bits)
+{
+	int r = 0;
+	unsigned i;
+
+	/* nr_bits is really just a sanity check */
+	if (nr_bits != from_cblock(cmd->cache_blocks)) {
+		DMERR("dirty bitset is wrong size");
+		return -EINVAL;
+	}
+
+	for (i = 0; i < nr_bits; i++) {
+		if (test_bit(i, bits))
+			r = dm_bitset_set_bit(&cmd->dirty_info, cmd->dirty_root, i, &cmd->dirty_root);
+		else
+			r = dm_bitset_clear_bit(&cmd->dirty_info, cmd->dirty_root, i, &cmd->dirty_root);
+
+		if (r)
+			return r;
+	}
+
+	cmd->changed = true;
+	return dm_bitset_flush(&cmd->dirty_info, cmd->dirty_root, &cmd->dirty_root);
+}
+
+int dm_cache_set_dirty_bits(struct dm_cache_metadata *cmd,
+			    unsigned nr_bits,
+			    unsigned long *bits)
 {
 	int r;
 
 	WRITE_LOCK(cmd);
-	r = __dirty(cmd, cblock, dirty);
+	if (separate_dirty_bits(cmd))
+		r = __set_dirty_bits_v2(cmd, nr_bits, bits);
+	else
+		r = __set_dirty_bits_v1(cmd, nr_bits, bits);
 	WRITE_UNLOCK(cmd);
 
 	return r;
