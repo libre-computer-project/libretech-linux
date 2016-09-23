@@ -223,6 +223,8 @@ static long ioctl_file_clone(struct file *dst_file, unsigned long srcfd,
 
 	if (!src_file.file)
 		return -EBADF;
+	if (src_file.file->f_path.mnt != dst_file->f_path.mnt)
+		return -EXDEV;
 	ret = vfs_clone_file_range(src_file.file, off, dst_file, destoff, olen);
 	fdput(src_file);
 	return ret;
