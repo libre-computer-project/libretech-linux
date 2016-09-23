@@ -78,6 +78,9 @@
 				pd-gpios = <&msmgpio 32 0>;
 
 				avdd-supply = <&pm8916_l6>;
+				dvdd-supply = <&pm8916_l6>;
+				pvdd-supply = <&pm8916_l6>;
+				a2vdd-supply = <&pm8916_l6>;
 				v1p2-supply = <&pm8916_l6>;
 				v3p3-supply = <&pm8916_l17>;
 
