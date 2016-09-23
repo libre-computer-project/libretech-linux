@@ -1689,10 +1689,6 @@ int vfs_clone_file_range(struct file *file_in, loff_t pos_in,
 	if (pos_in + len > i_size_read(inode_in))
 		return -EINVAL;
 
-	ret = mnt_want_write_file(file_out);
-	if (ret)
-		return ret;
-
 	ret = file_in->f_op->clone_file_range(file_in, pos_in,
 			file_out, pos_out, len);
 	if (!ret) {
@@ -1700,7 +1696,6 @@ int vfs_clone_file_range(struct file *file_in, loff_t pos_in,
 		fsnotify_modify(file_out);
 	}
 
-	mnt_drop_write_file(file_out);
 	return ret;
 }
 EXPORT_SYMBOL(vfs_clone_file_range);
