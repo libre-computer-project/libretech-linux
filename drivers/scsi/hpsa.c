@@ -4565,7 +4565,9 @@ static int fixup_ioaccel_cdb(u8 *cdb, int *cdb_len)
 	case READ_6:
 	case READ_12:
 		if (*cdb_len == 6) {
-			block = get_unaligned_be16(&cdb[2]);
+			block = (((cdb[1] & 0x1F) << 16) |
+				(cdb[2] << 8) |
+				cdb[3]);
 			block_cnt = cdb[4];
 			if (block_cnt == 0)
 				block_cnt = 256;
@@ -4725,9 +4727,11 @@ static void set_encrypt_ioaccel2(struct ctlr_info *h,
 	 */
 	switch (cmd->cmnd[0]) {
 	/* Required? 6-byte cdbs eliminated by fixup_ioaccel_cdb */
-	case WRITE_6:
 	case READ_6:
-		first_block = get_unaligned_be16(&cmd->cmnd[2]);
+	case WRITE_6:
+		first_block = (((cmd->cmnd[1] & 0x1F) << 16) |
+				(cmd->cmnd[2] << 8) |
+				cmd->cmnd[3]);
 		break;
 	case WRITE_10:
 	case READ_10:
@@ -4977,7 +4981,9 @@ static int hpsa_scsi_ioaccel_raid_map(struct ctlr_info *h,
 	case WRITE_6:
 		is_write = 1;
 	case READ_6:
-		first_block = get_unaligned_be16(&cmd->cmnd[2]);
+		first_block = (((cmd->cmnd[1] & 0x1F) << 16) |
+				(cmd->cmnd[2] << 8) |
+				cmd->cmnd[3]);
 		block_cnt = cmd->cmnd[4];
 		if (block_cnt == 0)
 			block_cnt = 256;
@@ -6011,7 +6017,7 @@ static int hpsa_send_reset_as_abort_ioaccel2(struct ctlr_info *h,
 			"Reset as abort: Resetting physical device at scsi3addr 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
 			psa[0], psa[1], psa[2], psa[3],
 			psa[4], psa[5], psa[6], psa[7]);
-	rc = hpsa_do_reset(h, dev, psa, HPSA_RESET_TYPE_TARGET, reply_queue);
+	rc = hpsa_do_reset(h, dev, psa, HPSA_PHYS_TARGET_RESET, reply_queue);
 	if (rc != 0) {
 		dev_warn(&h->pdev->dev,
 			"Reset as abort: Failed on physical device at scsi3addr 0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
