@@ -473,8 +473,8 @@ static void sti_gdp_disable(struct sti_gdp *gdp)
  * RETURNS:
  * 0 on success.
  */
-int sti_gdp_field_cb(struct notifier_block *nb,
-		unsigned long event, void *data)
+static int sti_gdp_field_cb(struct notifier_block *nb,
+			    unsigned long event, void *data)
 {
 	struct sti_gdp *gdp = container_of(nb, struct sti_gdp, vtg_field_nb);
 
