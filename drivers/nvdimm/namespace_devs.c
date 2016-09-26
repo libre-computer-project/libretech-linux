@@ -294,7 +294,7 @@ static bool __nd_namespace_blk_validate(struct nd_namespace_blk *nsblk)
 		if (strcmp(res->name, label_id.id) != 0)
 			continue;
 		/*
-		 * Resources with unacknoweldged adjustments indicate a
+		 * Resources with unacknowledged adjustments indicate a
 		 * failure to update labels
 		 */
 		if (res->flags & DPA_RESOURCE_ADJUSTED)
@@ -1584,8 +1584,10 @@ static int find_pmem_label_set(struct nd_region *nd_region,
 	int rc = -ENODEV, l;
 	u16 i;
 
-	if (cookie == 0)
+	if (cookie == 0) {
+		dev_dbg(&nd_region->dev, "invalid interleave-set-cookie\n");
 		return -ENXIO;
+	}
 
 	/*
 	 * Find a complete set of labels by uuid.  By definition we can start

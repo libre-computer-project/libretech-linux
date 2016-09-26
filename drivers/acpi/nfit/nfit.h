@@ -78,6 +78,14 @@ enum {
 	NFIT_ARS_TIMEOUT = 90,
 };
 
+enum nfit_root_notifiers {
+	NFIT_NOTIFY_UPDATE = 0x80,
+};
+
+enum nfit_dimm_notifiers {
+	NFIT_NOTIFY_DIMM_HEALTH = 0x81,
+};
+
 struct nfit_spa {
 	struct list_head list;
 	struct nd_region *nd_region;
@@ -124,6 +132,7 @@ struct nfit_mem {
 	struct acpi_nfit_system_address *spa_bdw;
 	struct acpi_nfit_interleave *idt_dcr;
 	struct acpi_nfit_interleave *idt_bdw;
+	struct kernfs_node *flags_attr;
 	struct nfit_flush *nfit_flush;
 	struct list_head list;
 	struct acpi_device *adev;
@@ -223,5 +232,7 @@ static inline struct acpi_nfit_desc *to_acpi_desc(
 
 const u8 *to_nfit_uuid(enum nfit_uuids id);
 int acpi_nfit_init(struct acpi_nfit_desc *acpi_desc, void *nfit, acpi_size sz);
+void __acpi_nfit_notify(struct device *dev, acpi_handle handle, u32 event);
+void __acpi_nvdimm_notify(struct device *dev, u32 event);
 void acpi_nfit_desc_init(struct acpi_nfit_desc *acpi_desc, struct device *dev);
 #endif /* __NFIT_H__ */
