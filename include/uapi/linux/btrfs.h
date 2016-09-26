@@ -239,7 +239,15 @@ struct btrfs_ioctl_fs_info_args {
  * Used by:
  * struct btrfs_ioctl_feature_flags
  */
-#define BTRFS_FEATURE_COMPAT_RO_FREE_SPACE_TREE	(1ULL << 0)
+#define BTRFS_FEATURE_COMPAT_RO_FREE_SPACE_TREE		(1ULL << 0)
+/*
+ * Older kernels on big-endian systems produced broken free space tree bitmaps,
+ * and btrfs-progs also used to corrupt the free space tree. If this bit is
+ * clear, then the free space tree cannot be trusted. btrfs-progs can also
+ * intentionally clear this bit to ask the kernel to rebuild the free space
+ * tree.
+ */
+#define BTRFS_FEATURE_COMPAT_RO_FREE_SPACE_TREE_VALID	(1ULL << 1)
 
 #define BTRFS_FEATURE_INCOMPAT_MIXED_BACKREF	(1ULL << 0)
 #define BTRFS_FEATURE_INCOMPAT_DEFAULT_SUBVOL	(1ULL << 1)
