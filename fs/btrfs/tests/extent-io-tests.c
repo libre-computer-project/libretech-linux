@@ -73,8 +73,8 @@ static int test_find_delalloc(u32 sectorsize)
 	struct page *page;
 	struct page *locked_page = NULL;
 	unsigned long index = 0;
-	u64 total_dirty = SZ_256M;
-	u64 max_bytes = SZ_128M;
+	u64 total_dirty = sectorsize * 256;
+	u64 max_bytes = total_dirty >> 1;
 	u64 start, end, test_start;
 	u64 found;
 	int ret = -EINVAL;
@@ -138,7 +138,7 @@ static int test_find_delalloc(u32 sectorsize)
 	 * |--- delalloc ---|
 	 *           |--- search ---|
 	 */
-	test_start = SZ_64M;
+	test_start = max_bytes >> 1;
 	locked_page = find_lock_page(inode->i_mapping,
 				     test_start >> PAGE_SHIFT);
 	if (!locked_page) {
@@ -226,7 +226,7 @@ static int test_find_delalloc(u32 sectorsize)
 	 * range we want to find.
 	 */
 	page = find_get_page(inode->i_mapping,
-			     (max_bytes + SZ_1M) >> PAGE_SHIFT);
+			     (max_bytes + PAGE_SIZE) >> PAGE_SHIFT);
 	if (!page) {
 		test_msg("Couldn't find our page\n");
 		goto out_bits;

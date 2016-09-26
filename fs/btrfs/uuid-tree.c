@@ -332,8 +332,12 @@ again_search_slot:
 					 * entry per UUID exists.
 					 */
 					goto again_search_slot;
-				}
-				if (ret < 0 && ret != -ENOENT)
+				} else if (ret == -ENOENT) {
+					key.type = 0;
+					key.offset = 0;
+					key.objectid++;
+					goto again_search_slot;
+				} else if (ret < 0)
 					goto out;
 			}
 			item_size -= sizeof(subid_le);

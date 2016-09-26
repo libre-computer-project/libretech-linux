@@ -24,14 +24,15 @@
 #include "../transaction.h"
 
 struct free_space_extent {
-	u64 start, length;
+	u64 start;
+	u64 length;
 };
 
 static int __check_free_space_extents(struct btrfs_trans_handle *trans,
 				      struct btrfs_fs_info *fs_info,
 				      struct btrfs_block_group_cache *cache,
 				      struct btrfs_path *path,
-				      struct free_space_extent *extents,
+				      const struct free_space_extent * const extents,
 				      unsigned int num_extents)
 {
 	struct btrfs_free_space_info *info;
@@ -120,7 +121,7 @@ static int check_free_space_extents(struct btrfs_trans_handle *trans,
 				    struct btrfs_fs_info *fs_info,
 				    struct btrfs_block_group_cache *cache,
 				    struct btrfs_path *path,
-				    struct free_space_extent *extents,
+				    const struct free_space_extent * const extents,
 				    unsigned int num_extents)
 {
 	struct btrfs_free_space_info *info;
@@ -165,7 +166,7 @@ static int test_empty_block_group(struct btrfs_trans_handle *trans,
 				  struct btrfs_path *path,
 				  u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid, cache->key.offset},
 	};
 
@@ -179,7 +180,7 @@ static int test_remove_all(struct btrfs_trans_handle *trans,
 			   struct btrfs_path *path,
 			   u32 alignment)
 {
-	struct free_space_extent extents[] = {};
+	const struct free_space_extent extents[] = {};
 	int ret;
 
 	ret = __remove_from_free_space_tree(trans, fs_info, cache, path,
@@ -200,7 +201,7 @@ static int test_remove_beginning(struct btrfs_trans_handle *trans,
 				 struct btrfs_path *path,
 				 u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid + alignment,
 			cache->key.offset - alignment},
 	};
@@ -224,7 +225,7 @@ static int test_remove_end(struct btrfs_trans_handle *trans,
 			   struct btrfs_path *path,
 			   u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid, cache->key.offset - alignment},
 	};
 	int ret;
@@ -248,7 +249,7 @@ static int test_remove_middle(struct btrfs_trans_handle *trans,
 			      struct btrfs_path *path,
 			      u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid, alignment},
 		{cache->key.objectid + 2 * alignment,
 			cache->key.offset - 2 * alignment},
@@ -273,7 +274,7 @@ static int test_merge_left(struct btrfs_trans_handle *trans,
 			   struct btrfs_path *path,
 			   u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid, 2 * alignment},
 	};
 	int ret;
@@ -311,7 +312,7 @@ static int test_merge_right(struct btrfs_trans_handle *trans,
 			   struct btrfs_path *path,
 			   u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid + alignment, 2 * alignment},
 	};
 	int ret;
@@ -350,7 +351,7 @@ static int test_merge_both(struct btrfs_trans_handle *trans,
 			   struct btrfs_path *path,
 			   u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid, 3 * alignment},
 	};
 	int ret;
@@ -396,7 +397,7 @@ static int test_merge_none(struct btrfs_trans_handle *trans,
 			   struct btrfs_path *path,
 			   u32 alignment)
 {
-	struct free_space_extent extents[] = {
+	const struct free_space_extent extents[] = {
 		{cache->key.objectid, alignment},
 		{cache->key.objectid + 2 * alignment, alignment},
 		{cache->key.objectid + 4 * alignment, alignment},
