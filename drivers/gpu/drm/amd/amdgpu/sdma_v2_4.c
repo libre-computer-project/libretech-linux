@@ -710,7 +710,7 @@ static int sdma_v2_4_ring_test_ib(struct amdgpu_ring *ring, long timeout)
 		DRM_ERROR("amdgpu: IB test timed out\n");
 		r = -ETIMEDOUT;
 		goto err1;
-	} else if (r) {
+	} else if (r < 0) {
 		DRM_ERROR("amdgpu: fence wait failed (%ld).\n", r);
 		goto err1;
 	}
@@ -900,6 +900,22 @@ static void sdma_v2_4_ring_emit_vm_flush(struct amdgpu_ring *ring,
 	amdgpu_ring_write(ring, 0); /* mask */
 	amdgpu_ring_write(ring, SDMA_PKT_POLL_REGMEM_DW5_RETRY_COUNT(0xfff) |
 			  SDMA_PKT_POLL_REGMEM_DW5_INTERVAL(10)); /* retry count, poll interval */
+}
+
+static unsigned sdma_v2_4_ring_get_emit_ib_size(struct amdgpu_ring *ring)
+{
+	return
+		7 + 6; /* sdma_v2_4_ring_emit_ib */
+}
+
+static unsigned sdma_v2_4_ring_get_dma_frame_size(struct amdgpu_ring *ring)
+{
+	return
+		6 + /* sdma_v2_4_ring_emit_hdp_flush */
+		3 + /* sdma_v2_4_ring_emit_hdp_invalidate */
+		6 + /* sdma_v2_4_ring_emit_pipeline_sync */
+		12 + /* sdma_v2_4_ring_emit_vm_flush */
+		10 + 10 + 10; /* sdma_v2_4_ring_emit_fence x3 for user fence, vm fence */
 }
 
 static int sdma_v2_4_early_init(void *handle)
@@ -1220,6 +1236,8 @@ static const struct amdgpu_ring_funcs sdma_v2_4_ring_funcs = {
 	.test_ib = sdma_v2_4_ring_test_ib,
 	.insert_nop = sdma_v2_4_ring_insert_nop,
 	.pad_ib = sdma_v2_4_ring_pad_ib,
+	.get_emit_ib_size = sdma_v2_4_ring_get_emit_ib_size,
+	.get_dma_frame_size = sdma_v2_4_ring_get_dma_frame_size,
 };
 
 static void sdma_v2_4_set_ring_funcs(struct amdgpu_device *adev)

@@ -52,6 +52,7 @@ static void cik_sdma_set_ring_funcs(struct amdgpu_device *adev);
 static void cik_sdma_set_irq_funcs(struct amdgpu_device *adev);
 static void cik_sdma_set_buffer_funcs(struct amdgpu_device *adev);
 static void cik_sdma_set_vm_pte_funcs(struct amdgpu_device *adev);
+static int cik_sdma_soft_reset(void *handle);
 
 MODULE_FIRMWARE("radeon/bonaire_sdma.bin");
 MODULE_FIRMWARE("radeon/bonaire_sdma1.bin");
@@ -847,6 +848,22 @@ static void cik_sdma_ring_emit_vm_flush(struct amdgpu_ring *ring,
 	amdgpu_ring_write(ring, (0xfff << 16) | 10); /* retry count, poll interval */
 }
 
+static unsigned cik_sdma_ring_get_emit_ib_size(struct amdgpu_ring *ring)
+{
+	return
+		7 + 4; /* cik_sdma_ring_emit_ib */
+}
+
+static unsigned cik_sdma_ring_get_dma_frame_size(struct amdgpu_ring *ring)
+{
+	return
+		6 + /* cik_sdma_ring_emit_hdp_flush */
+		3 + /* cik_sdma_ring_emit_hdp_invalidate */
+		6 + /* cik_sdma_ring_emit_pipeline_sync */
+		12 + /* cik_sdma_ring_emit_vm_flush */
+		9 + 9 + 9; /* cik_sdma_ring_emit_fence x3 for user fence, vm fence */
+}
+
 static void cik_enable_sdma_mgcg(struct amdgpu_device *adev,
 				 bool enable)
 {
@@ -997,6 +1014,8 @@ static int cik_sdma_suspend(void *handle)
 static int cik_sdma_resume(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	cik_sdma_soft_reset(handle);
 
 	return cik_sdma_hw_init(adev);
 }
@@ -1220,6 +1239,8 @@ static const struct amdgpu_ring_funcs cik_sdma_ring_funcs = {
 	.test_ib = cik_sdma_ring_test_ib,
 	.insert_nop = cik_sdma_ring_insert_nop,
 	.pad_ib = cik_sdma_ring_pad_ib,
+	.get_emit_ib_size = cik_sdma_ring_get_emit_ib_size,
+	.get_dma_frame_size = cik_sdma_ring_get_dma_frame_size,
 };
 
 static void cik_sdma_set_ring_funcs(struct amdgpu_device *adev)
