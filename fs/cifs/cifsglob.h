@@ -479,6 +479,7 @@ struct smb_vol {
 	bool setuidfromacl:1;
 	bool override_uid:1;
 	bool override_gid:1;
+	bool getuidfromsid:1;
 	bool dynperm:1;
 	bool noperm:1;
 	bool no_psx_acl:1; /* set if posix acl support should be disabled */

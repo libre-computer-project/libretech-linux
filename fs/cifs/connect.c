@@ -67,6 +67,7 @@ enum {
 	Opt_user_xattr, Opt_nouser_xattr,
 	Opt_forceuid, Opt_noforceuid,
 	Opt_forcegid, Opt_noforcegid,
+	Opt_getuidfromsid,
 	Opt_noblocksend, Opt_noautotune,
 	Opt_hard, Opt_soft, Opt_perm, Opt_noperm,
 	Opt_mapposix, Opt_nomapposix,
@@ -121,6 +122,7 @@ static const match_table_t cifs_mount_option_tokens = {
 	{ Opt_noforceuid, "noforceuid" },
 	{ Opt_forcegid, "forcegid" },
 	{ Opt_noforcegid, "noforcegid" },
+	{ Opt_getuidfromsid, "getuidfromsid" },
 	{ Opt_noblocksend, "noblocksend" },
 	{ Opt_noautotune, "noautotune" },
 	{ Opt_hard, "hard" },
@@ -1295,6 +1297,8 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 		case Opt_noforceuid:
 			override_uid = 0;
 			break;
+		case Opt_getuidfromsid:
+			vol->getuidfromsid = true;
 		case Opt_forcegid:
 			override_gid = 1;
 			break;
