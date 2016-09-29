@@ -278,6 +278,7 @@ enum mlx5_event {
 	MLX5_EVENT_TYPE_PORT_CHANGE	   = 0x09,
 	MLX5_EVENT_TYPE_GPIO_EVENT	   = 0x15,
 	MLX5_EVENT_TYPE_REMOTE_CONFIG	   = 0x19,
+	MLX5_EVENT_TYPE_PPS_EVENT          = 0x25,
 
 	MLX5_EVENT_TYPE_DB_BF_CONGESTION   = 0x1a,
 	MLX5_EVENT_TYPE_STALL_EVENT	   = 0x1b,
@@ -552,6 +553,22 @@ struct mlx5_eqe_vport_change {
 	__be32		rsvd1[6];
 } __packed;
 
+struct mlx5_eqe_pps {
+	u8		rsvd0[3];
+	u8		pin;
+	u8		rsvd1[4];
+	union {
+		struct {
+			__be32		time_sec;
+			__be32		time_nsec;
+		};
+		struct {
+			__be64		time_stamp;
+		};
+	};
+	u8		rsvd2[12];
+} __packed;
+
 union ev_data {
 	__be32				raw[7];
 	struct mlx5_eqe_cmd		cmd;
@@ -565,6 +582,7 @@ union ev_data {
 	struct mlx5_eqe_page_req	req_pages;
 	struct mlx5_eqe_page_fault	page_fault;
 	struct mlx5_eqe_vport_change	vport_change;
+	struct mlx5_eqe_pps		pps;
 } __packed;
 
 struct mlx5_eqe {
