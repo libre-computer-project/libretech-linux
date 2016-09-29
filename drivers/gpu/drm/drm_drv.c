@@ -208,6 +208,7 @@ static int drm_minor_register(struct drm_device *dev, unsigned int type)
 	struct drm_crtc *crtc;
 	unsigned long flags;
 	int ret;
+	bool is_modeset;
 
 	DRM_DEBUG("\n");
 
@@ -221,7 +222,8 @@ static int drm_minor_register(struct drm_device *dev, unsigned int type)
 		return ret;
 	}
 
-	if (type == DRM_MINOR_PRIMARY) {
+	is_modeset = drm_core_check_feature(dev, DRIVER_MODESET);
+	if (type == DRM_MINOR_PRIMARY && is_modeset) {
 		drm_for_each_crtc(crtc, dev) {
 			ret = drm_debugfs_crtc_add(crtc);
 			if (ret)
@@ -255,12 +257,14 @@ static void drm_minor_unregister(struct drm_device *dev, unsigned int type)
 	struct drm_minor *minor;
 	struct drm_crtc *crtc;
 	unsigned long flags;
+	bool is_modeset;
 
 	minor = *drm_minor_get_slot(dev, type);
 	if (!minor || !device_is_registered(minor->kdev))
 		return;
 
-	if (type == DRM_MINOR_PRIMARY) {
+	is_modeset = drm_core_check_feature(dev, DRIVER_MODESET);
+	if (type == DRM_MINOR_PRIMARY && is_modeset) {
 		drm_for_each_crtc(crtc, dev)
 			drm_debugfs_crtc_remove(crtc);
 	}
