@@ -682,6 +682,17 @@ static int mlx5_ib_query_device(struct ib_device *ibdev,
 					   IBV_RNDV_EXPECTED_RC |
 					   IBV_RNDV_UNEXPECTED;
 
+	if (field_avail(typeof(resp), mlx5_ib_support_multi_pkt_send_wqes,
+			uhw->outlen)) {
+		resp.mlx5_ib_support_multi_pkt_send_wqes =
+			MLX5_CAP_ETH(mdev, multi_pkt_send_wqe);
+		resp.response_length +=
+			sizeof(resp.mlx5_ib_support_multi_pkt_send_wqes);
+	}
+
+	if (field_avail(typeof(resp), reserved, uhw->outlen))
+		resp.response_length += sizeof(resp.reserved);
+
 	if (uhw->outlen) {
 		err = ib_copy_to_udata(uhw, &resp, resp.response_length);
 
