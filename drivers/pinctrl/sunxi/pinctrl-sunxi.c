@@ -786,6 +786,7 @@ static int sunxi_pinctrl_add_function(struct sunxi_pinctrl *pctl,
 static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 {
 	struct sunxi_pinctrl *pctl = platform_get_drvdata(pdev);
+	struct sunxi_pinctrl_function *functions;
 	int i;
 
 	pctl->ngroups = pctl->desc->npins;
@@ -832,9 +833,14 @@ static int sunxi_pinctrl_build_state(struct platform_device *pdev)
 		}
 	}
 
-	pctl->functions = krealloc(pctl->functions,
-				pctl->nfunctions * sizeof(*pctl->functions),
-				GFP_KERNEL);
+	functions = krealloc(pctl->functions,
+			     pctl->nfunctions * sizeof(*pctl->functions),
+			     GFP_KERNEL);
+	if (!functions) {
+		kfree(pctl->functions);
+		return -ENOMEM;
+	}
+	pctl->functions = functions;
 
 	for (i = 0; i < pctl->desc->npins; i++) {
 		const struct sunxi_desc_pin *pin = pctl->desc->pins + i;
