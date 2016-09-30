@@ -208,6 +208,7 @@ static int berlin_pinctrl_build_state(struct platform_device *pdev)
 	struct berlin_pinctrl *pctrl = platform_get_drvdata(pdev);
 	struct berlin_desc_group const *desc_group;
 	struct berlin_desc_function const *desc_function;
+	struct berlin_pinctrl_function *functions;
 	int i, max_functions = 0;
 
 	pctrl->nfunctions = 0;
@@ -236,9 +237,14 @@ static int berlin_pinctrl_build_state(struct platform_device *pdev)
 		}
 	}
 
-	pctrl->functions = krealloc(pctrl->functions,
-				    pctrl->nfunctions * sizeof(*pctrl->functions),
-				    GFP_KERNEL);
+	functions = krealloc(pctrl->functions,
+			     pctrl->nfunctions * sizeof(*pctrl->functions),
+			     GFP_KERNEL);
+	if (!functions) {
+		kfree(pctrl->functions);
+		return -ENOMEM;
+	}
+	pctrl->functions = functions;
 
 	/* map functions to theirs groups */
 	for (i = 0; i < pctrl->desc->ngroups; i++) {
