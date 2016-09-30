@@ -148,12 +148,35 @@ static int ovl_dir_getattr(struct vfsmount *mnt, struct dentry *dentry,
 	type = ovl_path_real(dentry, &realpath);
 	old_cred = ovl_override_creds(dentry->d_sb);
 	err = vfs_getattr(&realpath, stat);
+	/*
+	 * Use lower ino/dev for merged dir, so they are stable across copy up.
+	 */
+	if (!err && OVL_TYPE_MERGE(type) && OVL_TYPE_UPPER(type)) {
+		struct path lowerpath;
+		struct kstat lowerstat;
+
+		ovl_path_lower(dentry, &lowerpath);
+		err = vfs_getattr(&lowerpath, &lowerstat);
+		if (!err)
+			stat->ino = lowerstat.ino;
+	}
 	revert_creds(old_cred);
 	if (err)
 		return err;
 
-	stat->dev = dentry->d_sb->s_dev;
-	stat->ino = dentry->d_inode->i_ino;
+	/*
+	 * For merged and lower directories it's the choice between
+	 *  a) use lower s_dev
+	 *  b) use overlay s_dev
+	 *
+	 * With a) we get directories with the same dev/ino having different
+	 * contents for the merged case.  With b) we get dev numbers changing
+	 * across mounts.
+	 *
+	 * We should really be guaranteeing uniqueness so choose scheme b).
+	 */
+	if (OVL_TYPE_MERGE_OR_LOWER(type))
+		stat->dev = dentry->d_sb->s_dev;
 
 	/*
 	 * It's probably not worth it to count subdirs to get the
