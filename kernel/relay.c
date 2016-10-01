@@ -334,7 +334,9 @@ static struct rchan_callbacks default_channel_callbacks = {
  */
 static void wakeup_readers(struct irq_work *work)
 {
-	struct rchan_buf *buf = container_of(work, struct rchan_buf, wakeup_work);
+	struct rchan_buf *buf;
+
+	buf = container_of(work, struct rchan_buf, wakeup_work);
 	wake_up_interruptible(&buf->read_wait);
 }
 
