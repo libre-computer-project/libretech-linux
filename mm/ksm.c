@@ -300,11 +300,9 @@ static inline void free_rmap_item(struct rmap_item *rmap_item)
 static inline struct stable_node *alloc_stable_node(void)
 {
 	/*
-	 * The caller can take too long time with GFP_KERNEL when memory
-	 * is under pressure, it may be lead to the hung task. Therefore,
-	 * Adding the __GFP_HIGH to this. it grant access to some of
-	 * memory reserves. and it will make progress to make it allocation
-	 * successful at the utmost.
+	 * The allocation can take too long with GFP_KERNEL when memory is under
+	 * pressure, which may lead to hung task warnings.  Adding __GFP_HIGH
+	 * grants access to memory reserves, helping to avoid this problem.
 	 */
 	return kmem_cache_alloc(stable_node_cache, GFP_KERNEL | __GFP_HIGH);
 }
