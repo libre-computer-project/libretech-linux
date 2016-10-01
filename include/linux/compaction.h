@@ -58,6 +58,22 @@ enum compact_result {
 
 struct alloc_context; /* in mm/internal.h */
 
+/*
+ * Number of free order-0 pages that should be available above given watermark
+ * to make sure compaction has reasonable chance of not running out of free
+ * pages that it needs to isolate as migration target during its work.
+ */
+static inline unsigned long compact_gap(unsigned int order)
+{
+	/*
+	 * Although all the isolations for migration are temporary, compaction
+	 * may have up to 1 << order pages on its list and then try to split
+	 * an (order - 1) free page. At that point, a gap of 1 << order might
+	 * not be enough, so it's safer to require twice that amount.
+	 */
+	return 2UL << order;
+}
+
 #ifdef CONFIG_COMPACTION
 extern int sysctl_compact_memory;
 extern int sysctl_compaction_handler(struct ctl_table *table, int write,
