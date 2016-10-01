@@ -192,6 +192,23 @@ static inline unsigned fls_long(unsigned long l)
 }
 
 /**
+ * get_order_long - get order after rounding @l up to power of 2
+ * @l: parameter
+ *
+ * it is same as get_count_order() but long type parameter
+ * or 0 is returned if @l == 0UL
+ */
+static inline int get_order_long(unsigned long l)
+{
+	if (l == 0UL)
+		return 0;
+	else if (l & (l - 1UL))
+		return fls_long(l);
+	else
+		return fls_long(l) - 1;
+}
+
+/**
  * __ffs64 - find first set bit in a 64 bit word
  * @word: The 64 bit word
  *
