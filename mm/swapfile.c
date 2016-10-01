@@ -282,6 +282,7 @@ static void cluster_list_add_tail(struct swap_cluster_list *list,
 		cluster_set_next_flag(&list->tail, idx, 0);
 	} else {
 		unsigned int tail = cluster_next(&list->tail);
+
 		cluster_set_next(&ci[tail], idx);
 		cluster_set_next_flag(&list->tail, idx, 0);
 	}
@@ -2344,7 +2345,8 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 	for (i = 0; i < nr_clusters; i++) {
 		if (!cluster_count(&cluster_info[idx])) {
 			cluster_set_flag(&cluster_info[idx], CLUSTER_FLAG_FREE);
-			cluster_list_add_tail(&p->free_clusters, cluster_info, idx);
+			cluster_list_add_tail(&p->free_clusters, cluster_info,
+					      idx);
 		}
 		idx++;
 		if (idx == nr_clusters)
