@@ -31,6 +31,8 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#define CREATE_TRACE_POINTS
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -53,6 +55,7 @@
 #include <linux/mount.h>
 #include <linux/migrate.h>
 #include <linux/pagemap.h>
+#include <trace/events/zsmalloc.h>
 
 #define ZSPAGE_MAGIC	0x58
 
@@ -2309,6 +2312,9 @@ unsigned long zs_compact(struct zs_pool *pool)
 {
 	int i;
 	struct size_class *class;
+	unsigned long pages_compacted_before = pool->stats.pages_compacted;
+
+	trace_zsmalloc_compact_start(pool->name);
 
 	for (i = zs_size_classes - 1; i >= 0; i--) {
 		class = pool->size_class[i];
@@ -2318,6 +2324,10 @@ unsigned long zs_compact(struct zs_pool *pool)
 			continue;
 		__zs_compact(pool, class);
 	}
+
+	trace_zsmalloc_compact_end(pool->name,
+		pool->stats.pages_compacted - pages_compacted_before,
+		pool->stats.pages_compacted);
 
 	return pool->stats.pages_compacted;
 }
