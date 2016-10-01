@@ -678,12 +678,10 @@ static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t fla
 	locked += current->mm->locked_vm;
 	if ((locked > lock_limit) && (!capable(CAP_IPC_LOCK))) {
 		/*
-		 * It is possible that the regions requested
-		 * intersect with previously mlocked areas,
-		 * that part area in "mm->locked_vm" should
-		 * not be counted to new mlock increment
-		 * count. So check and adjust locked count
-		 * if necessary.
+		 * It is possible that the regions requested intersect with
+		 * previously mlocked areas, that part area in "mm->locked_vm"
+		 * should not be counted to new mlock increment count. So check
+		 * and adjust locked count if necessary.
 		 */
 		locked -= count_mm_mlocked_page_nr(current->mm,
 				start, len);
