@@ -74,6 +74,8 @@ static void squash_toc_save_inst(const char *name, unsigned long addr) { }
  * @syms_base:		Contents of the associated symbol table.
  * @loc_base:		Contents of the section to which relocations apply.
  * @addr_base:		The address where the section will be loaded in memory.
+ * @relative_symbols:	Are the symbols' st_value members relative?
+ * @check_symbols:	Fail if an unexpected symbol is found?
  * @obj_name:		The name of the ELF binary, for information messages.
  *
  * Applies RELA relocations to an ELF file already at its final location
@@ -84,12 +86,15 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 			     const char *strtab, const Elf64_Rela *rela,
 			     unsigned int num_rela, void *syms_base,
 			     void *loc_base, Elf64_Addr addr_base,
+			     bool relative_symbols, bool check_symbols,
 			     const char *obj_name)
 {
 	unsigned int i;
 	unsigned long *location;
 	unsigned long address;
+	unsigned long sec_base;
 	unsigned long value;
+	int reloc_type;
 	const char *name;
 	Elf64_Sym *sym;
 
@@ -116,15 +121,44 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 		else
 			name = "<unnamed symbol>";
 
-		pr_debug("RELOC at %p: %li-type as %s (0x%lx) + %li\n",
-		       location, (long)ELF64_R_TYPE(rela[i].r_info),
-		       name, (unsigned long)sym->st_value,
+		reloc_type = ELF64_R_TYPE(rela[i].r_info);
+
+		pr_debug("RELOC at %p: %i-type as %s (0x%lx) + %li\n",
+		       location, reloc_type, name, (unsigned long)sym->st_value,
 		       (long)rela[i].r_addend);
 
-		/* `Everything is relative'. */
-		value = sym->st_value + rela[i].r_addend;
+		if (check_symbols) {
+			/*
+			 * TOC symbols appear as undefined but should be
+			 * resolved as well, so allow them to be processed.
+			 */
+			if (sym->st_shndx == SHN_UNDEF &&
+					strcmp(name, ".TOC.") != 0 &&
+					reloc_type != R_PPC64_TOC) {
+				pr_err("Undefined symbol: %s\n", name);
+				return -ENOEXEC;
+			} else if (sym->st_shndx == SHN_COMMON) {
+				pr_err("Symbol '%s' in common section.\n",
+				       name);
+				return -ENOEXEC;
+			}
+		}
 
-		switch (ELF64_R_TYPE(rela[i].r_info)) {
+		if (relative_symbols && sym->st_shndx != SHN_ABS) {
+			if (sym->st_shndx >= elf_info->ehdr->e_shnum) {
+				pr_err("Invalid section %d for symbol %s\n",
+				       sym->st_shndx, name);
+				return -ENOEXEC;
+			}
+
+			sec_base = elf_info->sechdrs[sym->st_shndx].sh_addr;
+		} else
+			sec_base = 0;
+
+		/* `Everything is relative'. */
+		value = sym->st_value + sec_base + rela[i].r_addend;
+
+		switch (reloc_type) {
 		case R_PPC64_ADDR32:
 			/* Simply set it */
 			*(u32 *)location = value;
@@ -133,6 +167,11 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 		case R_PPC64_ADDR64:
 			/* Simply set it */
 			*(unsigned long *)location = value;
+			break;
+
+		case R_PPC64_REL32:
+			*(uint32_t *) location =
+				value - (uint32_t)(uint64_t) location;
 			break;
 
 		case R_PPC64_TOC:
@@ -186,6 +225,14 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 				| (value & 0xfffc);
 			break;
 
+		case R_PPC64_TOC16_HI:
+			/* Subtract TOC pointer */
+			value -= my_r2(elf_info);
+			value = value >> 16;
+			*((uint16_t *) location)
+				= (*((uint16_t *) location) & ~0xffff)
+				| (value & 0xffff);
+
 		case R_PPC64_TOC16_HA:
 			/* Subtract TOC pointer */
 			value -= my_r2(elf_info);
@@ -193,6 +240,21 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 			*((uint16_t *) location)
 				= (*((uint16_t *) location) & ~0xffff)
 				| (value & 0xffff);
+			break;
+
+		case R_PPC64_REL14:
+			/* Convert value to relative */
+			value -= address;
+			if (value + 0x8000 > 0xffff || (value & 3) != 0) {
+				pr_err("%s: REL14 %li out of range!\n",
+				       obj_name, (long int) value);
+				return -ENOEXEC;
+			}
+
+			/* Only replace bits 2 through 16 */
+			*(uint32_t *)location
+				= (*(uint32_t *)location & ~0xfffc)
+				| (value & 0xfffc);
 			break;
 
 		case R_PPC_REL24:
@@ -263,6 +325,29 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 			((uint32_t *)location)[1] = 0x38420000 + PPC_LO(value);
 			break;
 
+		case R_PPC64_ADDR16_LO:
+			*(uint16_t *)location = value & 0xffff;
+			break;
+
+		case R_PPC64_ADDR16_HI:
+			*(uint16_t *)location = (value >> 16) & 0xffff;
+			break;
+
+		case R_PPC64_ADDR16_HA:
+			*(uint16_t *)location = (((value + 0x8000) >> 16) &
+							0xffff);
+			break;
+
+		case R_PPC64_ADDR16_HIGHER:
+			*(uint16_t *)location = (((uint64_t)value >> 32) &
+							0xffff);
+			break;
+
+		case R_PPC64_ADDR16_HIGHEST:
+			*(uint16_t *)location = (((uint64_t)value >> 48) &
+							0xffff);
+			break;
+
 		case R_PPC64_REL16_HA:
 			/* Subtract location pointer */
 			value -= address;
@@ -281,9 +366,8 @@ int elf64_apply_relocate_add(const struct elf_info *elf_info,
 			break;
 
 		default:
-			pr_err("%s: Unknown ADD relocation: %lu\n",
-			       obj_name,
-			       (unsigned long)ELF64_R_TYPE(rela[i].r_info));
+			pr_err("%s: Unknown ADD relocation: %d\n", obj_name,
+			       reloc_type);
 			return -ENOEXEC;
 		}
 	}
