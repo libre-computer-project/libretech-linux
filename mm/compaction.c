@@ -1492,7 +1492,7 @@ static enum compact_result compact_zone(struct zone *zone, struct compact_contro
 
 	/*
 	 * Setup to move all movable pages to the end of the zone. Used cached
-	 * information on where the scanners should start (unless we explictly
+	 * information on where the scanners should start (unless we explicitly
 	 * want to compact the whole zone), but check that it is initialised
 	 * by ensuring the values are within zone boundaries.
 	 */
