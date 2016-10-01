@@ -153,7 +153,7 @@ void *elf64_load(struct kimage *image, char *kernel_buf,
 	int i, ret;
 	unsigned int fdt_size;
 	unsigned long kernel_load_addr, purgatory_load_addr;
-	unsigned long initrd_load_addr, fdt_load_addr, stack_top;
+	unsigned long initrd_load_addr = 0, fdt_load_addr, stack_top;
 	void *fdt;
 	const void *slave_code;
 	struct elfhdr ehdr;
