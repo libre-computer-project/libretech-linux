@@ -378,9 +378,6 @@ archclean:
 	$(Q)$(MAKE) $(clean)=$(boot)
 
 archprepare: checkbin
-ifeq ($(CONFIG_KEXEC_FILE),y)
-	$(Q)$(MAKE) $(build)=arch/powerpc/purgatory arch/powerpc/purgatory/kexec-purgatory.c
-endif
 
 # Use the file '.tmp_gas_check' for binutils tests, as gas won't output
 # to stdout and these checks are run even on install targets.
