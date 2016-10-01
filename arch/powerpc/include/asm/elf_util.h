@@ -20,7 +20,14 @@
 #include <linux/elf.h>
 
 struct elf_info {
+	/*
+	 * Where the ELF binary contents are kept.
+	 * Memory managed by the user of the struct.
+	 */
+	const char *buffer;
+
 	const struct elfhdr *ehdr;
+	const struct elf_phdr *proghdrs;
 	struct elf_shdr *sechdrs;
 
 	/* Index of stubs section. */
@@ -63,6 +70,17 @@ static inline unsigned long my_r2(const struct elf_info *elf_info)
 {
 	return elf_info->sechdrs[elf_info->toc_section].sh_addr + 0x8000;
 }
+
+static inline bool elf_is_elf_file(const struct elfhdr *ehdr)
+{
+	return memcmp(ehdr->e_ident, ELFMAG, SELFMAG) == 0;
+}
+
+int elf_read_from_buffer(const char *buf, size_t len, struct elfhdr *ehdr,
+			 struct elf_info *elf_info);
+void elf_init_elf_info(const struct elfhdr *ehdr, struct elf_shdr *sechdrs,
+		       struct elf_info *elf_info);
+void elf_free_info(struct elf_info *elf_info);
 
 int elf64_apply_relocate_add(const struct elf_info *elf_info,
 			     const char *strtab, const Elf64_Rela *rela,
