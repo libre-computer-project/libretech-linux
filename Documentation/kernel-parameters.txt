@@ -33,6 +33,21 @@ can also be entered as
 Double-quotes can be used to protect spaces in values, e.g.:
 	param="spaces in here"
 
+Some of the kernel parameters takes list of CPUs as value e.g.:
+isolcpus, task_isolation, nohz_full, irqaffinity, rcu_nocbs.
+The format of this list is:
+<cpu number>,...,<cpu number>
+or
+<cpu number>-<cpu number>
+(must be a positive range in ascending order)
+or a mixture
+<cpu number>,...,<cpu number>-<cpu number>
+Note that for special case of range one can split range into equal size of groups
+and for each group to use some amount form the begin of that group.
+<cpu number>-cpu number>:<used size>/<group size>
+For example one can add to its command line following parameter:
+isolcpus=1,2,10-20,100-2000:2/25
+
 This document may not be entirely up to date and comprehensive. The command
 "modinfo -p ${modulename}" shows a current list of all parameters of a loadable
 module. Loadable modules, after being loaded into the running kernel, also
