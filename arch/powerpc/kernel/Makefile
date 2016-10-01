@@ -123,6 +123,10 @@ ifneq ($(CONFIG_PPC_INDIRECT_PIO),y)
 obj-y				+= iomap.o
 endif
 
+ifeq ($(CONFIG_MODULES)$(CONFIG_WORD_SIZE),y64)
+obj-y				+= elf_util_64.o
+endif
+
 obj64-$(CONFIG_PPC_TRANSACTIONAL_MEM)	+= tm.o
 
 obj-$(CONFIG_PPC64)		+= $(obj64-y)
