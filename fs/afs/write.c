@@ -408,7 +408,7 @@ no_more:
 		case -ENOMEDIUM:
 		case -ENXIO:
 			afs_kill_pages(wb->vnode, true, first, last);
-			mapping_set_error(wb->vnode->vfs_inode.i_mapping, -ENXIO);
+			mapping_set_error(wb->vnode->vfs_inode.i_mapping, -EIO);
 			break;
 		case -EACCES:
 		case -EPERM:
