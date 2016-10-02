@@ -261,7 +261,6 @@ static int tpm_add_char_device(struct tpm_chip *chip)
 static void tpm_del_char_device(struct tpm_chip *chip)
 {
 	cdev_del(&chip->cdev);
-	device_del(&chip->dev);
 
 	/* Make the chip unavailable. */
 	mutex_lock(&idr_lock);
@@ -274,6 +273,8 @@ static void tpm_del_char_device(struct tpm_chip *chip)
 		tpm2_shutdown(chip, TPM2_SU_CLEAR);
 	chip->ops = NULL;
 	up_write(&chip->ops_sem);
+
+	device_del(&chip->dev);
 }
 
 static int tpm1_chip_register(struct tpm_chip *chip)
