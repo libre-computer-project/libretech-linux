@@ -1837,4 +1837,17 @@ int intel_color_check(struct drm_crtc *crtc, struct drm_crtc_state *state);
 void intel_color_set_csc(struct drm_crtc_state *crtc_state);
 void intel_color_load_luts(struct drm_crtc_state *crtc_state);
 
+/* intel_pipe_crc.c */
+int intel_pipe_crc_create(struct drm_minor *minor);
+void intel_pipe_crc_cleanup(struct drm_minor *minor);
+#ifdef CONFIG_DEBUG_FS
+int intel_crtc_set_crc_source(struct drm_crtc *crtc, const char *source_name,
+			      size_t *values_cnt);
+#else
+static inline int intel_crtc_set_crc_source(struct drm_crtc *crtc,
+					    const char *source_name,
+					    size_t *values_cnt) { return 0; }
+#endif
+extern const struct file_operations i915_display_crc_ctl_fops;
+
 #endif /* __INTEL_DRV_H__ */

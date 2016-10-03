@@ -40,7 +40,7 @@
 #include <drm/drm_modeset_lock.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_auth.h>
-#include <drm/drm_framebuffer.h>
+#include <drm/drm_debugfs_crc.h>
 
 #include "drm_crtc_internal.h"
 #include "drm_internal.h"
@@ -141,6 +141,25 @@ static void drm_crtc_unregister_all(struct drm_device *dev)
 	}
 }
 
+static int drm_crtc_crc_init(struct drm_crtc *crtc)
+{
+#ifdef CONFIG_DEBUG_FS
+	spin_lock_init(&crtc->crc.lock);
+	init_waitqueue_head(&crtc->crc.wq);
+	crtc->crc.source = kstrdup("auto", GFP_KERNEL);
+	if (!crtc->crc.source)
+		return -ENOMEM;
+#endif
+	return 0;
+}
+
+static void drm_crtc_crc_fini(struct drm_crtc *crtc)
+{
+#ifdef CONFIG_DEBUG_FS
+	kfree(crtc->crc.source);
+#endif
+}
+
 /**
  * drm_crtc_init_with_planes - Initialise a new CRTC object with
  *    specified primary and cursor planes.
@@ -210,6 +229,12 @@ int drm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *crtc,
 	if (cursor)
 		cursor->possible_crtcs = 1 << drm_crtc_index(crtc);
 
+	ret = drm_crtc_crc_init(crtc);
+	if (ret) {
+		drm_mode_object_unregister(dev, &crtc->base);
+		return ret;
+	}
+
 	if (drm_core_check_feature(dev, DRIVER_ATOMIC)) {
 		drm_object_attach_property(&crtc->base, config->prop_active, 0);
 		drm_object_attach_property(&crtc->base, config->prop_mode_id, 0);
@@ -235,6 +260,8 @@ void drm_crtc_cleanup(struct drm_crtc *crtc)
 	 * remove the drm_crtc at runtime we would have to decrement all
 	 * the indices on the drm_crtc after us in the crtc_list.
 	 */
+
+	drm_crtc_crc_fini(crtc);
 
 	kfree(crtc->gamma_store);
 	crtc->gamma_store = NULL;
