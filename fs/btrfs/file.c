@@ -1782,7 +1782,7 @@ static void update_time_for_write(struct inode *inode)
 	if (IS_NOCMTIME(inode))
 		return;
 
-	now = current_fs_time(inode->i_sb);
+	now = current_time(inode);
 	if (!timespec_equal(&inode->i_mtime, &now))
 		inode->i_mtime = now;
 
@@ -2065,7 +2065,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 		 * flags for any errors that might have happened while doing
 		 * writeback of file data.
 		 */
-		ret = btrfs_inode_check_errors(inode);
+		ret = filemap_check_errors(inode->i_mapping);
 		inode_unlock(inode);
 		goto out;
 	}
@@ -2603,7 +2603,7 @@ out_trans:
 		goto out_free;
 
 	inode_inc_iversion(inode);
-	inode->i_mtime = inode->i_ctime = current_fs_time(inode->i_sb);
+	inode->i_mtime = inode->i_ctime = current_time(inode);
 
 	trans->block_rsv = &root->fs_info->trans_block_rsv;
 	ret = btrfs_update_inode(trans, root, inode);
@@ -2867,7 +2867,7 @@ static long btrfs_fallocate(struct file *file, int mode,
 		if (IS_ERR(trans)) {
 			ret = PTR_ERR(trans);
 		} else {
-			inode->i_ctime = current_fs_time(inode->i_sb);
+			inode->i_ctime = current_time(inode);
 			i_size_write(inode, actual_end);
 			btrfs_ordered_update_i_size(inode, actual_end, NULL);
 			ret = btrfs_update_inode(trans, root, inode);
