@@ -64,6 +64,7 @@
 #include <linux/page_owner.h>
 #include <linux/kthread.h>
 #include <linux/memcontrol.h>
+#include <linux/random.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -89,6 +90,11 @@ EXPORT_PER_CPU_SYMBOL(numa_node);
 DEFINE_PER_CPU(int, _numa_mem_);		/* Kernel "local memory" node */
 EXPORT_PER_CPU_SYMBOL(_numa_mem_);
 int _node_numa_mem_[MAX_NUMNODES];
+#endif
+
+#ifdef CONFIG_GCC_PLUGIN_LATENT_ENTROPY
+volatile u64 latent_entropy __latent_entropy;
+EXPORT_SYMBOL(latent_entropy);
 #endif
 
 /*
@@ -1234,6 +1240,15 @@ static void __free_pages_ok(struct page *page, unsigned int order)
 	local_irq_restore(flags);
 }
 
+bool __meminitdata ram_latent_entropy;
+
+static int __init setup_ram_latent_entropy(char *str)
+{
+	ram_latent_entropy = true;
+	return 0;
+}
+early_param("ram_latent_entropy", setup_ram_latent_entropy);
+
 static void __init __free_pages_boot_core(struct page *page, unsigned int order)
 {
 	unsigned int nr_pages = 1 << order;
@@ -1248,6 +1263,17 @@ static void __init __free_pages_boot_core(struct page *page, unsigned int order)
 	}
 	__ClearPageReserved(p);
 	set_page_count(p, 0);
+
+	if (ram_latent_entropy && !PageHighMem(page) &&
+		page_to_pfn(page) < 0x100000) {
+		u64 hash = 0;
+		size_t index, end = PAGE_SIZE * nr_pages / sizeof(hash);
+		const u64 *data = lowmem_page_address(page);
+
+		for (index = 0; index < end; index++)
+			hash ^= hash + data[index];
+		add_device_randomness((const void *)&hash, sizeof(hash));
+	}
 
 	page_zone(page)->managed_pages += nr_pages;
 	set_page_refcounted(page);
