@@ -1297,14 +1297,10 @@ intel_dp_sink_rates(struct intel_dp *intel_dp, const int **sink_rates)
 bool intel_dp_source_supports_hbr2(struct intel_dp *intel_dp)
 {
 	struct intel_digital_port *dig_port = dp_to_dig_port(intel_dp);
-	struct drm_device *dev = dig_port->base.base.dev;
+	struct drm_i915_private *dev_priv = to_i915(dig_port->base.base.dev);
 
-	/* WaDisableHBR2:skl */
-	if (IS_SKL_REVID(dev, 0, SKL_REVID_B0))
-		return false;
-
-	if ((IS_HASWELL(dev) && !IS_HSW_ULX(dev)) || IS_BROADWELL(dev) ||
-	    (INTEL_INFO(dev)->gen >= 9))
+	if ((IS_HASWELL(dev_priv) && !IS_HSW_ULX(dev_priv)) ||
+	    IS_BROADWELL(dev_priv) || (INTEL_GEN(dev_priv) >= 9))
 		return true;
 	else
 		return false;
@@ -1314,13 +1310,13 @@ static int
 intel_dp_source_rates(struct intel_dp *intel_dp, const int **source_rates)
 {
 	struct intel_digital_port *dig_port = dp_to_dig_port(intel_dp);
-	struct drm_device *dev = dig_port->base.base.dev;
+	struct drm_i915_private *dev_priv = to_i915(dig_port->base.base.dev);
 	int size;
 
-	if (IS_BROXTON(dev)) {
+	if (IS_BROXTON(dev_priv)) {
 		*source_rates = bxt_rates;
 		size = ARRAY_SIZE(bxt_rates);
-	} else if (IS_SKYLAKE(dev) || IS_KABYLAKE(dev)) {
+	} else if (IS_SKYLAKE(dev_priv) || IS_KABYLAKE(dev_priv)) {
 		*source_rates = skl_rates;
 		size = ARRAY_SIZE(skl_rates);
 	} else {
@@ -5832,6 +5828,7 @@ bool intel_dp_init(struct drm_device *dev,
 		intel_encoder->crtc_mask = (1 << 0) | (1 << 1) | (1 << 2);
 	}
 	intel_encoder->cloneable = 0;
+	intel_encoder->port = port;
 
 	intel_dig_port->hpd_pulse = intel_dp_hpd_pulse;
 	dev_priv->hotplug.irq_port[port] = intel_dig_port;

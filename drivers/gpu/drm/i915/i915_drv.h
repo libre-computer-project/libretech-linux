@@ -185,6 +185,7 @@ enum plane {
 #define sprite_name(p, s) ((p) * INTEL_INFO(dev)->num_sprites[(p)] + (s) + 'A')
 
 enum port {
+	PORT_NONE = -1,
 	PORT_A = 0,
 	PORT_B,
 	PORT_C,
@@ -759,7 +760,7 @@ struct drm_i915_error_state {
 	u32 gam_ecochk;
 	u32 gab_ctl;
 	u32 gfx_mode;
-	u32 extra_instdone[I915_NUM_INSTDONE_REG];
+
 	u64 fence[I915_MAX_NUM_FENCES];
 	struct intel_overlay_error_state *overlay;
 	struct intel_display_error_state *display;
@@ -791,7 +792,6 @@ struct drm_i915_error_state {
 		u32 hws;
 		u32 ipeir;
 		u32 ipehr;
-		u32 instdone;
 		u32 bbstate;
 		u32 instpm;
 		u32 instps;
@@ -802,6 +802,7 @@ struct drm_i915_error_state {
 		u64 faddr;
 		u32 rc_psmi; /* sleep state */
 		u32 semaphore_mboxes[I915_NUM_ENGINES - 1];
+		struct intel_instdone instdone;
 
 		struct drm_i915_error_object {
 			int page_count;
@@ -971,6 +972,9 @@ struct intel_fbc {
 
 	bool enabled;
 	bool active;
+
+	bool underrun_detected;
+	struct work_struct underrun_work;
 
 	struct intel_fbc_state_cache {
 		struct {
@@ -1984,11 +1988,11 @@ struct drm_i915_private {
 	struct vlv_s0ix_state vlv_s0ix_state;
 
 	enum {
-		I915_SKL_SAGV_UNKNOWN = 0,
-		I915_SKL_SAGV_DISABLED,
-		I915_SKL_SAGV_ENABLED,
-		I915_SKL_SAGV_NOT_CONTROLLED
-	} skl_sagv_status;
+		I915_SAGV_UNKNOWN = 0,
+		I915_SAGV_DISABLED,
+		I915_SAGV_ENABLED,
+		I915_SAGV_NOT_CONTROLLED
+	} sagv_status;
 
 	struct {
 		/*
@@ -2079,7 +2083,8 @@ struct drm_i915_private {
 	/* perform PHY state sanity checks? */
 	bool chv_phy_assert[2];
 
-	struct intel_encoder *dig_port_map[I915_MAX_PORTS];
+	/* Used to save the pipe-to-encoder mapping for audio */
+	struct intel_encoder *av_enc_map[I915_MAX_PIPES];
 
 	/*
 	 * NOTE: This is the dri1/ums dungeon, don't add stuff here. Your patch
@@ -2276,21 +2281,19 @@ struct drm_i915_gem_object {
 	/** Record of address bit 17 of each page at last unbind. */
 	unsigned long *bit_17;
 
-	union {
-		/** for phy allocated objects */
-		struct drm_dma_handle *phys_handle;
-
-		struct i915_gem_userptr {
-			uintptr_t ptr;
-			unsigned read_only :1;
-			unsigned workers :4;
+	struct i915_gem_userptr {
+		uintptr_t ptr;
+		unsigned read_only :1;
+		unsigned workers :4;
 #define I915_GEM_USERPTR_MAX_WORKERS 15
 
-			struct i915_mm_struct *mm;
-			struct i915_mmu_object *mmu_object;
-			struct work_struct *work;
-		} userptr;
-	};
+		struct i915_mm_struct *mm;
+		struct i915_mmu_object *mmu_object;
+		struct work_struct *work;
+	} userptr;
+
+	/** for phys allocated objects */
+	struct drm_dma_handle *phys_handle;
 };
 
 static inline struct drm_i915_gem_object *
@@ -2885,6 +2888,11 @@ __i915_printk(struct drm_i915_private *dev_priv, const char *level,
 extern long i915_compat_ioctl(struct file *filp, unsigned int cmd,
 			      unsigned long arg);
 #endif
+extern const struct dev_pm_ops i915_pm_ops;
+
+extern int i915_driver_load(struct pci_dev *pdev,
+			    const struct pci_device_id *ent);
+extern void i915_driver_unload(struct drm_device *dev);
 extern int intel_gpu_reset(struct drm_i915_private *dev_priv, u32 engine_mask);
 extern bool intel_has_gpu_reset(struct drm_i915_private *dev_priv);
 extern void i915_reset(struct drm_i915_private *dev_priv);
@@ -3076,6 +3084,7 @@ int i915_gem_wait_ioctl(struct drm_device *dev, void *data,
 void i915_gem_load_init(struct drm_device *dev);
 void i915_gem_load_cleanup(struct drm_device *dev);
 void i915_gem_load_init_fences(struct drm_i915_private *dev_priv);
+int i915_gem_freeze(struct drm_i915_private *dev_priv);
 int i915_gem_freeze_late(struct drm_i915_private *dev_priv);
 
 void *i915_gem_object_alloc(struct drm_device *dev);
@@ -3542,7 +3551,9 @@ void i915_error_state_get(struct drm_device *dev,
 void i915_error_state_put(struct i915_error_state_file_priv *error_priv);
 void i915_destroy_error_state(struct drm_device *dev);
 
-void i915_get_extra_instdone(struct drm_i915_private *dev_priv, uint32_t *instdone);
+void i915_get_engine_instdone(struct drm_i915_private *dev_priv,
+			      enum intel_engine_id engine_id,
+			      struct intel_instdone *instdone);
 const char *i915_cache_level_str(struct drm_i915_private *i915, int type);
 
 /* i915_cmd_parser.c */

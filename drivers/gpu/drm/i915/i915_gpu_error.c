@@ -228,6 +228,35 @@ static const char *hangcheck_action_to_str(enum intel_engine_hangcheck_action a)
 	return "unknown";
 }
 
+static void error_print_instdone(struct drm_i915_error_state_buf *m,
+				 struct drm_i915_error_engine *ee)
+{
+	int slice;
+	int subslice;
+
+	err_printf(m, "  INSTDONE: 0x%08x\n",
+		   ee->instdone.instdone);
+
+	if (ee->engine_id != RCS || INTEL_GEN(m->i915) <= 3)
+		return;
+
+	err_printf(m, "  SC_INSTDONE: 0x%08x\n",
+		   ee->instdone.slice_common);
+
+	if (INTEL_GEN(m->i915) <= 6)
+		return;
+
+	for_each_instdone_slice_subslice(m->i915, slice, subslice)
+		err_printf(m, "  SAMPLER_INSTDONE[%d][%d]: 0x%08x\n",
+			   slice, subslice,
+			   ee->instdone.sampler[slice][subslice]);
+
+	for_each_instdone_slice_subslice(m->i915, slice, subslice)
+		err_printf(m, "  ROW_INSTDONE[%d][%d]: 0x%08x\n",
+			   slice, subslice,
+			   ee->instdone.row[slice][subslice]);
+}
+
 static void error_print_engine(struct drm_i915_error_state_buf *m,
 			       struct drm_i915_error_engine *ee)
 {
@@ -242,7 +271,9 @@ static void error_print_engine(struct drm_i915_error_state_buf *m,
 		   (u32)(ee->acthd>>32), (u32)ee->acthd);
 	err_printf(m, "  IPEIR: 0x%08x\n", ee->ipeir);
 	err_printf(m, "  IPEHR: 0x%08x\n", ee->ipehr);
-	err_printf(m, "  INSTDONE: 0x%08x\n", ee->instdone);
+
+	error_print_instdone(m, ee);
+
 	if (ee->batchbuffer) {
 		u64 start = ee->batchbuffer->gtt_offset;
 		u64 end = start + ee->batchbuffer->gtt_size;
@@ -401,10 +432,6 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 
 	for (i = 0; i < dev_priv->num_fence_regs; i++)
 		err_printf(m, "  fence[%d] = %08llx\n", i, error->fence[i]);
-
-	for (i = 0; i < ARRAY_SIZE(error->extra_instdone); i++)
-		err_printf(m, "  INSTDONE_%d: 0x%08x\n", i,
-			   error->extra_instdone[i]);
 
 	if (INTEL_INFO(dev)->gen >= 6) {
 		err_printf(m, "ERROR: 0x%08x\n", error->error);
@@ -855,7 +882,8 @@ static uint32_t i915_error_generate_code(struct drm_i915_private *dev_priv,
 			if (engine_id)
 				*engine_id = i;
 
-			return error->engine[i].ipehr ^ error->engine[i].instdone;
+			return error->engine[i].ipehr ^
+			       error->engine[i].instdone.instdone;
 		}
 	}
 
@@ -998,7 +1026,6 @@ static void error_record_engine_registers(struct drm_i915_error_state *error,
 		ee->faddr = I915_READ(RING_DMA_FADD(engine->mmio_base));
 		ee->ipeir = I915_READ(RING_IPEIR(engine->mmio_base));
 		ee->ipehr = I915_READ(RING_IPEHR(engine->mmio_base));
-		ee->instdone = I915_READ(RING_INSTDONE(engine->mmio_base));
 		ee->instps = I915_READ(RING_INSTPS(engine->mmio_base));
 		ee->bbaddr = I915_READ(RING_BBADDR(engine->mmio_base));
 		if (INTEL_GEN(dev_priv) >= 8) {
@@ -1010,8 +1037,9 @@ static void error_record_engine_registers(struct drm_i915_error_state *error,
 		ee->faddr = I915_READ(DMA_FADD_I8XX);
 		ee->ipeir = I915_READ(IPEIR);
 		ee->ipehr = I915_READ(IPEHR);
-		ee->instdone = I915_READ(GEN2_INSTDONE);
 	}
+
+	i915_get_engine_instdone(dev_priv, engine->id, &ee->instdone);
 
 	ee->waiting = intel_engine_has_waiter(engine);
 	ee->instpm = I915_READ(RING_INSTPM(engine->mmio_base));
@@ -1372,8 +1400,6 @@ static void i915_capture_reg_state(struct drm_i915_private *dev_priv,
 	}
 	error->eir = I915_READ(EIR);
 	error->pgtbl_er = I915_READ(PGTBL_ER);
-
-	i915_get_extra_instdone(dev_priv, error->extra_instdone);
 }
 
 static void i915_error_capture_msg(struct drm_i915_private *dev_priv,
@@ -1531,21 +1557,95 @@ const char *i915_cache_level_str(struct drm_i915_private *i915, int type)
 	}
 }
 
-/* NB: please notice the memset */
-void i915_get_extra_instdone(struct drm_i915_private *dev_priv,
-			     uint32_t *instdone)
+static inline uint32_t
+read_subslice_reg(struct drm_i915_private *dev_priv, int slice,
+		  int subslice, i915_reg_t reg)
 {
-	memset(instdone, 0, sizeof(*instdone) * I915_NUM_INSTDONE_REG);
+	uint32_t mcr;
+	uint32_t ret;
+	enum forcewake_domains fw_domains;
 
-	if (IS_GEN2(dev_priv) || IS_GEN3(dev_priv))
-		instdone[0] = I915_READ(GEN2_INSTDONE);
-	else if (IS_GEN4(dev_priv) || IS_GEN5(dev_priv) || IS_GEN6(dev_priv)) {
-		instdone[0] = I915_READ(RING_INSTDONE(RENDER_RING_BASE));
-		instdone[1] = I915_READ(GEN4_INSTDONE1);
-	} else if (INTEL_GEN(dev_priv) >= 7) {
-		instdone[0] = I915_READ(RING_INSTDONE(RENDER_RING_BASE));
-		instdone[1] = I915_READ(GEN7_SC_INSTDONE);
-		instdone[2] = I915_READ(GEN7_SAMPLER_INSTDONE);
-		instdone[3] = I915_READ(GEN7_ROW_INSTDONE);
+	fw_domains = intel_uncore_forcewake_for_reg(dev_priv, reg,
+						    FW_REG_READ);
+	fw_domains |= intel_uncore_forcewake_for_reg(dev_priv,
+						     GEN8_MCR_SELECTOR,
+						     FW_REG_READ | FW_REG_WRITE);
+
+	spin_lock_irq(&dev_priv->uncore.lock);
+	intel_uncore_forcewake_get__locked(dev_priv, fw_domains);
+
+	mcr = I915_READ_FW(GEN8_MCR_SELECTOR);
+	/*
+	 * The HW expects the slice and sublice selectors to be reset to 0
+	 * after reading out the registers.
+	 */
+	WARN_ON_ONCE(mcr & (GEN8_MCR_SLICE_MASK | GEN8_MCR_SUBSLICE_MASK));
+	mcr &= ~(GEN8_MCR_SLICE_MASK | GEN8_MCR_SUBSLICE_MASK);
+	mcr |= GEN8_MCR_SLICE(slice) | GEN8_MCR_SUBSLICE(subslice);
+	I915_WRITE_FW(GEN8_MCR_SELECTOR, mcr);
+
+	ret = I915_READ_FW(reg);
+
+	mcr &= ~(GEN8_MCR_SLICE_MASK | GEN8_MCR_SUBSLICE_MASK);
+	I915_WRITE_FW(GEN8_MCR_SELECTOR, mcr);
+
+	intel_uncore_forcewake_put__locked(dev_priv, fw_domains);
+	spin_unlock_irq(&dev_priv->uncore.lock);
+
+	return ret;
+}
+
+/* NB: please notice the memset */
+void i915_get_engine_instdone(struct drm_i915_private *dev_priv,
+			      enum intel_engine_id engine_id,
+			      struct intel_instdone *instdone)
+{
+	u32 mmio_base = dev_priv->engine[engine_id].mmio_base;
+	int slice;
+	int subslice;
+
+	memset(instdone, 0, sizeof(*instdone));
+
+	switch (INTEL_GEN(dev_priv)) {
+	default:
+		instdone->instdone = I915_READ(RING_INSTDONE(mmio_base));
+
+		if (engine_id != RCS)
+			break;
+
+		instdone->slice_common = I915_READ(GEN7_SC_INSTDONE);
+		for_each_instdone_slice_subslice(dev_priv, slice, subslice) {
+			instdone->sampler[slice][subslice] =
+				read_subslice_reg(dev_priv, slice, subslice,
+						  GEN7_SAMPLER_INSTDONE);
+			instdone->row[slice][subslice] =
+				read_subslice_reg(dev_priv, slice, subslice,
+						  GEN7_ROW_INSTDONE);
+		}
+		break;
+	case 7:
+		instdone->instdone = I915_READ(RING_INSTDONE(mmio_base));
+
+		if (engine_id != RCS)
+			break;
+
+		instdone->slice_common = I915_READ(GEN7_SC_INSTDONE);
+		instdone->sampler[0][0] = I915_READ(GEN7_SAMPLER_INSTDONE);
+		instdone->row[0][0] = I915_READ(GEN7_ROW_INSTDONE);
+
+		break;
+	case 6:
+	case 5:
+	case 4:
+		instdone->instdone = I915_READ(RING_INSTDONE(mmio_base));
+
+		if (engine_id == RCS)
+			/* HACK: Using the wrong struct member */
+			instdone->slice_common = I915_READ(GEN4_INSTDONE1);
+		break;
+	case 3:
+	case 2:
+		instdone->instdone = I915_READ(GEN2_INSTDONE);
+		break;
 	}
 }

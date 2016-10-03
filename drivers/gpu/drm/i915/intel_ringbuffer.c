@@ -851,15 +851,13 @@ static int gen9_init_workarounds(struct intel_engine_cs *engine)
 	WA_SET_BIT_MASKED(HALF_SLICE_CHICKEN3,
 			  GEN9_DISABLE_OCL_OOB_SUPPRESS_LOGIC);
 
-	/* WaDisableDgMirrorFixInHalfSliceChicken5:skl,bxt */
-	if (IS_SKL_REVID(dev_priv, 0, SKL_REVID_B0) ||
-	    IS_BXT_REVID(dev_priv, 0, BXT_REVID_A1))
+	/* WaDisableDgMirrorFixInHalfSliceChicken5:bxt */
+	if (IS_BXT_REVID(dev_priv, 0, BXT_REVID_A1))
 		WA_CLR_BIT_MASKED(GEN9_HALF_SLICE_CHICKEN5,
 				  GEN9_DG_MIRROR_FIX_ENABLE);
 
-	/* WaSetDisablePixMaskCammingAndRhwoInCommonSliceChicken:skl,bxt */
-	if (IS_SKL_REVID(dev_priv, 0, SKL_REVID_B0) ||
-	    IS_BXT_REVID(dev_priv, 0, BXT_REVID_A1)) {
+	/* WaSetDisablePixMaskCammingAndRhwoInCommonSliceChicken:bxt */
+	if (IS_BXT_REVID(dev_priv, 0, BXT_REVID_A1)) {
 		WA_SET_BIT_MASKED(GEN7_COMMON_SLICE_CHICKEN1,
 				  GEN9_RHWO_OPTIMIZATION_DISABLE);
 		/*
@@ -884,9 +882,8 @@ static int gen9_init_workarounds(struct intel_engine_cs *engine)
 	WA_CLR_BIT_MASKED(GEN9_HALF_SLICE_CHICKEN5,
 			  GEN9_CCS_TLB_PREFETCH_ENABLE);
 
-	/* WaDisableMaskBasedCammingInRCC:skl,bxt */
-	if (IS_SKL_REVID(dev_priv, SKL_REVID_C0, SKL_REVID_C0) ||
-	    IS_BXT_REVID(dev_priv, 0, BXT_REVID_A1))
+	/* WaDisableMaskBasedCammingInRCC:bxt */
+	if (IS_BXT_REVID(dev_priv, 0, BXT_REVID_A1))
 		WA_SET_BIT_MASKED(SLICE_ECO_CHICKEN0,
 				  PIXEL_MASK_CAMMING_DISABLE);
 
@@ -1003,47 +1000,12 @@ static int skl_init_workarounds(struct intel_engine_cs *engine)
 	 * until D0 which is the default case so this is equivalent to
 	 * !WaDisablePerCtxtPreemptionGranularityControl:skl
 	 */
-	if (IS_SKL_REVID(dev_priv, SKL_REVID_E0, REVID_FOREVER)) {
-		I915_WRITE(GEN7_FF_SLICE_CS_CHICKEN1,
-			   _MASKED_BIT_ENABLE(GEN9_FFSC_PERCTX_PREEMPT_CTRL));
-	}
-
-	if (IS_SKL_REVID(dev_priv, 0, SKL_REVID_E0)) {
-		/* WaDisableChickenBitTSGBarrierAckForFFSliceCS:skl */
-		I915_WRITE(FF_SLICE_CS_CHICKEN2,
-			   _MASKED_BIT_ENABLE(GEN9_TSG_BARRIER_ACK_DISABLE));
-	}
-
-	/* GEN8_L3SQCREG4 has a dependency with WA batch so any new changes
-	 * involving this register should also be added to WA batch as required.
-	 */
-	if (IS_SKL_REVID(dev_priv, 0, SKL_REVID_E0))
-		/* WaDisableLSQCROPERFforOCL:skl */
-		I915_WRITE(GEN8_L3SQCREG4, I915_READ(GEN8_L3SQCREG4) |
-			   GEN8_LQSC_RO_PERF_DIS);
+	I915_WRITE(GEN7_FF_SLICE_CS_CHICKEN1,
+		   _MASKED_BIT_ENABLE(GEN9_FFSC_PERCTX_PREEMPT_CTRL));
 
 	/* WaEnableGapsTsvCreditFix:skl */
-	if (IS_SKL_REVID(dev_priv, SKL_REVID_C0, REVID_FOREVER)) {
-		I915_WRITE(GEN8_GARBCNTL, (I915_READ(GEN8_GARBCNTL) |
-					   GEN9_GAPS_TSV_CREDIT_DISABLE));
-	}
-
-	/* WaDisablePowerCompilerClockGating:skl */
-	if (IS_SKL_REVID(dev_priv, SKL_REVID_B0, SKL_REVID_B0))
-		WA_SET_BIT_MASKED(HIZ_CHICKEN,
-				  BDW_HIZ_POWER_COMPILER_CLOCK_GATING_DISABLE);
-
-	/* WaBarrierPerformanceFixDisable:skl */
-	if (IS_SKL_REVID(dev_priv, SKL_REVID_C0, SKL_REVID_D0))
-		WA_SET_BIT_MASKED(HDC_CHICKEN0,
-				  HDC_FENCE_DEST_SLM_DISABLE |
-				  HDC_BARRIER_PERFORMANCE_DISABLE);
-
-	/* WaDisableSbeCacheDispatchPortSharing:skl */
-	if (IS_SKL_REVID(dev_priv, 0, SKL_REVID_F0))
-		WA_SET_BIT_MASKED(
-			GEN7_HALF_SLICE_CHICKEN1,
-			GEN7_SBE_SS_CACHE_DISPATCH_PORT_SHARING_DISABLE);
+	I915_WRITE(GEN8_GARBCNTL, (I915_READ(GEN8_GARBCNTL) |
+				   GEN9_GAPS_TSV_CREDIT_DISABLE));
 
 	/* WaDisableGafsUnitClkGating:skl */
 	WA_SET_BIT(GEN7_UCGCTL4, GEN8_EU_GAUNIT_CLOCK_GATE_DISABLE);

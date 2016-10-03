@@ -350,6 +350,9 @@ void gen6_reset_rps_interrupts(struct drm_i915_private *dev_priv)
 
 void gen6_enable_rps_interrupts(struct drm_i915_private *dev_priv)
 {
+	if (READ_ONCE(dev_priv->rps.interrupts_enabled))
+		return;
+
 	spin_lock_irq(&dev_priv->irq_lock);
 	WARN_ON_ONCE(dev_priv->rps.pm_iir);
 	WARN_ON_ONCE(I915_READ(gen6_pm_iir(dev_priv)) & dev_priv->pm_rps_events);
@@ -368,6 +371,9 @@ u32 gen6_sanitize_rps_pm_mask(struct drm_i915_private *dev_priv, u32 mask)
 
 void gen6_disable_rps_interrupts(struct drm_i915_private *dev_priv)
 {
+	if (!READ_ONCE(dev_priv->rps.interrupts_enabled))
+		return;
+
 	spin_lock_irq(&dev_priv->irq_lock);
 	dev_priv->rps.interrupts_enabled = false;
 
@@ -2545,18 +2551,44 @@ static void i915_reset_and_wakeup(struct drm_i915_private *dev_priv)
 	wake_up_all(&dev_priv->gpu_error.reset_queue);
 }
 
+static inline void
+i915_err_print_instdone(struct drm_i915_private *dev_priv,
+			struct intel_instdone *instdone)
+{
+	int slice;
+	int subslice;
+
+	pr_err("  INSTDONE: 0x%08x\n", instdone->instdone);
+
+	if (INTEL_GEN(dev_priv) <= 3)
+		return;
+
+	pr_err("  SC_INSTDONE: 0x%08x\n", instdone->slice_common);
+
+	if (INTEL_GEN(dev_priv) <= 6)
+		return;
+
+	for_each_instdone_slice_subslice(dev_priv, slice, subslice)
+		pr_err("  SAMPLER_INSTDONE[%d][%d]: 0x%08x\n",
+		       slice, subslice, instdone->sampler[slice][subslice]);
+
+	for_each_instdone_slice_subslice(dev_priv, slice, subslice)
+		pr_err("  ROW_INSTDONE[%d][%d]: 0x%08x\n",
+		       slice, subslice, instdone->row[slice][subslice]);
+}
+
 static void i915_report_and_clear_eir(struct drm_i915_private *dev_priv)
 {
-	uint32_t instdone[I915_NUM_INSTDONE_REG];
+	struct intel_instdone instdone;
 	u32 eir = I915_READ(EIR);
-	int pipe, i;
+	int pipe;
 
 	if (!eir)
 		return;
 
 	pr_err("render error detected, EIR: 0x%08x\n", eir);
 
-	i915_get_extra_instdone(dev_priv, instdone);
+	i915_get_engine_instdone(dev_priv, RCS, &instdone);
 
 	if (IS_G4X(dev_priv)) {
 		if (eir & (GM45_ERROR_MEM_PRIV | GM45_ERROR_CP_PRIV)) {
@@ -2564,8 +2596,7 @@ static void i915_report_and_clear_eir(struct drm_i915_private *dev_priv)
 
 			pr_err("  IPEIR: 0x%08x\n", I915_READ(IPEIR_I965));
 			pr_err("  IPEHR: 0x%08x\n", I915_READ(IPEHR_I965));
-			for (i = 0; i < ARRAY_SIZE(instdone); i++)
-				pr_err("  INSTDONE_%d: 0x%08x\n", i, instdone[i]);
+			i915_err_print_instdone(dev_priv, &instdone);
 			pr_err("  INSTPS: 0x%08x\n", I915_READ(INSTPS));
 			pr_err("  ACTHD: 0x%08x\n", I915_READ(ACTHD_I965));
 			I915_WRITE(IPEIR_I965, ipeir);
@@ -2600,8 +2631,7 @@ static void i915_report_and_clear_eir(struct drm_i915_private *dev_priv)
 	if (eir & I915_ERROR_INSTRUCTION) {
 		pr_err("instruction error\n");
 		pr_err("  INSTPM: 0x%08x\n", I915_READ(INSTPM));
-		for (i = 0; i < ARRAY_SIZE(instdone); i++)
-			pr_err("  INSTDONE_%d: 0x%08x\n", i, instdone[i]);
+		i915_err_print_instdone(dev_priv, &instdone);
 		if (INTEL_GEN(dev_priv) < 4) {
 			u32 ipeir = I915_READ(IPEIR);
 
@@ -2816,7 +2846,7 @@ semaphore_wait_to_signaller_ring(struct intel_engine_cs *engine, u32 ipehr,
 			if (engine == signaller)
 				continue;
 
-			if (offset == signaller->semaphore.signal_ggtt[engine->id])
+			if (offset == signaller->semaphore.signal_ggtt[engine->hw_id])
 				return signaller;
 		}
 	} else {
@@ -2826,13 +2856,13 @@ semaphore_wait_to_signaller_ring(struct intel_engine_cs *engine, u32 ipehr,
 			if(engine == signaller)
 				continue;
 
-			if (sync_bits == signaller->semaphore.mbox.wait[engine->id])
+			if (sync_bits == signaller->semaphore.mbox.wait[engine->hw_id])
 				return signaller;
 		}
 	}
 
-	DRM_DEBUG_DRIVER("No signaller ring found for ring %i, ipehr 0x%08x, offset 0x%016llx\n",
-			 engine->id, ipehr, offset);
+	DRM_DEBUG_DRIVER("No signaller ring found for %s, ipehr 0x%08x, offset 0x%016llx\n",
+			 engine->name, ipehr, offset);
 
 	return ERR_PTR(-ENODEV);
 }
@@ -2948,30 +2978,46 @@ static void semaphore_clear_deadlocks(struct drm_i915_private *dev_priv)
 		engine->hangcheck.deadlock = 0;
 }
 
+static bool instdone_unchanged(u32 current_instdone, u32 *old_instdone)
+{
+	u32 tmp = current_instdone | *old_instdone;
+	bool unchanged;
+
+	unchanged = tmp == *old_instdone;
+	*old_instdone |= tmp;
+
+	return unchanged;
+}
+
 static bool subunits_stuck(struct intel_engine_cs *engine)
 {
-	u32 instdone[I915_NUM_INSTDONE_REG];
+	struct drm_i915_private *dev_priv = engine->i915;
+	struct intel_instdone instdone;
+	struct intel_instdone *accu_instdone = &engine->hangcheck.instdone;
 	bool stuck;
-	int i;
+	int slice;
+	int subslice;
 
 	if (engine->id != RCS)
 		return true;
 
-	i915_get_extra_instdone(engine->i915, instdone);
+	i915_get_engine_instdone(dev_priv, RCS, &instdone);
 
 	/* There might be unstable subunit states even when
 	 * actual head is not moving. Filter out the unstable ones by
 	 * accumulating the undone -> done transitions and only
 	 * consider those as progress.
 	 */
-	stuck = true;
-	for (i = 0; i < I915_NUM_INSTDONE_REG; i++) {
-		const u32 tmp = instdone[i] | engine->hangcheck.instdone[i];
+	stuck = instdone_unchanged(instdone.instdone,
+				   &accu_instdone->instdone);
+	stuck &= instdone_unchanged(instdone.slice_common,
+				    &accu_instdone->slice_common);
 
-		if (tmp != engine->hangcheck.instdone[i])
-			stuck = false;
-
-		engine->hangcheck.instdone[i] |= tmp;
+	for_each_instdone_slice_subslice(dev_priv, slice, subslice) {
+		stuck &= instdone_unchanged(instdone.sampler[slice][subslice],
+					    &accu_instdone->sampler[slice][subslice]);
+		stuck &= instdone_unchanged(instdone.row[slice][subslice],
+					    &accu_instdone->row[slice][subslice]);
 	}
 
 	return stuck;
@@ -2983,7 +3029,7 @@ head_stuck(struct intel_engine_cs *engine, u64 acthd)
 	if (acthd != engine->hangcheck.acthd) {
 
 		/* Clear subunit states on head movement */
-		memset(engine->hangcheck.instdone, 0,
+		memset(&engine->hangcheck.instdone, 0,
 		       sizeof(engine->hangcheck.instdone));
 
 		return HANGCHECK_ACTIVE;
@@ -3153,7 +3199,7 @@ static void i915_hangcheck_elapsed(struct work_struct *work)
 			/* Clear head and subunit states on seqno movement */
 			acthd = 0;
 
-			memset(engine->hangcheck.instdone, 0,
+			memset(&engine->hangcheck.instdone, 0,
 			       sizeof(engine->hangcheck.instdone));
 		}
 
