@@ -52,7 +52,6 @@
 
 #ifdef CONFIG_RELOCATABLE
 #define __EXCEPTION_RELON_PROLOG_PSERIES_1(label, h)			\
-	ld	r12,PACAKBASE(r13);	/* get high part of &label */	\
 	mfspr	r11,SPRN_##h##SRR0;	/* save SRR0 */			\
 	LOAD_HANDLER(r12,label);					\
 	mtctr	r12;							\
@@ -84,13 +83,14 @@
 
 /*
  * We're short on space and time in the exception prolog, so we can't
- * use the normal SET_REG_IMMEDIATE macro. Normally we just need the
- * low halfword of the address, but for Kdump we need the whole low
- * word.
+ * use the normal LOAD_REG_IMMEDIATE macro to load the address of label.
+ * Instead we get the base of the kernel from paca->kernelbase and or in the low
+ * part of label. This requires that the label be within 64KB of kernelbase, and
+ * that kernelbase be 64K aligned.
  */
 #define LOAD_HANDLER(reg, label)					\
-	/* Handlers must be within 64K of kbase, which must be 64k aligned */ \
-	ori	reg,reg,(label)-_stext;	/* virt addr of handler ... */
+	ld	reg,PACAKBASE(r13);	/* get high part of &label */	\
+	ori	reg,reg,((label)-_stext)@l;	/* virt addr of handler ... */
 
 /* Exception register prefixes */
 #define EXC_HV	H
@@ -175,7 +175,6 @@ END_FTR_SECTION_NESTED(ftr,ftr,943)
 	__EXCEPTION_PROLOG_1(area, extra, vec)
 
 #define __EXCEPTION_PROLOG_PSERIES_1(label, h)				\
-	ld	r12,PACAKBASE(r13);	/* get high part of &label */	\
 	ld	r10,PACAKMSR(r13);	/* get MSR value for kernel */	\
 	mfspr	r11,SPRN_##h##SRR0;	/* save SRR0 */			\
 	LOAD_HANDLER(r12,label)						\

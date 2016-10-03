@@ -41,8 +41,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_REAL_LE)				\
 
 #define SYSCALL_PSERIES_2_RFID 					\
 	mfspr	r12,SPRN_SRR1 ;					\
-	ld	r10,PACAKBASE(r13) ; 				\
-	LOAD_HANDLER(r10, system_call_entry) ; 			\
+	LOAD_HANDLER(r10, system_call_common) ; 		\
 	mtspr	SPRN_SRR0,r10 ; 				\
 	ld	r10,PACAKMSR(r13) ;				\
 	mtspr	SPRN_SRR1,r10 ; 				\
@@ -63,15 +62,11 @@ END_FTR_SECTION_IFSET(CPU_FTR_REAL_LE)				\
 	 * is volatile across system calls.
 	 */
 #define SYSCALL_PSERIES_2_DIRECT				\
-	mflr	r10 ;						\
-	ld	r12,PACAKBASE(r13) ; 				\
-	LOAD_HANDLER(r12, system_call_entry) ;			\
+	LOAD_HANDLER(r12, system_call_common) ;			\
 	mtctr	r12 ;						\
 	mfspr	r12,SPRN_SRR1 ;					\
-	/* Re-use of r13... No spare regs to do this */	\
-	li	r13,MSR_RI ;					\
-	mtmsrd 	r13,1 ;						\
-	GET_PACA(r13) ;	/* get r13 back */			\
+	li	r10,MSR_RI ;					\
+	mtmsrd 	r10,1 ;						\
 	bctr ;
 #else
 	/* We can branch directly */
@@ -175,6 +170,7 @@ data_access_slb_pSeries:
 	std	r3,PACA_EXSLB+EX_R3(r13)
 	mfspr	r3,SPRN_DAR
 	mfspr	r12,SPRN_SRR1
+	crset	4*cr6+eq
 #ifndef CONFIG_RELOCATABLE
 	b	slb_miss_realmode
 #else
@@ -184,7 +180,6 @@ data_access_slb_pSeries:
 	 * the kernel ends up being put.
 	 */
 	mfctr	r11
-	ld	r10,PACAKBASE(r13)
 	LOAD_HANDLER(r10, slb_miss_realmode)
 	mtctr	r10
 	bctr
@@ -201,11 +196,11 @@ instruction_access_slb_pSeries:
 	std	r3,PACA_EXSLB+EX_R3(r13)
 	mfspr	r3,SPRN_SRR0		/* SRR0 is faulting address */
 	mfspr	r12,SPRN_SRR1
+	crclr	4*cr6+eq
 #ifndef CONFIG_RELOCATABLE
 	b	slb_miss_realmode
 #else
 	mfctr	r11
-	ld	r10,PACAKBASE(r13)
 	LOAD_HANDLER(r10, slb_miss_realmode)
 	mtctr	r10
 	bctr
@@ -355,7 +350,7 @@ facility_unavailable_trampoline:
 hv_facility_unavailable_trampoline:
 	SET_SCRATCH0(r13)
 	EXCEPTION_PROLOG_0(PACA_EXGEN)
-	b	facility_unavailable_hv
+	b	hv_facility_unavailable_hv
 
 #ifdef CONFIG_CBE_RAS
 	STD_EXCEPTION_HV(0x1200, 0x1202, cbe_system_error)
@@ -457,7 +452,6 @@ BEGIN_FTR_SECTION
 	mfmsr	r11			/* get MSR value */
 	ori	r11,r11,MSR_ME		/* turn on ME bit */
 	ori	r11,r11,MSR_RI		/* turn on RI bit */
-	ld	r12,PACAKBASE(r13)	/* get high part of &label */
 	LOAD_HANDLER(r12, machine_check_handle_early)
 1:	mtspr	SPRN_SRR0,r12
 	mtspr	SPRN_SRR1,r11
@@ -470,7 +464,6 @@ BEGIN_FTR_SECTION
 	 */
 	addi	r1,r1,INT_FRAME_SIZE	/* go back to previous stack frame */
 	ld	r11,PACAKMSR(r13)
-	ld	r12,PACAKBASE(r13)
 	LOAD_HANDLER(r12, unrecover_mce)
 	li	r10,MSR_ME
 	andc	r11,r11,r10		/* Turn off MSR_ME */
@@ -491,7 +484,6 @@ machine_check_pSeries_0:
 	 * used, so nested machine check corrupts it. machine_check_common
 	 * enables MSR_RI.
 	 */
-	ld	r12,PACAKBASE(r13)
 	ld	r10,PACAKMSR(r13)
 	xori	r10,r10,MSR_RI
 	mfspr	r11,SPRN_SRR0
@@ -600,7 +592,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_CFAR)
 	KVM_HANDLER(PACA_EXGEN, EXC_STD, 0xf40)
 	STD_EXCEPTION_PSERIES_OOL(0xf60, facility_unavailable)
 	KVM_HANDLER(PACA_EXGEN, EXC_STD, 0xf60)
-	STD_EXCEPTION_HV_OOL(0xf82, facility_unavailable)
+	STD_EXCEPTION_HV_OOL(0xf82, hv_facility_unavailable)
 	KVM_HANDLER(PACA_EXGEN, EXC_HV, 0xf82)
 
 /*
@@ -783,6 +775,7 @@ data_access_slb_relon_pSeries:
 	std	r3,PACA_EXSLB+EX_R3(r13)
 	mfspr	r3,SPRN_DAR
 	mfspr	r12,SPRN_SRR1
+	crset	4*cr6+eq
 #ifndef CONFIG_RELOCATABLE
 	b	slb_miss_realmode
 #else
@@ -792,7 +785,6 @@ data_access_slb_relon_pSeries:
 	 * the kernel ends up being put.
 	 */
 	mfctr	r11
-	ld	r10,PACAKBASE(r13)
 	LOAD_HANDLER(r10, slb_miss_realmode)
 	mtctr	r10
 	bctr
@@ -808,11 +800,11 @@ instruction_access_slb_relon_pSeries:
 	std	r3,PACA_EXSLB+EX_R3(r13)
 	mfspr	r3,SPRN_SRR0		/* SRR0 is faulting address */
 	mfspr	r12,SPRN_SRR1
+	crclr	4*cr6+eq
 #ifndef CONFIG_RELOCATABLE
 	b	slb_miss_realmode
 #else
 	mfctr	r11
-	ld	r10,PACAKBASE(r13)
 	LOAD_HANDLER(r10, slb_miss_realmode)
 	mtctr	r10
 	bctr
@@ -909,10 +901,6 @@ hv_facility_unavailable_relon_trampoline:
 	b	denorm_exception_hv
 #endif
 	STD_RELON_EXCEPTION_PSERIES(0x5700, 0x1700, altivec_assist)
-
-	.align	7
-system_call_entry:
-	b	system_call_common
 
 ppc64_runlatch_on_trampoline:
 	b	__ppc64_runlatch_on
@@ -1353,7 +1341,6 @@ machine_check_handle_early:
 	andi.	r11,r12,MSR_RI
 	bne	2f
 1:	mfspr	r11,SPRN_SRR0
-	ld	r10,PACAKBASE(r13)
 	LOAD_HANDLER(r10,unrecover_mce)
 	mtspr	SPRN_SRR0,r10
 	ld	r10,PACAKMSR(r13)
@@ -1408,6 +1395,7 @@ unrecover_mce:
  * r3 has the faulting address
  * r9 - r13 are saved in paca->exslb.
  * r3 is saved in paca->slb_r3
+ * cr6.eq is set for a D-SLB miss, clear for a I-SLB miss
  * We assume we aren't going to take any exceptions during this procedure.
  */
 slb_miss_realmode:
@@ -1418,29 +1406,31 @@ slb_miss_realmode:
 
 	stw	r9,PACA_EXSLB+EX_CCR(r13)	/* save CR in exc. frame */
 	std	r10,PACA_EXSLB+EX_LR(r13)	/* save LR */
+	std	r3,PACA_EXSLB+EX_DAR(r13)
 
+	crset	4*cr0+eq
 #ifdef CONFIG_PPC_STD_MMU_64
 BEGIN_MMU_FTR_SECTION
 	bl	slb_allocate_realmode
 END_MMU_FTR_SECTION_IFCLR(MMU_FTR_TYPE_RADIX)
 #endif
-	/* All done -- return from exception. */
 
 	ld	r10,PACA_EXSLB+EX_LR(r13)
 	ld	r3,PACA_EXSLB+EX_R3(r13)
 	lwz	r9,PACA_EXSLB+EX_CCR(r13)	/* get saved CR */
-
 	mtlr	r10
+
+	beq	8f		/* if bad address, make full stack frame */
+
 	andi.	r10,r12,MSR_RI	/* check for unrecoverable exception */
-BEGIN_MMU_FTR_SECTION
 	beq-	2f
-FTR_SECTION_ELSE
-	b	2f
-ALT_MMU_FTR_SECTION_END_IFCLR(MMU_FTR_TYPE_RADIX)
+
+	/* All done -- return from exception. */
 
 .machine	push
 .machine	"power4"
 	mtcrf	0x80,r9
+	mtcrf	0x02,r9		/* I/D indication is in cr6 */
 	mtcrf	0x01,r9		/* slb_allocate uses cr0 and cr7 */
 .machine	pop
 
@@ -1454,7 +1444,6 @@ ALT_MMU_FTR_SECTION_END_IFCLR(MMU_FTR_TYPE_RADIX)
 	b	.	/* prevent speculative execution */
 
 2:	mfspr	r11,SPRN_SRR0
-	ld	r10,PACAKBASE(r13)
 	LOAD_HANDLER(r10,unrecov_slb)
 	mtspr	SPRN_SRR0,r10
 	ld	r10,PACAKMSR(r13)
@@ -1470,6 +1459,26 @@ unrecov_slb:
 	bl	unrecoverable_exception
 	b	1b
 
+8:	mfspr	r11,SPRN_SRR0
+	LOAD_HANDLER(r10,bad_addr_slb)
+	mtspr	SPRN_SRR0,r10
+	ld	r10,PACAKMSR(r13)
+	mtspr	SPRN_SRR1,r10
+	rfid
+	b	.
+
+bad_addr_slb:
+	EXCEPTION_PROLOG_COMMON(0x380, PACA_EXSLB)
+	RECONCILE_IRQ_STATE(r10, r11)
+	ld	r3, PACA_EXSLB+EX_DAR(r13)
+	std	r3, _DAR(r1)
+	beq	cr6, 2f
+	li	r10, 0x480		/* fix trap number for I-SLB miss */
+	std	r10, _TRAP(r1)
+2:	bl	save_nvgprs
+	addi	r3, r1, STACK_FRAME_OVERHEAD
+	bl	slb_miss_bad_addr
+	b	ret_from_except
 
 #ifdef CONFIG_PPC_970_NAP
 power4_fixup_nap:
