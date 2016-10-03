@@ -480,7 +480,7 @@ static int redrat3_set_timeout(struct rc_dev *rc_dev, unsigned int timeoutns)
 	struct redrat3_dev *rr3 = rc_dev->priv;
 	struct usb_device *udev = rr3->udev;
 	struct device *dev = rr3->dev;
-	u32 *timeout;
+	__be32 *timeout;
 	int ret;
 
 	timeout = kmalloc(sizeof(*timeout), GFP_KERNEL);
@@ -970,10 +970,8 @@ static int redrat3_dev_probe(struct usb_interface *intf,
 
 	/* set up bulk-in endpoint */
 	rr3->read_urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!rr3->read_urb) {
-		dev_err(dev, "Read urb allocation failure\n");
+	if (!rr3->read_urb)
 		goto error;
-	}
 
 	rr3->ep_in = ep_in;
 	rr3->bulk_in_buf = usb_alloc_coherent(udev,
