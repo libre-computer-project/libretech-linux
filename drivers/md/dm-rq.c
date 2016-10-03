@@ -908,7 +908,6 @@ static int dm_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 static struct blk_mq_ops dm_mq_ops = {
 	.queue_rq = dm_mq_queue_rq,
-	.map_queue = blk_mq_map_queue,
 	.complete = dm_softirq_done,
 	.init_request = dm_mq_init_request,
 };
@@ -955,7 +954,7 @@ int dm_mq_init_request_queue(struct mapped_device *md, struct dm_table *t)
 	dm_init_md_queue(md);
 
 	/* backfill 'mq' sysfs registration normally done in blk_register_queue */
-	blk_mq_register_disk(md->disk);
+	blk_mq_register_dev(disk_to_dev(md->disk), q);
 
 	return 0;
 

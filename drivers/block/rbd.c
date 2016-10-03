@@ -4444,7 +4444,6 @@ static int rbd_init_request(void *data, struct request *rq,
 
 static struct blk_mq_ops rbd_mq_ops = {
 	.queue_rq	= rbd_queue_rq,
-	.map_queue	= blk_mq_map_queue,
 	.init_request	= rbd_init_request,
 };
 
