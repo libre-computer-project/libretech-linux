@@ -98,7 +98,7 @@ static void bcm6328_quirks(void)
 static void bcm6358_quirks(void)
 {
 	/*
-	 * BCM6358 needs special handling for its shared TLB, so
+	 * BCM3368/BCM6358 need special handling for their shared TLB, so
 	 * disable SMP for now
 	 */
 	bmips_smp_enabled = 0;
@@ -110,10 +110,12 @@ static void bcm6368_quirks(void)
 }
 
 static const struct bmips_quirk bmips_quirk_list[] = {
+	{ "brcm,bcm3368",		&bcm6358_quirks			},
 	{ "brcm,bcm3384-viper",		&bcm3384_viper_quirks		},
 	{ "brcm,bcm33843-viper",	&bcm3384_viper_quirks		},
 	{ "brcm,bcm6328",		&bcm6328_quirks			},
 	{ "brcm,bcm6358",		&bcm6358_quirks			},
+	{ "brcm,bcm6362",		&bcm6368_quirks			},
 	{ "brcm,bcm6368",		&bcm6368_quirks			},
 	{ "brcm,bcm63168",		&bcm6368_quirks			},
 	{ "brcm,bcm63268",		&bcm6368_quirks			},

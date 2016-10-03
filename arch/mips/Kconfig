@@ -479,6 +479,7 @@ config MIPS_MALTA
 	select SYS_SUPPORTS_ZBOOT
 	select SYS_SUPPORTS_RELOCATABLE
 	select USE_OF
+	select LIBFDT
 	select ZONE_DMA32 if 64BIT
 	select BUILTIN_DTB
 	select LIBFDT
@@ -514,7 +515,6 @@ config MIPS_SEAD3
 	select SYS_HAS_CPU_MIPS32_R2
 	select SYS_HAS_CPU_MIPS32_R6
 	select SYS_HAS_CPU_MIPS64_R1
-	select SYS_HAS_EARLY_PRINTK
 	select SYS_SUPPORTS_32BIT_KERNEL
 	select SYS_SUPPORTS_64BIT_KERNEL
 	select SYS_SUPPORTS_BIG_ENDIAN
@@ -1402,6 +1402,16 @@ config CPU_LOONGSON1B
 	  The Loongson 1B is a 32-bit SoC, which implements the MIPS32
 	  release 2 instruction set.
 
+config CPU_LOONGSON1C
+	bool "Loongson 1C"
+	depends on SYS_HAS_CPU_LOONGSON1C
+	select CPU_LOONGSON1
+	select ARCH_WANT_OPTIONAL_GPIOLIB
+	select LEDS_GPIO_REGISTER
+	help
+	  The Loongson 1C is a 32-bit SoC, which implements the MIPS32
+	  release 2 instruction set.
+
 config CPU_MIPS32_R1
 	bool "MIPS32 Release 1"
 	depends on SYS_HAS_CPU_MIPS32_R1
@@ -1849,6 +1859,9 @@ config SYS_HAS_CPU_LOONGSON2F
 	select CPU_SUPPORTS_UNCACHED_ACCELERATED
 
 config SYS_HAS_CPU_LOONGSON1B
+	bool
+
+config SYS_HAS_CPU_LOONGSON1C
 	bool
 
 config SYS_HAS_CPU_MIPS32_R1
