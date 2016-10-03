@@ -57,6 +57,7 @@ int ovl_copy_xattr(struct dentry *old, struct dentry *new)
 	ssize_t list_size, size, value_size = 0;
 	char *buf, *name, *value = NULL;
 	int uninitialized_var(error);
+	size_t slen;
 
 	if (!old->d_inode->i_op->getxattr ||
 	    !new->d_inode->i_op->getxattr)
@@ -79,7 +80,16 @@ int ovl_copy_xattr(struct dentry *old, struct dentry *new)
 		goto out;
 	}
 
-	for (name = buf; name < (buf + list_size); name += strlen(name) + 1) {
+	for (name = buf; list_size; name += slen) {
+		slen = strnlen(name, list_size) + 1;
+
+		/* underlying fs providing us with an broken xattr list? */
+		if (WARN_ON(slen > list_size)) {
+			error = -EIO;
+			break;
+		}
+		list_size -= slen;
+
 		if (ovl_is_private_xattr(name))
 			continue;
 retry:
@@ -136,6 +146,13 @@ static int ovl_copy_up_data(struct path *old, struct path *new, loff_t len)
 		goto out_fput;
 	}
 
+	/* Try to use clone_file_range to clone up within the same fs */
+	error = vfs_clone_file_range(old_file, 0, new_file, 0, len);
+	if (!error)
+		goto out;
+	/* Couldn't clone, so now we try to copy the data */
+	error = 0;
+
 	/* FIXME: copy up sparse files efficiently */
 	while (len) {
 		size_t this_len = OVL_COPY_UP_CHUNK_SIZE;
@@ -161,6 +178,7 @@ static int ovl_copy_up_data(struct path *old, struct path *new, loff_t len)
 		len -= bytes;
 	}
 
+out:
 	fput(new_file);
 out_fput:
 	fput(old_file);
@@ -338,7 +356,6 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 	struct path parentpath;
 	struct dentry *upperdir;
 	struct dentry *upperdentry;
-	const struct cred *old_cred;
 	char *link = NULL;
 
 	if (WARN_ON(!workdir))
@@ -358,8 +375,6 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 		if (IS_ERR(link))
 			return PTR_ERR(link);
 	}
-
-	old_cred = ovl_override_creds(dentry->d_sb);
 
 	err = -EIO;
 	if (lock_rename(workdir, upperdir) != NULL) {
@@ -381,7 +396,6 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 	}
 out_unlock:
 	unlock_rename(workdir, upperdir);
-	revert_creds(old_cred);
 
 	if (link)
 		free_page((unsigned long) link);
@@ -391,9 +405,9 @@ out_unlock:
 
 int ovl_copy_up(struct dentry *dentry)
 {
-	int err;
+	int err = 0;
+	const struct cred *old_cred = ovl_override_creds(dentry->d_sb);
 
-	err = 0;
 	while (!err) {
 		struct dentry *next;
 		struct dentry *parent;
@@ -425,6 +439,7 @@ int ovl_copy_up(struct dentry *dentry)
 		dput(parent);
 		dput(next);
 	}
+	revert_creds(old_cred);
 
 	return err;
 }

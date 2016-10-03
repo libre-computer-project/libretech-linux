@@ -15,6 +15,7 @@
 #include <linux/writeback.h>
 #include <linux/buffer_head.h>
 #include <linux/falloc.h>
+#include <linux/mount.h>
 #include "internal.h"
 
 #include <asm/ioctls.h>
@@ -223,7 +224,9 @@ static long ioctl_file_clone(struct file *dst_file, unsigned long srcfd,
 
 	if (!src_file.file)
 		return -EBADF;
-	ret = vfs_clone_file_range(src_file.file, off, dst_file, destoff, olen);
+	if (src_file.file->f_path.mnt != dst_file->f_path.mnt)
+		return -EXDEV;
+	ret = do_clone_file_range(src_file.file, off, dst_file, destoff, olen);
 	fdput(src_file);
 	return ret;
 }
