@@ -565,6 +565,8 @@ struct amd_iommu {
 
 	struct amd_irte_ops *irte_ops;
 #endif
+
+	volatile u64 __aligned(8) cmd_sem;
 };
 
 #define ACPIHID_UID_LEN 256

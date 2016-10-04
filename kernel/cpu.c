@@ -23,6 +23,8 @@
 #include <linux/tick.h>
 #include <linux/irq.h>
 #include <linux/smpboot.h>
+#include <linux/relay.h>
+#include <linux/slab.h>
 
 #include <trace/events/power.h>
 #define CREATE_TRACE_POINTS
@@ -73,15 +75,15 @@ static DEFINE_PER_CPU(struct cpuhp_cpu_state, cpuhp_state);
 struct cpuhp_step {
 	const char		*name;
 	union {
-		int		(*startup)(unsigned int cpu);
-		int		(*startup_multi)(unsigned int cpu,
-						 struct hlist_node *node);
-	};
+		int		(*single)(unsigned int cpu);
+		int		(*multi)(unsigned int cpu,
+					 struct hlist_node *node);
+	} startup;
 	union {
-		int		(*teardown)(unsigned int cpu);
-		int		(*teardown_multi)(unsigned int cpu,
-						  struct hlist_node *node);
-	};
+		int		(*single)(unsigned int cpu);
+		int		(*multi)(unsigned int cpu,
+					 struct hlist_node *node);
+	} teardown;
 	struct hlist_head	list;
 	bool			skip_onerr;
 	bool			cant_stop;
@@ -127,7 +129,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 	int ret, cnt;
 
 	if (!step->multi_instance) {
-		cb = bringup ? step->startup : step->teardown;
+		cb = bringup ? step->startup.single : step->teardown.single;
 		if (!cb)
 			return 0;
 		trace_cpuhp_enter(cpu, st->target, state, cb);
@@ -135,7 +137,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 		trace_cpuhp_exit(cpu, st->state, state, ret);
 		return ret;
 	}
-	cbm = bringup ? step->startup_multi : step->teardown_multi;
+	cbm = bringup ? step->startup.multi : step->teardown.multi;
 	if (!cbm)
 		return 0;
 
@@ -160,7 +162,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 	return 0;
 err:
 	/* Rollback the instances if one failed */
-	cbm = !bringup ? step->startup_multi : step->teardown_multi;
+	cbm = !bringup ? step->startup.multi : step->teardown.multi;
 	if (!cbm)
 		return ret;
 
@@ -331,10 +333,17 @@ void cpu_hotplug_disable(void)
 }
 EXPORT_SYMBOL_GPL(cpu_hotplug_disable);
 
+static void __cpu_hotplug_enable(void)
+{
+	if (WARN_ONCE(!cpu_hotplug_disabled, "Unbalanced cpu hotplug enable\n"))
+		return;
+	cpu_hotplug_disabled--;
+}
+
 void cpu_hotplug_enable(void)
 {
 	cpu_maps_update_begin();
-	WARN_ON(--cpu_hotplug_disabled < 0);
+	__cpu_hotplug_enable();
 	cpu_maps_update_done();
 }
 EXPORT_SYMBOL_GPL(cpu_hotplug_enable);
@@ -398,12 +407,6 @@ static int notify_prepare(unsigned int cpu)
 static int notify_online(unsigned int cpu)
 {
 	cpu_notify(CPU_ONLINE, cpu);
-	return 0;
-}
-
-static int notify_starting(unsigned int cpu)
-{
-	cpu_notify(CPU_STARTING, cpu);
 	return 0;
 }
 
@@ -752,12 +755,6 @@ static int notify_down_prepare(unsigned int cpu)
 	return err;
 }
 
-static int notify_dying(unsigned int cpu)
-{
-	cpu_notify(CPU_DYING, cpu);
-	return 0;
-}
-
 /* Take this CPU down. */
 static int take_cpu_down(void *_param)
 {
@@ -816,7 +813,7 @@ static int takedown_cpu(unsigned int cpu)
 	BUG_ON(cpu_online(cpu));
 
 	/*
-	 * The migration_call() CPU_DYING callback will have removed all
+	 * The CPUHP_AP_SCHED_MIGRATE_DYING callback will have removed all
 	 * runnable tasks from the cpu, there's only the idle task left now
 	 * that the migration thread is done doing the stop_machine thing.
 	 *
@@ -869,7 +866,6 @@ void cpuhp_report_idle_dead(void)
 #define notify_down_prepare	NULL
 #define takedown_cpu		NULL
 #define notify_dead		NULL
-#define notify_dying		NULL
 #endif
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -959,10 +955,9 @@ EXPORT_SYMBOL(cpu_down);
 #endif /*CONFIG_HOTPLUG_CPU*/
 
 /**
- * notify_cpu_starting(cpu) - call the CPU_STARTING notifiers
+ * notify_cpu_starting(cpu) - Invoke the callbacks on the starting CPU
  * @cpu: cpu that just started
  *
- * This function calls the cpu_chain notifiers with CPU_STARTING.
  * It must be called by the arch code on the new cpu, before the new cpu
  * enables interrupts and before the "boot" cpu returns from __cpu_up().
  */
@@ -1162,7 +1157,7 @@ void enable_nonboot_cpus(void)
 
 	/* Allow everyone to use the CPU hotplug again */
 	cpu_maps_update_begin();
-	WARN_ON(--cpu_hotplug_disabled < 0);
+	__cpu_hotplug_enable();
 	if (cpumask_empty(frozen_cpus))
 		goto out;
 
@@ -1251,40 +1246,50 @@ core_initcall(cpu_hotplug_pm_sync_init);
 static struct cpuhp_step cpuhp_bp_states[] = {
 	[CPUHP_OFFLINE] = {
 		.name			= "offline",
-		.startup		= NULL,
-		.teardown		= NULL,
+		.startup.single		= NULL,
+		.teardown.single	= NULL,
 	},
 #ifdef CONFIG_SMP
 	[CPUHP_CREATE_THREADS]= {
-		.name			= "threads:create",
-		.startup		= smpboot_create_threads,
-		.teardown		= NULL,
+		.name			= "threads:prepare",
+		.startup.single		= smpboot_create_threads,
+		.teardown.single	= NULL,
 		.cant_stop		= true,
 	},
 	[CPUHP_PERF_PREPARE] = {
-		.name = "perf prepare",
-		.startup = perf_event_init_cpu,
-		.teardown = perf_event_exit_cpu,
+		.name			= "perf:prepare",
+		.startup.single		= perf_event_init_cpu,
+		.teardown.single	= perf_event_exit_cpu,
 	},
 	[CPUHP_WORKQUEUE_PREP] = {
-		.name = "workqueue prepare",
-		.startup = workqueue_prepare_cpu,
-		.teardown = NULL,
+		.name			= "workqueue:prepare",
+		.startup.single		= workqueue_prepare_cpu,
+		.teardown.single	= NULL,
 	},
 	[CPUHP_HRTIMERS_PREPARE] = {
-		.name = "hrtimers prepare",
-		.startup = hrtimers_prepare_cpu,
-		.teardown = hrtimers_dead_cpu,
+		.name			= "hrtimers:prepare",
+		.startup.single		= hrtimers_prepare_cpu,
+		.teardown.single	= hrtimers_dead_cpu,
 	},
 	[CPUHP_SMPCFD_PREPARE] = {
-		.name = "SMPCFD prepare",
-		.startup = smpcfd_prepare_cpu,
-		.teardown = smpcfd_dead_cpu,
+		.name			= "smpcfd:prepare",
+		.startup.single		= smpcfd_prepare_cpu,
+		.teardown.single	= smpcfd_dead_cpu,
+	},
+	[CPUHP_RELAY_PREPARE] = {
+		.name			= "relay:prepare",
+		.startup.single		= relay_prepare_cpu,
+		.teardown.single	= NULL,
+	},
+	[CPUHP_SLAB_PREPARE] = {
+		.name			= "slab:prepare",
+		.startup.single		= slab_prepare_cpu,
+		.teardown.single	= slab_dead_cpu,
 	},
 	[CPUHP_RCUTREE_PREP] = {
-		.name = "RCU-tree prepare",
-		.startup = rcutree_prepare_cpu,
-		.teardown = rcutree_dead_cpu,
+		.name			= "RCU/tree:prepare",
+		.startup.single		= rcutree_prepare_cpu,
+		.teardown.single	= rcutree_dead_cpu,
 	},
 	/*
 	 * Preparatory and dead notifiers. Will be replaced once the notifiers
@@ -1292,8 +1297,8 @@ static struct cpuhp_step cpuhp_bp_states[] = {
 	 */
 	[CPUHP_NOTIFY_PREPARE] = {
 		.name			= "notify:prepare",
-		.startup		= notify_prepare,
-		.teardown		= notify_dead,
+		.startup.single		= notify_prepare,
+		.teardown.single	= notify_dead,
 		.skip_onerr		= true,
 		.cant_stop		= true,
 	},
@@ -1303,20 +1308,21 @@ static struct cpuhp_step cpuhp_bp_states[] = {
 	 * otherwise a RCU stall occurs.
 	 */
 	[CPUHP_TIMERS_DEAD] = {
-		.name = "timers dead",
-		.startup = NULL,
-		.teardown = timers_dead_cpu,
+		.name			= "timers:dead",
+		.startup.single		= NULL,
+		.teardown.single	= timers_dead_cpu,
 	},
 	/* Kicks the plugged cpu into life */
 	[CPUHP_BRINGUP_CPU] = {
 		.name			= "cpu:bringup",
-		.startup		= bringup_cpu,
-		.teardown		= NULL,
+		.startup.single		= bringup_cpu,
+		.teardown.single	= NULL,
 		.cant_stop		= true,
 	},
 	[CPUHP_AP_SMPCFD_DYING] = {
-		.startup = NULL,
-		.teardown = smpcfd_dying_cpu,
+		.name			= "smpcfd:dying",
+		.startup.single		= NULL,
+		.teardown.single	= smpcfd_dying_cpu,
 	},
 	/*
 	 * Handled on controll processor until the plugged processor manages
@@ -1324,8 +1330,8 @@ static struct cpuhp_step cpuhp_bp_states[] = {
 	 */
 	[CPUHP_TEARDOWN_CPU] = {
 		.name			= "cpu:teardown",
-		.startup		= NULL,
-		.teardown		= takedown_cpu,
+		.startup.single		= NULL,
+		.teardown.single	= takedown_cpu,
 		.cant_stop		= true,
 	},
 #else
@@ -1351,24 +1357,13 @@ static struct cpuhp_step cpuhp_ap_states[] = {
 	/* First state is scheduler control. Interrupts are disabled */
 	[CPUHP_AP_SCHED_STARTING] = {
 		.name			= "sched:starting",
-		.startup		= sched_cpu_starting,
-		.teardown		= sched_cpu_dying,
+		.startup.single		= sched_cpu_starting,
+		.teardown.single	= sched_cpu_dying,
 	},
 	[CPUHP_AP_RCUTREE_DYING] = {
-		.startup = NULL,
-		.teardown = rcutree_dying_cpu,
-	},
-	/*
-	 * Low level startup/teardown notifiers. Run with interrupts
-	 * disabled. Will be removed once the notifiers are converted to
-	 * states.
-	 */
-	[CPUHP_AP_NOTIFY_STARTING] = {
-		.name			= "notify:starting",
-		.startup		= notify_starting,
-		.teardown		= notify_dying,
-		.skip_onerr		= true,
-		.cant_stop		= true,
+		.name			= "RCU/tree:dying",
+		.startup.single		= NULL,
+		.teardown.single	= rcutree_dying_cpu,
 	},
 	/* Entry state on starting. Interrupts enabled from here on. Transient
 	 * state for synchronsization */
@@ -1377,24 +1372,24 @@ static struct cpuhp_step cpuhp_ap_states[] = {
 	},
 	/* Handle smpboot threads park/unpark */
 	[CPUHP_AP_SMPBOOT_THREADS] = {
-		.name			= "smpboot:threads",
-		.startup		= smpboot_unpark_threads,
-		.teardown		= NULL,
+		.name			= "smpboot/threads:online",
+		.startup.single		= smpboot_unpark_threads,
+		.teardown.single	= NULL,
 	},
 	[CPUHP_AP_PERF_ONLINE] = {
-		.name = "perf online",
-		.startup = perf_event_init_cpu,
-		.teardown = perf_event_exit_cpu,
+		.name			= "perf:online",
+		.startup.single		= perf_event_init_cpu,
+		.teardown.single	= perf_event_exit_cpu,
 	},
 	[CPUHP_AP_WORKQUEUE_ONLINE] = {
-		.name = "workqueue online",
-		.startup = workqueue_online_cpu,
-		.teardown = workqueue_offline_cpu,
+		.name			= "workqueue:online",
+		.startup.single		= workqueue_online_cpu,
+		.teardown.single	= workqueue_offline_cpu,
 	},
 	[CPUHP_AP_RCUTREE_ONLINE] = {
-		.name = "RCU-tree online",
-		.startup = rcutree_online_cpu,
-		.teardown = rcutree_offline_cpu,
+		.name			= "RCU/tree:online",
+		.startup.single		= rcutree_online_cpu,
+		.teardown.single	= rcutree_offline_cpu,
 	},
 
 	/*
@@ -1403,8 +1398,8 @@ static struct cpuhp_step cpuhp_ap_states[] = {
 	 */
 	[CPUHP_AP_NOTIFY_ONLINE] = {
 		.name			= "notify:online",
-		.startup		= notify_online,
-		.teardown		= notify_down_prepare,
+		.startup.single		= notify_online,
+		.teardown.single	= notify_down_prepare,
 		.skip_onerr		= true,
 	},
 #endif
@@ -1416,16 +1411,16 @@ static struct cpuhp_step cpuhp_ap_states[] = {
 	/* Last state is scheduler control setting the cpu active */
 	[CPUHP_AP_ACTIVE] = {
 		.name			= "sched:active",
-		.startup		= sched_cpu_activate,
-		.teardown		= sched_cpu_deactivate,
+		.startup.single		= sched_cpu_activate,
+		.teardown.single	= sched_cpu_deactivate,
 	},
 #endif
 
 	/* CPU is fully up and running. */
 	[CPUHP_ONLINE] = {
 		.name			= "online",
-		.startup		= NULL,
-		.teardown		= NULL,
+		.startup.single		= NULL,
+		.teardown.single	= NULL,
 	},
 };
 
@@ -1448,8 +1443,8 @@ static void cpuhp_store_callbacks(enum cpuhp_state state,
 
 	mutex_lock(&cpuhp_state_mutex);
 	sp = cpuhp_get_step(state);
-	sp->startup = startup;
-	sp->teardown = teardown;
+	sp->startup.single = startup;
+	sp->teardown.single = teardown;
 	sp->name = name;
 	sp->multi_instance = multi_instance;
 	INIT_HLIST_HEAD(&sp->list);
@@ -1458,7 +1453,7 @@ static void cpuhp_store_callbacks(enum cpuhp_state state,
 
 static void *cpuhp_get_teardown_cb(enum cpuhp_state state)
 {
-	return cpuhp_get_step(state)->teardown;
+	return cpuhp_get_step(state)->teardown.single;
 }
 
 /*
@@ -1471,7 +1466,8 @@ static int cpuhp_issue_call(int cpu, enum cpuhp_state state, bool bringup,
 	struct cpuhp_step *sp = cpuhp_get_step(state);
 	int ret;
 
-	if ((bringup && !sp->startup) || (!bringup && !sp->teardown))
+	if ((bringup && !sp->startup.single) ||
+	    (!bringup && !sp->teardown.single))
 		return 0;
 	/*
 	 * The non AP bound callbacks can fail on bringup. On teardown
@@ -1549,7 +1545,7 @@ int __cpuhp_state_add_instance(enum cpuhp_state state, struct hlist_node *node,
 
 	get_online_cpus();
 
-	if (!invoke || !sp->startup_multi)
+	if (!invoke || !sp->startup.multi)
 		goto add_node;
 
 	/*
@@ -1565,7 +1561,7 @@ int __cpuhp_state_add_instance(enum cpuhp_state state, struct hlist_node *node,
 
 		ret = cpuhp_issue_call(cpu, state, true, node);
 		if (ret) {
-			if (sp->teardown_multi)
+			if (sp->teardown.multi)
 				cpuhp_rollback_install(cpu, state, node);
 			goto err;
 		}
