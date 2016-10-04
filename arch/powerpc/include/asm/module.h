@@ -12,7 +12,14 @@
 #include <linux/list.h>
 #include <asm/bug.h>
 #include <asm-generic/module.h>
+#include <asm/elf_util.h>
 
+/* Both low and high 16 bits are added as SIGNED additions, so if low
+   16 bits has high bit set, high 16 bits must be adjusted.  These
+   macros do that (stolen from binutils). */
+#define PPC_LO(v) ((v) & 0xffff)
+#define PPC_HI(v) (((v) >> 16) & 0xffff)
+#define PPC_HA(v) PPC_HI ((v) + 0x8000)
 
 #ifndef __powerpc64__
 /*
@@ -33,8 +40,7 @@ struct ppc_plt_entry {
 
 struct mod_arch_specific {
 #ifdef __powerpc64__
-	unsigned int stubs_section;	/* Index of stubs section in module */
-	unsigned int toc_section;	/* What section is the TOC? */
+	struct elf_info elf_info;
 	bool toc_fixed;			/* Have we fixed up .TOC.? */
 #ifdef CONFIG_DYNAMIC_FTRACE
 	unsigned long toc;
@@ -89,6 +95,10 @@ static inline int module_finalize_ftrace(struct module *mod, const Elf_Shdr *sec
 	return 0;
 }
 #endif
+
+unsigned long stub_for_addr(const struct elf_info *elf_info, unsigned long addr,
+			    const char *obj_name);
+int restore_r2(u32 *instruction, const char *obj_name);
 
 struct exception_table_entry;
 void sort_ex_table(struct exception_table_entry *start,

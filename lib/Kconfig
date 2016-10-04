@@ -185,6 +185,13 @@ config CRC8
 	  when they need to do cyclic redundancy check according CRC8
 	  algorithm. Module will be called crc8.
 
+config CRC64_ECMA
+	tristate "CRC64 ECMA function"
+	help
+	  This option provides CRC64 ECMA function. Drivers may select this
+	  when they need to do cyclic redundancy check according to the CRC64
+	  ECMA algorithm.
+
 config AUDIT_GENERIC
 	bool
 	depends on AUDIT && !AUDIT_ARCH
@@ -456,9 +463,6 @@ config NLATTR
 #
 config GENERIC_ATOMIC64
        bool
-
-config ARCH_HAS_ATOMIC64_DEC_IF_POSITIVE
-	def_bool y if GENERIC_ATOMIC64
 
 config LRU_CACHE
 	tristate
