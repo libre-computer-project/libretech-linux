@@ -13,6 +13,7 @@
 #include <linux/of.h>
 #include <linux/mfd/stmpe.h>
 #include <linux/seq_file.h>
+#include <linux/bitops.h>
 
 /*
  * These registers are modified under the irq bus lock and cached to avoid
@@ -42,7 +43,7 @@ static int stmpe_gpio_get(struct gpio_chip *chip, unsigned offset)
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(chip);
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 	u8 reg = stmpe->regs[STMPE_IDX_GPMR_LSB + (offset / 8)];
-	u8 mask = 1 << (offset % 8);
+	u8 mask = BIT(offset % 8);
 	int ret;
 
 	ret = stmpe_reg_read(stmpe, reg);
@@ -58,7 +59,7 @@ static void stmpe_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 	int which = val ? STMPE_IDX_GPSR_LSB : STMPE_IDX_GPCR_LSB;
 	u8 reg = stmpe->regs[which + (offset / 8)];
-	u8 mask = 1 << (offset % 8);
+	u8 mask = BIT(offset % 8);
 
 	/*
 	 * Some variants have single register for gpio set/clear functionality.
@@ -76,7 +77,7 @@ static int stmpe_gpio_get_direction(struct gpio_chip *chip,
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(chip);
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 	u8 reg = stmpe->regs[STMPE_IDX_GPDR_LSB] - (offset / 8);
-	u8 mask = 1 << (offset % 8);
+	u8 mask = BIT(offset % 8);
 	int ret;
 
 	ret = stmpe_reg_read(stmpe, reg);
@@ -92,7 +93,7 @@ static int stmpe_gpio_direction_output(struct gpio_chip *chip,
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(chip);
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 	u8 reg = stmpe->regs[STMPE_IDX_GPDR_LSB + (offset / 8)];
-	u8 mask = 1 << (offset % 8);
+	u8 mask = BIT(offset % 8);
 
 	stmpe_gpio_set(chip, offset, val);
 
@@ -105,7 +106,7 @@ static int stmpe_gpio_direction_input(struct gpio_chip *chip,
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(chip);
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 	u8 reg = stmpe->regs[STMPE_IDX_GPDR_LSB + (offset / 8)];
-	u8 mask = 1 << (offset % 8);
+	u8 mask = BIT(offset % 8);
 
 	return stmpe_set_bits(stmpe, reg, mask, 0);
 }
@@ -115,13 +116,13 @@ static int stmpe_gpio_request(struct gpio_chip *chip, unsigned offset)
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(chip);
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 
-	if (stmpe_gpio->norequest_mask & (1 << offset))
+	if (stmpe_gpio->norequest_mask & BIT(offset))
 		return -EINVAL;
 
-	return stmpe_set_altfunc(stmpe, 1 << offset, STMPE_BLOCK_GPIO);
+	return stmpe_set_altfunc(stmpe, BIT(offset), STMPE_BLOCK_GPIO);
 }
 
-static struct gpio_chip template_chip = {
+static const struct gpio_chip template_chip = {
 	.label			= "stmpe",
 	.owner			= THIS_MODULE,
 	.get_direction		= stmpe_gpio_get_direction,
@@ -139,7 +140,7 @@ static int stmpe_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(gc);
 	int offset = d->hwirq;
 	int regoffset = offset / 8;
-	int mask = 1 << (offset % 8);
+	int mask = BIT(offset % 8);
 
 	if (type & IRQ_TYPE_LEVEL_LOW || type & IRQ_TYPE_LEVEL_HIGH)
 		return -EINVAL;
@@ -217,7 +218,7 @@ static void stmpe_gpio_irq_mask(struct irq_data *d)
 	struct stmpe_gpio *stmpe_gpio = gpiochip_get_data(gc);
 	int offset = d->hwirq;
 	int regoffset = offset / 8;
-	int mask = 1 << (offset % 8);
+	int mask = BIT(offset % 8);
 
 	stmpe_gpio->regs[REG_IE][regoffset] &= ~mask;
 }
@@ -229,7 +230,7 @@ static void stmpe_gpio_irq_unmask(struct irq_data *d)
 	struct stmpe *stmpe = stmpe_gpio->stmpe;
 	int offset = d->hwirq;
 	int regoffset = offset / 8;
-	int mask = 1 << (offset % 8);
+	int mask = BIT(offset % 8);
 
 	stmpe_gpio->regs[REG_IE][regoffset] |= mask;
 
@@ -253,7 +254,7 @@ static void stmpe_dbg_show_one(struct seq_file *s,
 	bool val = !!stmpe_gpio_get(gc, offset);
 	u8 bank = offset / 8;
 	u8 dir_reg = stmpe->regs[STMPE_IDX_GPDR_LSB + bank];
-	u8 mask = 1 << (offset % 8);
+	u8 mask = BIT(offset % 8);
 	int ret;
 	u8 dir;
 
@@ -400,7 +401,7 @@ static irqreturn_t stmpe_gpio_irq(int irq, void *dev)
 							 line);
 
 			handle_nested_irq(child_irq);
-			stat &= ~(1 << bit);
+			stat &= ~BIT(bit);
 		}
 
 		/*
@@ -449,6 +450,8 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 
 	of_property_read_u32(np, "st,norequest-mask",
 			&stmpe_gpio->norequest_mask);
+	if (stmpe_gpio->norequest_mask)
+		stmpe_gpio->chip.irq_need_valid_mask = true;
 
 	if (irq < 0)
 		dev_info(&pdev->dev,
@@ -472,6 +475,14 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev, "unable to get irq: %d\n", ret);
 			goto out_disable;
+		}
+		if (stmpe_gpio->norequest_mask) {
+			int i;
+
+			/* Forbid unused lines to be mapped as IRQs */
+			for (i = 0; i < sizeof(u32); i++)
+				if (stmpe_gpio->norequest_mask & BIT(i))
+					clear_bit(i, stmpe_gpio->chip.irq_valid_mask);
 		}
 		ret =  gpiochip_irqchip_add(&stmpe_gpio->chip,
 					    &stmpe_gpio_irq_chip,
