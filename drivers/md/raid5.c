@@ -6372,7 +6372,7 @@ static void free_conf(struct r5conf *conf)
 {
 	if (conf->log)
 		r5l_exit_log(conf->log);
-	if (conf->shrinker.seeks)
+	if (conf->shrinker.nr_deferred)
 		unregister_shrinker(&conf->shrinker);
 
 	free_thread_groups(conf);
@@ -6670,7 +6670,12 @@ static struct r5conf *setup_conf(struct mddev *mddev)
 	conf->shrinker.count_objects = raid5_cache_count;
 	conf->shrinker.batch = 128;
 	conf->shrinker.flags = 0;
-	register_shrinker(&conf->shrinker);
+	if (register_shrinker(&conf->shrinker)) {
+		printk(KERN_ERR
+		       "md/raid:%s: couldn't register shrinker.\n",
+		       mdname(mddev));
+		goto abort;
+	}
 
 	sprintf(pers_name, "raid%d", mddev->new_level);
 	conf->thread = md_register_thread(raid5d, mddev, pers_name);
@@ -7066,6 +7071,8 @@ static int raid5_run(struct mddev *mddev)
 		else
 			queue_flag_clear_unlocked(QUEUE_FLAG_DISCARD,
 						mddev->queue);
+
+		blk_queue_max_hw_sectors(mddev->queue, UINT_MAX);
 	}
 
 	if (journal_dev) {
