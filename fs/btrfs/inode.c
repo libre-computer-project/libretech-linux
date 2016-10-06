@@ -372,7 +372,7 @@ static noinline int add_async_extent(struct async_cow *cow,
 	return 0;
 }
 
-static inline int inode_need_compress(struct inode *inode)
+int inode_need_compress(struct inode *inode)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 
@@ -713,6 +713,17 @@ retry:
 					 async_extent->start +
 					 async_extent->ram_size - 1);
 
+			/*
+			 * We use 128KB as max extent size to calculate number
+			 * of outstanding extents for this extent before, now
+			 * it'll go throuth uncompressed IO, we need to use
+			 * 128MB as max extent size to re-calculate number of
+			 * outstanding extents for this extent.
+			 */
+			adjust_outstanding_extents(inode, async_extent->start,
+						   async_extent->start +
+						   async_extent->ram_size - 1,
+						   BTRFS_RESERVE_COMPRESS);
 			/* allocate blocks */
 			ret = cow_file_range(inode, async_cow->locked_page,
 					     async_extent->start,
@@ -1158,7 +1169,8 @@ static noinline void async_cow_free(struct btrfs_work *work)
 
 static int cow_file_range_async(struct inode *inode, struct page *locked_page,
 				u64 start, u64 end, int *page_started,
-				unsigned long *nr_written)
+				unsigned long *nr_written,
+				enum btrfs_metadata_reserve_type reserve_type)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	struct async_cow *async_cow;
@@ -1177,10 +1189,8 @@ static int cow_file_range_async(struct inode *inode, struct page *locked_page,
 		async_cow->locked_page = locked_page;
 		async_cow->start = start;
 
-		if (BTRFS_I(inode)->flags & BTRFS_INODE_NOCOMPRESS &&
-		    !btrfs_test_opt(fs_info, FORCE_COMPRESS))
-			cur_end = end;
-		else
+		cur_end = end;
+		if (reserve_type == BTRFS_RESERVE_COMPRESS)
 			cur_end = min(end, start + SZ_512K - 1);
 
 		async_cow->end = cur_end;
@@ -1580,21 +1590,37 @@ static int run_delalloc_range(struct inode *inode, struct page *locked_page,
 {
 	int ret;
 	int force_cow = need_force_cow(inode, start, end);
+	struct extent_io_tree *io_tree = &BTRFS_I(inode)->io_tree;
+	int need_compress;
+	enum btrfs_metadata_reserve_type reserve_type = BTRFS_RESERVE_NORMAL;
+
+	need_compress = test_range_bit(io_tree, start, end,
+				       EXTENT_COMPRESS, 1, NULL);
+	if (need_compress)
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 
 	if (BTRFS_I(inode)->flags & BTRFS_INODE_NODATACOW && !force_cow) {
+		if (need_compress)
+			adjust_outstanding_extents(inode, start, end,
+						   reserve_type);
+
 		ret = run_delalloc_nocow(inode, locked_page, start, end,
 					 page_started, 1, nr_written);
 	} else if (BTRFS_I(inode)->flags & BTRFS_INODE_PREALLOC && !force_cow) {
+		if (need_compress)
+			adjust_outstanding_extents(inode, start, end,
+						   reserve_type);
+
 		ret = run_delalloc_nocow(inode, locked_page, start, end,
 					 page_started, 0, nr_written);
-	} else if (!inode_need_compress(inode)) {
+	} else if (!need_compress) {
 		ret = cow_file_range(inode, locked_page, start, end, end,
 				      page_started, nr_written, 1, NULL);
 	} else {
 		set_bit(BTRFS_INODE_HAS_ASYNC_EXTENT,
 			&BTRFS_I(inode)->runtime_flags);
 		ret = cow_file_range_async(inode, locked_page, start, end,
-					   page_started, nr_written);
+				page_started, nr_written, reserve_type);
 	}
 	return ret;
 }
@@ -1613,6 +1639,8 @@ static void btrfs_split_extent_hook(struct inode *inode,
 	if (btrfs_is_free_space_inode(inode))
 		return;
 
+	if (orig->state & EXTENT_COMPRESS)
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 	max_extent_size = btrfs_max_extent_size(reserve_type);
 
 	size = orig->end - orig->start + 1;
@@ -1662,6 +1690,8 @@ static void btrfs_merge_extent_hook(struct inode *inode,
 	if (btrfs_is_free_space_inode(inode))
 		return;
 
+	if (other->state & EXTENT_COMPRESS)
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 	max_extent_size = btrfs_max_extent_size(reserve_type);
 
 	if (new->start > other->start)
@@ -1781,6 +1811,8 @@ static void btrfs_set_bit_hook(struct inode *inode,
 		u64 num_extents;
 		bool do_list = !btrfs_is_free_space_inode(inode);
 
+		if (*bits & EXTENT_COMPRESS)
+			reserve_type = BTRFS_RESERVE_COMPRESS;
 		max_extent_size = btrfs_max_extent_size(reserve_type);
 		num_extents = div64_u64(len + max_extent_size - 1,
 					max_extent_size);
@@ -1838,6 +1870,8 @@ static void btrfs_clear_bit_hook(struct inode *inode,
 		struct btrfs_root *root = BTRFS_I(inode)->root;
 		bool do_list = !btrfs_is_free_space_inode(inode);
 
+		if (state->state & EXTENT_COMPRESS)
+			reserve_type = BTRFS_RESERVE_COMPRESS;
 		max_extent_size = btrfs_max_extent_size(reserve_type);
 		num_extents = div64_u64(len + max_extent_size - 1,
 					max_extent_size);
@@ -2040,18 +2074,30 @@ static noinline int add_pending_csums(struct btrfs_trans_handle *trans,
 	return 0;
 }
 
+/*
+ * Normally flag should be 0, but if a data range will go through compress path,
+ * set flag to 1. Note: here we should ensure enum btrfs_metadata_reserve_type
+ * and flag's values are consistent.
+ */
 int btrfs_set_extent_delalloc(struct inode *inode, u64 start, u64 end,
 			      struct extent_state **cached_state,
 			      enum btrfs_metadata_reserve_type reserve_type)
 {
 	int ret;
+	unsigned bits;
 	u64 max_extent_size = btrfs_max_extent_size(reserve_type);
 	u64 num_extents = div64_u64(end - start + max_extent_size,
 				    max_extent_size);
 
+	/* compression path */
+	if (reserve_type == BTRFS_RESERVE_COMPRESS)
+		bits = EXTENT_DELALLOC | EXTENT_COMPRESS | EXTENT_UPTODATE;
+	else
+		bits = EXTENT_DELALLOC | EXTENT_UPTODATE;
+
 	WARN_ON((end & (PAGE_SIZE - 1)) == 0);
-	ret = set_extent_delalloc(&BTRFS_I(inode)->io_tree, start, end,
-				  cached_state);
+	ret = set_extent_bit(&BTRFS_I(inode)->io_tree, start, end,
+			     bits, NULL, cached_state, GFP_NOFS);
 
 	/*
 	 * btrfs_delalloc_reserve_metadata() will first add number of
@@ -2078,14 +2124,20 @@ int btrfs_set_extent_defrag(struct inode *inode, u64 start, u64 end,
 			    enum btrfs_metadata_reserve_type reserve_type)
 {
 	int ret;
+	unsigned bits;
 	u64 max_extent_size = btrfs_max_extent_size(reserve_type);
 	u64 num_extents = div64_u64(end - start + max_extent_size,
 				    max_extent_size);
 
 	WARN_ON((end & (PAGE_SIZE - 1)) == 0);
-	ret = set_extent_defrag(&BTRFS_I(inode)->io_tree, start, end,
-				cached_state);
+	if (reserve_type == BTRFS_RESERVE_COMPRESS)
+		bits = EXTENT_DELALLOC | EXTENT_UPTODATE | EXTENT_DEFRAG |
+				EXTENT_COMPRESS;
+	else
+		bits = EXTENT_DELALLOC | EXTENT_UPTODATE | EXTENT_DEFRAG;
 
+	ret = set_extent_bit(&BTRFS_I(inode)->io_tree, start, end,
+			     bits, NULL, cached_state, GFP_NOFS);
 	if (ret == 0 && !btrfs_is_free_space_inode(inode)) {
 		spin_lock(&BTRFS_I(inode)->lock);
 		BTRFS_I(inode)->outstanding_extents -= num_extents;
@@ -2144,6 +2196,8 @@ again:
 		goto again;
 	}
 
+	if (inode_need_compress(inode))
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 	ret = btrfs_delalloc_reserve_space(inode, page_start,
 					   PAGE_SIZE, reserve_type);
 	if (ret) {
@@ -3041,8 +3095,11 @@ static int btrfs_finish_ordered_io(struct btrfs_ordered_extent *ordered_extent)
 
 	trans->block_rsv = &fs_info->delalloc_block_rsv;
 
-	if (test_bit(BTRFS_ORDERED_COMPRESSED, &ordered_extent->flags))
+	if (test_bit(BTRFS_ORDERED_COMPRESSED, &ordered_extent->flags)) {
 		compress_type = ordered_extent->compress_type;
+		reserve_type = BTRFS_RESERVE_COMPRESS;
+	}
+
 	if (test_bit(BTRFS_ORDERED_PREALLOC, &ordered_extent->flags)) {
 		BUG_ON(compress_type);
 		ret = btrfs_mark_extent_written(trans, inode,
@@ -4815,6 +4872,9 @@ int btrfs_truncate_block(struct inode *inode, loff_t from, loff_t len,
 	u64 block_start;
 	u64 block_end;
 	enum btrfs_metadata_reserve_type reserve_type = BTRFS_RESERVE_NORMAL;
+
+	if (inode_need_compress(inode))
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 
 	if ((offset & (blocksize - 1)) == 0 &&
 	    (!len || ((len & (blocksize - 1)) == 0)))
@@ -9059,6 +9119,8 @@ int btrfs_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 	page_end = page_start + PAGE_SIZE - 1;
 	end = page_end;
 
+	if (inode_need_compress(inode))
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 	/*
 	 * Reserving delalloc space after obtaining the page lock can lead to
 	 * deadlock. For example, if a dirty page is locked by this function

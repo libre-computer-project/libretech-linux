@@ -5922,6 +5922,8 @@ u64 btrfs_max_extent_size(enum btrfs_metadata_reserve_type reserve_type)
 {
 	if (reserve_type == BTRFS_RESERVE_NORMAL)
 		return BTRFS_MAX_EXTENT_SIZE;
+	else if (reserve_type == BTRFS_RESERVE_COMPRESS)
+		return SZ_128K;
 
 	ASSERT(0);
 	return BTRFS_MAX_EXTENT_SIZE;
