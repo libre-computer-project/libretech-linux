@@ -53,10 +53,15 @@
 
 #define MUX_CLK_NUM_PARENTS		2
 
+#define PHYSEL_REG0			0x0
+#define PHYSEL_REG0_VALUE		0x10110181
+#define PHYSEL_REG1			0x4
+
 struct meson8b_dwmac {
 	struct platform_device	*pdev;
 
 	void __iomem		*regs;
+	void __iomem		*physel_regs;
 
 	phy_interface_t		phy_mode;
 
@@ -244,6 +249,23 @@ static int meson8b_init_prg_eth(struct meson8b_dwmac *dwmac)
 	meson8b_dwmac_mask_bits(dwmac, PRG_ETH0, PRG_ETH0_TX_AND_PHY_REF_CLK,
 				PRG_ETH0_TX_AND_PHY_REF_CLK);
 
+	/* Select PHY, either internal or external if specified */
+	if (!IS_ERR(dwmac->physel_regs) &&
+	    of_find_property(dwmac->pdev->dev.of_node,
+			     "amlogic,phy-select", NULL)) {
+		u32 val;
+
+		ret = of_property_read_u32(dwmac->pdev->dev.of_node,
+					   "amlogic,phy-select", &val);
+		if (ret) {
+			dev_err(&dwmac->pdev->dev, "invalid phy-select property\n");
+		} else {
+			writel(PHYSEL_REG0_VALUE,
+			       dwmac->physel_regs + PHYSEL_REG0);
+			writel(val, dwmac->physel_regs + PHYSEL_REG1);
+		}
+	}
+
 	return 0;
 }
 
@@ -271,6 +293,9 @@ static int meson8b_dwmac_probe(struct platform_device *pdev)
 	dwmac->regs = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(dwmac->regs))
 		return PTR_ERR(dwmac->regs);
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+	dwmac->physel_regs = devm_ioremap_resource(&pdev->dev, res);
 
 	dwmac->pdev = pdev;
 	dwmac->phy_mode = of_get_phy_mode(pdev->dev.of_node);
