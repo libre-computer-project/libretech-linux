@@ -226,6 +226,11 @@ config DP83867_PHY
 	---help---
 	  Currently supports the DP83867 PHY.
 
+config MESON_GXL_PHY
+	tristate "Amlogic Meson GXL Internal PHY"
+	---help---
+	  Currently has a driver for the Amlogic Meson GXL Internal PHY
+
 config FIXED_PHY
 	tristate "MDIO Bus/PHY emulation with fixed speed/link PHYs"
 	depends on PHYLIB
