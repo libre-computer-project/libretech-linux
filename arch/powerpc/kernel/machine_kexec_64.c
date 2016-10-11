@@ -648,9 +648,9 @@ int setup_purgatory(struct kimage *image, const void *slave_code,
 	return 0;
 }
 
-/*
- * setup_new_fdt() - modify /chosen and memory reservation for the next kernel
- * @fdt:
+/**
+ * setup_new_fdt() - modify /chosen and memory reservations for the next kernel
+ * @fdt:		Flattened device tree for the next kernel.
  * @initrd_load_addr:	Address where the next initrd will be loaded.
  * @initrd_len:		Size of the next initrd, or 0 if there will be none.
  * @cmdline:		Command line for the next kernel, or NULL if there will
@@ -661,33 +661,16 @@ int setup_purgatory(struct kimage *image, const void *slave_code,
 int setup_new_fdt(void *fdt, unsigned long initrd_load_addr,
 		  unsigned long initrd_len, const char *cmdline)
 {
-	uint64_t oldfdt_addr;
-	int i, ret, chosen_node;
+	int ret, chosen_node;
 	const void *prop;
 
 	/* Remove memory reservation for the current device tree. */
-	oldfdt_addr = __pa(initial_boot_params);
-	for (i = 0; i < fdt_num_mem_rsv(fdt); i++) {
-		uint64_t rsv_start, rsv_size;
-
-		ret = fdt_get_mem_rsv(fdt, i, &rsv_start, &rsv_size);
-		if (ret) {
-			pr_err("Malformed device tree.\n");
-			return -EINVAL;
-		}
-
-		if (rsv_start == oldfdt_addr &&
-		    rsv_size == fdt_totalsize(initial_boot_params)) {
-			ret = fdt_del_mem_rsv(fdt, i);
-			if (ret) {
-				pr_err("Error deleting fdt reservation.\n");
-				return -EINVAL;
-			}
-
-			pr_debug("Removed old device tree reservation.\n");
-			break;
-		}
-	}
+	ret = delete_fdt_mem_rsv(fdt, __pa(initial_boot_params),
+				 fdt_totalsize(initial_boot_params));
+	if (ret == 0)
+		pr_debug("Removed old device tree reservation.\n");
+	else if (ret != -ENOENT)
+		return ret;
 
 	chosen_node = fdt_path_offset(fdt, "/chosen");
 	if (chosen_node == -FDT_ERR_NOTFOUND) {
@@ -705,7 +688,7 @@ int setup_new_fdt(void *fdt, unsigned long initrd_load_addr,
 	/* Did we boot using an initrd? */
 	prop = fdt_getprop(fdt, chosen_node, "linux,initrd-start", NULL);
 	if (prop) {
-		uint64_t tmp_start, tmp_end, tmp_size, tmp_sizepg;
+		uint64_t tmp_start, tmp_end, tmp_size;
 
 		tmp_start = fdt64_to_cpu(*((const fdt64_t *) prop));
 
@@ -721,30 +704,14 @@ int setup_new_fdt(void *fdt, unsigned long initrd_load_addr,
 		 * reserve a multiple of PAGE_SIZE, so check for both.
 		 */
 		tmp_size = tmp_end - tmp_start;
-		tmp_sizepg = round_up(tmp_size, PAGE_SIZE);
-
-		/* Remove memory reservation for the current initrd. */
-		for (i = 0; i < fdt_num_mem_rsv(fdt); i++) {
-			uint64_t rsv_start, rsv_size;
-
-			ret = fdt_get_mem_rsv(fdt, i, &rsv_start, &rsv_size);
-			if (ret) {
-				pr_err("Malformed device tree.\n");
-				return -EINVAL;
-			}
-
-			if (rsv_start == tmp_start &&
-			    (rsv_size == tmp_size || rsv_size == tmp_sizepg)) {
-				ret = fdt_del_mem_rsv(fdt, i);
-				if (ret) {
-					pr_err("Error deleting fdt reservation.\n");
-					return -EINVAL;
-				}
-				pr_debug("Removed old initrd reservation.\n");
-
-				break;
-			}
-		}
+		ret = delete_fdt_mem_rsv(fdt, tmp_start, tmp_size);
+		if (ret == -ENOENT)
+			ret = delete_fdt_mem_rsv(fdt, tmp_start,
+						 round_up(tmp_size, PAGE_SIZE));
+		if (ret == 0)
+			pr_debug("Removed old initrd reservation.\n");
+		else if (ret != -ENOENT)
+			return ret;
 
 		/* If there's no new initrd, delete the old initrd's info. */
 		if (initrd_len == 0) {
@@ -802,6 +769,8 @@ int setup_new_fdt(void *fdt, unsigned long initrd_load_addr,
 		}
 	}
 
+	remove_ima_buffer(fdt, chosen_node);
+
 	ret = fdt_setprop(fdt, chosen_node, "linux,booted-from-kexec", NULL, 0);
 	if (ret) {
 		pr_err("Error setting up the new device tree.\n");
@@ -809,6 +778,38 @@ int setup_new_fdt(void *fdt, unsigned long initrd_load_addr,
 	}
 
 	return 0;
+}
+
+/**
+ * delete_fdt_mem_rsv - delete memory reservation with given address and size
+ *
+ * Return: 0 on success, or negative errno on error.
+ */
+int delete_fdt_mem_rsv(void *fdt, unsigned long start, unsigned long size)
+{
+	int i, ret, num_rsvs = fdt_num_mem_rsv(fdt);
+
+	for (i = 0; i < num_rsvs; i++) {
+		uint64_t rsv_start, rsv_size;
+
+		ret = fdt_get_mem_rsv(fdt, i, &rsv_start, &rsv_size);
+		if (ret) {
+			pr_err("Malformed device tree.\n");
+			return -EINVAL;
+		}
+
+		if (rsv_start == start && rsv_size == size) {
+			ret = fdt_del_mem_rsv(fdt, i);
+			if (ret) {
+				pr_err("Error deleting device tree reservation.\n");
+				return -EINVAL;
+			}
+
+			return 0;
+		}
+	}
+
+	return -ENOENT;
 }
 
 /**
