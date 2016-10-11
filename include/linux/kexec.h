@@ -289,6 +289,8 @@ phys_addr_t paddr_vmcoreinfo_note(void);
 	vmcoreinfo_append_str("VMALLOC_START=%lx\n", (unsigned long)value)
 #define VMCOREINFO_VMEMMAP_START(value) \
 	vmcoreinfo_append_str("VMEMMAP_START=%lx\n", (unsigned long)value)
+#define VMCOREINFO_PHYS_BASE(value) \
+	vmcoreinfo_append_str("PHYS_BASE=%lx\n", (unsigned long)value)
 
 extern struct kimage *kexec_image;
 extern struct kimage *kexec_crash_image;

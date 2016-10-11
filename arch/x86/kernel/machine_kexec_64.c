@@ -340,6 +340,7 @@ void arch_crash_save_vmcoreinfo(void)
 	VMCOREINFO_PAGE_OFFSET(PAGE_OFFSET);
 	VMCOREINFO_VMALLOC_START(VMALLOC_START);
 	VMCOREINFO_VMEMMAP_START(VMEMMAP_START);
+	VMCOREINFO_PHYS_BASE(phys_base);
 }
 
 /* arch-dependent functionality related to kexec file-based syscall */
