@@ -11,9 +11,18 @@
 
 #include "ppc_asm.h"
 
+/*
+ * The ppc64 kexec purgatory uses this file and packages it in ELF64,
+ * so it needs dot symbols for the ppc64 big endian ABI. This macro
+ * allows it to create those symbols.
+ */
+#ifndef DOTSYM
+#define DOTSYM(a)	a
+#endif
+
 	.text
-	.globl	strcpy
-strcpy:
+	.globl	DOTSYM(strcpy)
+DOTSYM(strcpy):
 	addi	r5,r3,-1
 	addi	r4,r4,-1
 1:	lbzu	r0,1(r4)
@@ -22,8 +31,8 @@ strcpy:
 	bne	1b
 	blr
 
-	.globl	strncpy
-strncpy:
+	.globl	DOTSYM(strncpy)
+DOTSYM(strncpy):
 	cmpwi	0,r5,0
 	beqlr
 	mtctr	r5
@@ -35,8 +44,8 @@ strncpy:
 	bdnzf	2,1b		/* dec ctr, branch if ctr != 0 && !cr0.eq */
 	blr
 
-	.globl	strcat
-strcat:
+	.globl	DOTSYM(strcat)
+DOTSYM(strcat):
 	addi	r5,r3,-1
 	addi	r4,r4,-1
 1:	lbzu	r0,1(r5)
@@ -49,8 +58,8 @@ strcat:
 	bne	1b
 	blr
 
-	.globl	strchr
-strchr:
+	.globl	DOTSYM(strchr)
+DOTSYM(strchr):
 	addi	r3,r3,-1
 1:	lbzu	r0,1(r3)
 	cmpw	0,r0,r4
@@ -60,8 +69,8 @@ strchr:
 	li	r3,0
 	blr
 
-	.globl	strcmp
-strcmp:
+	.globl	DOTSYM(strcmp)
+DOTSYM(strcmp):
 	addi	r5,r3,-1
 	addi	r4,r4,-1
 1:	lbzu	r3,1(r5)
@@ -72,8 +81,8 @@ strcmp:
 	beq	1b
 	blr
 
-	.globl	strncmp
-strncmp:
+	.globl	DOTSYM(strncmp)
+DOTSYM(strncmp):
 	mtctr	r5
 	addi	r5,r3,-1
 	addi	r4,r4,-1
@@ -85,8 +94,8 @@ strncmp:
 	bdnzt	eq,1b
 	blr
 
-	.globl	strlen
-strlen:
+	.globl	DOTSYM(strlen)
+DOTSYM(strlen):
 	addi	r4,r3,-1
 1:	lbzu	r0,1(r4)
 	cmpwi	0,r0,0
@@ -94,8 +103,8 @@ strlen:
 	subf	r3,r3,r4
 	blr
 
-	.globl	memset
-memset:
+	.globl	DOTSYM(memset)
+DOTSYM(memset):
 	rlwimi	r4,r4,8,16,23
 	rlwimi	r4,r4,16,0,15
 	addi	r6,r3,-4
@@ -120,14 +129,14 @@ memset:
 	bdnz	8b
 	blr
 
-	.globl	memmove
-memmove:
+	.globl	DOTSYM(memmove)
+DOTSYM(memmove):
 	cmplw	0,r3,r4
-	bgt	backwards_memcpy
+	bgt	DOTSYM(backwards_memcpy)
 	/* fall through */
 
-	.globl	memcpy
-memcpy:
+	.globl	DOTSYM(memcpy)
+DOTSYM(memcpy):
 	rlwinm.	r7,r5,32-3,3,31		/* r7 = r5 >> 3 */
 	addi	r6,r3,-4
 	addi	r4,r4,-4
@@ -175,8 +184,8 @@ memcpy:
 	mtctr	r7
 	b	1b
 
-	.globl	backwards_memcpy
-backwards_memcpy:
+	.globl	DOTSYM(backwards_memcpy)
+DOTSYM(backwards_memcpy):
 	rlwinm.	r7,r5,32-3,3,31		/* r7 = r5 >> 3 */
 	add	r6,r3,r5
 	add	r4,r4,r5
@@ -219,8 +228,8 @@ backwards_memcpy:
 	mtctr	r7
 	b	1b
 
-	.globl	memchr
-memchr:
+	.globl	DOTSYM(memchr)
+DOTSYM(memchr):
 	cmpwi	0,r5,0
 	blelr
 	mtctr	r5
@@ -232,8 +241,8 @@ memchr:
 	li	r3,0
 	blr
 
-	.globl	memcmp
-memcmp:
+	.globl	DOTSYM(memcmp)
+DOTSYM(memcmp):
 	cmpwi	0,r5,0
 	ble	2f
 	mtctr	r5
@@ -253,8 +262,8 @@ memcmp:
  *
  * flush_cache(addr, len)
  */
-	.global	flush_cache
-flush_cache:
+	.globl	DOTSYM(flush_cache)
+DOTSYM(flush_cache):
 	addi	4,4,0x1f	/* len = (len + 0x1f) / 0x20 */
 	rlwinm.	4,4,27,5,31
 	mtctr	4
