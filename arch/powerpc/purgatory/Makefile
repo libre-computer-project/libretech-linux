@@ -23,10 +23,12 @@ KBUILD_AFLAGS := -fno-exceptions -msoft-float -m$(CONFIG_WORD_SIZE) \
 		-D__ASSEMBLY__
 
 ifeq ($(CONFIG_CPU_LITTLE_ENDIAN),y)
-KBUILD_CFLAGS += $(call cc-option,-mabi=elfv2,$(call cc-option,-mcall-aixdesc))
-KBUILD_AFLAGS += $(call cc-option,-mabi=elfv2)
+KBUILD_CFLAGS += $(call cc-option,-mabi=elfv2,$(call cc-option,-mcall-aixdesc)) \
+		-mlittle-endian
+KBUILD_AFLAGS += $(call cc-option,-mabi=elfv2) -mlittle-endian
 else
-KBUILD_CFLAGS += $(call cc-option,-mcall-aixdesc)
+KBUILD_CFLAGS += $(call cc-option,-mcall-aixdesc) -mbig-endian
+KBUILD_AFLAGS += -mbig-endian
 endif
 
 $(obj)/purgatory.ro: $(PURGATORY_OBJS) FORCE
