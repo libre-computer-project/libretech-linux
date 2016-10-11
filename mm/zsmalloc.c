@@ -1770,9 +1770,12 @@ struct zs_compact_control {
 	/* Destination page for migration which should be a first page
 	 * of zspage. */
 	struct page *d_page;
-	 /* Starting object index within @s_page which used for live object
-	  * in the subpage. */
+	/* Starting object index within @s_page which used for live object
+	 * in the subpage. */
 	int obj_idx;
+
+	unsigned long nr_migrated_obj;
+	unsigned long nr_freed_pages;
 };
 
 static int migrate_zspage(struct zs_pool *pool, struct size_class *class,
@@ -1806,6 +1809,7 @@ static int migrate_zspage(struct zs_pool *pool, struct size_class *class,
 		free_obj = obj_malloc(class, get_zspage(d_page), handle);
 		zs_object_copy(class, free_obj, used_obj);
 		obj_idx++;
+		cc->nr_migrated_obj++;
 		/*
 		 * record_obj updates handle's value to free_obj and it will
 		 * invalidate lock bit(ie, HANDLE_PIN_BIT) of handle, which
@@ -2263,7 +2267,10 @@ static unsigned long zs_can_compact(struct size_class *class)
 
 static void __zs_compact(struct zs_pool *pool, struct size_class *class)
 {
-	struct zs_compact_control cc;
+	struct zs_compact_control cc = {
+		.nr_migrated_obj = 0,
+		.nr_freed_pages = 0,
+	};
 	struct zspage *src_zspage;
 	struct zspage *dst_zspage = NULL;
 
@@ -2295,7 +2302,7 @@ static void __zs_compact(struct zs_pool *pool, struct size_class *class)
 		putback_zspage(class, dst_zspage);
 		if (putback_zspage(class, src_zspage) == ZS_EMPTY) {
 			free_zspage(pool, class, src_zspage);
-			pool->stats.pages_compacted += class->pages_per_zspage;
+			cc.nr_freed_pages += class->pages_per_zspage;
 		}
 		spin_unlock(&class->lock);
 		cond_resched();
@@ -2306,6 +2313,9 @@ static void __zs_compact(struct zs_pool *pool, struct size_class *class)
 		putback_zspage(class, src_zspage);
 
 	spin_unlock(&class->lock);
+
+	pool->stats.pages_compacted += cc.nr_freed_pages;
+	trace_zs_compact(class->index, cc.nr_migrated_obj, cc.nr_freed_pages);
 }
 
 unsigned long zs_compact(struct zs_pool *pool)
@@ -2314,7 +2324,7 @@ unsigned long zs_compact(struct zs_pool *pool)
 	struct size_class *class;
 	unsigned long pages_compacted_before = pool->stats.pages_compacted;
 
-	trace_zsmalloc_compact_start(pool->name);
+	trace_zs_compact_start(pool->name);
 
 	for (i = zs_size_classes - 1; i >= 0; i--) {
 		class = pool->size_class[i];
@@ -2325,9 +2335,8 @@ unsigned long zs_compact(struct zs_pool *pool)
 		__zs_compact(pool, class);
 	}
 
-	trace_zsmalloc_compact_end(pool->name,
-		pool->stats.pages_compacted - pages_compacted_before,
-		pool->stats.pages_compacted);
+	trace_zs_compact_end(pool->name,
+		pool->stats.pages_compacted - pages_compacted_before);
 
 	return pool->stats.pages_compacted;
 }
