@@ -64,7 +64,9 @@ static inline unsigned long my_r2(const struct elf_info *elf_info)
 }
 
 int elf64_apply_relocate_add(const struct elf_info *elf_info,
-			     const char *strtab, unsigned int symindex,
-			     unsigned int relsec, const char *obj_name);
+			     const char *strtab, const Elf64_Rela *rela,
+			     unsigned int num_rela, void *syms_base,
+			     void *loc_base, Elf64_Addr addr_base,
+			     const char *obj_name);
 
 #endif /* _ASM_POWERPC_ELF_UTIL_H */

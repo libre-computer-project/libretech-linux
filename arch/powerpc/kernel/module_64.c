@@ -439,16 +439,26 @@ int restore_r2(u32 *instruction, const char *obj_name)
 	return 1;
 }
 
+/*
+ * When this function is called, the module is already at its final location in
+ * memory, so Elf64_Shdr.sh_addr can be used for accessing the section
+ * contents as well as the base address for relocations.
+ */
 int apply_relocate_add(Elf64_Shdr *sechdrs,
 		       const char *strtab,
 		       unsigned int symindex,
 		       unsigned int relsec,
 		       struct module *me)
 {
+	Elf64_Shdr *rel_section = &sechdrs[relsec];
+	void *syms_base = (void *) sechdrs[symindex].sh_addr;
+	Elf64_Addr addr_base = sechdrs[rel_section->sh_info].sh_addr;
+	const Elf64_Rela *rela = (const Elf64_Rela *) rel_section->sh_addr;
+	unsigned int num_rela = rel_section->sh_size / sizeof(Elf64_Rela);
 	Elf64_Sym *sym;
 
 	pr_debug("Applying ADD relocate section %u to %u\n", relsec,
-	       sechdrs[relsec].sh_info);
+		 rel_section->sh_info);
 
 	/* First time we're called, we can fix up .TOC. */
 	if (!me->arch.toc_fixed) {
@@ -460,8 +470,9 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 		me->arch.toc_fixed = true;
 	}
 
-	return elf64_apply_relocate_add(&me->arch.elf_info, strtab, symindex,
-					relsec, me->name);
+	return elf64_apply_relocate_add(&me->arch.elf_info, strtab, rela,
+					num_rela, syms_base, (void *) addr_base,
+					addr_base, me->name);
 }
 
 #ifdef CONFIG_DYNAMIC_FTRACE
