@@ -5012,6 +5012,47 @@ static void wake_all_tickets(struct list_head *head)
 }
 
 /*
+ * This function must be protected by btrfs_space_info's lock.
+ * In shrink_delalloc(), if can_overcommit() returns true, shrink_delalloc()
+ * will not shrink delalloc bytes any more, in this case we should check
+ * whether some tickcts' requests can overcommit, if some can, we can satisfy
+ * them timely and directly.
+ */
+static void try_to_wake_tickets(struct btrfs_root *root,
+				struct btrfs_space_info *space_info)
+{
+	struct reserve_ticket *ticket;
+	struct list_head *head = &space_info->priority_tickets;
+	enum btrfs_reserve_flush_enum flush = BTRFS_RESERVE_NO_FLUSH;
+	u64 used;
+
+again:
+	while (!list_empty(head)) {
+		ticket = list_first_entry(head, struct reserve_ticket,
+					  list);
+		used = space_info->bytes_used +
+			space_info->bytes_reserved + space_info->bytes_pinned +
+			space_info->bytes_readonly + space_info->bytes_may_use;
+
+		if (used + ticket->bytes <= space_info->total_bytes ||
+		    can_overcommit(root, space_info, ticket->bytes, flush)) {
+			space_info->bytes_may_use += ticket->bytes;
+			list_del_init(&ticket->list);
+			ticket->bytes = 0;
+			space_info->tickets_id++;
+			wake_up(&ticket->wait);
+		} else
+			return;
+	}
+
+	if (head == &space_info->priority_tickets) {
+		head = &space_info->tickets;
+		flush = BTRFS_RESERVE_FLUSH_ALL;
+		goto again;
+	}
+}
+
+/*
  * This is for normal flushers, we can wait all goddamned day if we want to.  We
  * will loop and continuously try to flush as long as we are making progress.
  * We count progress as clearing off tickets each time we have to loop.
@@ -5050,6 +5091,8 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 				  flush_state, reclaim_priority);
 
 		spin_lock(&space_info->lock);
+		if (!ret)
+			try_to_wake_tickets(fs_info->fs_root, space_info);
 		if (list_empty(&space_info->tickets)) {
 			space_info->flush = 0;
 			spin_unlock(&space_info->lock);
