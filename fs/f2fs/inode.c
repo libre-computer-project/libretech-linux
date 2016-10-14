@@ -19,10 +19,13 @@
 
 #include <trace/events/f2fs.h>
 
-void f2fs_mark_inode_dirty_sync(struct inode *inode)
+void f2fs_mark_inode_dirty_sync(struct inode *inode, bool sync)
 {
+	if (sync)
+		set_inode_flag(inode, FI_DIRTY_INODE_SYNC);
 	if (f2fs_inode_dirtied(inode))
 		return;
+
 	mark_inode_dirty_sync(inode);
 }
 
@@ -43,7 +46,7 @@ void f2fs_set_inode_flags(struct inode *inode)
 		new_fl |= S_DIRSYNC;
 	inode_set_flags(inode, new_fl,
 			S_SYNC|S_APPEND|S_IMMUTABLE|S_NOATIME|S_DIRSYNC);
-	f2fs_mark_inode_dirty_sync(inode);
+	f2fs_mark_inode_dirty_sync(inode, false);
 }
 
 static void __get_inode_rdev(struct inode *inode, struct f2fs_inode *ri)
@@ -329,9 +332,6 @@ int f2fs_write_inode(struct inode *inode, struct writeback_control *wbc)
 
 	if (inode->i_ino == F2FS_NODE_INO(sbi) ||
 			inode->i_ino == F2FS_META_INO(sbi))
-		return 0;
-
-	if (!is_inode_flag_set(inode, FI_DIRTY_INODE))
 		return 0;
 
 	/*
