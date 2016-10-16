@@ -1316,7 +1316,7 @@ drop:
  * The overall length has already been checked.
  */
 static void fcoe_ctlr_recv_clr_vlink(struct fcoe_ctlr *fip,
-				     struct fip_header *fh)
+				     struct sk_buff *skb)
 {
 	struct fip_desc *desc;
 	struct fip_mac_desc *mp;
@@ -1331,17 +1331,46 @@ static void fcoe_ctlr_recv_clr_vlink(struct fcoe_ctlr *fip,
 	int num_vlink_desc;
 	int reset_phys_port = 0;
 	struct fip_vn_desc **vlink_desc_arr = NULL;
+	struct fip_header *fh = (struct fip_header *)skb->data;
+	struct ethhdr *eh = eth_hdr(skb);
 
 	LIBFCOE_FIP_DBG(fip, "Clear Virtual Link received\n");
 
-	if (!fcf || !lport->port_id) {
+	if (!fcf) {
 		/*
 		 * We are yet to select best FCF, but we got CVL in the
 		 * meantime. reset the ctlr and let it rediscover the FCF
 		 */
+		LIBFCOE_FIP_DBG(fip, "Resetting fcoe_ctlr as FCF has not been "
+		    "selected yet\n");
 		mutex_lock(&fip->ctlr_mutex);
 		fcoe_ctlr_reset(fip);
 		mutex_unlock(&fip->ctlr_mutex);
+		return;
+	}
+
+	/*
+	 * If we've selected an FCF check that the CVL is from there to avoid
+	 * processing CVLs from an unexpected source.  If it is from an
+	 * unexpected source drop it on the floor.
+	 */
+	if (!ether_addr_equal(eh->h_source, fcf->fcf_mac)) {
+		LIBFCOE_FIP_DBG(fip, "Dropping CVL due to source address "
+		    "mismatch with FCF src=%pM\n", eh->h_source);
+		return;
+	}
+
+	/*
+	 * If we haven't logged into the fabric but receive a CVL we should
+	 * reset everything and go back to solicitation.
+	 */
+	if (!lport->port_id) {
+		LIBFCOE_FIP_DBG(fip, "lport not logged in, resoliciting\n");
+		mutex_lock(&fip->ctlr_mutex);
+		fcoe_ctlr_reset(fip);
+		mutex_unlock(&fip->ctlr_mutex);
+		fc_lport_reset(fip->lp);
+		fcoe_ctlr_solicit(fip, NULL);
 		return;
 	}
 
@@ -1576,7 +1605,7 @@ static int fcoe_ctlr_recv_handler(struct fcoe_ctlr *fip, struct sk_buff *skb)
 	if (op == FIP_OP_DISC && sub == FIP_SC_ADV)
 		fcoe_ctlr_recv_adv(fip, skb);
 	else if (op == FIP_OP_CTRL && sub == FIP_SC_CLR_VLINK)
-		fcoe_ctlr_recv_clr_vlink(fip, fiph);
+		fcoe_ctlr_recv_clr_vlink(fip, skb);
 	kfree_skb(skb);
 	return 0;
 drop:
@@ -2145,9 +2174,15 @@ static void fcoe_ctlr_disc_stop_locked(struct fc_lport *lport)
 {
 	struct fc_rport_priv *rdata;
 
+	rcu_read_lock();
+	list_for_each_entry_rcu(rdata, &lport->disc.rports, peers) {
+		if (kref_get_unless_zero(&rdata->kref)) {
+			lport->tt.rport_logoff(rdata);
+			kref_put(&rdata->kref, lport->tt.rport_destroy);
+		}
+	}
+	rcu_read_unlock();
 	mutex_lock(&lport->disc.disc_mutex);
-	list_for_each_entry_rcu(rdata, &lport->disc.rports, peers)
-		lport->tt.rport_logoff(rdata);
 	lport->disc.disc_callback = NULL;
 	mutex_unlock(&lport->disc.disc_mutex);
 }
@@ -2472,17 +2507,22 @@ static void fcoe_ctlr_vn_add(struct fcoe_ctlr *fip, struct fc_rport_priv *new)
 		mutex_unlock(&lport->disc.disc_mutex);
 		return;
 	}
+	mutex_lock(&rdata->rp_mutex);
+	mutex_unlock(&lport->disc.disc_mutex);
 
 	rdata->ops = &fcoe_ctlr_vn_rport_ops;
 	rdata->disc_id = lport->disc.disc_id;
 
 	ids = &rdata->ids;
 	if ((ids->port_name != -1 && ids->port_name != new->ids.port_name) ||
-	    (ids->node_name != -1 && ids->node_name != new->ids.node_name))
+	    (ids->node_name != -1 && ids->node_name != new->ids.node_name)) {
+		mutex_unlock(&rdata->rp_mutex);
 		lport->tt.rport_logoff(rdata);
+		mutex_lock(&rdata->rp_mutex);
+	}
 	ids->port_name = new->ids.port_name;
 	ids->node_name = new->ids.node_name;
-	mutex_unlock(&lport->disc.disc_mutex);
+	mutex_unlock(&rdata->rp_mutex);
 
 	frport = fcoe_ctlr_rport(rdata);
 	LIBFCOE_FIP_DBG(fip, "vn_add rport %6.6x %s\n",
@@ -2638,11 +2678,15 @@ static unsigned long fcoe_ctlr_vn_age(struct fcoe_ctlr *fip)
 	unsigned long deadline;
 
 	next_time = jiffies + msecs_to_jiffies(FIP_VN_BEACON_INT * 10);
-	mutex_lock(&lport->disc.disc_mutex);
+	rcu_read_lock();
 	list_for_each_entry_rcu(rdata, &lport->disc.rports, peers) {
-		frport = fcoe_ctlr_rport(rdata);
-		if (!frport->time)
+		if (!kref_get_unless_zero(&rdata->kref))
 			continue;
+		frport = fcoe_ctlr_rport(rdata);
+		if (!frport->time) {
+			kref_put(&rdata->kref, lport->tt.rport_destroy);
+			continue;
+		}
 		deadline = frport->time +
 			   msecs_to_jiffies(FIP_VN_BEACON_INT * 25 / 10);
 		if (time_after_eq(jiffies, deadline)) {
@@ -2653,8 +2697,9 @@ static unsigned long fcoe_ctlr_vn_age(struct fcoe_ctlr *fip)
 			lport->tt.rport_logoff(rdata);
 		} else if (time_before(deadline, next_time))
 			next_time = deadline;
+		kref_put(&rdata->kref, lport->tt.rport_destroy);
 	}
-	mutex_unlock(&lport->disc.disc_mutex);
+	rcu_read_unlock();
 	return next_time;
 }
 
@@ -2991,12 +3036,17 @@ static void fcoe_ctlr_vn_disc(struct fcoe_ctlr *fip)
 	mutex_lock(&disc->disc_mutex);
 	callback = disc->pending ? disc->disc_callback : NULL;
 	disc->pending = 0;
+	mutex_unlock(&disc->disc_mutex);
+	rcu_read_lock();
 	list_for_each_entry_rcu(rdata, &disc->rports, peers) {
+		if (!kref_get_unless_zero(&rdata->kref))
+			continue;
 		frport = fcoe_ctlr_rport(rdata);
 		if (frport->time)
 			lport->tt.rport_login(rdata);
+		kref_put(&rdata->kref, lport->tt.rport_destroy);
 	}
-	mutex_unlock(&disc->disc_mutex);
+	rcu_read_unlock();
 	if (callback)
 		callback(lport, DISC_EV_SUCCESS);
 }
