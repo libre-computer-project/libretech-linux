@@ -23,6 +23,7 @@
 #include <linux/posix_acl_xattr.h>
 
 #include <asm/uaccess.h>
+#include "internal.h"
 
 static const char *
 strcmp_prefix(const char *a, const char *a_prefix)
@@ -493,11 +494,13 @@ SYSCALL_DEFINE5(fsetxattr, int, fd, const char __user *, name,
 	if (!f.file)
 		return error;
 	audit_file(f.file);
-	error = mnt_want_write_file(f.file);
+	sb_start_write(f.file->f_path.mnt->mnt_sb);
+	error = __mnt_want_write_file(f.file);
 	if (!error) {
 		error = setxattr(f.file->f_path.dentry, name, value, size, flags);
-		mnt_drop_write_file(f.file);
+		__mnt_drop_write_file(f.file);
 	}
+	sb_end_write(f.file->f_path.mnt->mnt_sb);
 	fdput(f);
 	return error;
 }
@@ -731,11 +734,13 @@ SYSCALL_DEFINE2(fremovexattr, int, fd, const char __user *, name)
 	if (!f.file)
 		return error;
 	audit_file(f.file);
-	error = mnt_want_write_file(f.file);
+	sb_start_write(f.file->f_path.mnt->mnt_sb);
+	error = __mnt_want_write_file(f.file);
 	if (!error) {
 		error = removexattr(f.file->f_path.dentry, name);
-		mnt_drop_write_file(f.file);
+		__mnt_drop_write_file(f.file);
 	}
+	sb_end_write(f.file->f_path.mnt->mnt_sb);
 	fdput(f);
 	return error;
 }
