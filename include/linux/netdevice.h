@@ -1506,6 +1506,8 @@ enum netdev_priv_flags {
  *	@if_port:	Selectable AUI, TP, ...
  *	@dma:		DMA channel
  *	@mtu:		Interface MTU value
+ *	@min_mtu:	Interface Minimum MTU value
+ *	@max_mtu:	Interface Maximum MTU value
  *	@type:		Interface hardware type
  *	@hard_header_len: Maximum hardware header length.
  *
@@ -1726,6 +1728,8 @@ struct net_device {
 	unsigned char		dma;
 
 	unsigned int		mtu;
+	unsigned int		min_mtu;
+	unsigned int		max_mtu;
 	unsigned short		type;
 	unsigned short		hard_header_len;
 
@@ -2647,71 +2651,6 @@ static inline void skb_gro_remcsum_cleanup(struct sk_buff *skb,
 	}
 
 	remcsum_unadjust((__sum16 *)ptr, grc->delta);
-}
-
-struct skb_csum_offl_spec {
-	__u16		ipv4_okay:1,
-			ipv6_okay:1,
-			encap_okay:1,
-			ip_options_okay:1,
-			ext_hdrs_okay:1,
-			tcp_okay:1,
-			udp_okay:1,
-			sctp_okay:1,
-			vlan_okay:1,
-			no_encapped_ipv6:1,
-			no_not_encapped:1;
-};
-
-bool __skb_csum_offload_chk(struct sk_buff *skb,
-			    const struct skb_csum_offl_spec *spec,
-			    bool *csum_encapped,
-			    bool csum_help);
-
-static inline bool skb_csum_offload_chk(struct sk_buff *skb,
-					const struct skb_csum_offl_spec *spec,
-					bool *csum_encapped,
-					bool csum_help)
-{
-	if (skb->ip_summed != CHECKSUM_PARTIAL)
-		return false;
-
-	return __skb_csum_offload_chk(skb, spec, csum_encapped, csum_help);
-}
-
-static inline bool skb_csum_offload_chk_help(struct sk_buff *skb,
-					     const struct skb_csum_offl_spec *spec)
-{
-	bool csum_encapped;
-
-	return skb_csum_offload_chk(skb, spec, &csum_encapped, true);
-}
-
-static inline bool skb_csum_off_chk_help_cmn(struct sk_buff *skb)
-{
-	static const struct skb_csum_offl_spec csum_offl_spec = {
-		.ipv4_okay = 1,
-		.ip_options_okay = 1,
-		.ipv6_okay = 1,
-		.vlan_okay = 1,
-		.tcp_okay = 1,
-		.udp_okay = 1,
-	};
-
-	return skb_csum_offload_chk_help(skb, &csum_offl_spec);
-}
-
-static inline bool skb_csum_off_chk_help_cmn_v4_only(struct sk_buff *skb)
-{
-	static const struct skb_csum_offl_spec csum_offl_spec = {
-		.ipv4_okay = 1,
-		.ip_options_okay = 1,
-		.tcp_okay = 1,
-		.udp_okay = 1,
-		.vlan_okay = 1,
-	};
-
-	return skb_csum_offload_chk_help(skb, &csum_offl_spec);
 }
 
 static inline int dev_hard_header(struct sk_buff *skb, struct net_device *dev,
@@ -3954,19 +3893,6 @@ static inline bool can_checksum_protocol(netdev_features_t features,
 		return !!(features & NETIF_F_IPV6_CSUM);
 	default:
 		return false;
-	}
-}
-
-/* Map an ethertype into IP protocol if possible */
-static inline int eproto_to_ipproto(int eproto)
-{
-	switch (eproto) {
-	case htons(ETH_P_IP):
-		return IPPROTO_IP;
-	case htons(ETH_P_IPV6):
-		return IPPROTO_IPV6;
-	default:
-		return -1;
 	}
 }
 
