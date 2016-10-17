@@ -30,8 +30,8 @@ struct xfs_defer_op_type;
 struct xfs_defer_pending {
 	const struct xfs_defer_op_type	*dfp_type;	/* function pointers */
 	struct list_head		dfp_list;	/* pending items */
-	bool				dfp_committed;	/* committed trans? */
 	void				*dfp_intent;	/* log intent item */
+	void				*dfp_done;	/* log done item */
 	struct list_head		dfp_work;	/* work items */
 	unsigned int			dfp_count;	/* # extent items */
 };
@@ -51,6 +51,8 @@ struct xfs_defer_pending {
  * find all the space it needs.
  */
 enum xfs_defer_ops_type {
+	XFS_DEFER_OPS_TYPE_BMAP,
+	XFS_DEFER_OPS_TYPE_REFCOUNT,
 	XFS_DEFER_OPS_TYPE_RMAP,
 	XFS_DEFER_OPS_TYPE_FREE,
 	XFS_DEFER_OPS_TYPE_MAX,

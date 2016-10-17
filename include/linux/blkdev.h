@@ -449,7 +449,7 @@ struct request_queue {
 
 	struct list_head	requeue_list;
 	spinlock_t		requeue_lock;
-	struct work_struct	requeue_work;
+	struct delayed_work	requeue_work;
 
 	struct mutex		sysfs_lock;
 
@@ -882,7 +882,7 @@ static inline unsigned int blk_rq_cur_sectors(const struct request *rq)
 static inline unsigned int blk_queue_get_max_sectors(struct request_queue *q,
 						     int op)
 {
-	if (unlikely(op == REQ_OP_DISCARD))
+	if (unlikely(op == REQ_OP_DISCARD || op == REQ_OP_SECURE_ERASE))
 		return min(q->limits.max_discard_sectors, UINT_MAX >> 9);
 
 	if (unlikely(op == REQ_OP_WRITE_SAME))
@@ -913,7 +913,9 @@ static inline unsigned int blk_rq_get_max_sectors(struct request *rq,
 	if (unlikely(rq->cmd_type != REQ_TYPE_FS))
 		return q->limits.max_hw_sectors;
 
-	if (!q->limits.chunk_sectors || (req_op(rq) == REQ_OP_DISCARD))
+	if (!q->limits.chunk_sectors ||
+	    req_op(rq) == REQ_OP_DISCARD ||
+	    req_op(rq) == REQ_OP_SECURE_ERASE)
 		return blk_queue_get_max_sectors(q, req_op(rq));
 
 	return min(blk_max_size_offset(q, offset),
@@ -1438,8 +1440,8 @@ static inline bool req_gap_front_merge(struct request *req, struct bio *bio)
 	return bio_will_gap(req->q, bio, req->bio);
 }
 
-struct work_struct;
 int kblockd_schedule_work(struct work_struct *work);
+int kblockd_schedule_work_on(int cpu, struct work_struct *work);
 int kblockd_schedule_delayed_work(struct delayed_work *dwork, unsigned long delay);
 int kblockd_schedule_delayed_work_on(int cpu, struct delayed_work *dwork, unsigned long delay);
 

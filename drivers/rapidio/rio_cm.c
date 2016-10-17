@@ -1080,8 +1080,8 @@ static int riocm_send_ack(struct rio_channel *ch)
 static struct rio_channel *riocm_ch_accept(u16 ch_id, u16 *new_ch_id,
 					   long timeout)
 {
-	struct rio_channel *ch = NULL;
-	struct rio_channel *new_ch = NULL;
+	struct rio_channel *ch;
+	struct rio_channel *new_ch;
 	struct conn_req *req;
 	struct cm_peer *peer;
 	int found = 0;
@@ -1155,6 +1155,7 @@ static struct rio_channel *riocm_ch_accept(u16 ch_id, u16 *new_ch_id,
 
 	spin_unlock_bh(&ch->lock);
 	riocm_put_channel(ch);
+	ch = NULL;
 	kfree(req);
 
 	down_read(&rdev_sem);
@@ -1172,7 +1173,7 @@ static struct rio_channel *riocm_ch_accept(u16 ch_id, u16 *new_ch_id,
 	if (!found) {
 		/* If peer device object not found, simply ignore the request */
 		err = -ENODEV;
-		goto err_nodev;
+		goto err_put_new_ch;
 	}
 
 	new_ch->rdev = peer->rdev;
@@ -1184,15 +1185,16 @@ static struct rio_channel *riocm_ch_accept(u16 ch_id, u16 *new_ch_id,
 
 	*new_ch_id = new_ch->id;
 	return new_ch;
+
+err_put_new_ch:
+	spin_lock_bh(&idr_lock);
+	idr_remove(&ch_idr, new_ch->id);
+	spin_unlock_bh(&idr_lock);
+	riocm_put_channel(new_ch);
+
 err_put:
-	riocm_put_channel(ch);
-err_nodev:
-	if (new_ch) {
-		spin_lock_bh(&idr_lock);
-		idr_remove(&ch_idr, new_ch->id);
-		spin_unlock_bh(&idr_lock);
-		riocm_put_channel(new_ch);
-	}
+	if (ch)
+		riocm_put_channel(ch);
 	*new_ch_id = 0;
 	return ERR_PTR(err);
 }
@@ -1839,24 +1841,19 @@ static int cm_chan_msg_send(void __user *arg)
 {
 	struct rio_cm_msg msg;
 	void *buf;
-	int ret = 0;
+	int ret;
 
 	if (copy_from_user(&msg, arg, sizeof(msg)))
 		return -EFAULT;
 	if (msg.size > RIO_MAX_MSG_SIZE)
 		return -EINVAL;
 
-	buf = kmalloc(msg.size, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	if (copy_from_user(buf, (void __user *)(uintptr_t)msg.msg, msg.size)) {
-		ret = -EFAULT;
-		goto out;
-	}
+	buf = memdup_user((void __user *)(uintptr_t)msg.msg, msg.size);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	ret = riocm_ch_send(msg.ch_num, buf, msg.size);
-out:
+
 	kfree(buf);
 	return ret;
 }
@@ -2245,16 +2242,29 @@ static int rio_cm_shutdown(struct notifier_block *nb, unsigned long code,
 {
 	struct rio_channel *ch;
 	unsigned int i;
+	LIST_HEAD(list);
 
 	riocm_debug(EXIT, ".");
 
+	/*
+	 * If there are any channels left in connected state send
+	 * close notification to the connection partner.
+	 * First build a list of channels that require a closing
+	 * notification because function riocm_send_close() should
+	 * be called outside of spinlock protected code.
+	 */
 	spin_lock_bh(&idr_lock);
 	idr_for_each_entry(&ch_idr, ch, i) {
-		riocm_debug(EXIT, "close ch %d", ch->id);
-		if (ch->state == RIO_CM_CONNECTED)
-			riocm_send_close(ch);
+		if (ch->state == RIO_CM_CONNECTED) {
+			riocm_debug(EXIT, "close ch %d", ch->id);
+			idr_remove(&ch_idr, ch->id);
+			list_add(&ch->ch_node, &list);
+		}
 	}
 	spin_unlock_bh(&idr_lock);
+
+	list_for_each_entry(ch, &list, ch_node)
+		riocm_send_close(ch);
 
 	return NOTIFY_DONE;
 }

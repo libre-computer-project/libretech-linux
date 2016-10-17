@@ -12,6 +12,9 @@
 #include <linux/xattr.h>
 #include <linux/security.h>
 #include <linux/cred.h>
+#include <linux/posix_acl.h>
+#include <linux/posix_acl_xattr.h>
+#include <linux/atomic.h>
 #include "overlayfs.h"
 
 void ovl_cleanup(struct inode *wdir, struct dentry *wdentry)
@@ -35,8 +38,10 @@ struct dentry *ovl_lookup_temp(struct dentry *workdir, struct dentry *dentry)
 {
 	struct dentry *temp;
 	char name[20];
+	static atomic_t temp_id = ATOMIC_INIT(0);
 
-	snprintf(name, sizeof(name), "#%lx", (unsigned long) dentry);
+	/* counter is allowed to wrap, since temp dentries are ephemeral */
+	snprintf(name, sizeof(name), "#%x", atomic_inc_return(&temp_id));
 
 	temp = lookup_one_len(name, workdir, strlen(name));
 	if (!IS_ERR(temp) && temp->d_inode) {
@@ -185,6 +190,9 @@ static int ovl_create_upper(struct dentry *dentry, struct inode *inode,
 	struct inode *udir = upperdir->d_inode;
 	struct dentry *newdentry;
 	int err;
+
+	if (!hardlink && !IS_POSIXACL(udir))
+		stat->mode &= ~current_umask();
 
 	inode_lock_nested(udir, I_MUTEX_PARENT);
 	newdentry = lookup_one_len(dentry->d_name.name, upperdir,
@@ -335,6 +343,32 @@ out_free:
 	return ret;
 }
 
+static int ovl_set_upper_acl(struct dentry *upperdentry, const char *name,
+			     const struct posix_acl *acl)
+{
+	void *buffer;
+	size_t size;
+	int err;
+
+	if (!IS_ENABLED(CONFIG_FS_POSIX_ACL) || !acl)
+		return 0;
+
+	size = posix_acl_to_xattr(NULL, acl, NULL, 0);
+	buffer = kmalloc(size, GFP_KERNEL);
+	if (!buffer)
+		return -ENOMEM;
+
+	size = posix_acl_to_xattr(&init_user_ns, acl, buffer, size);
+	err = size;
+	if (err < 0)
+		goto out_free;
+
+	err = vfs_setxattr(upperdentry, name, buffer, size, XATTR_CREATE);
+out_free:
+	kfree(buffer);
+	return err;
+}
+
 static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 				    struct kstat *stat, const char *link,
 				    struct dentry *hardlink)
@@ -346,9 +380,17 @@ static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 	struct dentry *upper;
 	struct dentry *newdentry;
 	int err;
+	struct posix_acl *acl, *default_acl;
 
 	if (WARN_ON(!workdir))
 		return -EROFS;
+
+	if (!hardlink) {
+		err = posix_acl_create(dentry->d_parent->d_inode,
+				       &stat->mode, &default_acl, &acl);
+		if (err)
+			return err;
+	}
 
 	err = ovl_lock_rename_workdir(workdir, upperdir);
 	if (err)
@@ -384,6 +426,17 @@ static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 		if (err)
 			goto out_cleanup;
 	}
+	if (!hardlink) {
+		err = ovl_set_upper_acl(newdentry, XATTR_NAME_POSIX_ACL_ACCESS,
+					acl);
+		if (err)
+			goto out_cleanup;
+
+		err = ovl_set_upper_acl(newdentry, XATTR_NAME_POSIX_ACL_DEFAULT,
+					default_acl);
+		if (err)
+			goto out_cleanup;
+	}
 
 	if (!hardlink && S_ISDIR(stat->mode)) {
 		err = ovl_set_opaque(newdentry);
@@ -410,6 +463,10 @@ out_dput:
 out_unlock:
 	unlock_rename(workdir, upperdir);
 out:
+	if (!hardlink) {
+		posix_acl_release(acl);
+		posix_acl_release(default_acl);
+	}
 	return err;
 
 out_cleanup:
@@ -435,6 +492,15 @@ static int ovl_create_or_link(struct dentry *dentry, struct inode *inode,
 	if (override_cred) {
 		override_cred->fsuid = inode->i_uid;
 		override_cred->fsgid = inode->i_gid;
+		if (!hardlink) {
+			err = security_dentry_create_files_as(dentry,
+					stat->mode, &dentry->d_name, old_cred,
+					override_cred);
+			if (err) {
+				put_cred(override_cred);
+				goto out_revert_creds;
+			}
+		}
 		put_cred(override_creds(override_cred));
 		put_cred(override_cred);
 
@@ -445,6 +511,7 @@ static int ovl_create_or_link(struct dentry *dentry, struct inode *inode,
 			err = ovl_create_over_whiteout(dentry, inode, stat,
 							link, hardlink);
 	}
+out_revert_creds:
 	revert_creds(old_cred);
 	if (!err) {
 		struct inode *realinode = d_inode(ovl_dentry_upper(dentry));
@@ -942,17 +1009,14 @@ const struct inode_operations ovl_dir_inode_operations = {
 	.symlink	= ovl_symlink,
 	.unlink		= ovl_unlink,
 	.rmdir		= ovl_rmdir,
-	.rename2	= ovl_rename2,
+	.rename		= ovl_rename2,
 	.link		= ovl_link,
 	.setattr	= ovl_setattr,
 	.create		= ovl_create,
 	.mknod		= ovl_mknod,
 	.permission	= ovl_permission,
 	.getattr	= ovl_dir_getattr,
-	.setxattr	= generic_setxattr,
-	.getxattr	= ovl_getxattr,
 	.listxattr	= ovl_listxattr,
-	.removexattr	= ovl_removexattr,
 	.get_acl	= ovl_get_acl,
 	.update_time	= ovl_update_time,
 };

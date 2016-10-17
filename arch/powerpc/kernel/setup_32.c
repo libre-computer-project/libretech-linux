@@ -16,6 +16,7 @@
 #include <linux/cpu.h>
 #include <linux/console.h>
 #include <linux/memblock.h>
+#include <linux/export.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -47,10 +48,15 @@ int boot_cpuid_phys;
 EXPORT_SYMBOL_GPL(boot_cpuid_phys);
 
 int smp_hw_index[NR_CPUS];
+EXPORT_SYMBOL(smp_hw_index);
 
 unsigned long ISA_DMA_THRESHOLD;
 unsigned int DMA_MODE_READ;
 unsigned int DMA_MODE_WRITE;
+
+EXPORT_SYMBOL(ISA_DMA_THRESHOLD);
+EXPORT_SYMBOL(DMA_MODE_READ);
+EXPORT_SYMBOL(DMA_MODE_WRITE);
 
 /*
  * These are used in binfmt_elf.c to put aux entries on the stack
@@ -93,15 +99,16 @@ notrace unsigned long __init early_init(unsigned long dt_ptr)
  * and we are running with enough of the MMU enabled to have our
  * proper kernel virtual addresses
  *
- * Find out what kind of machine we're on and save any data we need
- * from the early boot process (devtree is copied on pmac by prom_init()).
- * This is called very early on the boot process, after a minimal
- * MMU environment has been set up but before MMU_init is called.
+ * We do the initial parsing of the flat device-tree and prepares
+ * for the MMU to be fully initialized.
  */
 extern unsigned int memset_nocache_branch; /* Insn to be replaced by NOP */
 
 notrace void __init machine_init(u64 dt_ptr)
 {
+	/* Configure static keys first, now that we're relocated. */
+	setup_feature_keys();
+
 	/* Enable early debugging if any specified (see udbg.h) */
 	udbg_early_init();
 

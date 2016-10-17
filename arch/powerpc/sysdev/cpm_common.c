@@ -37,6 +37,21 @@
 #include <linux/of_gpio.h>
 #endif
 
+static int __init cpm_init(void)
+{
+	struct device_node *np;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,cpm1");
+	if (!np)
+		np = of_find_compatible_node(NULL, NULL, "fsl,cpm2");
+	if (!np)
+		return -ENODEV;
+	cpm_muram_init();
+	of_node_put(np);
+	return 0;
+}
+subsys_initcall(cpm_init);
+
 #ifdef CONFIG_PPC_EARLY_DEBUG_CPM
 static u32 __iomem *cpm_udbg_txdesc;
 static u8 __iomem *cpm_udbg_txbuf;
@@ -94,7 +109,8 @@ struct cpm2_gpio32_chip {
 
 static void cpm2_gpio32_save_regs(struct of_mm_gpio_chip *mm_gc)
 {
-	struct cpm2_gpio32_chip *cpm2_gc = gpiochip_get_data(&mm_gc->gc);
+	struct cpm2_gpio32_chip *cpm2_gc =
+		container_of(mm_gc, struct cpm2_gpio32_chip, mm_gc);
 	struct cpm2_ioports __iomem *iop = mm_gc->regs;
 
 	cpm2_gc->cpdata = in_be32(&iop->dat);

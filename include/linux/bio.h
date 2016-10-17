@@ -1,6 +1,4 @@
 /*
- * 2.5 block I/O model
- *
  * Copyright (C) 2001 Jens Axboe <axboe@suse.de>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -71,7 +69,8 @@ static inline bool bio_has_data(struct bio *bio)
 {
 	if (bio &&
 	    bio->bi_iter.bi_size &&
-	    bio_op(bio) != REQ_OP_DISCARD)
+	    bio_op(bio) != REQ_OP_DISCARD &&
+	    bio_op(bio) != REQ_OP_SECURE_ERASE)
 		return true;
 
 	return false;
@@ -79,7 +78,9 @@ static inline bool bio_has_data(struct bio *bio)
 
 static inline bool bio_no_advance_iter(struct bio *bio)
 {
-	return bio_op(bio) == REQ_OP_DISCARD || bio_op(bio) == REQ_OP_WRITE_SAME;
+	return bio_op(bio) == REQ_OP_DISCARD ||
+	       bio_op(bio) == REQ_OP_SECURE_ERASE ||
+	       bio_op(bio) == REQ_OP_WRITE_SAME;
 }
 
 static inline bool bio_is_rw(struct bio *bio)
@@ -197,6 +198,9 @@ static inline unsigned bio_segments(struct bio *bio)
 	 */
 
 	if (bio_op(bio) == REQ_OP_DISCARD)
+		return 1;
+
+	if (bio_op(bio) == REQ_OP_SECURE_ERASE)
 		return 1;
 
 	if (bio_op(bio) == REQ_OP_WRITE_SAME)
@@ -455,6 +459,7 @@ static inline void bio_flush_dcache_pages(struct bio *bi)
 
 extern void bio_copy_data(struct bio *dst, struct bio *src);
 extern int bio_alloc_pages(struct bio *bio, gfp_t gfp);
+extern void bio_free_pages(struct bio *bio);
 
 extern struct bio *bio_copy_user_iov(struct request_queue *,
 				     struct rq_map_data *,
