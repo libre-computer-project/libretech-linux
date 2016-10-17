@@ -30,7 +30,6 @@
 #include <linux/mpage.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
-#include <linux/statfs.h>
 #include <linux/compat.h>
 #include <linux/bit_spinlock.h>
 #include <linux/xattr.h>
@@ -8931,9 +8930,14 @@ again:
 	 *    So even we call qgroup_free_data(), it won't decrease reserved
 	 *    space.
 	 * 2) Not written to disk
-	 *    This means the reserved space should be freed here.
+	 *    This means the reserved space should be freed here. However,
+	 *    if a truncate invalidates the page (by clearing PageDirty)
+	 *    and the page is accounted for while allocating extent
+	 *    in btrfs_check_data_free_space() we let delayed_ref to
+	 *    free the entire extent.
 	 */
-	btrfs_qgroup_free_data(inode, page_start, PAGE_SIZE);
+	if (PageDirty(page))
+		btrfs_qgroup_free_data(inode, page_start, PAGE_SIZE);
 	if (!inode_evicting) {
 		clear_extent_bit(tree, page_start, page_end,
 				 EXTENT_LOCKED | EXTENT_DIRTY |
@@ -9222,6 +9226,7 @@ static int btrfs_truncate(struct inode *inode)
 			break;
 		}
 
+		btrfs_block_rsv_release(root, rsv, -1);
 		ret = btrfs_block_rsv_migrate(&root->fs_info->trans_block_rsv,
 					      rsv, min_size, 0);
 		BUG_ON(ret);	/* shouldn't happen */
