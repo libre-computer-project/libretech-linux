@@ -124,7 +124,7 @@ static int psbfb_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	unsigned long phys_addr = (unsigned long)dev_priv->stolen_base +
 				  psbfb->gtt->offset;
 
-	page_num = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+	page_num = vma_pages(vma);
 	address = (unsigned long)vmf->virtual_address - (vmf->pgoff << PAGE_SHIFT);
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
@@ -298,7 +298,6 @@ static struct drm_framebuffer *psb_framebuffer_create
  *	psbfb_alloc		-	allocate frame buffer memory
  *	@dev: the DRM device
  *	@aligned_size: space needed
- *	@force: fall back to GEM buffers if need be
  *
  *	Allocate the frame buffer. In the usual case we get a GTT range that
  *	is stolen memory backed and life is simple. If there isn't sufficient
