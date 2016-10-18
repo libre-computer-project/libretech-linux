@@ -435,6 +435,7 @@ nl80211_key_default_policy[NUM_NL80211_KEY_DEFAULT_TYPES] = {
 	[NL80211_KEY_DEFAULT_TYPE_MULTICAST] = { .type = NLA_FLAG },
 };
 
+#ifdef CONFIG_PM
 /* policy for WoWLAN attributes */
 static const struct nla_policy
 nl80211_wowlan_policy[NUM_NL80211_WOWLAN_TRIG] = {
@@ -468,6 +469,7 @@ nl80211_wowlan_tcp_policy[NUM_NL80211_WOWLAN_TCP] = {
 	[NL80211_WOWLAN_TCP_WAKE_PAYLOAD] = { .len = 1 },
 	[NL80211_WOWLAN_TCP_WAKE_MASK] = { .len = 1 },
 };
+#endif /* CONFIG_PM */
 
 /* policy for coalesce rule attributes */
 static const struct nla_policy
@@ -1074,6 +1076,10 @@ static int nl80211_put_iface_combinations(struct wiphy *wiphy,
 				c->radar_detect_widths) ||
 		     nla_put_u32(msg, NL80211_IFACE_COMB_RADAR_DETECT_REGIONS,
 				c->radar_detect_regions)))
+			goto nla_put_failure;
+		if (c->beacon_int_min_gcd &&
+		    nla_put_u32(msg, NL80211_IFACE_COMB_BI_MIN_GCD,
+				c->beacon_int_min_gcd))
 			goto nla_put_failure;
 
 		nla_nest_end(msg, nl_combi);
@@ -3803,7 +3809,8 @@ static int nl80211_start_ap(struct sk_buff *skb, struct genl_info *info)
 	params.dtim_period =
 		nla_get_u32(info->attrs[NL80211_ATTR_DTIM_PERIOD]);
 
-	err = cfg80211_validate_beacon_int(rdev, params.beacon_interval);
+	err = cfg80211_validate_beacon_int(rdev, dev->ieee80211_ptr->iftype,
+					   params.beacon_interval);
 	if (err)
 		return err;
 
@@ -8152,7 +8159,8 @@ static int nl80211_join_ibss(struct sk_buff *skb, struct genl_info *info)
 		ibss.beacon_interval =
 			nla_get_u32(info->attrs[NL80211_ATTR_BEACON_INTERVAL]);
 
-	err = cfg80211_validate_beacon_int(rdev, ibss.beacon_interval);
+	err = cfg80211_validate_beacon_int(rdev, NL80211_IFTYPE_ADHOC,
+					   ibss.beacon_interval);
 	if (err)
 		return err;
 
@@ -9417,7 +9425,9 @@ static int nl80211_join_mesh(struct sk_buff *skb, struct genl_info *info)
 		setup.beacon_interval =
 			nla_get_u32(info->attrs[NL80211_ATTR_BEACON_INTERVAL]);
 
-		err = cfg80211_validate_beacon_int(rdev, setup.beacon_interval);
+		err = cfg80211_validate_beacon_int(rdev,
+						   NL80211_IFTYPE_MESH_POINT,
+						   setup.beacon_interval);
 		if (err)
 			return err;
 	}
@@ -10778,7 +10788,8 @@ static int nl80211_nan_add_func(struct sk_buff *skb,
 
 		err = nla_parse(srf_tb, NL80211_NAN_SRF_ATTR_MAX,
 				nla_data(tb[NL80211_NAN_FUNC_SRF]),
-				nla_len(tb[NL80211_NAN_FUNC_SRF]), NULL);
+				nla_len(tb[NL80211_NAN_FUNC_SRF]),
+				nl80211_nan_srf_policy);
 		if (err)
 			goto out;
 
