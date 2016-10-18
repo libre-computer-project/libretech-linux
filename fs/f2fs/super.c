@@ -651,6 +651,7 @@ void f2fs_inode_synced(struct inode *inode)
 	}
 	list_del_init(&F2FS_I(inode)->gdirty_list);
 	clear_inode_flag(inode, FI_DIRTY_INODE);
+	clear_inode_flag(inode, FI_DIRTY_INODE_SYNC);
 	clear_inode_flag(inode, FI_AUTO_RECOVER);
 	dec_page_count(sbi, F2FS_DIRTY_IMETA);
 	stat_dec_dirty_inode(F2FS_I_SB(inode), DIRTY_META);
@@ -671,6 +672,8 @@ static void f2fs_dirty_inode(struct inode *inode, int flags)
 		return;
 
 	if (flags == I_DIRTY_TIME)
+		return;
+	if (!is_inode_flag_set(inode, FI_DIRTY_INODE_SYNC))
 		return;
 
 	if (is_inode_flag_set(inode, FI_AUTO_RECOVER))
@@ -738,7 +741,6 @@ static void f2fs_put_super(struct super_block *sb)
 	 * In addition, EIO will skip do checkpoint, we need this as well.
 	 */
 	release_ino_entry(sbi, true);
-	release_discard_addrs(sbi);
 
 	f2fs_leave_shrinker(sbi);
 	mutex_unlock(&sbi->umount_mutex);
