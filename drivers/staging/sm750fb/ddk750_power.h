@@ -15,16 +15,8 @@ DPMS_t;
 }
 
 void ddk750_setDPMS(DPMS_t);
-
-/*
- * This function sets the current power mode
- */
-void setPowerMode(unsigned int powerMode);
-
-/*
- * This function sets current gate
- */
-void setCurrentGate(unsigned int gate);
+void set_power_mode(unsigned int powerMode);
+void set_current_gate(unsigned int gate);
 
 /*
  * This function enable/disable the 2D engine.

@@ -1,5 +1,4 @@
 
-#include "ddk750_help.h"
 #include "ddk750_reg.h"
 #include "ddk750_mode.h"
 #include "ddk750_chip.h"
@@ -72,7 +71,8 @@ static unsigned long displayControlAdjust_SM750LE(mode_parameter_t *pModeParam, 
 
 
 /* only timing related registers will be  programed */
-static int programModeRegisters(mode_parameter_t *pModeParam, pll_value_t *pll)
+static int programModeRegisters(mode_parameter_t *pModeParam,
+						struct pll_value *pll)
 {
 	int ret = 0;
 	int cnt = 0;
@@ -80,7 +80,7 @@ static int programModeRegisters(mode_parameter_t *pModeParam, pll_value_t *pll)
 
 	if (pll->clockType == SECONDARY_PLL) {
 		/* programe secondary pixel clock */
-		POKE32(CRT_PLL_CTRL, formatPllReg(pll));
+		POKE32(CRT_PLL_CTRL, format_pll_reg(pll));
 		POKE32(CRT_HORIZONTAL_TOTAL,
 			(((pModeParam->horizontal_total - 1) <<
 				CRT_HORIZONTAL_TOTAL_TOTAL_SHIFT) &
@@ -130,7 +130,7 @@ static int programModeRegisters(mode_parameter_t *pModeParam, pll_value_t *pll)
 	} else if (pll->clockType == PRIMARY_PLL) {
 		unsigned int reserved;
 
-		POKE32(PANEL_PLL_CTRL, formatPllReg(pll));
+		POKE32(PANEL_PLL_CTRL, format_pll_reg(pll));
 
 		reg = ((pModeParam->horizontal_total - 1) <<
 			PANEL_HORIZONTAL_TOTAL_TOTAL_SHIFT) &
@@ -201,13 +201,13 @@ static int programModeRegisters(mode_parameter_t *pModeParam, pll_value_t *pll)
 
 int ddk750_setModeTiming(mode_parameter_t *parm, clock_type_t clock)
 {
-	pll_value_t pll;
+	struct pll_value pll;
 	unsigned int uiActualPixelClk;
 
 	pll.inputFreq = DEFAULT_INPUT_CLOCK;
 	pll.clockType = clock;
 
-	uiActualPixelClk = calcPllValue(parm->pixel_clock, &pll);
+	uiActualPixelClk = calc_pll_value(parm->pixel_clock, &pll);
 	if (sm750_get_chip_type() == SM750LE) {
 		/* set graphic mode via IO method */
 		outb_p(0x88, 0x3d4);

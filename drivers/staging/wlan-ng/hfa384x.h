@@ -266,7 +266,7 @@
 #define		HFA384x_RID_DBMCOMMSQUALITY_LEN	 \
 	((u16)sizeof(struct hfa384x_dbmcommsquality))
 #define		HFA384x_RID_JOINREQUEST_LEN \
-	((u16)sizeof(struct hfa384x_JoinRequest_data))
+	((u16)sizeof(struct hfa384x_join_request_data))
 
 /*--------------------------------------------------------------------
  * Information RIDs:  Modem Information
@@ -415,13 +415,13 @@ struct hfa384x_HostScanRequest_data {
 } __packed;
 
 /*-- Configuration Record: JoinRequest (data portion only) --*/
-struct hfa384x_JoinRequest_data {
+struct hfa384x_join_request_data {
 	u8 bssid[WLAN_BSSID_LEN];
 	u16 channel;
 } __packed;
 
 /*-- Configuration Record: authenticateStation (data portion only) --*/
-struct hfa384x_authenticateStation_data {
+struct hfa384x_authenticate_station_data {
 	u8 address[ETH_ALEN];
 	u16 status;
 	u16 algorithm;
@@ -455,9 +455,9 @@ struct hfa384x_downloadbuffer {
 
 /*-- Information Record: commsquality --*/
 struct hfa384x_commsquality {
-	u16 CQ_currBSS;
-	u16 ASL_currBSS;
-	u16 ANL_currFC;
+	u16 cq_curr_bss;
+	u16 asl_curr_bss;
+	u16 anl_curr_fc;
 } __packed;
 
 /*-- Information Record: dmbcommsquality --*/
@@ -634,7 +634,7 @@ struct hfa384x_CommTallies16 {
 	u16 rxmsginbadmsgfrag;
 } __packed;
 
-struct hfa384x_CommTallies32 {
+struct hfa384x_comm_tallies_32 {
 	u32 txunicastframes;
 	u32 txmulticastframes;
 	u32 txfragments;
@@ -659,7 +659,7 @@ struct hfa384x_CommTallies32 {
 } __packed;
 
 /*--  Inquiry Frame, Diagnose: Scan Results & Subfields--*/
-struct hfa384x_ScanResultSub {
+struct hfa384x_scan_result_sub {
 	u16 chid;
 	u16 anl;
 	u16 sl;
@@ -671,14 +671,14 @@ struct hfa384x_ScanResultSub {
 	u16 proberesp_rate;
 } __packed;
 
-struct hfa384x_ScanResult {
+struct hfa384x_scan_result {
 	u16 rsvd;
 	u16 scanreason;
-	struct hfa384x_ScanResultSub result[HFA384x_SCANRESULT_MAX];
+	struct hfa384x_scan_result_sub result[HFA384x_SCANRESULT_MAX];
 } __packed;
 
 /*--  Inquiry Frame, Diagnose: ChInfo Results & Subfields--*/
-struct hfa384x_ChInfoResultSub {
+struct hfa384x_ch_info_result_sub {
 	u16 chid;
 	u16 anl;
 	u16 pnl;
@@ -690,7 +690,7 @@ struct hfa384x_ChInfoResultSub {
 
 struct hfa384x_ChInfoResult {
 	u16 scanchannels;
-	struct hfa384x_ChInfoResultSub result[HFA384x_CHINFORESULT_MAX];
+	struct hfa384x_ch_info_result_sub result[HFA384x_CHINFORESULT_MAX];
 } __packed;
 
 /*--  Inquiry Frame, Diagnose: Host Scan Results & Subfields--*/
@@ -733,7 +733,7 @@ struct hfa384x_LinkStatus {
 #define HFA384x_ASSOCSTATUS_REASSOC	((u16)2)
 #define HFA384x_ASSOCSTATUS_AUTHFAIL	((u16)5)
 
-struct hfa384x_AssocStatus {
+struct hfa384x_assoc_status {
 	u16 assocstatus;
 	u8 sta_addr[ETH_ALEN];
 	/* old_ap_addr is only valid if assocstatus == 2 */
@@ -763,18 +763,18 @@ struct hfa384x_KeyIDChanged {
 /*--  Collection of all Inf frames ---------------*/
 union hfa384x_infodata {
 	struct hfa384x_CommTallies16 commtallies16;
-	struct hfa384x_CommTallies32 commtallies32;
-	struct hfa384x_ScanResult scanresult;
+	struct hfa384x_comm_tallies_32 commtallies32;
+	struct hfa384x_scan_result scanresult;
 	struct hfa384x_ChInfoResult chinforesult;
 	struct hfa384x_HScanResult hscanresult;
 	struct hfa384x_LinkStatus linkstatus;
-	struct hfa384x_AssocStatus assocstatus;
+	struct hfa384x_assoc_status assocstatus;
 	struct hfa384x_AuthRequest authreq;
 	struct hfa384x_PSUserCount psusercnt;
 	struct hfa384x_KeyIDChanged keyidchanged;
 } __packed;
 
-struct hfa384x_InfFrame {
+struct hfa384x_inf_frame {
 	u16 framelen;
 	u16 infotype;
 	union hfa384x_infodata info;
@@ -862,7 +862,7 @@ struct hfa384x_usb_rxfrm {
 
 struct hfa384x_usb_infofrm {
 	u16 type;
-	struct hfa384x_InfFrame info;
+	struct hfa384x_inf_frame info;
 } __packed;
 
 struct hfa384x_usb_statusresp {
@@ -1169,7 +1169,6 @@ enum ctlx_state {
 	CTLX_REQ_COMPLETE,	/* OUT URB complete */
 	CTLX_RESP_COMPLETE	/* IN URB received */
 };
-typedef enum ctlx_state CTLX_STATE;
 
 struct hfa384x_usbctlx;
 struct hfa384x;
@@ -1186,7 +1185,7 @@ struct hfa384x_usbctlx {
 	union hfa384x_usbout outbuf;	/* pkt buf for OUT */
 	union hfa384x_usbin inbuf;	/* pkt buf for IN(a copy) */
 
-	CTLX_STATE state;	/* Tracks running state */
+	enum ctlx_state state;	/* Tracks running state */
 
 	struct completion done;
 	volatile int reapable;	/* Food for the reaper task */
@@ -1294,7 +1293,7 @@ struct hfa384x {
 	int scanflag;		/* to signal scan complete */
 	int join_ap;		/* are we joined to a specific ap */
 	int join_retries;	/* number of join retries till we fail */
-	struct hfa384x_JoinRequest_data joinreq;	/* join request saved data */
+	struct hfa384x_join_request_data joinreq;/* join request saved data */
 
 	struct wlandevice *wlandev;
 	/* Timer to allow for the deferred processing of linkstatus messages */
@@ -1360,7 +1359,7 @@ struct hfa384x {
 	struct hfa384x_caplevel cap_act_ap_mfi;	/* ap f/w to modem interface */
 
 	u32 psusercount;	/* Power save user count. */
-	struct hfa384x_CommTallies32 tallies;	/* Communication tallies. */
+	struct hfa384x_comm_tallies_32 tallies;	/* Communication tallies. */
 	u8 comment[WLAN_COMMENT_MAX + 1];	/* User comment */
 
 	/* Channel Info request results (AP only) */
@@ -1370,7 +1369,7 @@ struct hfa384x {
 		struct hfa384x_ChInfoResult results;
 	} channel_info;
 
-	struct hfa384x_InfFrame *scanresults;
+	struct hfa384x_inf_frame *scanresults;
 
 	struct prism2sta_authlist authlist;	/* Authenticated station list. */
 	unsigned int accessmode;		/* Access mode. */
