@@ -1468,7 +1468,7 @@ int btrfs_qgroup_prepare_account_extents(struct btrfs_trans_handle *trans,
 	return ret;
 }
 
-int btrfs_qgroup_insert_dirty_extent_nolock(struct btrfs_fs_info *fs_info,
+int btrfs_qgroup_trace_extent_nolock(struct btrfs_fs_info *fs_info,
 				struct btrfs_delayed_ref_root *delayed_refs,
 				struct btrfs_qgroup_extent_record *record)
 {
@@ -1478,7 +1478,7 @@ int btrfs_qgroup_insert_dirty_extent_nolock(struct btrfs_fs_info *fs_info,
 	u64 bytenr = record->bytenr;
 
 	assert_spin_locked(&delayed_refs->lock);
-	trace_btrfs_qgroup_insert_dirty_extent(fs_info, record);
+	trace_btrfs_qgroup_trace_extent(fs_info, record);
 
 	while (*p) {
 		parent_node = *p;
@@ -1497,7 +1497,7 @@ int btrfs_qgroup_insert_dirty_extent_nolock(struct btrfs_fs_info *fs_info,
 	return 0;
 }
 
-int btrfs_qgroup_insert_dirty_extent(struct btrfs_trans_handle *trans,
+int btrfs_qgroup_trace_extent(struct btrfs_trans_handle *trans,
 		struct btrfs_fs_info *fs_info, u64 bytenr, u64 num_bytes,
 		gfp_t gfp_flag)
 {
@@ -1520,7 +1520,7 @@ int btrfs_qgroup_insert_dirty_extent(struct btrfs_trans_handle *trans,
 	record->old_roots = NULL;
 
 	spin_lock(&delayed_refs->lock);
-	ret = btrfs_qgroup_insert_dirty_extent_nolock(fs_info, delayed_refs,
+	ret = btrfs_qgroup_trace_extent_nolock(fs_info, delayed_refs,
 						      record);
 	spin_unlock(&delayed_refs->lock);
 	if (ret > 0)
