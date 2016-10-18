@@ -33,7 +33,6 @@
 #include <linux/namei.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
-#include <linux/statfs.h>
 #include <linux/compat.h>
 #include <linux/bit_spinlock.h>
 #include <linux/security.h>
@@ -3814,6 +3813,11 @@ process_slot:
 		}
 		btrfs_release_path(path);
 		key.offset = next_key_min_offset;
+
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			goto out;
+		}
 	}
 	ret = 0;
 
