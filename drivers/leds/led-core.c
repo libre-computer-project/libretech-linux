@@ -107,15 +107,15 @@ static void set_brightness_delayed(struct work_struct *ws)
 	int ret = 0;
 
 	if (led_cdev->flags & LED_BLINK_DISABLE) {
-		led_cdev->delayed_set_value = LED_OFF;
+		led_cdev->brightness = LED_OFF;
 		led_stop_software_blink(led_cdev);
 		led_cdev->flags &= ~LED_BLINK_DISABLE;
 	}
 
-	ret = __led_set_brightness(led_cdev, led_cdev->delayed_set_value);
+	ret = __led_set_brightness(led_cdev, led_cdev->brightness);
 	if (ret == -ENOTSUPP)
 		ret = __led_set_brightness_blocking(led_cdev,
-					led_cdev->delayed_set_value);
+					led_cdev->brightness);
 	if (ret < 0 &&
 	    /* LED HW might have been unplugged, therefore don't warn */
 	    !(ret == -ENODEV && (led_cdev->flags & LED_UNREGISTERING) &&
@@ -260,7 +260,7 @@ void led_set_brightness_nopm(struct led_classdev *led_cdev,
 		return;
 
 	/* If brightness setting can sleep, delegate it to a work queue task */
-	led_cdev->delayed_set_value = value;
+	led_cdev->brightness = value;
 	schedule_work(&led_cdev->set_brightness_work);
 }
 EXPORT_SYMBOL_GPL(led_set_brightness_nopm);
