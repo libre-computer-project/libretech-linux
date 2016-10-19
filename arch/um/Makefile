@@ -158,7 +158,7 @@ define filechk_gen-asm-offsets
          echo " *"; \
          echo " */"; \
          echo ""; \
-         sed -ne "/^->/{s:^->\([^ ]*\) [\$$#]*\([^ ]*\) \(.*\):#define \1 \2 /* \3 */:; s:->::; p;}"; \
+         sed -ne '/#define/{s/\$$//;s/#//2;s/$$/*\//p;}'; \
          echo ""; )
 endef
 
