@@ -291,6 +291,13 @@ static int hidma_handle_tre_completion(struct hidma_lldev *lldev)
 		evre_write_off =
 		    readl_relaxed(lldev->evca + HIDMA_EVCA_WRITE_PTR_REG);
 		num_completed++;
+
+		/*
+		 * An error interrupt might have arrived while we are processing
+		 * the completed interrupt.
+		 */
+		if (!hidma_ll_isenabled(lldev))
+			break;
 	}
 
 	if (num_completed) {
@@ -680,17 +687,36 @@ int hidma_ll_setup(struct hidma_lldev *lldev)
 	writel(HIDMA_EVRE_SIZE * nr_tres,
 			lldev->evca + HIDMA_EVCA_RING_LEN_REG);
 
-	/* support IRQ only for now */
+	/* configure interrupts */
+	hidma_ll_setup_irq(lldev, lldev->msi_support);
+
+	rc = hidma_ll_enable(lldev);
+	if (rc)
+		return rc;
+
+	return rc;
+}
+
+void hidma_ll_setup_irq(struct hidma_lldev *lldev, bool msi)
+{
+	u32 val;
+
+	lldev->msi_support = msi;
+
+	/* disable interrupts again after reset */
+	writel(0, lldev->evca + HIDMA_EVCA_IRQ_CLR_REG);
+	writel(0, lldev->evca + HIDMA_EVCA_IRQ_EN_REG);
+
+	/* support IRQ by default */
 	val = readl(lldev->evca + HIDMA_EVCA_INTCTRL_REG);
 	val &= ~0xF;
-	val |= 0x1;
+	if (!lldev->msi_support)
+		val = val | 0x1;
 	writel(val, lldev->evca + HIDMA_EVCA_INTCTRL_REG);
 
 	/* clear all pending interrupts and enable them */
 	writel(ENABLE_IRQS, lldev->evca + HIDMA_EVCA_IRQ_CLR_REG);
 	writel(ENABLE_IRQS, lldev->evca + HIDMA_EVCA_IRQ_EN_REG);
-
-	return hidma_ll_enable(lldev);
 }
 
 struct hidma_lldev *hidma_ll_init(struct device *dev, u32 nr_tres,
