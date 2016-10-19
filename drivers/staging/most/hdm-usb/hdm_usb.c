@@ -97,9 +97,7 @@ struct clear_hold_work {
  * @cap: channel capabilities
  * @conf: channel configuration
  * @dci: direct communication interface of hardware
- * @hw_addr: MAC address of hardware
  * @ep_address: endpoint address table
- * @link_stat: link status of hardware
  * @description: device description
  * @suffix: suffix for channel name
  * @channel_lock: synchronize channel access
@@ -117,9 +115,7 @@ struct most_dev {
 	struct most_channel_capability *cap;
 	struct most_channel_config *conf;
 	struct most_dci_obj *dci;
-	u8 hw_addr[6];
 	u8 *ep_address;
-	u16 link_stat;
 	char description[MAX_STRING_LEN];
 	char suffix[MAX_NUM_ENDPOINTS][MAX_SUFFIX_LEN];
 	spinlock_t channel_lock[MAX_NUM_ENDPOINTS]; /* sync channel access */
@@ -184,30 +180,6 @@ static inline int drci_wr_reg(struct usb_device *dev, u16 reg, u16 data)
 			       NULL,
 			       0,
 			       5 * HZ);
-}
-
-/**
- * free_anchored_buffers - free device's anchored items
- * @mdev: the device
- * @channel: channel ID
- * @status: status of MBO termination
- */
-static void free_anchored_buffers(struct most_dev *mdev, unsigned int channel,
-				  enum mbo_status_flags status)
-{
-	struct mbo *mbo;
-	struct urb *urb;
-
-	while ((urb = usb_get_from_anchor(&mdev->busy_urbs[channel]))) {
-		mbo = urb->context;
-		usb_kill_urb(urb);
-		if (mbo && mbo->complete) {
-			mbo->status = status;
-			mbo->processed_length = 0;
-			mbo->complete(mbo);
-		}
-		usb_free_urb(urb);
-	}
 }
 
 /**
@@ -278,7 +250,7 @@ static int hdm_poison_channel(struct most_interface *iface, int channel)
 	cancel_work_sync(&mdev->clear_work[channel].ws);
 
 	mutex_lock(&mdev->io_mutex);
-	free_anchored_buffers(mdev, channel, MBO_E_CLOSE);
+	usb_kill_anchored_urbs(&mdev->busy_urbs[channel]);
 	if (mdev->padding_active[channel])
 		mdev->padding_active[channel] = false;
 
@@ -377,33 +349,27 @@ static void hdm_write_completion(struct urb *urb)
 	unsigned long flags;
 
 	spin_lock_irqsave(lock, flags);
-	if (urb->status == -ENOENT || urb->status == -ECONNRESET ||
-	    !mdev->is_channel_healthy[channel]) {
-		spin_unlock_irqrestore(lock, flags);
-		return;
-	}
 
-	if (unlikely(urb->status && urb->status != -ESHUTDOWN)) {
-		mbo->processed_length = 0;
+	mbo->processed_length = 0;
+	mbo->status = MBO_E_INVAL;
+	if (likely(mdev->is_channel_healthy[channel])) {
 		switch (urb->status) {
+		case 0:
+		case -ESHUTDOWN:
+			mbo->processed_length = urb->actual_length;
+			mbo->status = MBO_SUCCESS;
+			break;
 		case -EPIPE:
 			dev_warn(dev, "Broken OUT pipe detected\n");
 			mdev->is_channel_healthy[channel] = false;
-			spin_unlock_irqrestore(lock, flags);
 			mdev->clear_work[channel].pipe = urb->pipe;
 			schedule_work(&mdev->clear_work[channel].ws);
-			return;
+			break;
 		case -ENODEV:
 		case -EPROTO:
 			mbo->status = MBO_E_CLOSE;
 			break;
-		default:
-			mbo->status = MBO_E_INVAL;
-			break;
 		}
-	} else {
-		mbo->status = MBO_SUCCESS;
-		mbo->processed_length = urb->actual_length;
 	}
 
 	spin_unlock_irqrestore(lock, flags);
@@ -531,39 +497,34 @@ static void hdm_read_completion(struct urb *urb)
 	unsigned long flags;
 
 	spin_lock_irqsave(lock, flags);
-	if (urb->status == -ENOENT || urb->status == -ECONNRESET ||
-	    !mdev->is_channel_healthy[channel]) {
-		spin_unlock_irqrestore(lock, flags);
-		return;
-	}
 
-	if (unlikely(urb->status && urb->status != -ESHUTDOWN)) {
-		mbo->processed_length = 0;
+	mbo->processed_length = 0;
+	mbo->status = MBO_E_INVAL;
+	if (likely(mdev->is_channel_healthy[channel])) {
 		switch (urb->status) {
+		case 0:
+		case -ESHUTDOWN:
+			mbo->processed_length = urb->actual_length;
+			mbo->status = MBO_SUCCESS;
+			if (mdev->padding_active[channel] &&
+			    hdm_remove_padding(mdev, channel, mbo)) {
+				mbo->processed_length = 0;
+				mbo->status = MBO_E_INVAL;
+			}
+			break;
 		case -EPIPE:
 			dev_warn(dev, "Broken IN pipe detected\n");
 			mdev->is_channel_healthy[channel] = false;
-			spin_unlock_irqrestore(lock, flags);
 			mdev->clear_work[channel].pipe = urb->pipe;
 			schedule_work(&mdev->clear_work[channel].ws);
-			return;
+			break;
 		case -ENODEV:
 		case -EPROTO:
 			mbo->status = MBO_E_CLOSE;
 			break;
 		case -EOVERFLOW:
 			dev_warn(dev, "Babble on IN pipe detected\n");
-		default:
-			mbo->status = MBO_E_INVAL;
 			break;
-		}
-	} else {
-		mbo->processed_length = urb->actual_length;
-		mbo->status = MBO_SUCCESS;
-		if (mdev->padding_active[channel] &&
-		    hdm_remove_padding(mdev, channel, mbo)) {
-			mbo->processed_length = 0;
-			mbo->status = MBO_E_INVAL;
 		}
 	}
 
@@ -738,56 +699,6 @@ exit:
 }
 
 /**
- * hdm_update_netinfo - retrieve latest networking information
- * @mdev: device interface
- *
- * This triggers the USB vendor requests to read the hardware address and
- * the current link status of the attached device.
- */
-static int hdm_update_netinfo(struct most_dev *mdev)
-{
-	struct usb_device *usb_device = mdev->usb_device;
-	struct device *dev = &usb_device->dev;
-	u16 hi, mi, lo, link;
-
-	if (!is_valid_ether_addr(mdev->hw_addr)) {
-		if (drci_rd_reg(usb_device, DRCI_REG_HW_ADDR_HI, &hi) < 0) {
-			dev_err(dev, "Vendor request \"hw_addr_hi\" failed\n");
-			return -EFAULT;
-		}
-
-		if (drci_rd_reg(usb_device, DRCI_REG_HW_ADDR_MI, &mi) < 0) {
-			dev_err(dev, "Vendor request \"hw_addr_mid\" failed\n");
-			return -EFAULT;
-		}
-
-		if (drci_rd_reg(usb_device, DRCI_REG_HW_ADDR_LO, &lo) < 0) {
-			dev_err(dev, "Vendor request \"hw_addr_low\" failed\n");
-			return -EFAULT;
-		}
-
-		mutex_lock(&mdev->io_mutex);
-		mdev->hw_addr[0] = hi >> 8;
-		mdev->hw_addr[1] = hi;
-		mdev->hw_addr[2] = mi >> 8;
-		mdev->hw_addr[3] = mi;
-		mdev->hw_addr[4] = lo >> 8;
-		mdev->hw_addr[5] = lo;
-		mutex_unlock(&mdev->io_mutex);
-	}
-
-	if (drci_rd_reg(usb_device, DRCI_REG_NI_STATE, &link) < 0) {
-		dev_err(dev, "Vendor request \"link status\" failed\n");
-		return -EFAULT;
-	}
-
-	mutex_lock(&mdev->io_mutex);
-	mdev->link_stat = link;
-	mutex_unlock(&mdev->io_mutex);
-	return 0;
-}
-
-/**
  * hdm_request_netinfo - request network information
  * @iface: pointer to interface
  * @channel: channel ID
@@ -807,7 +718,7 @@ static void hdm_request_netinfo(struct most_interface *iface, int channel)
 }
 
 /**
- * link_stat_timer_handler - add work to link_stat work queue
+ * link_stat_timer_handler - schedule work obtaining mac address and link status
  * @data: pointer to USB device instance
  *
  * The handler runs in interrupt context. That's why we need to defer the
@@ -823,33 +734,47 @@ static void link_stat_timer_handler(unsigned long data)
 }
 
 /**
- * wq_netinfo - work queue function
+ * wq_netinfo - work queue function to deliver latest networking information
  * @wq_obj: object that holds data for our deferred work to do
  *
  * This retrieves the network interface status of the USB INIC
- * and compares it with the current status. If the status has
- * changed, it updates the status of the core.
  */
 static void wq_netinfo(struct work_struct *wq_obj)
 {
 	struct most_dev *mdev = to_mdev_from_work(wq_obj);
-	int i, prev_link_stat = mdev->link_stat;
-	u8 prev_hw_addr[6];
+	struct usb_device *usb_device = mdev->usb_device;
+	struct device *dev = &usb_device->dev;
+	u16 hi, mi, lo, link;
+	u8 hw_addr[6];
 
-	for (i = 0; i < 6; i++)
-		prev_hw_addr[i] = mdev->hw_addr[i];
-
-	if (hdm_update_netinfo(mdev) < 0)
+	if (drci_rd_reg(usb_device, DRCI_REG_HW_ADDR_HI, &hi) < 0) {
+		dev_err(dev, "Vendor request 'hw_addr_hi' failed\n");
 		return;
-	if (prev_link_stat != mdev->link_stat ||
-	    prev_hw_addr[0] != mdev->hw_addr[0] ||
-	    prev_hw_addr[1] != mdev->hw_addr[1] ||
-	    prev_hw_addr[2] != mdev->hw_addr[2] ||
-	    prev_hw_addr[3] != mdev->hw_addr[3] ||
-	    prev_hw_addr[4] != mdev->hw_addr[4] ||
-	    prev_hw_addr[5] != mdev->hw_addr[5])
-		most_deliver_netinfo(&mdev->iface, mdev->link_stat,
-				     &mdev->hw_addr[0]);
+	}
+
+	if (drci_rd_reg(usb_device, DRCI_REG_HW_ADDR_MI, &mi) < 0) {
+		dev_err(dev, "Vendor request 'hw_addr_mid' failed\n");
+		return;
+	}
+
+	if (drci_rd_reg(usb_device, DRCI_REG_HW_ADDR_LO, &lo) < 0) {
+		dev_err(dev, "Vendor request 'hw_addr_low' failed\n");
+		return;
+	}
+
+	if (drci_rd_reg(usb_device, DRCI_REG_NI_STATE, &link) < 0) {
+		dev_err(dev, "Vendor request 'link status' failed\n");
+		return;
+	}
+
+	hw_addr[0] = hi >> 8;
+	hw_addr[1] = hi;
+	hw_addr[2] = mi >> 8;
+	hw_addr[3] = mi;
+	hw_addr[4] = lo >> 8;
+	hw_addr[5] = lo;
+
+	most_deliver_netinfo(&mdev->iface, link, hw_addr);
 }
 
 /**
@@ -867,7 +792,7 @@ static void wq_clear_halt(struct work_struct *wq_obj)
 
 	mutex_lock(&mdev->io_mutex);
 	most_stop_enqueue(&mdev->iface, channel);
-	free_anchored_buffers(mdev, channel, MBO_E_INVAL);
+	usb_kill_anchored_urbs(&mdev->busy_urbs[channel]);
 	if (usb_clear_halt(mdev->usb_device, pipe))
 		dev_warn(&mdev->usb_device->dev, "Failed to reset endpoint.\n");
 
