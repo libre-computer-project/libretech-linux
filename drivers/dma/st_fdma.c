@@ -720,21 +720,11 @@ static int st_fdma_parse_dt(struct platform_device *pdev,
 			const struct st_fdma_driverdata *drvdata,
 			struct st_fdma_dev *fdev)
 {
-	struct device_node *np = pdev->dev.of_node;
-	int ret;
-
-	if (!np)
-		goto err;
-
-	ret = of_property_read_u32(np, "dma-channels", &fdev->nr_channels);
-	if (ret)
-		goto err;
-
 	snprintf(fdev->fw_name, FW_NAME_SIZE, "fdma_%s_%d.elf",
 		drvdata->name, drvdata->id);
 
-err:
-	return ret;
+	return of_property_read_u32(pdev->dev.of_node, "dma-channels",
+				    &fdev->nr_channels);
 }
 #define FDMA_DMA_BUSWIDTHS	(BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) | \
 				 BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) | \
@@ -802,7 +792,7 @@ static int st_fdma_probe(struct platform_device *pdev)
 	}
 
 	fdev->slim_rproc = st_slim_rproc_alloc(pdev, fdev->fw_name);
-	if (!fdev->slim_rproc) {
+	if (IS_ERR(fdev->slim_rproc)) {
 		ret = PTR_ERR(fdev->slim_rproc);
 		dev_err(&pdev->dev, "slim_rproc_alloc failed (%d)\n", ret);
 		goto err;
