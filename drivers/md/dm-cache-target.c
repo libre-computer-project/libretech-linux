@@ -179,7 +179,7 @@ enum cache_io_mode {
 struct cache_features {
 	enum cache_metadata_mode mode;
 	enum cache_io_mode io_mode;
-	unsigned metadata_version;
+	struct dm_cache_metadata_features metadata_features;
 };
 
 struct cache_stats {
@@ -2542,7 +2542,7 @@ static void init_features(struct cache_features *cf)
 {
 	cf->mode = CM_WRITE;
 	cf->io_mode = CM_IO_WRITEBACK;
-	cf->metadata_version = 1;
+	cf->metadata_features.separate_dirty_bits = false;
 }
 
 static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
@@ -2575,8 +2575,11 @@ static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 		else if (!strcasecmp(arg, "passthrough"))
 			cf->io_mode = CM_IO_PASSTHROUGH;
 
+		else if (!strcasecmp(arg, "metadata1"))
+			cf->metadata_features.separate_dirty_bits = false;
+
 		else if (!strcasecmp(arg, "metadata2"))
-			cf->metadata_version = 2;
+			cf->metadata_features.separate_dirty_bits = true;
 
 		else {
 			*error = "Unrecognised cache feature requested";
@@ -2833,7 +2836,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	cmd = dm_cache_metadata_open(cache->metadata_dev->bdev,
 				     ca->block_size, may_format,
 				     dm_cache_policy_get_hint_size(cache->policy),
-				     ca->features.metadata_version);
+				     &ca->features.metadata_features);
 	if (IS_ERR(cmd)) {
 		*error = "Error creating metadata object";
 		r = PTR_ERR(cmd);
