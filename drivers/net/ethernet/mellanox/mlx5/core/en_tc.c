@@ -47,21 +47,27 @@
 struct mlx5e_tc_flow {
 	struct rhash_head	node;
 	u64			cookie;
-	struct mlx5_flow_rule	*rule;
+	struct mlx5_flow_handle *rule;
 	struct mlx5_esw_flow_attr *attr;
 };
 
 #define MLX5E_TC_TABLE_NUM_ENTRIES 1024
 #define MLX5E_TC_TABLE_NUM_GROUPS 4
 
-static struct mlx5_flow_rule *mlx5e_tc_add_nic_flow(struct mlx5e_priv *priv,
-						    struct mlx5_flow_spec *spec,
-						    u32 action, u32 flow_tag)
+static struct mlx5_flow_handle *
+mlx5e_tc_add_nic_flow(struct mlx5e_priv *priv,
+		      struct mlx5_flow_spec *spec,
+		      u32 action, u32 flow_tag)
 {
 	struct mlx5_core_dev *dev = priv->mdev;
 	struct mlx5_flow_destination dest = { 0 };
+	struct mlx5_flow_act flow_act = {
+		.action = action,
+		.flow_tag = flow_tag,
+		.encap_id = 0,
+	};
 	struct mlx5_fc *counter = NULL;
-	struct mlx5_flow_rule *rule;
+	struct mlx5_flow_handle *rule;
 	bool table_created = false;
 
 	if (action & MLX5_FLOW_CONTEXT_ACTION_FWD_DEST) {
@@ -82,7 +88,7 @@ static struct mlx5_flow_rule *mlx5e_tc_add_nic_flow(struct mlx5e_priv *priv,
 							    MLX5E_TC_PRIO,
 							    MLX5E_TC_TABLE_NUM_ENTRIES,
 							    MLX5E_TC_TABLE_NUM_GROUPS,
-							    0);
+							    0, 0);
 		if (IS_ERR(priv->fs.tc.t)) {
 			netdev_err(priv->netdev,
 				   "Failed to create tc offload table\n");
@@ -94,9 +100,7 @@ static struct mlx5_flow_rule *mlx5e_tc_add_nic_flow(struct mlx5e_priv *priv,
 	}
 
 	spec->match_criteria_enable = MLX5_MATCH_OUTER_HEADERS;
-	rule = mlx5_add_flow_rule(priv->fs.tc.t, spec,
-				  action, flow_tag,
-				  &dest);
+	rule = mlx5_add_flow_rules(priv->fs.tc.t, spec, &flow_act, &dest, 1);
 
 	if (IS_ERR(rule))
 		goto err_add_rule;
@@ -114,9 +118,10 @@ err_create_ft:
 	return rule;
 }
 
-static struct mlx5_flow_rule *mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
-						    struct mlx5_flow_spec *spec,
-						    struct mlx5_esw_flow_attr *attr)
+static struct mlx5_flow_handle *
+mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
+		      struct mlx5_flow_spec *spec,
+		      struct mlx5_esw_flow_attr *attr)
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 	int err;
@@ -129,7 +134,7 @@ static struct mlx5_flow_rule *mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 }
 
 static void mlx5e_tc_del_flow(struct mlx5e_priv *priv,
-			      struct mlx5_flow_rule *rule,
+			      struct mlx5_flow_handle *rule,
 			      struct mlx5_esw_flow_attr *attr)
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
@@ -140,7 +145,7 @@ static void mlx5e_tc_del_flow(struct mlx5e_priv *priv,
 	if (esw && esw->mode == SRIOV_OFFLOADS)
 		mlx5_eswitch_del_vlan_action(esw, attr);
 
-	mlx5_del_flow_rule(rule);
+	mlx5_del_flow_rules(rule);
 
 	mlx5_fc_destroy(priv->mdev, counter);
 
@@ -238,8 +243,8 @@ static int parse_cls_flower(struct mlx5e_priv *priv, struct mlx5_flow_spec *spec
 						  FLOW_DISSECTOR_KEY_VLAN,
 						  f->mask);
 		if (mask->vlan_id) {
-			MLX5_SET(fte_match_set_lyr_2_4, headers_c, vlan_tag, 1);
-			MLX5_SET(fte_match_set_lyr_2_4, headers_v, vlan_tag, 1);
+			MLX5_SET(fte_match_set_lyr_2_4, headers_c, cvlan_tag, 1);
+			MLX5_SET(fte_match_set_lyr_2_4, headers_v, cvlan_tag, 1);
 
 			MLX5_SET(fte_match_set_lyr_2_4, headers_c, first_vid, mask->vlan_id);
 			MLX5_SET(fte_match_set_lyr_2_4, headers_v, first_vid, key->vlan_id);
@@ -450,7 +455,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv, __be16 protocol,
 	u32 flow_tag, action;
 	struct mlx5e_tc_flow *flow;
 	struct mlx5_flow_spec *spec;
-	struct mlx5_flow_rule *old = NULL;
+	struct mlx5_flow_handle *old = NULL;
 	struct mlx5_esw_flow_attr *old_attr = NULL;
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 
@@ -511,7 +516,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv, __be16 protocol,
 	goto out;
 
 err_del_rule:
-	mlx5_del_flow_rule(flow->rule);
+	mlx5_del_flow_rules(flow->rule);
 
 err_free:
 	if (!old)
