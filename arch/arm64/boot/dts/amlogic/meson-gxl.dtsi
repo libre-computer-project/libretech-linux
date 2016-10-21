@@ -49,6 +49,34 @@
 	compatible = "amlogic,meson-gxl";
 };
 
+&ethmac {
+	reg = <0x0 0xc9410000 0x0 0x10000
+	       0x0 0xc8834540 0x0 0x4
+	       0x0 0xc8834558 0x0 0xc>;
+
+	clocks = <&clkc CLKID_ETH>,
+		 <&clkc CLKID_FCLK_DIV2>,
+		 <&clkc CLKID_MPLL2>;
+	clock-names = "stmmaceth", "clkin0", "clkin1";
+
+	/* Select Internal PHY by default */
+	amlogic,phy-select = <0xe40908ff>;
+	phy-mode = "rmii";
+	phy-handle = <&internal_phy>;
+
+	mdio0 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "snps,dwmac-mdio";
+
+		internal_phy: ethernet-phy@8 {
+			compatible = "ethernet-phy-id0181.4400", "ethernet-phy-ieee802.3-c22";
+			reg = <8>;
+			max-speed = <100>;
+		};
+	};
+};
+
 &aobus {
 	pinctrl_aobus: pinctrl@14 {
 		compatible = "amlogic,meson-gxl-aobus-pinctrl";
