@@ -131,6 +131,9 @@ static void read_arc_build_cfg_regs(void)
 		cpu->isa.be = IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
 	}
 
+	cpu->extn.swape = (cpu->core.family >= 0x34) ? 1 :
+				IS_ENABLED(CONFIG_ARC_HAS_SWAPE);
+
 	READ_BCR(ARC_REG_TIMERS_BCR, timer);
 	cpu->extn.timer0 = timer.t0;
 	cpu->extn.timer1 = timer.t1;
@@ -258,7 +261,7 @@ static char *arc_cpu_mumbojumbo(int cpu_id, char *buf, int len)
 		       IS_AVAIL1(cpu->extn.swap, "swap "),
 		       IS_AVAIL1(cpu->extn.minmax, "minmax "),
 		       IS_AVAIL1(cpu->extn.crc, "crc "),
-		       IS_AVAIL2(core->family > 0x33, "swape", CONFIG_ARC_HAS_SWAPE));
+		       IS_AVAIL2(cpu->extn.swape, "swape", CONFIG_ARC_HAS_SWAPE));
 
 	if (cpu->bpu.ver)
 		n += scnprintf(buf + n, len - n,
