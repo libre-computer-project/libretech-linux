@@ -112,6 +112,32 @@ static inline void fsl_espi_write_reg8(struct mpc8xxx_spi *mspi, int offset,
 	iowrite8(val, mspi->reg_base + offset);
 }
 
+static void fsl_espi_memcpy_swab(void *to, const void *from,
+				 struct spi_message *m,
+				 struct spi_transfer *t)
+{
+	unsigned int len = t->len;
+
+	if (!(m->spi->mode & SPI_LSB_FIRST) || t->bits_per_word <= 8) {
+		memcpy(to, from, len);
+		return;
+	}
+
+	/* In case of LSB-first and bits_per_word > 8 byte-swap all words */
+	while (len)
+		if (len >= 4) {
+			*(u32 *)to = swahb32p(from);
+			to += 4;
+			from += 4;
+			len -= 4;
+		} else {
+			*(u16 *)to = swab16p(from);
+			to += 2;
+			from += 2;
+			len -= 2;
+		}
+}
+
 static void fsl_espi_copy_to_buf(struct spi_message *m,
 				 struct mpc8xxx_spi *mspi)
 {
@@ -120,7 +146,7 @@ static void fsl_espi_copy_to_buf(struct spi_message *m,
 
 	list_for_each_entry(t, &m->transfers, transfer_list) {
 		if (t->tx_buf)
-			memcpy(buf, t->tx_buf, t->len);
+			fsl_espi_memcpy_swab(buf, t->tx_buf, m, t);
 		else
 			memset(buf, 0, t->len);
 		buf += t->len;
@@ -135,7 +161,7 @@ static void fsl_espi_copy_from_buf(struct spi_message *m,
 
 	list_for_each_entry(t, &m->transfers, transfer_list) {
 		if (t->rx_buf)
-			memcpy(t->rx_buf, buf, t->len);
+			fsl_espi_memcpy_swab(t->rx_buf, buf, m, t);
 		buf += t->len;
 	}
 }
@@ -153,12 +179,22 @@ static int fsl_espi_check_message(struct spi_message *m)
 
 	first = list_first_entry(&m->transfers, struct spi_transfer,
 				 transfer_list);
+
 	list_for_each_entry(t, &m->transfers, transfer_list) {
 		if (first->bits_per_word != t->bits_per_word ||
 		    first->speed_hz != t->speed_hz) {
 			dev_err(mspi->dev, "bits_per_word/speed_hz should be the same for all transfers\n");
 			return -EINVAL;
 		}
+	}
+
+	/* ESPI supports MSB-first transfers for word size 8 / 16 only */
+	if (!(m->spi->mode & SPI_LSB_FIRST) && first->bits_per_word != 8 &&
+	    first->bits_per_word != 16) {
+		dev_err(mspi->dev,
+			"MSB-first transfer not supported for wordsize %u\n",
+			first->bits_per_word);
+		return -EINVAL;
 	}
 
 	return 0;
@@ -184,27 +220,6 @@ static void fsl_espi_change_mode(struct spi_device *spi)
 	local_irq_restore(flags);
 }
 
-static u32 fsl_espi_tx_buf_lsb(struct mpc8xxx_spi *mpc8xxx_spi)
-{
-	u32 data;
-	u16 data_h;
-	u16 data_l;
-	const u32 *tx = mpc8xxx_spi->tx;
-
-	if (!tx)
-		return 0;
-
-	data = *tx++ << mpc8xxx_spi->tx_shift;
-	data_l = data & 0xffff;
-	data_h = (data >> 16) & 0xffff;
-	swab16s(&data_l);
-	swab16s(&data_h);
-	data = data_h | data_l;
-
-	mpc8xxx_spi->tx = tx;
-	return data;
-}
-
 static void fsl_espi_setup_transfer(struct spi_device *spi,
 					struct spi_transfer *t)
 {
@@ -213,23 +228,6 @@ static void fsl_espi_setup_transfer(struct spi_device *spi,
 	u32 hz = t ? t->speed_hz : spi->max_speed_hz;
 	u8 pm;
 	struct spi_mpc8xxx_cs *cs = spi->controller_state;
-
-	cs->rx_shift = 0;
-	cs->tx_shift = 0;
-	cs->get_rx = mpc8xxx_spi_rx_buf_u32;
-	cs->get_tx = mpc8xxx_spi_tx_buf_u32;
-	if (bits_per_word <= 8) {
-		cs->rx_shift = 8 - bits_per_word;
-	} else {
-		cs->rx_shift = 16 - bits_per_word;
-		if (spi->mode & SPI_LSB_FIRST)
-			cs->get_tx = fsl_espi_tx_buf_lsb;
-	}
-
-	mpc8xxx_spi->rx_shift = cs->rx_shift;
-	mpc8xxx_spi->tx_shift = cs->tx_shift;
-	mpc8xxx_spi->get_rx = cs->get_rx;
-	mpc8xxx_spi->get_tx = cs->get_tx;
 
 	/* mask out bits we are going to set */
 	cs->hw_mode &= ~(CSMODE_LEN(0xF) | CSMODE_DIV16 | CSMODE_PM(0xF));
@@ -261,7 +259,6 @@ static void fsl_espi_setup_transfer(struct spi_device *spi,
 static int fsl_espi_bufs(struct spi_device *spi, struct spi_transfer *t)
 {
 	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(spi->master);
-	u32 word;
 	int ret;
 
 	mpc8xxx_spi->len = t->len;
@@ -280,8 +277,8 @@ static int fsl_espi_bufs(struct spi_device *spi, struct spi_transfer *t)
 	fsl_espi_write_reg(mpc8xxx_spi, ESPI_SPIM, SPIM_RNE);
 
 	/* transmit word */
-	word = mpc8xxx_spi->get_tx(mpc8xxx_spi);
-	fsl_espi_write_reg(mpc8xxx_spi, ESPI_SPITF, word);
+	fsl_espi_write_reg(mpc8xxx_spi, ESPI_SPITF, *(u32 *)mpc8xxx_spi->tx);
+	mpc8xxx_spi->tx += 4;
 
 	/* Won't hang up forever, SPI bus sometimes got lost interrupts... */
 	ret = wait_for_completion_timeout(&mpc8xxx_spi->done, 2 * HZ);
@@ -458,8 +455,10 @@ static void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
 
 		mspi->len -= rx_nr_bytes;
 
-		if (mspi->rx)
-			mspi->get_rx(rx_data, mspi);
+		if (mspi->rx) {
+			*(u32 *)mspi->rx = rx_data;
+			mspi->rx += 4;
+		}
 	}
 
 	if (!(events & SPIE_TNF)) {
@@ -477,9 +476,8 @@ static void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
 
 	mspi->count -= 1;
 	if (mspi->count) {
-		u32 word = mspi->get_tx(mspi);
-
-		fsl_espi_write_reg(mspi, ESPI_SPITF, word);
+		fsl_espi_write_reg(mspi, ESPI_SPITF, *(u32 *)mspi->tx);
+		mspi->tx += 4;
 	} else {
 		complete(&mspi->done);
 	}
@@ -545,9 +543,8 @@ static int fsl_espi_probe(struct device *dev, struct resource *mem,
 	struct spi_master *master;
 	struct mpc8xxx_spi *mpc8xxx_spi;
 	struct device_node *nc;
-	const __be32 *prop;
-	u32 regval, csmode;
-	int i, len, ret;
+	u32 regval, csmode, cs, prop;
+	int ret;
 
 	master = spi_alloc_master(dev, sizeof(struct mpc8xxx_spi));
 	if (!master)
@@ -599,29 +596,29 @@ static int fsl_espi_probe(struct device *dev, struct resource *mem,
 	/* Init eSPI CS mode register */
 	for_each_available_child_of_node(master->dev.of_node, nc) {
 		/* get chip select */
-		prop = of_get_property(nc, "reg", &len);
-		if (!prop || len < sizeof(*prop))
-			continue;
-		i = be32_to_cpup(prop);
-		if (i < 0 || i >= pdata->max_chipselect)
+		ret = of_property_read_u32(nc, "reg", &cs);
+		if (ret || cs >= pdata->max_chipselect)
 			continue;
 
 		csmode = CSMODE_INIT_VAL;
-		/* check if CSBEF is set in device tree */
-		prop = of_get_property(nc, "fsl,csbef", &len);
-		if (prop && len >= sizeof(*prop)) {
-			csmode &= ~(CSMODE_BEF(0xf));
-			csmode |= CSMODE_BEF(be32_to_cpup(prop));
-		}
-		/* check if CSAFT is set in device tree */
-		prop = of_get_property(nc, "fsl,csaft", &len);
-		if (prop && len >= sizeof(*prop)) {
-			csmode &= ~(CSMODE_AFT(0xf));
-			csmode |= CSMODE_AFT(be32_to_cpup(prop));
-		}
-		fsl_espi_write_reg(mpc8xxx_spi, ESPI_SPMODEx(i), csmode);
 
-		dev_info(dev, "cs=%d, init_csmode=0x%x\n", i, csmode);
+		/* check if CSBEF is set in device tree */
+		ret = of_property_read_u32(nc, "fsl,csbef", &prop);
+		if (!ret) {
+			csmode &= ~(CSMODE_BEF(0xf));
+			csmode |= CSMODE_BEF(prop);
+		}
+
+		/* check if CSAFT is set in device tree */
+		ret = of_property_read_u32(nc, "fsl,csaft", &prop);
+		if (!ret) {
+			csmode &= ~(CSMODE_AFT(0xf));
+			csmode |= CSMODE_AFT(prop);
+		}
+
+		fsl_espi_write_reg(mpc8xxx_spi, ESPI_SPMODEx(cs), csmode);
+
+		dev_info(dev, "cs=%u, init_csmode=0x%x\n", cs, csmode);
 	}
 
 	/* Enable SPI interface */
@@ -660,16 +657,16 @@ static int of_fsl_espi_get_chipselects(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 	struct fsl_spi_platform_data *pdata = dev_get_platdata(dev);
-	const u32 *prop;
-	int len;
+	u32 num_cs;
+	int ret;
 
-	prop = of_get_property(np, "fsl,espi-num-chipselects", &len);
-	if (!prop || len < sizeof(*prop)) {
+	ret = of_property_read_u32(np, "fsl,espi-num-chipselects", &num_cs);
+	if (ret) {
 		dev_err(dev, "No 'fsl,espi-num-chipselects' property\n");
 		return -EINVAL;
 	}
 
-	pdata->max_chipselect = *prop;
+	pdata->max_chipselect = num_cs;
 	pdata->cs_control = NULL;
 
 	return 0;
