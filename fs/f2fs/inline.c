@@ -137,8 +137,10 @@ int f2fs_convert_inline_page(struct dnode_of_data *dn, struct page *page)
 	fio.old_blkaddr = dn->data_blkaddr;
 	write_data_page(dn, &fio);
 	f2fs_wait_on_page_writeback(page, DATA, true);
-	if (dirty)
+	if (dirty) {
 		inode_dec_dirty_pages(dn->inode);
+		remove_dirty_inode(dn->inode);
+	}
 
 	/* this converted inline_data should be recovered. */
 	set_inode_flag(dn->inode, FI_APPEND_WRITE);
@@ -419,7 +421,7 @@ static int f2fs_add_inline_entries(struct inode *dir,
 		}
 
 		new_name.name = d.filename[bit_pos];
-		new_name.len = de->name_len;
+		new_name.len = le16_to_cpu(de->name_len);
 
 		ino = le32_to_cpu(de->ino);
 		fake_mode = get_de_type(de) << S_SHIFT;

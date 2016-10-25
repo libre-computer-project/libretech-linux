@@ -136,7 +136,7 @@ struct f2fs_dir_entry *find_target_dentry(struct fscrypt_name *fname,
 
 		/* show encrypted name */
 		if (fname->hash) {
-			if (de->hash_code == fname->hash)
+			if (de->hash_code == cpu_to_le32(fname->hash))
 				goto found;
 		} else if (de_name.len == name->len &&
 			de->hash_code == namehash &&
@@ -742,6 +742,7 @@ void f2fs_delete_entry(struct f2fs_dir_entry *dentry, struct page *page,
 		ClearPagePrivate(page);
 		ClearPageUptodate(page);
 		inode_dec_dirty_pages(dir);
+		remove_dirty_inode(dir);
 	}
 	f2fs_put_page(page, 1);
 }

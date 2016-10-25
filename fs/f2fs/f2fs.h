@@ -503,6 +503,12 @@ static inline void __try_update_largest_extent(struct inode *inode,
 	}
 }
 
+enum nid_list {
+	FREE_NID_LIST,
+	ALLOC_NID_LIST,
+	MAX_NID_LIST,
+};
+
 struct f2fs_nm_info {
 	block_t nat_blkaddr;		/* base disk address of NAT */
 	nid_t max_nid;			/* maximum possible node ids */
@@ -522,9 +528,9 @@ struct f2fs_nm_info {
 
 	/* free node ids management */
 	struct radix_tree_root free_nid_root;/* root of the free_nid cache */
-	struct list_head free_nid_list;	/* a list for free nids */
-	spinlock_t free_nid_list_lock;	/* protect free nid list */
-	unsigned int fcnt;		/* the number of free node id */
+	struct list_head nid_list[MAX_NID_LIST];/* lists for free nids */
+	unsigned int nid_cnt[MAX_NID_LIST];	/* the number of free node id */
+	spinlock_t nid_list_lock;	/* protect nid lists ops */
 	struct mutex build_lock;	/* lock for build free nids */
 
 	/* for checkpoint */
@@ -2034,7 +2040,7 @@ void move_node_page(struct page *, int);
 int fsync_node_pages(struct f2fs_sb_info *, struct inode *,
 			struct writeback_control *, bool);
 int sync_node_pages(struct f2fs_sb_info *, struct writeback_control *);
-void build_free_nids(struct f2fs_sb_info *);
+void build_free_nids(struct f2fs_sb_info *, bool);
 bool alloc_nid(struct f2fs_sb_info *, nid_t *);
 void alloc_nid_done(struct f2fs_sb_info *, nid_t);
 void alloc_nid_failed(struct f2fs_sb_info *, nid_t);
@@ -2184,7 +2190,7 @@ struct f2fs_stat_info {
 	s64 ndirty_node, ndirty_dent, ndirty_meta, ndirty_data, ndirty_imeta;
 	s64 inmem_pages;
 	unsigned int ndirty_dirs, ndirty_files, ndirty_all;
-	int nats, dirty_nats, sits, dirty_sits, fnids;
+	int nats, dirty_nats, sits, dirty_sits, free_nids, alloc_nids;
 	int total_count, utilization;
 	int bg_gc, wb_bios;
 	int inline_xattr, inline_inode, inline_dir, orphans;
