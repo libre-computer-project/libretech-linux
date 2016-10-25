@@ -1820,19 +1820,17 @@ err_fib_entry_insert:
 	return err;
 }
 
-static int mlxsw_sp_router_fib4_del(struct mlxsw_sp *mlxsw_sp,
-				    struct fib_entry_notifier_info *fen_info)
+static void mlxsw_sp_router_fib4_del(struct mlxsw_sp *mlxsw_sp,
+				     struct fib_entry_notifier_info *fen_info)
 {
 	struct mlxsw_sp_fib_entry *fib_entry;
 
 	if (mlxsw_sp->router.aborted)
-		return 0;
+		return;
 
 	fib_entry = mlxsw_sp_fib_entry_find(mlxsw_sp, fen_info);
-	if (!fib_entry) {
-		dev_warn(mlxsw_sp->bus_info->dev, "Failed to find FIB4 entry being removed.\n");
-		return -ENOENT;
-	}
+	if (!fib_entry)
+		return;
 
 	if (fib_entry->ref_count == 1) {
 		mlxsw_sp_fib_entry_del(mlxsw_sp, fib_entry);
@@ -1840,7 +1838,6 @@ static int mlxsw_sp_router_fib4_del(struct mlxsw_sp *mlxsw_sp,
 	}
 
 	mlxsw_sp_fib_entry_put(mlxsw_sp, fib_entry);
-	return 0;
 }
 
 static int mlxsw_sp_router_set_abort_trap(struct mlxsw_sp *mlxsw_sp)
@@ -1862,7 +1859,8 @@ static int mlxsw_sp_router_set_abort_trap(struct mlxsw_sp *mlxsw_sp)
 	if (err)
 		return err;
 
-	mlxsw_reg_raltb_pack(raltb_pl, 0, MLXSW_REG_RALXX_PROTOCOL_IPV4, 0);
+	mlxsw_reg_raltb_pack(raltb_pl, 0, MLXSW_REG_RALXX_PROTOCOL_IPV4,
+			     MLXSW_SP_LPM_TREE_MIN);
 	err = mlxsw_reg_write(mlxsw_sp->core, MLXSW_REG(raltb), raltb_pl);
 	if (err)
 		return err;
