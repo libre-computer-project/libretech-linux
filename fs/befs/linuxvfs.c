@@ -37,7 +37,8 @@ static int befs_readdir(struct file *, struct dir_context *);
 static int befs_get_block(struct inode *, sector_t, struct buffer_head *, int);
 static int befs_readpage(struct file *file, struct page *page);
 static sector_t befs_bmap(struct address_space *mapping, sector_t block);
-static struct dentry *befs_lookup(struct inode *, struct dentry *, unsigned int);
+static struct dentry *befs_lookup(struct inode *, struct dentry *,
+				  unsigned int);
 static struct inode *befs_iget(struct super_block *, unsigned long);
 static struct inode *befs_alloc_inode(struct super_block *sb);
 static void befs_destroy_inode(struct inode *inode);
@@ -109,8 +110,6 @@ befs_bmap(struct address_space *mapping, sector_t block)
  * Used by many higher level functions.
  *
  * Calls befs_fblock2brun() in datastream.c to do the real work.
- *
- * -WD 10-26-01
  */
 
 static int
@@ -269,15 +268,15 @@ befs_alloc_inode(struct super_block *sb)
 	struct befs_inode_info *bi;
 
 	bi = kmem_cache_alloc(befs_inode_cachep, GFP_KERNEL);
-        if (!bi)
-                return NULL;
-        return &bi->vfs_inode;
+	if (!bi)
+		return NULL;
+	return &bi->vfs_inode;
 }
 
 static void befs_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
-        kmem_cache_free(befs_inode_cachep, BEFS_I(inode));
+	kmem_cache_free(befs_inode_cachep, BEFS_I(inode));
 }
 
 static void befs_destroy_inode(struct inode *inode)
@@ -287,7 +286,7 @@ static void befs_destroy_inode(struct inode *inode)
 
 static void init_once(void *foo)
 {
-        struct befs_inode_info *bi = (struct befs_inode_info *) foo;
+	struct befs_inode_info *bi = (struct befs_inode_info *) foo;
 
 	inode_init_once(&bi->vfs_inode);
 }
@@ -414,10 +413,10 @@ static struct inode *befs_iget(struct super_block *sb, unsigned long ino)
 	unlock_new_inode(inode);
 	return inode;
 
-      unacquire_bh:
+unacquire_bh:
 	brelse(bh);
 
-      unacquire_none:
+unacquire_none:
 	iget_failed(inode);
 	befs_debug(sb, "<--- %s - Bad inode", __func__);
 	return ERR_PTR(-EIO);
@@ -491,13 +490,10 @@ fail:
 }
 
 /*
- * UTF-8 to NLS charset  convert routine
+ * UTF-8 to NLS charset convert routine
  * 
- *
- * Changed 8/10/01 by Will Dyson. Now use uni2char() / char2uni() rather than
- * the nls tables directly
+ * Uses uni2char() / char2uni() rather than the nls tables directly
  */
-
 static int
 befs_utf2nls(struct super_block *sb, const char *in,
 	     int in_len, char **out, int *out_len)
@@ -521,9 +517,8 @@ befs_utf2nls(struct super_block *sb, const char *in,
 	}
 
 	*out = result = kmalloc(maxlen, GFP_NOFS);
-	if (!*out) {
+	if (!*out)
 		return -ENOMEM;
-	}
 
 	for (i = o = 0; i < in_len; i += utflen, o += unilen) {
 
@@ -546,7 +541,7 @@ befs_utf2nls(struct super_block *sb, const char *in,
 
 	return o;
 
-      conv_err:
+conv_err:
 	befs_error(sb, "Name using character set %s contains a character that "
 		   "cannot be converted to unicode.", nls->charset);
 	befs_debug(sb, "<--- %s", __func__);
@@ -585,9 +580,11 @@ befs_nls2utf(struct super_block *sb, const char *in,
 	wchar_t uni;
 	int unilen, utflen;
 	char *result;
-	/* There're nls characters that will translate to 3-chars-wide UTF-8
-	 * characters, a additional byte is needed to save the final \0
-	 * in special cases */
+	/*
+	 * There are nls characters that will translate to 3-chars-wide UTF-8
+	 * characters, an additional byte is needed to save the final \0
+	 * in special cases
+	 */
 	int maxlen = (3 * in_len) + 1;
 
 	befs_debug(sb, "---> %s\n", __func__);
@@ -624,8 +621,8 @@ befs_nls2utf(struct super_block *sb, const char *in,
 
 	return i;
 
-      conv_err:
-	befs_error(sb, "Name using charecter set %s contains a charecter that "
+conv_err:
+	befs_error(sb, "Name using character set %s contains a character that "
 		   "cannot be converted to unicode.", nls->charset);
 	befs_debug(sb, "<--- %s", __func__);
 	kfree(result);
@@ -666,6 +663,7 @@ parse_options(char *options, struct befs_mount_options *opts)
 
 	while ((p = strsep(&options, ",")) != NULL) {
 		int token;
+
 		if (!*p)
 			continue;
 
@@ -782,7 +780,6 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 	 * Linux 2.4.10 and later refuse to read blocks smaller than
 	 * the logical block size for the device. But we also need to read at
 	 * least 1k to get the second 512 bytes of the volume.
-	 * -WD 10-26-01
 	 */ 
 	blocksize = sb_min_blocksize(sb, 1024);
 	if (!blocksize) {
@@ -791,7 +788,8 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 		goto unacquire_priv_sbp;
 	}
 
-	if (!(bh = sb_bread(sb, sb_block))) {
+	bh = sb_bread(sb, sb_block);
+	if (!bh) {
 		if (!silent)
 			befs_error(sb, "unable to read superblock");
 		goto unacquire_priv_sbp;
@@ -816,7 +814,7 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 
 	brelse(bh);
 
-	if( befs_sb->num_blocks > ~((sector_t)0) ) {
+	if (befs_sb->num_blocks > ~((sector_t)0)) {
 		if (!silent)
 			befs_error(sb, "blocks count: %llu is larger than the host can use",
 					befs_sb->num_blocks);
@@ -861,16 +859,16 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	return 0;
-/*****************/
-      unacquire_bh:
+
+unacquire_bh:
 	brelse(bh);
 
-      unacquire_priv_sbp:
+unacquire_priv_sbp:
 	kfree(befs_sb->mount_opts.iocharset);
 	kfree(sb->s_fs_info);
 	sb->s_fs_info = NULL;
 
-      unacquire_none:
+unacquire_none:
 	return ret;
 }
 
@@ -956,9 +954,9 @@ exit_befs_fs(void)
 }
 
 /*
-Macros that typecheck the init and exit functions,
-ensures that they are called at init and cleanup,
-and eliminates warnings about unused functions.
-*/
+ * Macros that typecheck the init and exit functions,
+ * ensures that they are called at init and cleanup,
+ * and eliminates warnings about unused functions.
+ */
 module_init(init_befs_fs)
 module_exit(exit_befs_fs)
