@@ -93,7 +93,7 @@ config VIDEO_OMAP3_DEBUG
 
 config VIDEO_PXA27x
 	tristate "PXA27x Quick Capture Interface driver"
-	depends on VIDEO_DEV && HAS_DMA
+	depends on VIDEO_DEV && VIDEO_V4L2 && HAS_DMA
 	depends on PXA27x || COMPILE_TEST
 	select VIDEOBUF2_DMA_SG
 	select SG_SPLIT
@@ -174,6 +174,23 @@ config VIDEO_MEDIATEK_VPU
 
 	    To compile this driver as a module, choose M here: the
 	    module will be called mtk-vpu.
+
+config VIDEO_MEDIATEK_MDP
+	tristate "Mediatek MDP driver"
+	depends on MTK_IOMMU || COMPILE_TEST
+	depends on VIDEO_DEV && VIDEO_V4L2
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on HAS_DMA
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select VIDEO_MEDIATEK_VPU
+	default n
+	---help---
+	    It is a v4l2 driver and present in Mediatek MT8173 SoCs.
+	    The driver supports for scaling and color space conversion.
+
+	    To compile this driver as a module, choose M here: the
+	    module will be called mtk-mdp.
 
 config VIDEO_MEDIATEK_VCODEC
 	tristate "Mediatek Video Codec driver"
