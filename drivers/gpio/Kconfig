@@ -781,16 +781,13 @@ config GPIO_PCF857X
 	  platform-neutral GPIO calls.
 
 config GPIO_SX150X
-	bool "Semtech SX150x I2C GPIO expander"
-	depends on I2C=y
-	select GPIOLIB_IRQCHIP
+	bool "Semtech SX150x I2C GPIO expander (deprecated)"
+	depends on PINCTRL && I2C=y
+	select PINCTRL_SX150X
 	default n
 	help
-	  Say yes here to provide support for Semtech SX150-series I2C
-	  GPIO expanders. Compatible models include:
-
-	  8 bits:  sx1508q
-	  16 bits: sx1509q
+	  Say yes here to provide support for Semtech SX150x-series I2C
+	  GPIO expanders. The GPIO driver was replaced by a Pinctrl version.
 
 config GPIO_TPIC2810
 	tristate "TPIC2810 8-Bit I2C GPO expander"
@@ -802,6 +799,7 @@ config GPIO_TPIC2810
 
 config GPIO_TS4900
 	tristate "Technologic Systems FPGA I2C GPIO"
+	depends on SOC_IMX6 || COMPILE_TEST
 	select REGMAP_I2C
 	help
 	  Say yes here to enabled the GPIO driver for Technologic's FPGA core.
@@ -817,6 +815,14 @@ config GPIO_ADP5520
 	help
 	  This option enables support for on-chip GPIO found
 	  on Analog Devices ADP5520 PMICs.
+
+config GPIO_ALTERA_A10SR
+	tristate "Altera Arria10 System Resource GPIO"
+	depends on MFD_ALTERA_A10SR
+	help
+	  Driver for Arria10 Development Kit GPIO expansion which
+	  includes reads of pushbuttons and DIP switches as well
+	  as writes to LEDs.
 
 config GPIO_ARIZONA
 	tristate "Wolfson Microelectronics Arizona class devices"
