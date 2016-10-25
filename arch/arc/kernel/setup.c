@@ -40,6 +40,20 @@ struct task_struct *_current_task[NR_CPUS];	/* For stack switching */
 
 struct cpuinfo_arc cpuinfo_arc700[NR_CPUS];
 
+static const struct cpuinfo_data arc_cpu_tbl[] = {
+#ifdef CONFIG_ISA_ARCOMPACT
+	{ {0x20, "ARC 600"      }, 0x2F},
+	{ {0x30, "ARC 700"      }, 0x33},
+	{ {0x34, "ARC 700 R4.10"}, 0x34},
+	{ {0x35, "ARC 700 R4.11"}, 0x35},
+#else
+	{ {0x50, "ARC HS38 R2.0"}, 0x51},
+	{ {0x52, "ARC HS38 R2.1"}, 0x52},
+	{ {0x53, "ARC HS38 R3.0"}, 0x53},
+#endif
+	{ {0x00, NULL		} }
+};
+
 static void read_decode_ccm_bcr(struct cpuinfo_arc *cpu)
 {
 	if (is_isa_arcompact()) {
@@ -92,10 +106,33 @@ static void read_arc_build_cfg_regs(void)
 	struct bcr_timer timer;
 	struct bcr_generic bcr;
 	struct cpuinfo_arc *cpu = &cpuinfo_arc700[smp_processor_id()];
+	const struct cpuinfo_data *tbl;
+
 	FIX_PTR(cpu);
 
 	READ_BCR(AUX_IDENTITY, cpu->core);
 	READ_BCR(ARC_REG_ISA_CFG_BCR, cpu->isa);
+
+	for (tbl = &arc_cpu_tbl[0]; tbl->info.id != 0; tbl++) {
+		if ((cpu->core.family >= tbl->info.id) &&
+		    (cpu->core.family <= tbl->up_range)) {
+			cpu->details = tbl;
+			break;
+		}
+	}
+
+	/* some hacks for lack of feature BCR info in old ARC700 cores */
+	if (is_isa_arcompact()) {
+		if (!cpu->isa.ver)	/* ISA BCR absent, use Kconfig info */
+			cpu->isa.atomic = IS_ENABLED(CONFIG_ARC_HAS_LLSC);
+		else
+			cpu->isa.atomic = cpu->isa.atomic1;
+
+		cpu->isa.be = IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
+	}
+
+	cpu->extn.swape = (cpu->core.family >= 0x34) ? 1 :
+				IS_ENABLED(CONFIG_ARC_HAS_SWAPE);
 
 	READ_BCR(ARC_REG_TIMERS_BCR, timer);
 	cpu->extn.timer0 = timer.t0;
@@ -162,59 +199,30 @@ static void read_arc_build_cfg_regs(void)
 	cpu->extn.debug = cpu->extn.ap | cpu->extn.smart | cpu->extn.rtt;
 }
 
-static const struct cpuinfo_data arc_cpu_tbl[] = {
-#ifdef CONFIG_ISA_ARCOMPACT
-	{ {0x20, "ARC 600"      }, 0x2F},
-	{ {0x30, "ARC 700"      }, 0x33},
-	{ {0x34, "ARC 700 R4.10"}, 0x34},
-	{ {0x35, "ARC 700 R4.11"}, 0x35},
-#else
-	{ {0x50, "ARC HS38 R2.0"}, 0x51},
-	{ {0x52, "ARC HS38 R2.1"}, 0x52},
-	{ {0x53, "ARC HS38 R3.0"}, 0x53},
-#endif
-	{ {0x00, NULL		} }
-};
-
-
 static char *arc_cpu_mumbojumbo(int cpu_id, char *buf, int len)
 {
 	struct cpuinfo_arc *cpu = &cpuinfo_arc700[cpu_id];
 	struct bcr_identity *core = &cpu->core;
-	const struct cpuinfo_data *tbl;
+	const struct cpuinfo_data *tbl = cpu->details;
 	char *isa_nm;
-	int i, be, atomic;
-	int n = 0;
+	int i, n = 0;
 
 	FIX_PTR(cpu);
 
 	if (is_isa_arcompact()) {
 		isa_nm = "ARCompact";
-		be = IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
-
-		atomic = cpu->isa.atomic1;
-		if (!cpu->isa.ver)	/* ISA BCR absent, use Kconfig info */
-			atomic = IS_ENABLED(CONFIG_ARC_HAS_LLSC);
 	} else {
 		isa_nm = "ARCv2";
-		be = cpu->isa.be;
-		atomic = cpu->isa.atomic;
 	}
 
 	n += scnprintf(buf + n, len - n,
 		       "\nIDENTITY\t: ARCVER [%#02x] ARCNUM [%#02x] CHIPID [%#4x]\n",
 		       core->family, core->cpu_id, core->chip_id);
 
-	for (tbl = &arc_cpu_tbl[0]; tbl->info.id != 0; tbl++) {
-		if ((core->family >= tbl->info.id) &&
-		    (core->family <= tbl->up_range)) {
-			n += scnprintf(buf + n, len - n,
+	n += scnprintf(buf + n, len - n,
 				       "processor [%d]\t: %s (%s ISA) %s\n",
 				       cpu_id, tbl->info.str, isa_nm,
-				       IS_AVAIL1(be, "[Big-Endian]"));
-			break;
-		}
-	}
+				       IS_AVAIL1(cpu->isa.be, "[Big-Endian]"));
 
 	if (tbl->info.id == 0)
 		n += scnprintf(buf + n, len - n, "UNKNOWN ARC Processor\n");
@@ -226,7 +234,7 @@ static char *arc_cpu_mumbojumbo(int cpu_id, char *buf, int len)
 				 CONFIG_ARC_HAS_RTC));
 
 	n += i = scnprintf(buf + n, len - n, "%s%s%s%s%s",
-			   IS_AVAIL2(atomic, "atomic ", CONFIG_ARC_HAS_LLSC),
+			   IS_AVAIL2(cpu->isa.atomic, "atomic ", CONFIG_ARC_HAS_LLSC),
 			   IS_AVAIL2(cpu->isa.ldd, "ll64 ", CONFIG_ARC_HAS_LL64),
 			   IS_AVAIL1(cpu->isa.unalign, "unalign (not used)"));
 
@@ -253,7 +261,7 @@ static char *arc_cpu_mumbojumbo(int cpu_id, char *buf, int len)
 		       IS_AVAIL1(cpu->extn.swap, "swap "),
 		       IS_AVAIL1(cpu->extn.minmax, "minmax "),
 		       IS_AVAIL1(cpu->extn.crc, "crc "),
-		       IS_AVAIL2(1, "swape", CONFIG_ARC_HAS_SWAPE));
+		       IS_AVAIL2(cpu->extn.swape, "swape", CONFIG_ARC_HAS_SWAPE));
 
 	if (cpu->bpu.ver)
 		n += scnprintf(buf + n, len - n,
@@ -272,9 +280,7 @@ static char *arc_extn_mumbojumbo(int cpu_id, char *buf, int len)
 
 	FIX_PTR(cpu);
 
-	n += scnprintf(buf + n, len - n,
-		       "Vector Table\t: %#x\nPeripherals\t: %#lx:%#lx\n",
-		       cpu->vec_base, perip_base, perip_end);
+	n += scnprintf(buf + n, len - n, "Vector Table\t: %#x\n", cpu->vec_base);
 
 	if (cpu->extn.fpu_sp || cpu->extn.fpu_dp)
 		n += scnprintf(buf + n, len - n, "FPU\t\t: %s%s\n",
@@ -507,7 +513,7 @@ static void *c_start(struct seq_file *m, loff_t *pos)
 	 * way to pass it w/o having to kmalloc/free a 2 byte string.
 	 * Encode cpu-id as 0xFFcccc, which is decoded by show routine.
 	 */
-	return *pos < num_possible_cpus() ? cpu_to_ptr(*pos) : NULL;
+	return *pos < nr_cpu_ids ? cpu_to_ptr(*pos) : NULL;
 }
 
 static void *c_next(struct seq_file *m, void *v, loff_t *pos)
