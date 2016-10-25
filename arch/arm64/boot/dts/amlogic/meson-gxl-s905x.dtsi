@@ -1,7 +1,6 @@
 /*
- * Copyright (c) 2016 Andreas Färber
- * Copyright (c) 2016 BayLibre, Inc.
- * Author: Kevin Hilman <khilman@kernel.org>
+ * Copyright (c) 2016 Endless Computers, Inc.
+ * Author: Carlo Caione <carlo@endlessm.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -42,68 +41,8 @@
  *     OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "meson-gxbb.dtsi"
+#include "meson-gxl.dtsi"
 
 / {
-	aliases {
-		serial0 = &uart_AO;
-	};
-
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
-	memory@0 {
-		device_type = "memory";
-		reg = <0x0 0x0 0x0 0x40000000>;
-	};
-
-	usb_pwr: regulator-usb-pwrs {
-		compatible = "regulator-fixed";
-
-		regulator-name = "USB_PWR";
-
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-
-		/* signal name in schematic: USB_PWR_EN */
-		gpio = <&gpio GPIODV_24 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-	};
-};
-
-/* This UART is brought out to the DB9 connector */
-&uart_AO {
-	status = "okay";
-	pinctrl-0 = <&uart_ao_a_pins>;
-	pinctrl-names = "default";
-};
-
-&ethmac {
-	status = "okay";
-	pinctrl-0 = <&eth_rgmii_pins>;
-	pinctrl-names = "default";
-};
-
-&ir {
-	status = "okay";
-	pinctrl-0 = <&remote_input_ao_pins>;
-	pinctrl-names = "default";
-};
-
-&usb0_phy {
-	status = "okay";
-	phy-supply = <&usb_pwr>;
-};
-
-&usb1_phy {
-	status = "okay";
-};
-
-&usb0 {
-	status = "okay";
-};
-
-&usb1 {
-	status = "okay";
+	compatible = "amlogic,s905x", "amlogic,meson-gxl";
 };
