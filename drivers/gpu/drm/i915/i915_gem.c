@@ -826,6 +826,7 @@ i915_gem_gtt_pread(struct drm_device *dev,
 	uint64_t offset;
 	int ret;
 
+	intel_runtime_pm_get(to_i915(dev));
 	vma = i915_gem_object_ggtt_pin(obj, NULL, 0, 0, PIN_MAPPABLE);
 	if (!IS_ERR(vma)) {
 		node.start = i915_ggtt_offset(vma);
@@ -926,6 +927,7 @@ out_unpin:
 		i915_vma_unpin(vma);
 	}
 out:
+	intel_runtime_pm_put(to_i915(dev));
 	return ret;
 }
 
@@ -1060,12 +1062,9 @@ i915_gem_pread_ioctl(struct drm_device *dev, void *data,
 	ret = i915_gem_shmem_pread(dev, obj, args, file);
 
 	/* pread for non shmem backed objects */
-	if (ret == -EFAULT || ret == -ENODEV) {
-		intel_runtime_pm_get(to_i915(dev));
+	if (ret == -EFAULT || ret == -ENODEV)
 		ret = i915_gem_gtt_pread(dev, obj, args->size,
 					args->offset, args->data_ptr);
-		intel_runtime_pm_put(to_i915(dev));
-	}
 
 	i915_gem_object_put(obj);
 	mutex_unlock(&dev->struct_mutex);
@@ -1126,6 +1125,7 @@ i915_gem_gtt_pwrite_fast(struct drm_i915_private *i915,
 	if (i915_gem_object_is_tiled(obj))
 		return -EFAULT;
 
+	intel_runtime_pm_get(i915);
 	vma = i915_gem_object_ggtt_pin(obj, NULL, 0, 0,
 				       PIN_MAPPABLE | PIN_NONBLOCK);
 	if (!IS_ERR(vma)) {
@@ -1234,6 +1234,7 @@ out_unpin:
 		i915_vma_unpin(vma);
 	}
 out:
+	intel_runtime_pm_put(i915);
 	return ret;
 }
 
@@ -1466,12 +1467,12 @@ i915_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 	 * perspective, requiring manual detiling by the client.
 	 */
 	if (!i915_gem_object_has_struct_page(obj) ||
-	    cpu_write_needs_clflush(obj)) {
-		ret = i915_gem_gtt_pwrite_fast(dev_priv, obj, args, file);
+	    cpu_write_needs_clflush(obj))
 		/* Note that the gtt paths might fail with non-page-backed user
 		 * pointers (e.g. gtt mappings when moving data between
-		 * textures). Fallback to the shmem path in that case. */
-	}
+		 * textures). Fallback to the shmem path in that case.
+		 */
+		ret = i915_gem_gtt_pwrite_fast(dev_priv, obj, args, file);
 
 	if (ret == -EFAULT || ret == -ENOSPC) {
 		if (obj->phys_handle)
@@ -1839,16 +1840,18 @@ int i915_gem_fault(struct vm_area_struct *area, struct vm_fault *vmf)
 	if (ret)
 		goto err_unpin;
 
+	/* Mark as being mmapped into userspace for later revocation */
+	assert_rpm_wakelock_held(dev_priv);
+	if (list_empty(&obj->userfault_link))
+		list_add(&obj->userfault_link, &dev_priv->mm.userfault_list);
+
 	/* Finally, remap it using the new GTT offset */
 	ret = remap_io_mapping(area,
 			       area->vm_start + (vma->ggtt_view.params.partial.offset << PAGE_SHIFT),
 			       (ggtt->mappable_base + vma->node.start) >> PAGE_SHIFT,
 			       min_t(u64, vma->size, area->vm_end - area->vm_start),
 			       &ggtt->mappable);
-	if (ret)
-		goto err_unpin;
 
-	obj->fault_mappable = true;
 err_unpin:
 	__i915_vma_unpin(vma);
 err_unlock:
@@ -1916,15 +1919,23 @@ err:
 void
 i915_gem_release_mmap(struct drm_i915_gem_object *obj)
 {
+	struct drm_i915_private *i915 = to_i915(obj->base.dev);
+
 	/* Serialisation between user GTT access and our code depends upon
 	 * revoking the CPU's PTE whilst the mutex is held. The next user
 	 * pagefault then has to wait until we release the mutex.
+	 *
+	 * Note that RPM complicates somewhat by adding an additional
+	 * requirement that operations to the GGTT be made holding the RPM
+	 * wakeref.
 	 */
-	lockdep_assert_held(&obj->base.dev->struct_mutex);
+	lockdep_assert_held(&i915->drm.struct_mutex);
+	intel_runtime_pm_get(i915);
 
-	if (!obj->fault_mappable)
-		return;
+	if (list_empty(&obj->userfault_link))
+		goto out;
 
+	list_del_init(&obj->userfault_link);
 	drm_vma_node_unmap(&obj->base.vma_node,
 			   obj->base.dev->anon_inode->i_mapping);
 
@@ -1937,16 +1948,45 @@ i915_gem_release_mmap(struct drm_i915_gem_object *obj)
 	 */
 	wmb();
 
-	obj->fault_mappable = false;
+out:
+	intel_runtime_pm_put(i915);
 }
 
-void
-i915_gem_release_all_mmaps(struct drm_i915_private *dev_priv)
+void i915_gem_runtime_suspend(struct drm_i915_private *dev_priv)
 {
-	struct drm_i915_gem_object *obj;
+	struct drm_i915_gem_object *obj, *on;
+	int i;
 
-	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list)
-		i915_gem_release_mmap(obj);
+	/*
+	 * Only called during RPM suspend. All users of the userfault_list
+	 * must be holding an RPM wakeref to ensure that this can not
+	 * run concurrently with themselves (and use the struct_mutex for
+	 * protection between themselves).
+	 */
+
+	list_for_each_entry_safe(obj, on,
+				 &dev_priv->mm.userfault_list, userfault_link) {
+		list_del_init(&obj->userfault_link);
+		drm_vma_node_unmap(&obj->base.vma_node,
+				   obj->base.dev->anon_inode->i_mapping);
+	}
+
+	/* The fence will be lost when the device powers down. If any were
+	 * in use by hardware (i.e. they are pinned), we should not be powering
+	 * down! All other fences will be reacquired by the user upon waking.
+	 */
+	for (i = 0; i < dev_priv->num_fence_regs; i++) {
+		struct drm_i915_fence_reg *reg = &dev_priv->fence_regs[i];
+
+		if (WARN_ON(reg->pin_count))
+			continue;
+
+		if (!reg->vma)
+			continue;
+
+		GEM_BUG_ON(!list_empty(&reg->vma->obj->userfault_link));
+		reg->dirty = true;
+	}
 }
 
 /**
@@ -3455,7 +3495,7 @@ int i915_gem_get_caching_ioctl(struct drm_device *dev, void *data,
 int i915_gem_set_caching_ioctl(struct drm_device *dev, void *data,
 			       struct drm_file *file)
 {
-	struct drm_i915_private *dev_priv = to_i915(dev);
+	struct drm_i915_private *i915 = to_i915(dev);
 	struct drm_i915_gem_caching *args = data;
 	struct drm_i915_gem_object *obj;
 	enum i915_cache_level level;
@@ -3472,23 +3512,21 @@ int i915_gem_set_caching_ioctl(struct drm_device *dev, void *data,
 		 * cacheline, whereas normally such cachelines would get
 		 * invalidated.
 		 */
-		if (!HAS_LLC(dev) && !HAS_SNOOP(dev))
+		if (!HAS_LLC(i915) && !HAS_SNOOP(i915))
 			return -ENODEV;
 
 		level = I915_CACHE_LLC;
 		break;
 	case I915_CACHING_DISPLAY:
-		level = HAS_WT(dev_priv) ? I915_CACHE_WT : I915_CACHE_NONE;
+		level = HAS_WT(i915) ? I915_CACHE_WT : I915_CACHE_NONE;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	intel_runtime_pm_get(dev_priv);
-
 	ret = i915_mutex_lock_interruptible(dev);
 	if (ret)
-		goto rpm_put;
+		return ret;
 
 	obj = i915_gem_object_lookup(file, args->handle);
 	if (!obj) {
@@ -3497,13 +3535,9 @@ int i915_gem_set_caching_ioctl(struct drm_device *dev, void *data,
 	}
 
 	ret = i915_gem_object_set_cache_level(obj, level);
-
 	i915_gem_object_put(obj);
 unlock:
 	mutex_unlock(&dev->struct_mutex);
-rpm_put:
-	intel_runtime_pm_put(dev_priv);
-
 	return ret;
 }
 
@@ -4108,6 +4142,7 @@ void i915_gem_object_init(struct drm_i915_gem_object *obj,
 	int i;
 
 	INIT_LIST_HEAD(&obj->global_list);
+	INIT_LIST_HEAD(&obj->userfault_link);
 	for (i = 0; i < I915_NUM_ENGINES; i++)
 		init_request_active(&obj->last_read[i],
 				    i915_gem_object_retire__read);
@@ -4435,6 +4470,8 @@ i915_gem_init_hw(struct drm_device *dev)
 	enum intel_engine_id id;
 	int ret;
 
+	dev_priv->gt.last_init_time = ktime_get();
+
 	/* Double layer security blanket, see i915_gem_init() */
 	intel_uncore_forcewake_get(dev_priv, FORCEWAKE_ALL);
 
@@ -4640,6 +4677,7 @@ i915_gem_load_init(struct drm_device *dev)
 	INIT_LIST_HEAD(&dev_priv->mm.unbound_list);
 	INIT_LIST_HEAD(&dev_priv->mm.bound_list);
 	INIT_LIST_HEAD(&dev_priv->mm.fence_list);
+	INIT_LIST_HEAD(&dev_priv->mm.userfault_list);
 	INIT_DELAYED_WORK(&dev_priv->gt.retire_work,
 			  i915_gem_retire_work_handler);
 	INIT_DELAYED_WORK(&dev_priv->gt.idle_work,

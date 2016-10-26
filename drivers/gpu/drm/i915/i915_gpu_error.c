@@ -546,9 +546,13 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 	}
 
 	err_printf(m, "%s\n", error->error_msg);
-	err_printf(m, "Time: %ld s %ld us\n", error->time.tv_sec,
-		   error->time.tv_usec);
 	err_printf(m, "Kernel: " UTS_RELEASE "\n");
+	err_printf(m, "Time: %ld s %ld us\n",
+		   error->time.tv_sec, error->time.tv_usec);
+	err_printf(m, "Boottime: %ld s %ld us\n",
+		   error->boottime.tv_sec, error->boottime.tv_usec);
+	err_printf(m, "Uptime: %ld s %ld us\n",
+		   error->uptime.tv_sec, error->uptime.tv_usec);
 	err_print_capabilities(m, &error->device_info);
 	max_hangcheck_score = 0;
 	for (i = 0; i < ARRAY_SIZE(error->engine); i++) {
@@ -702,6 +706,8 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 
 	print_error_obj(m, NULL, "Semaphores", error->semaphore);
 
+	print_error_obj(m, NULL, "GuC log buffer", error->guc_log);
+
 	if (error->overlay)
 		intel_overlay_print_error_state(m, error->overlay);
 
@@ -782,6 +788,7 @@ static void i915_error_state_free(struct kref *error_ref)
 	}
 
 	i915_error_object_free(error->semaphore);
+	i915_error_object_free(error->guc_log);
 
 	for (i = 0; i < ARRAY_SIZE(error->active_bo); i++)
 		kfree(error->active_bo[i]);
@@ -1408,6 +1415,17 @@ static void i915_capture_pinned_buffers(struct drm_i915_private *dev_priv,
 	error->pinned_bo = bo;
 }
 
+static void i915_gem_capture_guc_log_buffer(struct drm_i915_private *dev_priv,
+					    struct drm_i915_error_state *error)
+{
+	/* Capturing log buf contents won't be useful if logging was disabled */
+	if (!dev_priv->guc.log.vma || (i915.guc_log_level < 0))
+		return;
+
+	error->guc_log = i915_error_object_create(dev_priv,
+						  dev_priv->guc.log.vma);
+}
+
 /* Capture all registers which don't fit into another category. */
 static void i915_capture_reg_state(struct drm_i915_private *dev_priv,
 				   struct drm_i915_error_state *error)
@@ -1532,8 +1550,13 @@ static int capture(void *data)
 	i915_gem_record_rings(error->i915, error);
 	i915_capture_active_buffers(error->i915, error);
 	i915_capture_pinned_buffers(error->i915, error);
+	i915_gem_capture_guc_log_buffer(error->i915, error);
 
 	do_gettimeofday(&error->time);
+	error->boottime = ktime_to_timeval(ktime_get_boottime());
+	error->uptime =
+		ktime_to_timeval(ktime_sub(ktime_get(),
+					   error->i915->gt.last_init_time));
 
 	error->overlay = intel_overlay_capture_error_state(error->i915);
 	error->display = intel_display_capture_error_state(error->i915);

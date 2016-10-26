@@ -1111,6 +1111,7 @@ static void i915_driver_register(struct drm_i915_private *dev_priv)
 	/* Reveal our presence to userspace */
 	if (drm_dev_register(dev, 0) == 0) {
 		i915_debugfs_register(dev_priv);
+		i915_guc_register(dev_priv);
 		i915_setup_sysfs(dev_priv);
 	} else
 		DRM_ERROR("Failed to register driver for userspace access!\n");
@@ -1149,6 +1150,7 @@ static void i915_driver_unregister(struct drm_i915_private *dev_priv)
 	intel_opregion_unregister(dev_priv);
 
 	i915_teardown_sysfs(dev_priv);
+	i915_guc_unregister(dev_priv);
 	i915_debugfs_unregister(dev_priv);
 	drm_dev_unregister(&dev_priv->drm);
 
@@ -2278,10 +2280,8 @@ static int vlv_resume_prepare(struct drm_i915_private *dev_priv,
 
 	vlv_check_no_gt_access(dev_priv);
 
-	if (rpm_resume) {
+	if (rpm_resume)
 		intel_init_clock_gating(dev);
-		i915_gem_restore_fences(dev);
-	}
 
 	return ret;
 }
@@ -2301,32 +2301,13 @@ static int intel_runtime_suspend(struct device *kdev)
 
 	DRM_DEBUG_KMS("Suspending device\n");
 
-	/*
-	 * We could deadlock here in case another thread holding struct_mutex
-	 * calls RPM suspend concurrently, since the RPM suspend will wait
-	 * first for this RPM suspend to finish. In this case the concurrent
-	 * RPM resume will be followed by its RPM suspend counterpart. Still
-	 * for consistency return -EAGAIN, which will reschedule this suspend.
-	 */
-	if (!mutex_trylock(&dev->struct_mutex)) {
-		DRM_DEBUG_KMS("device lock contention, deffering suspend\n");
-		/*
-		 * Bump the expiration timestamp, otherwise the suspend won't
-		 * be rescheduled.
-		 */
-		pm_runtime_mark_last_busy(kdev);
-
-		return -EAGAIN;
-	}
-
 	disable_rpm_wakeref_asserts(dev_priv);
 
 	/*
 	 * We are safe here against re-faults, since the fault handler takes
 	 * an RPM reference.
 	 */
-	i915_gem_release_all_mmaps(dev_priv);
-	mutex_unlock(&dev->struct_mutex);
+	i915_gem_runtime_suspend(dev_priv);
 
 	intel_guc_suspend(dev);
 
