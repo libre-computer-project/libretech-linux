@@ -107,6 +107,7 @@ void blk_set_default_limits(struct queue_limits *lim)
 	lim->io_opt = 0;
 	lim->misaligned = 0;
 	lim->cluster = 1;
+	lim->zoned = BLK_ZONED_NONE;
 }
 EXPORT_SYMBOL(blk_set_default_limits);
 
@@ -629,6 +630,10 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		t->discard_alignment = lcm_not_zero(t->discard_alignment, alignment) %
 			t->discard_granularity;
 	}
+
+	if (b->chunk_sectors)
+		t->chunk_sectors = min_not_zero(t->chunk_sectors,
+						b->chunk_sectors);
 
 	return ret;
 }

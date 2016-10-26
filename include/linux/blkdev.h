@@ -24,6 +24,7 @@
 #include <linux/rcupdate.h>
 #include <linux/percpu-refcount.h>
 #include <linux/scatterlist.h>
+#include <linux/blkzoned.h>
 
 struct module;
 struct scsi_ioctl_command;
@@ -261,6 +262,15 @@ struct blk_queue_tag {
 #define BLK_SCSI_MAX_CMDS	(256)
 #define BLK_SCSI_CMD_PER_LONG	(BLK_SCSI_MAX_CMDS / (sizeof(long) * 8))
 
+/*
+ * Zoned block device models (zoned limit).
+ */
+enum blk_zoned_model {
+	BLK_ZONED_NONE,	/* Regular block device */
+	BLK_ZONED_HA,	/* Host-aware zoned block device */
+	BLK_ZONED_HM,	/* Host-managed zoned block device */
+};
+
 struct queue_limits {
 	unsigned long		bounce_pfn;
 	unsigned long		seg_boundary_mask;
@@ -290,7 +300,44 @@ struct queue_limits {
 	unsigned char		cluster;
 	unsigned char		discard_zeroes_data;
 	unsigned char		raid_partial_stripes_expensive;
+	enum blk_zoned_model	zoned;
 };
+
+#ifdef CONFIG_BLK_DEV_ZONED
+
+struct blk_zone_report_hdr {
+	unsigned int	nr_zones;
+	u8		padding[60];
+};
+
+extern int blkdev_report_zones(struct block_device *bdev,
+			       sector_t sector, struct blk_zone *zones,
+			       unsigned int *nr_zones, gfp_t gfp_mask);
+extern int blkdev_reset_zones(struct block_device *bdev, sector_t sectors,
+			      sector_t nr_sectors, gfp_t gfp_mask);
+
+extern int blkdev_report_zones_ioctl(struct block_device *bdev, fmode_t mode,
+				     unsigned int cmd, unsigned long arg);
+extern int blkdev_reset_zones_ioctl(struct block_device *bdev, fmode_t mode,
+				    unsigned int cmd, unsigned long arg);
+
+#else /* CONFIG_BLK_DEV_ZONED */
+
+static inline int blkdev_report_zones_ioctl(struct block_device *bdev,
+					    fmode_t mode, unsigned int cmd,
+					    unsigned long arg)
+{
+	return -ENOTTY;
+}
+
+static inline int blkdev_reset_zones_ioctl(struct block_device *bdev,
+					   fmode_t mode, unsigned int cmd,
+					   unsigned long arg)
+{
+	return -ENOTTY;
+}
+
+#endif /* CONFIG_BLK_DEV_ZONED */
 
 struct request_queue {
 	/*
@@ -625,6 +672,28 @@ static inline bool queue_is_rq_based(struct request_queue *q)
 static inline unsigned int blk_queue_cluster(struct request_queue *q)
 {
 	return q->limits.cluster;
+}
+
+static inline enum blk_zoned_model
+blk_queue_zoned_model(struct request_queue *q)
+{
+	return q->limits.zoned;
+}
+
+static inline bool blk_queue_is_zoned(struct request_queue *q)
+{
+	switch (blk_queue_zoned_model(q)) {
+	case BLK_ZONED_HA:
+	case BLK_ZONED_HM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static inline unsigned int blk_queue_zone_size(struct request_queue *q)
+{
+	return blk_queue_is_zoned(q) ? q->limits.chunk_sectors : 0;
 }
 
 /*
@@ -1350,6 +1419,36 @@ static inline unsigned int bdev_write_same(struct block_device *bdev)
 
 	if (q)
 		return q->limits.max_write_same_sectors;
+
+	return 0;
+}
+
+static inline enum blk_zoned_model bdev_zoned_model(struct block_device *bdev)
+{
+	struct request_queue *q = bdev_get_queue(bdev);
+
+	if (q)
+		return blk_queue_zoned_model(q);
+
+	return BLK_ZONED_NONE;
+}
+
+static inline bool bdev_is_zoned(struct block_device *bdev)
+{
+	struct request_queue *q = bdev_get_queue(bdev);
+
+	if (q)
+		return blk_queue_is_zoned(q);
+
+	return false;
+}
+
+static inline unsigned int bdev_zone_size(struct block_device *bdev)
+{
+	struct request_queue *q = bdev_get_queue(bdev);
+
+	if (q)
+		return blk_queue_zone_size(q);
 
 	return 0;
 }
