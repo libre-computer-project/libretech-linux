@@ -237,16 +237,19 @@ static const char *fc_lport_state(struct fc_lport *lport)
  * @remote_fid:	 The FID of the ptp rport
  * @remote_wwpn: The WWPN of the ptp rport
  * @remote_wwnn: The WWNN of the ptp rport
+ *
+ * Locking Note: The lport lock is expected to be held before calling
+ * this routine.
  */
 static void fc_lport_ptp_setup(struct fc_lport *lport,
 			       u32 remote_fid, u64 remote_wwpn,
 			       u64 remote_wwnn)
 {
-	mutex_lock(&lport->disc.disc_mutex);
 	if (lport->ptp_rdata) {
 		lport->tt.rport_logoff(lport->ptp_rdata);
 		kref_put(&lport->ptp_rdata->kref, lport->tt.rport_destroy);
 	}
+	mutex_lock(&lport->disc.disc_mutex);
 	lport->ptp_rdata = lport->tt.rport_create(lport, remote_fid);
 	kref_get(&lport->ptp_rdata->kref);
 	lport->ptp_rdata->ids.port_name = remote_wwpn;
@@ -1007,8 +1010,10 @@ EXPORT_SYMBOL(fc_lport_reset);
  */
 static void fc_lport_reset_locked(struct fc_lport *lport)
 {
-	if (lport->dns_rdata)
+	if (lport->dns_rdata) {
 		lport->tt.rport_logoff(lport->dns_rdata);
+		lport->dns_rdata = NULL;
+	}
 
 	if (lport->ptp_rdata) {
 		lport->tt.rport_logoff(lport->ptp_rdata);
@@ -1772,7 +1777,7 @@ void fc_lport_flogi_resp(struct fc_seq *sp, struct fc_frame *fp,
 	if ((csp_flags & FC_SP_FT_FPORT) == 0) {
 		if (e_d_tov > lport->e_d_tov)
 			lport->e_d_tov = e_d_tov;
-		lport->r_a_tov = 2 * e_d_tov;
+		lport->r_a_tov = 2 * lport->e_d_tov;
 		fc_lport_set_port_id(lport, did, fp);
 		printk(KERN_INFO "host%d: libfc: "
 		       "Port (%6.6x) entered "
@@ -1784,8 +1789,10 @@ void fc_lport_flogi_resp(struct fc_seq *sp, struct fc_frame *fp,
 				   get_unaligned_be64(
 					   &flp->fl_wwnn));
 	} else {
-		lport->e_d_tov = e_d_tov;
-		lport->r_a_tov = r_a_tov;
+		if (e_d_tov > lport->e_d_tov)
+			lport->e_d_tov = e_d_tov;
+		if (r_a_tov > lport->r_a_tov)
+			lport->r_a_tov = r_a_tov;
 		fc_host_fabric_name(lport->host) =
 			get_unaligned_be64(&flp->fl_wwnn);
 		fc_lport_set_port_id(lport, did, fp);

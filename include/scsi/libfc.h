@@ -44,6 +44,11 @@
 #define	FC_NO_ERR	0	/* no error */
 #define	FC_EX_TIMEOUT	1	/* Exchange timeout */
 #define	FC_EX_CLOSED	2	/* Exchange closed */
+#define FC_EX_ALLOC_ERR	3	/* Exchange allocation failed */
+#define FC_EX_XMIT_ERR	4	/* Exchange transmit failed */
+#define FC_EX_ELS_RJT	5	/* ELS rejected */
+#define FC_EX_INV_LOGIN	6	/* Login not completed */
+#define FC_EX_SEQ_ERR	6	/* Exchange sequence error */
 
 /**
  * enum fc_lport_state - Local port states
@@ -350,7 +355,8 @@ struct fc_fcp_pkt {
 
 	/* Timeout/error related information */
 	struct timer_list timer;
-	int	          wait_for_comp;
+	int		  wait_for_comp;
+	int		  timer_delay;
 	u32		  recov_retry;
 	struct fc_seq	  *recov_seq;
 	struct completion tm_done;
@@ -385,6 +391,7 @@ struct fc_seq {
 
 #define FC_EX_DONE		(1 << 0) /* ep is completed */
 #define FC_EX_RST_CLEANUP	(1 << 1) /* reset is forcing completion */
+#define FC_EX_QUARANTINE	(1 << 2) /* exch is quarantined */
 
 /**
  * struct fc_exch - Fibre Channel Exchange
