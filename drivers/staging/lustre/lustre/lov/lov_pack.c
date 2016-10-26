@@ -97,135 +97,60 @@ void lov_dump_lmm_v3(int level, struct lov_mds_md_v3 *lmm)
 			     le16_to_cpu(lmm->lmm_stripe_count));
 }
 
-/* Pack LOV object metadata for disk storage.  It is packed in LE byte
- * order and is opaque to the networking layer.
+/**
+ * Pack LOV striping metadata for disk storage format (in little
+ * endian byte order).
  *
- * XXX In the future, this will be enhanced to get the EA size from the
- *     underlying OSC device(s) to get their EA sizes so we can stack
- *     LOVs properly.  For now lov_mds_md_size() just assumes one u64
- *     per stripe.
+ * This follows the getxattr() conventions. If \a buf_size is zero
+ * then return the size needed. If \a buf_size is too small then
+ * return -ERANGE. Otherwise return the size of the result.
  */
-int lov_obd_packmd(struct lov_obd *lov, struct lov_mds_md **lmmp,
-		   struct lov_stripe_md *lsm)
+ssize_t lov_lsm_pack(const struct lov_stripe_md *lsm, void *buf,
+		     size_t buf_size)
 {
-	struct lov_mds_md_v1 *lmmv1;
-	struct lov_mds_md_v3 *lmmv3;
-	__u16 stripe_count;
 	struct lov_ost_data_v1 *lmm_objects;
-	int lmm_size, lmm_magic;
-	int i;
-	int cplen = 0;
+	struct lov_mds_md_v1 *lmmv1 = buf;
+	struct lov_mds_md_v3 *lmmv3 = buf;
+	size_t lmm_size;
+	unsigned int i;
 
-	if (lsm) {
-		lmm_magic = lsm->lsm_magic;
-	} else {
-		if (lmmp && *lmmp)
-			lmm_magic = le32_to_cpu((*lmmp)->lmm_magic);
-		else
-			/* lsm == NULL and lmmp == NULL */
-			lmm_magic = LOV_MAGIC;
-	}
-
-	if ((lmm_magic != LOV_MAGIC_V1) &&
-	    (lmm_magic != LOV_MAGIC_V3)) {
-		CERROR("bad mem LOV MAGIC: 0x%08X != 0x%08X nor 0x%08X\n",
-		       lmm_magic, LOV_MAGIC_V1, LOV_MAGIC_V3);
-		return -EINVAL;
-	}
-
-	if (lsm) {
-		/* If we are just sizing the EA, limit the stripe count
-		 * to the actual number of OSTs in this filesystem.
-		 */
-		if (!lmmp) {
-			stripe_count = lov_get_stripecnt(lov, lmm_magic,
-							 lsm->lsm_stripe_count);
-			lsm->lsm_stripe_count = stripe_count;
-		} else if (!lsm_is_released(lsm)) {
-			stripe_count = lsm->lsm_stripe_count;
-		} else {
-			stripe_count = 0;
-		}
-	} else {
-		/*
-		 * To calculate maximum easize by active targets at present,
-		 * which is exactly the maximum easize to be seen by LOV
-		 */
-		stripe_count = lov->desc.ld_active_tgt_count;
-	}
-
-	/* XXX LOV STACKING call into osc for sizes */
-	lmm_size = lov_mds_md_size(stripe_count, lmm_magic);
-
-	if (!lmmp)
+	lmm_size = lov_mds_md_size(lsm->lsm_stripe_count, lsm->lsm_magic);
+	if (!buf_size)
 		return lmm_size;
 
-	if (*lmmp && !lsm) {
-		stripe_count = le16_to_cpu((*lmmp)->lmm_stripe_count);
-		lmm_size = lov_mds_md_size(stripe_count, lmm_magic);
-		kvfree(*lmmp);
-		*lmmp = NULL;
-		return 0;
-	}
+	if (buf_size < lmm_size)
+		return -ERANGE;
 
-	if (!*lmmp) {
-		*lmmp = libcfs_kvzalloc(lmm_size, GFP_NOFS);
-		if (!*lmmp)
-			return -ENOMEM;
-	}
-
-	CDEBUG(D_INFO, "lov_packmd: LOV_MAGIC 0x%08X, lmm_size = %d\n",
-	       lmm_magic, lmm_size);
-
-	lmmv1 = *lmmp;
-	lmmv3 = (struct lov_mds_md_v3 *)*lmmp;
-	if (lmm_magic == LOV_MAGIC_V3)
-		lmmv3->lmm_magic = cpu_to_le32(LOV_MAGIC_V3);
-	else
-		lmmv1->lmm_magic = cpu_to_le32(LOV_MAGIC_V1);
-
-	if (!lsm)
-		return lmm_size;
-
-	/* lmmv1 and lmmv3 point to the same struct and have the
+	/*
+	 * lmmv1 and lmmv3 point to the same struct and have the
 	 * same first fields
 	 */
+	lmmv1->lmm_magic = cpu_to_le32(lsm->lsm_magic);
 	lmm_oi_cpu_to_le(&lmmv1->lmm_oi, &lsm->lsm_oi);
 	lmmv1->lmm_stripe_size = cpu_to_le32(lsm->lsm_stripe_size);
-	lmmv1->lmm_stripe_count = cpu_to_le16(stripe_count);
+	lmmv1->lmm_stripe_count = cpu_to_le16(lsm->lsm_stripe_count);
 	lmmv1->lmm_pattern = cpu_to_le32(lsm->lsm_pattern);
 	lmmv1->lmm_layout_gen = cpu_to_le16(lsm->lsm_layout_gen);
+
 	if (lsm->lsm_magic == LOV_MAGIC_V3) {
-		cplen = strlcpy(lmmv3->lmm_pool_name, lsm->lsm_pool_name,
-				sizeof(lmmv3->lmm_pool_name));
-		if (cplen >= sizeof(lmmv3->lmm_pool_name))
-			return -E2BIG;
+		CLASSERT(sizeof(lsm->lsm_pool_name) ==
+			 sizeof(lmmv3->lmm_pool_name));
+		strlcpy(lmmv3->lmm_pool_name, lsm->lsm_pool_name,
+			sizeof(lmmv3->lmm_pool_name));
 		lmm_objects = lmmv3->lmm_objects;
 	} else {
 		lmm_objects = lmmv1->lmm_objects;
 	}
 
-	for (i = 0; i < stripe_count; i++) {
+	for (i = 0; i < lsm->lsm_stripe_count; i++) {
 		struct lov_oinfo *loi = lsm->lsm_oinfo[i];
-		/* XXX LOV STACKING call down to osc_packmd() to do packing */
-		LASSERTF(ostid_id(&loi->loi_oi) != 0, "lmm_oi "DOSTID
-			 " stripe %u/%u idx %u\n", POSTID(&lmmv1->lmm_oi),
-			 i, stripe_count, loi->loi_ost_idx);
+
 		ostid_cpu_to_le(&loi->loi_oi, &lmm_objects[i].l_ost_oi);
 		lmm_objects[i].l_ost_gen = cpu_to_le32(loi->loi_ost_gen);
 		lmm_objects[i].l_ost_idx = cpu_to_le32(loi->loi_ost_idx);
 	}
 
 	return lmm_size;
-}
-
-int lov_packmd(struct obd_export *exp, struct lov_mds_md **lmmp,
-	       struct lov_stripe_md *lsm)
-{
-	struct obd_device *obd = class_exp2obd(exp);
-	struct lov_obd *lov = &obd->u.lov;
-
-	return lov_obd_packmd(lov, lmmp, lsm);
 }
 
 /* Find the max stripecount we should use */
@@ -378,15 +303,14 @@ int lov_unpackmd(struct obd_export *exp,  struct lov_stripe_md **lsmp,
 int lov_getstripe(struct lov_object *obj, struct lov_stripe_md *lsm,
 		  struct lov_user_md __user *lump)
 {
-	/*
-	 * XXX huge struct allocated on stack.
-	 */
 	/* we use lov_user_md_v3 because it is larger than lov_user_md_v1 */
-	struct lov_obd *lov;
 	struct lov_user_md_v3 lum;
-	struct lov_mds_md *lmmk = NULL;
-	int rc, lmmk_size, lmm_size;
-	int lum_size;
+	struct lov_mds_md *lmmk;
+	u32 stripe_count;
+	ssize_t lmm_size;
+	size_t lmmk_size;
+	size_t lum_size;
+	int rc;
 	mm_segment_t seg;
 
 	if (!lsm)
@@ -398,6 +322,18 @@ int lov_getstripe(struct lov_object *obj, struct lov_stripe_md *lsm,
 	 */
 	seg = get_fs();
 	set_fs(KERNEL_DS);
+
+	if (lsm->lsm_magic != LOV_MAGIC_V1 && lsm->lsm_magic != LOV_MAGIC_V3) {
+		CERROR("bad LSM MAGIC: 0x%08X != 0x%08X nor 0x%08X\n",
+		       lsm->lsm_magic, LOV_MAGIC_V1, LOV_MAGIC_V3);
+		rc = -EIO;
+		goto out;
+	}
+
+	if (!lsm_is_released(lsm))
+		stripe_count = lsm->lsm_stripe_count;
+	else
+		stripe_count = 0;
 
 	/* we only need the header part from user space to get lmm_magic and
 	 * lmm_stripe_count, (the header part is common to v1 and v3)
@@ -417,32 +353,40 @@ int lov_getstripe(struct lov_object *obj, struct lov_stripe_md *lsm,
 	if (lum.lmm_stripe_count &&
 	    (lum.lmm_stripe_count < lsm->lsm_stripe_count)) {
 		/* Return right size of stripe to user */
-		lum.lmm_stripe_count = lsm->lsm_stripe_count;
+		lum.lmm_stripe_count = stripe_count;
 		rc = copy_to_user(lump, &lum, lum_size);
 		rc = -EOVERFLOW;
 		goto out;
 	}
-	lov = lu2lov_dev(obj->lo_cl.co_lu.lo_dev)->ld_lov;
-	rc = lov_obd_packmd(lov, &lmmk, lsm);
-	if (rc < 0)
+	lmmk_size = lov_mds_md_size(stripe_count, lsm->lsm_magic);
+
+
+	lmmk = libcfs_kvzalloc(lmmk_size, GFP_NOFS);
+	if (!lmmk) {
+		rc = -ENOMEM;
 		goto out;
-	lmmk_size = rc;
-	lmm_size = rc;
-	rc = 0;
+	}
+
+	lmm_size = lov_lsm_pack(lsm, lmmk, lmmk_size);
+	if (lmm_size < 0) {
+		rc = lmm_size;
+		goto out_free;
+	}
 
 	/* FIXME: Bug 1185 - copy fields properly when structs change */
 	/* struct lov_user_md_v3 and struct lov_mds_md_v3 must be the same */
 	CLASSERT(sizeof(lum) == sizeof(struct lov_mds_md_v3));
 	CLASSERT(sizeof(lum.lmm_objects[0]) == sizeof(lmmk->lmm_objects[0]));
 
-	if ((cpu_to_le32(LOV_MAGIC) != LOV_MAGIC) &&
-	    ((lmmk->lmm_magic == cpu_to_le32(LOV_MAGIC_V1)) ||
-	    (lmmk->lmm_magic == cpu_to_le32(LOV_MAGIC_V3)))) {
+	if (cpu_to_le32(LOV_MAGIC) != LOV_MAGIC &&
+	    (lmmk->lmm_magic == cpu_to_le32(LOV_MAGIC_V1) ||
+	     lmmk->lmm_magic == cpu_to_le32(LOV_MAGIC_V3))) {
 		lustre_swab_lov_mds_md(lmmk);
 		lustre_swab_lov_user_md_objects(
 				(struct lov_user_ost_data *)lmmk->lmm_objects,
 				lmmk->lmm_stripe_count);
 	}
+
 	if (lum.lmm_magic == LOV_USER_MAGIC) {
 		/* User request for v1, we need skip lmm_pool_name */
 		if (lmmk->lmm_magic == LOV_MAGIC_V3) {
@@ -474,9 +418,11 @@ int lov_getstripe(struct lov_object *obj, struct lov_stripe_md *lsm,
 	((struct lov_user_md *)lmmk)->lmm_stripe_count = lum.lmm_stripe_count;
 	if (copy_to_user(lump, lmmk, lmm_size))
 		rc = -EFAULT;
+	else
+		rc = 0;
 
 out_free:
-	kfree(lmmk);
+	kvfree(lmmk);
 out:
 	set_fs(seg);
 	return rc;

@@ -172,14 +172,14 @@ extern char obd_jobid_var[];
 #define OBD_FAIL_MDS_ALL_REQUEST_NET     0x123
 #define OBD_FAIL_MDS_SYNC_NET	    0x124
 #define OBD_FAIL_MDS_SYNC_PACK	   0x125
-#define OBD_FAIL_MDS_DONE_WRITING_NET    0x126
-#define OBD_FAIL_MDS_DONE_WRITING_PACK   0x127
+/*	OBD_FAIL_MDS_DONE_WRITING_NET	0x126 obsolete since 2.8.0 */
+/*	OBD_FAIL_MDS_DONE_WRITING_PACK	0x127 obsolete since 2.8.0 */
 #define OBD_FAIL_MDS_ALLOC_OBDO	  0x128
 #define OBD_FAIL_MDS_PAUSE_OPEN	  0x129
 #define OBD_FAIL_MDS_STATFS_LCW_SLEEP    0x12a
 #define OBD_FAIL_MDS_OPEN_CREATE	 0x12b
 #define OBD_FAIL_MDS_OST_SETATTR	 0x12c
-#define OBD_FAIL_MDS_QUOTACHECK_NET      0x12d
+/*	OBD_FAIL_MDS_QUOTACHECK_NET      0x12d obsolete since 2.4 */
 #define OBD_FAIL_MDS_QUOTACTL_NET	0x12e
 #define OBD_FAIL_MDS_CLIENT_ADD	  0x12f
 #define OBD_FAIL_MDS_GETXATTR_NET	0x130
@@ -264,7 +264,7 @@ extern char obd_jobid_var[];
 #define OBD_FAIL_OST_ENOSPC	      0x215
 #define OBD_FAIL_OST_EROFS	       0x216
 #define OBD_FAIL_OST_ENOENT	      0x217
-#define OBD_FAIL_OST_QUOTACHECK_NET      0x218
+/*	OBD_FAIL_OST_QUOTACHECK_NET      0x218 obsolete since 2.4 */
 #define OBD_FAIL_OST_QUOTACTL_NET	0x219
 #define OBD_FAIL_OST_CHECKSUM_RECEIVE    0x21a
 #define OBD_FAIL_OST_CHECKSUM_SEND       0x21b
@@ -373,7 +373,7 @@ extern char obd_jobid_var[];
 #define OBD_FAIL_OBD_PING_NET	    0x600
 #define OBD_FAIL_OBD_LOG_CANCEL_NET      0x601
 #define OBD_FAIL_OBD_LOGD_NET	    0x602
-#define OBD_FAIL_OBD_QC_CALLBACK_NET     0x603
+/*	OBD_FAIL_OBD_QC_CALLBACK_NET     0x603 obsolete since 2.4 */
 #define OBD_FAIL_OBD_DQACQ	       0x604
 #define OBD_FAIL_OBD_LLOG_SETUP	  0x605
 #define OBD_FAIL_OBD_LOG_CANCEL_REP      0x606

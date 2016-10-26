@@ -501,8 +501,7 @@ int ll_dir_setstripe(struct inode *inode, struct lov_user_md *lump,
 		return PTR_ERR(op_data);
 
 	/* swabbing is done in lov_setstripe() on server side */
-	rc = md_setattr(sbi->ll_md_exp, op_data, lump, lum_size,
-			NULL, 0, &req, NULL);
+	rc = md_setattr(sbi->ll_md_exp, op_data, lump, lum_size, &req);
 	ll_finish_md_op_data(op_data);
 	ptlrpc_req_finished(req);
 	if (rc) {
@@ -682,7 +681,7 @@ static int ll_ioc_copy_start(struct super_block *sb, struct hsm_copy *copy)
 {
 	struct ll_sb_info		*sbi = ll_s2sbi(sb);
 	struct hsm_progress_kernel	 hpk;
-	int				 rc;
+	int rc2, rc = 0;
 
 	/* Forge a hsm_progress based on data from copy. */
 	hpk.hpk_fid = copy->hc_hai.hai_fid;
@@ -732,10 +731,10 @@ progress:
 	/* On error, the request should be considered as completed */
 	if (hpk.hpk_errval > 0)
 		hpk.hpk_flags |= HP_FLAG_COMPLETED;
-	rc = obd_iocontrol(LL_IOC_HSM_PROGRESS, sbi->ll_md_exp, sizeof(hpk),
-			   &hpk, NULL);
+	rc2 = obd_iocontrol(LL_IOC_HSM_PROGRESS, sbi->ll_md_exp, sizeof(hpk),
+			    &hpk, NULL);
 
-	return rc;
+	return rc ? rc : rc2;
 }
 
 /**
@@ -757,7 +756,7 @@ static int ll_ioc_copy_end(struct super_block *sb, struct hsm_copy *copy)
 {
 	struct ll_sb_info		*sbi = ll_s2sbi(sb);
 	struct hsm_progress_kernel	 hpk;
-	int				 rc;
+	int rc2, rc = 0;
 
 	/* If you modify the logic here, also check llapi_hsm_copy_end(). */
 	/* Take care: copy->hc_hai.hai_action, len, gid and data are not
@@ -831,10 +830,10 @@ static int ll_ioc_copy_end(struct super_block *sb, struct hsm_copy *copy)
 	}
 
 progress:
-	rc = obd_iocontrol(LL_IOC_HSM_PROGRESS, sbi->ll_md_exp, sizeof(hpk),
-			   &hpk, NULL);
+	rc2 = obd_iocontrol(LL_IOC_HSM_PROGRESS, sbi->ll_md_exp, sizeof(hpk),
+			    &hpk, NULL);
 
-	return rc;
+	return rc ? rc : rc2;
 }
 
 static int copy_and_ioctl(int cmd, struct obd_export *exp,
@@ -862,10 +861,6 @@ static int quotactl_ioctl(struct ll_sb_info *sbi, struct if_quotactl *qctl)
 	int rc = 0;
 
 	switch (cmd) {
-	case LUSTRE_Q_INVALIDATE:
-	case LUSTRE_Q_FINVALIDATE:
-	case Q_QUOTAON:
-	case Q_QUOTAOFF:
 	case Q_SETQUOTA:
 	case Q_SETINFO:
 		if (!capable(CFS_CAP_SYS_ADMIN))
@@ -930,10 +925,6 @@ static int quotactl_ioctl(struct ll_sb_info *sbi, struct if_quotactl *qctl)
 		QCTL_COPY(oqctl, qctl);
 		rc = obd_quotactl(sbi->ll_md_exp, oqctl);
 		if (rc) {
-			if (rc != -EALREADY && cmd == Q_QUOTAON) {
-				oqctl->qc_cmd = Q_QUOTAOFF;
-				obd_quotactl(sbi->ll_md_exp, oqctl);
-			}
 			kfree(oqctl);
 			return rc;
 		}
@@ -1370,134 +1361,6 @@ out_req:
 			ll_putname(filename);
 		return rc;
 	}
-	case IOC_LOV_GETINFO: {
-		struct lov_user_mds_data __user *lumd;
-		struct lov_stripe_md *lsm;
-		struct lov_user_md __user *lum;
-		struct lov_mds_md *lmm;
-		int lmmsize;
-		lstat_t st;
-
-		lumd = (struct lov_user_mds_data __user *)arg;
-		lum = &lumd->lmd_lmm;
-
-		rc = ll_get_max_mdsize(sbi, &lmmsize);
-		if (rc)
-			return rc;
-
-		lmm = libcfs_kvzalloc(lmmsize, GFP_NOFS);
-		if (!lmm)
-			return -ENOMEM;
-		if (copy_from_user(lmm, lum, lmmsize)) {
-			rc = -EFAULT;
-			goto free_lmm;
-		}
-
-		switch (lmm->lmm_magic) {
-		case LOV_USER_MAGIC_V1:
-			if (cpu_to_le32(LOV_USER_MAGIC_V1) == LOV_USER_MAGIC_V1)
-				break;
-			/* swab objects first so that stripes num will be sane */
-			lustre_swab_lov_user_md_objects(
-				((struct lov_user_md_v1 *)lmm)->lmm_objects,
-				((struct lov_user_md_v1 *)lmm)->lmm_stripe_count);
-			lustre_swab_lov_user_md_v1((struct lov_user_md_v1 *)lmm);
-			break;
-		case LOV_USER_MAGIC_V3:
-			if (cpu_to_le32(LOV_USER_MAGIC_V3) == LOV_USER_MAGIC_V3)
-				break;
-			/* swab objects first so that stripes num will be sane */
-			lustre_swab_lov_user_md_objects(
-				((struct lov_user_md_v3 *)lmm)->lmm_objects,
-				((struct lov_user_md_v3 *)lmm)->lmm_stripe_count);
-			lustre_swab_lov_user_md_v3((struct lov_user_md_v3 *)lmm);
-			break;
-		default:
-			rc = -EINVAL;
-			goto free_lmm;
-		}
-
-		rc = obd_unpackmd(sbi->ll_dt_exp, &lsm, lmm, lmmsize);
-		if (rc < 0) {
-			rc = -ENOMEM;
-			goto free_lmm;
-		}
-
-		/* Perform glimpse_size operation. */
-		memset(&st, 0, sizeof(st));
-
-		rc = ll_glimpse_ioctl(sbi, lsm, &st);
-		if (rc)
-			goto free_lsm;
-
-		if (copy_to_user(&lumd->lmd_st, &st, sizeof(st))) {
-			rc = -EFAULT;
-			goto free_lsm;
-		}
-
-free_lsm:
-		obd_free_memmd(sbi->ll_dt_exp, &lsm);
-free_lmm:
-		kvfree(lmm);
-		return rc;
-	}
-	case OBD_IOC_QUOTACHECK: {
-		struct obd_quotactl *oqctl;
-		int error = 0;
-
-		if (!capable(CFS_CAP_SYS_ADMIN))
-			return -EPERM;
-
-		oqctl = kzalloc(sizeof(*oqctl), GFP_NOFS);
-		if (!oqctl)
-			return -ENOMEM;
-		oqctl->qc_type = arg;
-		rc = obd_quotacheck(sbi->ll_md_exp, oqctl);
-		if (rc < 0) {
-			CDEBUG(D_INFO, "md_quotacheck failed: rc %d\n", rc);
-			error = rc;
-		}
-
-		rc = obd_quotacheck(sbi->ll_dt_exp, oqctl);
-		if (rc < 0)
-			CDEBUG(D_INFO, "obd_quotacheck failed: rc %d\n", rc);
-
-		kfree(oqctl);
-		return error ?: rc;
-	}
-	case OBD_IOC_POLL_QUOTACHECK: {
-		struct if_quotacheck *check;
-
-		if (!capable(CFS_CAP_SYS_ADMIN))
-			return -EPERM;
-
-		check = kzalloc(sizeof(*check), GFP_NOFS);
-		if (!check)
-			return -ENOMEM;
-
-		rc = obd_iocontrol(cmd, sbi->ll_md_exp, 0, (void *)check,
-				   NULL);
-		if (rc) {
-			CDEBUG(D_QUOTA, "mdc ioctl %d failed: %d\n", cmd, rc);
-			if (copy_to_user((void __user *)arg, check,
-					 sizeof(*check)))
-				CDEBUG(D_QUOTA, "copy_to_user failed\n");
-			goto out_poll;
-		}
-
-		rc = obd_iocontrol(cmd, sbi->ll_dt_exp, 0, (void *)check,
-				   NULL);
-		if (rc) {
-			CDEBUG(D_QUOTA, "osc ioctl %d failed: %d\n", cmd, rc);
-			if (copy_to_user((void __user *)arg, check,
-					 sizeof(*check)))
-				CDEBUG(D_QUOTA, "copy_to_user failed\n");
-			goto out_poll;
-		}
-out_poll:
-		kfree(check);
-		return rc;
-	}
 	case OBD_IOC_QUOTACTL: {
 		struct if_quotactl *qctl;
 
@@ -1536,7 +1399,7 @@ out_quotactl:
 		exp = count ? sbi->ll_md_exp : sbi->ll_dt_exp;
 		vallen = sizeof(count);
 		rc = obd_get_info(NULL, exp, sizeof(KEY_TGT_COUNT),
-				  KEY_TGT_COUNT, &vallen, &count, NULL);
+				  KEY_TGT_COUNT, &vallen, &count);
 		if (rc) {
 			CERROR("get target count failed: %d\n", rc);
 			return rc;
