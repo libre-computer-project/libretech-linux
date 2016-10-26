@@ -48,6 +48,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_CQ0093VC if MFD_DAVINCI_VOICECODEC
 	select SND_SOC_CS35L32 if I2C
 	select SND_SOC_CS35L33 if I2C
+	select SND_SOC_CS35L34 if I2C
 	select SND_SOC_CS42L51_I2C if I2C
 	select SND_SOC_CS42L52 if I2C && INPUT
 	select SND_SOC_CS42L56 if I2C && INPUT
@@ -399,6 +400,10 @@ config SND_SOC_CS35L33
 	tristate "Cirrus Logic CS35L33 CODEC"
 	depends on I2C
 
+config SND_SOC_CS35L34
+	tristate "Cirrus Logic CS35L34 CODEC"
+	depends on I2C
+
 config SND_SOC_CS42L51
 	tristate
 
@@ -580,6 +585,13 @@ config SND_SOC_MAX9860
 	tristate "Maxim MAX9860 Mono Audio Voice Codec"
 	depends on I2C
 	select REGMAP_I2C
+
+config SND_SOC_MSM8916_WCD_ANALOG
+	tristate "Qualcomm MSM8916 WCD Analog Codec"
+	depends on SPMI || COMPILE_TEST
+
+config SND_SOC_MSM8916_WCD_DIGITAL
+	tristate "Qualcomm MSM8916 WCD DIGITAL Codec"
 
 config SND_SOC_PCM1681
 	tristate "Texas Instruments PCM1681 CODEC"
@@ -914,7 +926,7 @@ config SND_SOC_WM8523
 	depends on I2C
 
 config SND_SOC_WM8580
-	tristate "Wolfson Microelectronics WM8523 CODEC"
+	tristate "Wolfson Microelectronics WM8580 and WM8581 CODECs"
 	depends on I2C
 
 config SND_SOC_WM8711
@@ -1054,9 +1066,11 @@ config SND_SOC_WM9090
 
 config SND_SOC_WM9705
 	tristate
+	select REGMAP_AC97
 
 config SND_SOC_WM9712
 	tristate
+	select REGMAP_AC97
 
 config SND_SOC_WM9713
 	tristate

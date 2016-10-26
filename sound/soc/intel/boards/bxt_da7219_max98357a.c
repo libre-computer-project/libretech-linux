@@ -130,8 +130,8 @@ static int broxton_da7219_codec_init(struct snd_soc_pcm_runtime *rtd)
 	 */
 	ret = snd_soc_card_jack_new(rtd->card, "Headset Jack",
 			SND_JACK_HEADSET | SND_JACK_BTN_0 | SND_JACK_BTN_1 |
-			SND_JACK_BTN_2 | SND_JACK_BTN_3, &broxton_headset,
-			NULL, 0);
+			SND_JACK_BTN_2 | SND_JACK_BTN_3 | SND_JACK_LINEOUT,
+			&broxton_headset, NULL, 0);
 	if (ret) {
 		dev_err(rtd->dev, "Headset Jack creation failed: %d\n", ret);
 		return ret;
@@ -248,7 +248,7 @@ static int broxton_da7219_hw_free(struct snd_pcm_substream *substream)
 	return ret;
 }
 
-static struct snd_soc_ops broxton_da7219_ops = {
+static const struct snd_soc_ops broxton_da7219_ops = {
 	.hw_params = broxton_da7219_hw_params,
 	.hw_free = broxton_da7219_hw_free,
 };
@@ -295,7 +295,7 @@ static int broxton_refcap_startup(struct snd_pcm_substream *substream)
 			&constraints_16000);
 };
 
-static struct snd_soc_ops broxton_refcap_ops = {
+static const struct snd_soc_ops broxton_refcap_ops = {
 	.startup = broxton_refcap_startup,
 };
 
@@ -348,7 +348,7 @@ static struct snd_soc_dai_link broxton_dais[] = {
 		.dynamic = 1,
 		.ops = &broxton_refcap_ops,
 	},
-	[BXT_DPCM_AUDIO_DMIC_CP]
+	[BXT_DPCM_AUDIO_DMIC_CP] =
 	{
 		.name = "Bxt Audio DMIC cap",
 		.stream_name = "dmiccap",
