@@ -30,7 +30,7 @@ static struct rb_node *hists__filter_entries(struct rb_node *nd,
 
 static bool hist_browser__has_filter(struct hist_browser *hb)
 {
-	return hists__has_filter(hb->hists) || hb->min_pcnt || symbol_conf.has_filter;
+	return hists__has_filter(hb->hists) || hb->min_pcnt || symbol_conf.has_filter || hb->c2c_filter;
 }
 
 static int hist_browser__get_folding(struct hist_browser *browser)
@@ -2807,7 +2807,10 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 			do_zoom_dso(browser, actions);
 			continue;
 		case 'V':
-			browser->show_dso = !browser->show_dso;
+			verbose = (verbose + 1) % 4;
+			browser->show_dso = verbose > 0;
+			ui_helpline__fpush("Verbosity level set to %d\n",
+					   verbose);
 			continue;
 		case 't':
 			actions->thread = thread;

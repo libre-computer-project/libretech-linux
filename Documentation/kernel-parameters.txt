@@ -1074,12 +1074,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	nopku		[X86] Disable Memory Protection Keys CPU feature found
 			in some Intel CPUs.
 
-	eagerfpu=	[X86]
-			on	enable eager fpu restore
-			off	disable eager fpu restore
-			auto	selects the default scheme, which automatically
-				enables eagerfpu restore for xsaveopt.
-
 	module.async_probe [KNL]
 			Enable asynchronous probe on this module.
 
@@ -3828,12 +3822,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	shapers=	[NET]
 			Maximal number of shapers.
-
-	show_msr=	[x86] show boot-time MSR settings
-			Format: { <integer> }
-			Show boot-time (BIOS-initialized) MSR settings.
-			The parameter means the number of CPUs to show,
-			for example 1 means boot CPU only.
 
 	simeth=		[IA-64]
 	simscsi=

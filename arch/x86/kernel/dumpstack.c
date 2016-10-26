@@ -82,7 +82,7 @@ void show_trace_log_lvl(struct task_struct *task, struct pt_regs *regs,
 	 * - softirq stack
 	 * - hardirq stack
 	 */
-	for (; stack; stack = stack_info.next_sp) {
+	for (regs = NULL; stack; stack = stack_info.next_sp) {
 		const char *str_begin, *str_end;
 
 		/*
@@ -97,7 +97,7 @@ void show_trace_log_lvl(struct task_struct *task, struct pt_regs *regs,
 
 		stack_type_str(stack_info.type, &str_begin, &str_end);
 		if (str_begin)
-			printk("%s <%s> ", log_lvl, str_begin);
+			printk("%s <%s>\n", log_lvl, str_begin);
 
 		/*
 		 * Scan the stack, printing any text addresses we find.  At the
@@ -118,6 +118,15 @@ void show_trace_log_lvl(struct task_struct *task, struct pt_regs *regs,
 
 			if (!__kernel_text_address(addr))
 				continue;
+
+			/*
+			 * Don't print regs->ip again if it was already printed
+			 * by __show_regs() below.
+			 */
+			if (regs && stack == &regs->ip) {
+				unwind_next_frame(&state);
+				continue;
+			}
 
 			if (stack == ret_addr_p)
 				reliable = 1;
@@ -146,10 +155,15 @@ void show_trace_log_lvl(struct task_struct *task, struct pt_regs *regs,
 			 * of the addresses will just be printed as unreliable.
 			 */
 			unwind_next_frame(&state);
+
+			/* if the frame has entry regs, print them */
+			regs = unwind_get_entry_regs(&state);
+			if (regs)
+				__show_regs(regs, 0);
 		}
 
 		if (str_end)
-			printk("%s <%s> ", log_lvl, str_end);
+			printk("%s <%s>\n", log_lvl, str_end);
 	}
 }
 
@@ -164,12 +178,12 @@ void show_stack(struct task_struct *task, unsigned long *sp)
 	if (!sp && task == current)
 		sp = get_stack_pointer(current, NULL);
 
-	show_stack_log_lvl(task, NULL, sp, "");
+	show_stack_log_lvl(task, NULL, sp, KERN_DEFAULT);
 }
 
 void show_stack_regs(struct pt_regs *regs)
 {
-	show_stack_log_lvl(current, regs, NULL, "");
+	show_stack_log_lvl(current, regs, NULL, KERN_DEFAULT);
 }
 
 static arch_spinlock_t die_lock = __ARCH_SPIN_LOCK_UNLOCKED;
