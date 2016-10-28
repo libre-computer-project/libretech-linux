@@ -1848,7 +1848,26 @@ again:
 			new_ptr_gen = 0;
 		}
 
-		if (WARN_ON(new_bytenr > 0 && new_bytenr == old_bytenr)) {
+		/*
+		 * When we create the reloc root (which is a snapshot of the
+		 * subvolume tree) we set its last_snapshot field (as well as
+		 * for the subvolume's tree root) to the value of the current
+		 * transaction generation minus 1 (at create_reloc_root()).
+		 * This means that at walk_down_reloc_tree() we can catch
+		 * pointers (bytenr/generation pairs) with a generation
+		 * matching the generation of the transaction where we created
+		 * the reloc root, so those pointers correspond to tree blocks
+		 * that were either created before or after the reloc root was
+		 * created. If walk_down_reloc_tree() gave us a path that points
+		 * to a tree block that was created (or COWed) before the reloc
+		 * root was created and in the same transaction where the reloc
+		 * root was created, we have nothing to do and can safely return
+		 * (the tree block is already in both trees).
+		 */
+		if (new_bytenr > 0 && new_bytenr == old_bytenr) {
+			ASSERT(new_ptr_gen == old_ptr_gen);
+			ASSERT(new_ptr_gen ==
+			       btrfs_root_last_snapshot(&src->root_item) + 1);
 			ret = level;
 			break;
 		}
