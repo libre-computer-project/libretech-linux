@@ -78,6 +78,50 @@ enum rq_cmd_type_bits {
 	REQ_TYPE_DRV_PRIV,		/* driver defined types from here */
 };
 
+/*
+ * request flags */
+typedef __u32 __bitwise req_flags_t;
+
+/* elevator knows about this request */
+#define RQF_SORTED		((__force req_flags_t)(1 << 0))
+/* drive already may have started this one */
+#define RQF_STARTED		((__force req_flags_t)(1 << 1))
+/* uses tagged queueing */
+#define RQF_QUEUED		((__force req_flags_t)(1 << 2))
+/* may not be passed by ioscheduler */
+#define RQF_SOFTBARRIER		((__force req_flags_t)(1 << 3))
+/* request for flush sequence */
+#define RQF_FLUSH_SEQ		((__force req_flags_t)(1 << 4))
+/* merge of different types, fail separately */
+#define RQF_MIXED_MERGE		((__force req_flags_t)(1 << 5))
+/* track inflight for MQ */
+#define RQF_MQ_INFLIGHT		((__force req_flags_t)(1 << 6))
+/* don't call prep for this one */
+#define RQF_DONTPREP		((__force req_flags_t)(1 << 7))
+/* set for "ide_preempt" requests and also for requests for which the SCSI
+   "quiesce" state must be ignored. */
+#define RQF_PREEMPT		((__force req_flags_t)(1 << 8))
+/* contains copies of user pages */
+#define RQF_COPY_USER		((__force req_flags_t)(1 << 9))
+/* vaguely specified driver internal error.  Ignored by the block layer */
+#define RQF_FAILED		((__force req_flags_t)(1 << 10))
+/* don't warn about errors */
+#define RQF_QUIET		((__force req_flags_t)(1 << 11))
+/* elevator private data attached */
+#define RQF_ELVPRIV		((__force req_flags_t)(1 << 12))
+/* account I/O stat */
+#define RQF_IO_STAT		((__force req_flags_t)(1 << 13))
+/* request came from our alloc pool */
+#define RQF_ALLOCED		((__force req_flags_t)(1 << 14))
+/* runtime pm request */
+#define RQF_PM			((__force req_flags_t)(1 << 15))
+/* on IO scheduler merge hash */
+#define RQF_HASHED		((__force req_flags_t)(1 << 16))
+
+/* flags that prevent us from merging requests: */
+#define RQF_NOMERGE_FLAGS \
+	(RQF_STARTED | RQF_SOFTBARRIER | RQF_FLUSH_SEQ)
+
 #define BLK_MAX_CDB	16
 
 /*
@@ -98,7 +142,8 @@ struct request {
 
 	int cpu;
 	unsigned cmd_type;
-	u64 cmd_flags;
+	unsigned int cmd_flags;		/* op and common flags */
+	req_flags_t rq_flags;
 	unsigned long atomic_flags;
 
 	/* the following two fields are internal, NEVER access directly */
@@ -198,20 +243,6 @@ struct request {
 	/* for bidi */
 	struct request *next_rq;
 };
-
-#define REQ_OP_SHIFT (8 * sizeof(u64) - REQ_OP_BITS)
-#define req_op(req)  ((req)->cmd_flags >> REQ_OP_SHIFT)
-
-#define req_set_op(req, op) do {				\
-	WARN_ON(op >= (1 << REQ_OP_BITS));			\
-	(req)->cmd_flags &= ((1ULL << REQ_OP_SHIFT) - 1);	\
-	(req)->cmd_flags |= ((u64) (op) << REQ_OP_SHIFT);	\
-} while (0)
-
-#define req_set_op_attrs(req, op, flags) do {	\
-	req_set_op(req, op);			\
-	(req)->cmd_flags |= flags;		\
-} while (0)
 
 static inline unsigned short req_get_ioprio(struct request *req)
 {
@@ -648,7 +679,7 @@ static inline void queue_flag_clear(unsigned int flag, struct request_queue *q)
 			     REQ_FAILFAST_DRIVER))
 
 #define blk_account_rq(rq) \
-	(((rq)->cmd_flags & REQ_STARTED) && \
+	(((rq)->rq_flags & RQF_STARTED) && \
 	 ((rq)->cmd_type == REQ_TYPE_FS))
 
 #define blk_rq_cpu_valid(rq)	((rq)->cpu != -1)
@@ -696,17 +727,9 @@ static inline unsigned int blk_queue_zone_size(struct request_queue *q)
 	return blk_queue_is_zoned(q) ? q->limits.chunk_sectors : 0;
 }
 
-/*
- * We regard a request as sync, if either a read or a sync write
- */
-static inline bool rw_is_sync(int op, unsigned int rw_flags)
-{
-	return op == REQ_OP_READ || (rw_flags & REQ_SYNC);
-}
-
 static inline bool rq_is_sync(struct request *rq)
 {
-	return rw_is_sync(req_op(rq), rq->cmd_flags);
+	return op_is_sync(rq->cmd_flags);
 }
 
 static inline bool blk_rl_full(struct request_list *rl, bool sync)
@@ -739,6 +762,8 @@ static inline bool rq_mergeable(struct request *rq)
 		return false;
 
 	if (rq->cmd_flags & REQ_NOMERGE_FLAGS)
+		return false;
+	if (rq->rq_flags & RQF_NOMERGE_FLAGS)
 		return false;
 
 	return true;
