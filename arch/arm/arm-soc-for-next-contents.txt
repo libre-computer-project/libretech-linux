@@ -20,6 +20,8 @@ next/fixes-non-critical
 next/cleanup
 
 next/soc
+	vexpress/fixes
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/vexpress-fixes-4.10
 
 next/arm64
 	patch
@@ -30,8 +32,12 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-4.10
 	socfpga/dts
 		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_dts_for_v4.10_part_1
+	vexpress/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/vexpress-dt-4.10
 
 next/dt64
+	juno/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/juno-dt-4.10
 
 next/defconfig
 	patch
