@@ -44,7 +44,7 @@ MODULE_PARM_DESC(debug, "Enable debug printks in this driver");
 
 static int forceload;
 module_param_named(forceload, forceload, uint, 0644);
-MODULE_PARM_DESC(debug, "Enable driver testing on unvalidated i5000");
+MODULE_PARM_DESC(forceload, "Enable driver testing on unvalidated i5000");
 
 #define dprintk(fmt, arg...) \
 	do { if (debug) printk(KERN_INFO I7300_PRINT fmt, ##arg); } while (0)
