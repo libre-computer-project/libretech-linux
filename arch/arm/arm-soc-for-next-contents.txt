@@ -1,0 +1,43 @@
+fixes
+	<no branch> (51227bf52008bd4c4c50da4b749bbc6e7bbbca52)
+		git://git.infradead.org/linux-mvebu tags/mvebu-fixes-4.8-3
+	patch
+		ARM: dts: fix the SD card on the Snowball
+		bus: qcom-ebi2: depend on ARCH_QCOM or COMPILE_TEST
+		MAINTAINERS: add myself as Marvell berlin SoC maintainer
+		ARM: multi_v7_defconfig: Enable Intel e1000e driver
+	<no branch> (8e68c65d111a57a4cbe41dc886bb2a1e671e0b6e)
+		git://git.kernel.org/pub/scm/linux/kernel/git/masahiroy/linux-uniphier tags/uniphier-fixes-v4.9
+	<no branch> (4edd601c5a9c5094daa714e65063e623826f3bcc)
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.9
+	<no branch> (963d790468a2f581abf039b45edac79af5e16e55)
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.9/devicetree-arm64-fixes
+	<no branch> (7c6273194445fe1316084d3096f9311c3dfa4da6)
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.9-rockchip-dts64-fixes1
+
+next/fixes-non-critical
+
+next/cleanup
+
+next/soc
+
+next/arm64
+	patch
+		arm64: Enable HIBERNATION in defconfig
+
+next/dt
+	sti/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-4.10
+	socfpga/dts
+		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_dts_for_v4.10_part_1
+
+next/dt64
+
+next/defconfig
+	patch
+		ARM: defconfig: update U8500 defconfig
+	sti/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-defconfig-for-4.10
+
+next/drivers
+
