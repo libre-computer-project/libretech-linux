@@ -28,7 +28,7 @@
 #include <asm/processor.h>
 #include <asm/mce.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 
 #define SKX_REVISION    " Ver: 1.0 "
 
