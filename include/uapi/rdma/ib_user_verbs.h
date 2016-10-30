@@ -235,6 +235,38 @@ struct ib_uverbs_rss_caps {
 	__u32 reserved;
 };
 
+enum {
+	/* The HW supports messages without tag
+	 * sent on QPs attached to a XRQ
+	 */
+	IB_NO_TAG	     = 1 << 0,
+	/* The HW supports tag matching for EAGER messages when
+	 * the send arrives after the corresponding receive
+	 */
+	IB_EAGER_EXPECTED   = 1 << 1,
+	/* The HW supports tag matching for EAGER messages when
+	 * the send arrives before the corresponding receive
+	 */
+	IB_EAGER_UNEXPECTED = 1 << 2,
+	/* The HW supports tag matching for RANDEZVOUS messages when
+	 * the send arrives after the corresponding receive (for RC QPs)
+	 */
+	IB_RNDV_EXPECTED    = 1 << 3,
+	/* The HW supports tag matching for RANDEZVOUS messages when
+	 * the send arrives before the corresponding receive
+	 */
+	IB_RNDV_UNEXPECTED  = 1 << 5,
+};
+
+struct ib_uverbs_tm_caps {
+	__u32 max_unexpected_tags;
+	__u32 tag_mask_length;
+	__u32 header_size;
+	__u32 app_context_size;
+	__u32 max_match_list;
+	__u32 capability_flags;
+};
+
 struct ib_uverbs_ex_query_device_resp {
 	struct ib_uverbs_query_device_resp base;
 	__u32 comp_mask;
@@ -246,6 +278,7 @@ struct ib_uverbs_ex_query_device_resp {
 	struct ib_uverbs_rss_caps rss_caps;
 	__u32  max_wq_type_rq;
 	__u32 reserved;
+	struct ib_uverbs_tm_caps xrq_caps;
 };
 
 struct ib_uverbs_query_port {
@@ -957,7 +990,7 @@ struct ib_uverbs_create_xsrq {
 	__u32 max_wr;
 	__u32 max_sge;
 	__u32 srq_limit;
-	__u32 reserved;
+	__u32 tm_list_size;
 	__u32 xrcd_handle;
 	__u32 cq_handle;
 	__u64 driver_data[0];
