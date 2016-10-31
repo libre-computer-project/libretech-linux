@@ -141,34 +141,38 @@ EXPORT_SYMBOL_GPL(init_srcu_struct);
 #endif /* #else #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 
 /*
- * Returns approximate total of the readers' ->seq[] values for the
+ * Returns approximate total of the readers' ->lock_count[] values for the
  * rank of per-CPU counters specified by idx.
  */
-static unsigned long srcu_readers_seq_idx(struct srcu_struct *sp, int idx)
+static unsigned long srcu_readers_lock_idx(struct srcu_struct *sp, int idx)
 {
 	int cpu;
 	unsigned long sum = 0;
 	unsigned long t;
 
 	for_each_possible_cpu(cpu) {
-		t = READ_ONCE(per_cpu_ptr(sp->per_cpu_ref, cpu)->seq[idx]);
+		struct srcu_struct_array* cpu_counts =
+			per_cpu_ptr(sp->per_cpu_ref, cpu);
+		t = READ_ONCE(cpu_counts->lock_count[idx]);
 		sum += t;
 	}
 	return sum;
 }
 
 /*
- * Returns approximate number of readers active on the specified rank
- * of the per-CPU ->c[] counters.
+ * Returns approximate total of the readers' ->unlock_count[] values for the
+ * rank of per-CPU counters specified by idx.
  */
-static unsigned long srcu_readers_active_idx(struct srcu_struct *sp, int idx)
+static unsigned long srcu_readers_unlock_idx(struct srcu_struct *sp, int idx)
 {
 	int cpu;
 	unsigned long sum = 0;
 	unsigned long t;
 
 	for_each_possible_cpu(cpu) {
-		t = READ_ONCE(per_cpu_ptr(sp->per_cpu_ref, cpu)->c[idx]);
+		struct srcu_struct_array* cpu_counts =
+			per_cpu_ptr(sp->per_cpu_ref, cpu);
+		t = READ_ONCE(cpu_counts->unlock_count[idx]);
 		sum += t;
 	}
 	return sum;
@@ -176,79 +180,43 @@ static unsigned long srcu_readers_active_idx(struct srcu_struct *sp, int idx)
 
 /*
  * Return true if the number of pre-existing readers is determined to
- * be stably zero.  An example unstable zero can occur if the call
- * to srcu_readers_active_idx() misses an __srcu_read_lock() increment,
- * but due to task migration, sees the corresponding __srcu_read_unlock()
- * decrement.  This can happen because srcu_readers_active_idx() takes
- * time to sum the array, and might in fact be interrupted or preempted
- * partway through the summation.
+ * be zero.
  */
 static bool srcu_readers_active_idx_check(struct srcu_struct *sp, int idx)
 {
-	unsigned long seq;
+	unsigned long unlocks;
 
-	seq = srcu_readers_seq_idx(sp, idx);
+	unlocks = srcu_readers_unlock_idx(sp, idx);
 
 	/*
-	 * The following smp_mb() A pairs with the smp_mb() B located in
-	 * __srcu_read_lock().  This pairing ensures that if an
-	 * __srcu_read_lock() increments its counter after the summation
-	 * in srcu_readers_active_idx(), then the corresponding SRCU read-side
-	 * critical section will see any changes made prior to the start
-	 * of the current SRCU grace period.
+	 * Make sure that a lock is always counted if the corresponding unlock
+	 * is counted. Needs to be a smp_mb() as the read side may contain a
+	 * read from a variable that is written to before the synchronize_srcu()
+	 * in the write side. In this case smp_mb()s A and B act like the store
+	 * buffering pattern.
 	 *
-	 * Also, if the above call to srcu_readers_seq_idx() saw the
-	 * increment of ->seq[], then the call to srcu_readers_active_idx()
-	 * must see the increment of ->c[].
+	 * This smp_mb() also pairs with smp_mb() C to prevent writes after the
+	 * synchronize_srcu() from being executed before the grace period ends.
 	 */
 	smp_mb(); /* A */
 
 	/*
-	 * Note that srcu_readers_active_idx() can incorrectly return
-	 * zero even though there is a pre-existing reader throughout.
-	 * To see this, suppose that task A is in a very long SRCU
-	 * read-side critical section that started on CPU 0, and that
-	 * no other reader exists, so that the sum of the counters
-	 * is equal to one.  Then suppose that task B starts executing
-	 * srcu_readers_active_idx(), summing up to CPU 1, and then that
-	 * task C starts reading on CPU 0, so that its increment is not
-	 * summed, but finishes reading on CPU 2, so that its decrement
-	 * -is- summed.  Then when task B completes its sum, it will
-	 * incorrectly get zero, despite the fact that task A has been
-	 * in its SRCU read-side critical section the whole time.
+	 * If the locks are the same as the unlocks, then there must of have
+	 * been no readers on this index at some time in between. This does not
+	 * mean that there are no more readers, as one could have read the
+	 * current index but have incremented the lock counter yet.
 	 *
-	 * We therefore do a validation step should srcu_readers_active_idx()
-	 * return zero.
+	 * Note that there can be at most NR_CPUS worth of readers using the old
+	 * index that haven't incremented ->lock_count[] yet.  Therefore, the
+	 * sum of the ->lock_count[]s cannot increment enough times to overflow
+	 * and end up equal the sum of the ->unlock_count[]s, as long as there
+	 * are at most ULONG_MAX - NR_CPUS readers at a time.  (Yes, this does
+	 * mean that systems having more than a billion or so CPUs need to be
+	 * 64-bit systems.)  Therefore, the only way that the return values of
+	 * the two calls to srcu_readers_(un)lock_idx() can be equal is if there
+	 * are no active readers using this index.
 	 */
-	if (srcu_readers_active_idx(sp, idx) != 0)
-		return false;
-
-	/*
-	 * The remainder of this function is the validation step.
-	 * The following smp_mb() D pairs with the smp_mb() C in
-	 * __srcu_read_unlock().  If the __srcu_read_unlock() was seen
-	 * by srcu_readers_active_idx() above, then any destructive
-	 * operation performed after the grace period will happen after
-	 * the corresponding SRCU read-side critical section.
-	 *
-	 * Note that there can be at most NR_CPUS worth of readers using
-	 * the old index, which is not enough to overflow even a 32-bit
-	 * integer.  (Yes, this does mean that systems having more than
-	 * a billion or so CPUs need to be 64-bit systems.)  Therefore,
-	 * the sum of the ->seq[] counters cannot possibly overflow.
-	 * Therefore, the only way that the return values of the two
-	 * calls to srcu_readers_seq_idx() can be equal is if there were
-	 * no increments of the corresponding rank of ->seq[] counts
-	 * in the interim.  But the missed-increment scenario laid out
-	 * above includes an increment of the ->seq[] counter by
-	 * the corresponding __srcu_read_lock().  Therefore, if this
-	 * scenario occurs, the return values from the two calls to
-	 * srcu_readers_seq_idx() will differ, and thus the validation
-	 * step below suffices.
-	 */
-	smp_mb(); /* D */
-
-	return srcu_readers_seq_idx(sp, idx) == seq;
+	return srcu_readers_lock_idx(sp, idx) == unlocks;
 }
 
 /**
@@ -266,8 +234,12 @@ static bool srcu_readers_active(struct srcu_struct *sp)
 	unsigned long sum = 0;
 
 	for_each_possible_cpu(cpu) {
-		sum += READ_ONCE(per_cpu_ptr(sp->per_cpu_ref, cpu)->c[0]);
-		sum += READ_ONCE(per_cpu_ptr(sp->per_cpu_ref, cpu)->c[1]);
+		struct srcu_struct_array* cpu_counts =
+			per_cpu_ptr(sp->per_cpu_ref, cpu);
+		sum += READ_ONCE(cpu_counts->lock_count[0]);
+		sum += READ_ONCE(cpu_counts->lock_count[1]);
+		sum -= READ_ONCE(cpu_counts->unlock_count[0]);
+		sum -= READ_ONCE(cpu_counts->unlock_count[1]);
 	}
 	return sum;
 }
@@ -298,9 +270,8 @@ int __srcu_read_lock(struct srcu_struct *sp)
 	int idx;
 
 	idx = READ_ONCE(sp->completed) & 0x1;
-	__this_cpu_inc(sp->per_cpu_ref->c[idx]);
+	__this_cpu_inc(sp->per_cpu_ref->lock_count[idx]);
 	smp_mb(); /* B */  /* Avoid leaking the critical section. */
-	__this_cpu_inc(sp->per_cpu_ref->seq[idx]);
 	return idx;
 }
 EXPORT_SYMBOL_GPL(__srcu_read_lock);
@@ -314,7 +285,7 @@ EXPORT_SYMBOL_GPL(__srcu_read_lock);
 void __srcu_read_unlock(struct srcu_struct *sp, int idx)
 {
 	smp_mb(); /* C */  /* Avoid leaking the critical section. */
-	this_cpu_dec(sp->per_cpu_ref->c[idx]);
+	this_cpu_inc(sp->per_cpu_ref->unlock_count[idx]);
 }
 EXPORT_SYMBOL_GPL(__srcu_read_unlock);
 
@@ -349,7 +320,7 @@ static bool try_check_zero(struct srcu_struct *sp, int idx, int trycount)
 
 /*
  * Increment the ->completed counter so that future SRCU readers will
- * use the other rank of the ->c[] and ->seq[] arrays.  This allows
+ * use the other rank of the ->(un)lock_count[] arrays.  This allows
  * us to wait for pre-existing readers in a starvation-free manner.
  */
 static void srcu_flip(struct srcu_struct *sp)
