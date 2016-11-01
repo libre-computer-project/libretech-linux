@@ -912,15 +912,6 @@ static inline struct cfq_data *cic_to_cfqd(struct cfq_io_cq *cic)
 }
 
 /*
- * We regard a request as SYNC, if it's either a read or has the SYNC bit
- * set (in which case it could also be direct WRITE).
- */
-static inline bool cfq_bio_sync(struct bio *bio)
-{
-	return bio_data_dir(bio) == READ || (bio->bi_opf & REQ_SYNC);
-}
-
-/*
  * scheduler run of queue, if there are requests pending and no one in the
  * driver that will restart queueing
  */
@@ -2490,7 +2481,7 @@ cfq_find_rq_fmerge(struct cfq_data *cfqd, struct bio *bio)
 	if (!cic)
 		return NULL;
 
-	cfqq = cic_to_cfqq(cic, cfq_bio_sync(bio));
+	cfqq = cic_to_cfqq(cic, op_is_sync(bio->bi_opf));
 	if (cfqq)
 		return elv_rb_find(&cfqq->sort_list, bio_end_sector(bio));
 
@@ -2604,13 +2595,14 @@ static int cfq_allow_bio_merge(struct request_queue *q, struct request *rq,
 			       struct bio *bio)
 {
 	struct cfq_data *cfqd = q->elevator->elevator_data;
+	bool is_sync = op_is_sync(bio->bi_opf);
 	struct cfq_io_cq *cic;
 	struct cfq_queue *cfqq;
 
 	/*
 	 * Disallow merge of a sync bio into an async request.
 	 */
-	if (cfq_bio_sync(bio) && !rq_is_sync(rq))
+	if (is_sync && !rq_is_sync(rq))
 		return false;
 
 	/*
@@ -2621,7 +2613,7 @@ static int cfq_allow_bio_merge(struct request_queue *q, struct request *rq,
 	if (!cic)
 		return false;
 
-	cfqq = cic_to_cfqq(cic, cfq_bio_sync(bio));
+	cfqq = cic_to_cfqq(cic, is_sync);
 	return cfqq == RQ_CFQQ(rq);
 }
 
@@ -3922,6 +3914,12 @@ cfq_update_io_seektime(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 		cfqq->seek_history |= (sdist > CFQQ_SEEK_THR);
 }
 
+static inline bool req_noidle(struct request *req)
+{
+	return req_op(req) == REQ_OP_WRITE &&
+		(req->cmd_flags & (REQ_SYNC | REQ_IDLE)) == REQ_SYNC;
+}
+
 /*
  * Disable idle window if the process thinks too long or seeks so much that
  * it doesn't matter
@@ -3943,7 +3941,7 @@ cfq_update_idle_window(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 	if (cfqq->queued[0] + cfqq->queued[1] >= 4)
 		cfq_mark_cfqq_deep(cfqq);
 
-	if (cfqq->next_rq && (cfqq->next_rq->cmd_flags & REQ_NOIDLE))
+	if (cfqq->next_rq && req_noidle(cfqq->next_rq))
 		enable_idle = 0;
 	else if (!atomic_read(&cic->icq.ioc->active_ref) ||
 		 !cfqd->cfq_slice_idle ||
@@ -4228,8 +4226,7 @@ static void cfq_completed_request(struct request_queue *q, struct request *rq)
 	const int sync = rq_is_sync(rq);
 	u64 now = ktime_get_ns();
 
-	cfq_log_cfqq(cfqd, cfqq, "complete rqnoidle %d",
-		     !!(rq->cmd_flags & REQ_NOIDLE));
+	cfq_log_cfqq(cfqd, cfqq, "complete rqnoidle %d", req_noidle(rq));
 
 	cfq_update_hw_tag(cfqd);
 

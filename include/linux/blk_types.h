@@ -17,7 +17,6 @@ struct io_context;
 struct cgroup_subsys_state;
 typedef void (bio_end_io_t) (struct bio *);
 
-#ifdef CONFIG_BLOCK
 /*
  * main unit of I/O for the block layer and lower layers (ie drivers and
  * stacking drivers)
@@ -126,8 +125,6 @@ struct bio {
 #define BVEC_POOL_OFFSET	(16 - BVEC_POOL_BITS)
 #define BVEC_POOL_IDX(bio)	((bio)->bi_flags >> BVEC_POOL_OFFSET)
 
-#endif /* CONFIG_BLOCK */
-
 /*
  * Operations and flags common to the bio and request structures.
  * We use 8 bits for encoding the operation, and the remaining 24 for flags.
@@ -175,7 +172,7 @@ enum req_flag_bits {
 	__REQ_META,		/* metadata io request */
 	__REQ_PRIO,		/* boost priority in cfq */
 	__REQ_NOMERGE,		/* don't touch this for merging */
-	__REQ_NOIDLE,		/* don't anticipate more IO after this one */
+	__REQ_IDLE,		/* anticipate more IO after this one */
 	__REQ_INTEGRITY,	/* I/O includes block integrity payload */
 	__REQ_FUA,		/* forced unit access */
 	__REQ_PREFLUSH,		/* request for cache flush */
@@ -190,7 +187,7 @@ enum req_flag_bits {
 #define REQ_META		(1ULL << __REQ_META)
 #define REQ_PRIO		(1ULL << __REQ_PRIO)
 #define REQ_NOMERGE		(1ULL << __REQ_NOMERGE)
-#define REQ_NOIDLE		(1ULL << __REQ_NOIDLE)
+#define REQ_IDLE		(1ULL << __REQ_IDLE)
 #define REQ_INTEGRITY		(1ULL << __REQ_INTEGRITY)
 #define REQ_FUA			(1ULL << __REQ_FUA)
 #define REQ_PREFLUSH		(1ULL << __REQ_PREFLUSH)
@@ -216,9 +213,15 @@ static inline bool op_is_write(unsigned int op)
 	return (op & 1);
 }
 
+/*
+ * Reads are always treated as synchronous, as are requests with the FUA or
+ * PREFLUSH flag.  Other operations may be marked as synchronous using the
+ * REQ_SYNC flag.
+ */
 static inline bool op_is_sync(unsigned int op)
 {
-	return (op & REQ_OP_MASK) == REQ_OP_READ || (op & REQ_SYNC);
+	return (op & REQ_OP_MASK) == REQ_OP_READ ||
+		(op & (REQ_SYNC | REQ_FUA | REQ_PREFLUSH));
 }
 
 typedef unsigned int blk_qc_t;
