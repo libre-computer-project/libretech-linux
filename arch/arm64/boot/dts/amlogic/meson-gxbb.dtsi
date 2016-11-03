@@ -56,6 +56,10 @@
 		};
 	};
 
+	system-suspend {
+		compatible = "amlogic,meson-gx-pm";
+	};
+
 	efuse: efuse {
 		compatible = "amlogic,meson-gxbb-efuse";
 		#address-cells = <1>;
@@ -353,6 +357,11 @@
 		reg = <0x0 0x00040 0x0 0x4>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
+	};
+
+	vrtc: rtc@0a8 {
+		compatible = "amlogic,meson-vrtc";
+		reg = <0x0 0x000a8 0x0 0x4>;
 	};
 
 	ir: ir@580 {
