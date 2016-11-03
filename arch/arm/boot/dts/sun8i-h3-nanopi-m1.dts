@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 James Pettigrew <james@innovum.com.au>
+ * Copyright (C) 2016 Milo Kim <woogyom.kim@gmail.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -43,6 +43,22 @@
 #include "sun8i-h3-nanopi.dtsi"
 
 / {
-	model = "FriendlyARM NanoPi NEO";
-	compatible = "friendlyarm,nanopi-neo", "allwinner,sun8i-h3";
+	model = "FriendlyArm NanoPi M1";
+	compatible = "friendlyarm,nanopi-m1", "allwinner,sun8i-h3";
+};
+
+&ehci1 {
+	status = "okay";
+};
+
+&ehci2 {
+	status = "okay";
+};
+
+&ohci1 {
+	status = "okay";
+};
+
+&ohci2 {
+	status = "okay";
 };
