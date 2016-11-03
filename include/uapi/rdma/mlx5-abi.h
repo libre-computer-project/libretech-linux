@@ -124,18 +124,47 @@ struct mlx5_ib_rss_caps {
 	__u8 reserved[7];
 };
 
+struct mlx5_packet_pacing_caps {
+	__u32 qp_rate_limit_min;
+	__u32 qp_rate_limit_max; /* In kpbs */
+
+	/* Corresponding bit will be set if qp type from
+	 * 'enum ib_qp_type' is supported, e.g.
+	 * supported_qpts |= 1 << IB_QPT_RAW_PACKET
+	 */
+	__u32 supported_qpts;
+	__u32 reserved;
+};
+
+enum mlx5_ib_cqe_comp_res_format {
+	MLX5_IB_CQE_RES_FORMAT_HASH	= 1 << 0,
+	MLX5_IB_CQE_RES_FORMAT_CSUM	= 1 << 1,
+	MLX5_IB_CQE_RES_RESERVED	= 1 << 2,
+};
+
+struct mlx5_ib_cqe_comp_caps {
+	__u32 max_num;
+	__u32 supported_format; /* enum mlx5_ib_cqe_comp_res_format */
+};
+
 struct mlx5_ib_query_device_resp {
 	__u32	comp_mask;
 	__u32	response_length;
 	struct	mlx5_ib_tso_caps tso_caps;
 	struct	mlx5_ib_rss_caps rss_caps;
+	struct	mlx5_packet_pacing_caps packet_pacing_caps;
+	__u32	mlx5_ib_support_multi_pkt_send_wqes;
+	__u32	reserved;
+	struct	mlx5_ib_cqe_comp_caps cqe_comp_caps;
 };
 
 struct mlx5_ib_create_cq {
 	__u64	buf_addr;
 	__u64	db_addr;
 	__u32	cqe_size;
-	__u32	reserved; /* explicit padding (optional on i386) */
+	__u8    cqe_comp_en;
+	__u8    cqe_comp_res_format;
+	__u16	reserved; /* explicit padding (optional on i386) */
 };
 
 struct mlx5_ib_create_cq_resp {
