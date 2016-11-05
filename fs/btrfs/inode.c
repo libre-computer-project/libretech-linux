@@ -5859,8 +5859,6 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 	char tmp_name[32];
 	char *name_ptr;
 	int name_len;
-	int is_curr = 0;	/* ctx->pos points to the current index? */
-	bool emitted;
 	bool put = false;
 	struct btrfs_key location;
 
@@ -5885,7 +5883,6 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 	if (ret < 0)
 		goto err;
 
-	emitted = false;
 	while (1) {
 		leaf = path->nodes[0];
 		slot = path->slots[0];
@@ -5911,7 +5908,6 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 			goto next;
 
 		ctx->pos = found_key.offset;
-		is_curr = 1;
 
 		di = btrfs_item_ptr(leaf, slot, struct btrfs_dir_item);
 		if (verify_dir_item(root, leaf, di))
@@ -5941,27 +5937,14 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 
 		if (over)
 			goto nopos;
+		ctx->pos++;
 next:
 		path->slots[0]++;
 	}
 
-	if (is_curr)
-		ctx->pos++;
-	ret = btrfs_readdir_delayed_dir_index(ctx, &ins_list, &emitted);
+	ret = btrfs_readdir_delayed_dir_index(ctx, &ins_list);
 	if (ret)
 		goto nopos;
-
-	/*
-	 * If we haven't emitted any dir entry, we must not touch ctx->pos as
-	 * it was was set to the termination value in previous call. We assume
-	 * that "." and ".." were emitted if we reach this point and set the
-	 * termination value as well for an empty directory.
-	 */
-	if (ctx->pos > 2 && !emitted)
-		goto nopos;
-
-	/* Reached end of directory/root. Bump pos past the last item. */
-	ctx->pos++;
 
 	/*
 	 * Stop new entries from being returned after we return the last
