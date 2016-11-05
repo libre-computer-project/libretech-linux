@@ -248,7 +248,7 @@
 			ranges = <0 MBUS_ID(0x09, 0x05) 0 0x800>;
 		};
 
-		bm_bppi: bm-bppi {
+		bm_bppi: bm-bppi@0 {
 			compatible = "mmio-sram";
 			reg = <MBUS_ID(0x0c, 0x04) 0 0x100000>;
 			ranges = <0 MBUS_ID(0x0c, 0x04) 0 0x100000>;

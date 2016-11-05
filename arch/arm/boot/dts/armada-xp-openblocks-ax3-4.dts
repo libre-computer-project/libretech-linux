@@ -187,10 +187,6 @@
 				status = "okay";
 			};
 		};
-
-		bm-bppi {
-			status = "okay";
-		};
 	};
 };
 
@@ -220,6 +216,10 @@
 		reg = <0 0x8000000>;
 		bank-width = <2>;
 	};
+};
+
+&bm_bppi {
+	status = "okay";
 };
 
 &mdio {

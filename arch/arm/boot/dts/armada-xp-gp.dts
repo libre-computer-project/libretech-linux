@@ -198,10 +198,6 @@
 				nand-on-flash-bbt;
 			};
 		};
-
-		bm-bppi {
-			status = "okay";
-		};
 	};
 };
 
@@ -231,6 +227,10 @@
 		reg = <0 0x1000000>;
 		bank-width = <2>;
 	};
+};
+
+&bm_bppi {
+	status = "okay";
 };
 
 &mdio {
