@@ -70,15 +70,6 @@
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000
 			  MBUS_ID(0x0c, 0x04) 0 0 0xd1200000 0x100000>;
 
-		pcie-controller {
-			status = "okay";
-			/* Internal mini-PCIe connector */
-			pcie@1,0 {
-				/* Port 0, Lane 0 */
-				status = "okay";
-			};
-		};
-
 		internal-regs {
 			rtc@10300 {
 				/* No crystal connected to the internal RTC */
@@ -220,6 +211,15 @@
 
 &bm_bppi {
 	status = "okay";
+};
+
+&pciec {
+	status = "okay";
+	/* Internal mini-PCIe connector */
+	pcie@1,0 {
+		/* Port 0, Lane 0 */
+		status = "okay";
+	};
 };
 
 &mdio {

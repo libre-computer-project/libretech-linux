@@ -99,27 +99,6 @@
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000
 			  MBUS_ID(0x0c, 0x04) 0 0 0xf1200000 0x100000>;
 
-		pcie-controller {
-			status = "okay";
-
-			/*
-			 * The 3 slots are physically present as
-			 * standard PCIe slots on the board.
-			 */
-			pcie@1,0 {
-				/* Port 0, Lane 0 */
-				status = "okay";
-			};
-			pcie@9,0 {
-				/* Port 2, Lane 0 */
-				status = "okay";
-			};
-			pcie@10,0 {
-				/* Port 3, Lane 0 */
-				status = "okay";
-			};
-		};
-
 		internal-regs {
 			serial@12000 {
 				status = "okay";
@@ -226,6 +205,27 @@
 		compatible = "cfi-flash";
 		reg = <0 0x1000000>;
 		bank-width = <2>;
+	};
+};
+
+&pciec {
+	status = "okay";
+
+	/*
+	 * The 3 slots are physically present as
+	 * standard PCIe slots on the board.
+	 */
+	pcie@1,0 {
+		/* Port 0, Lane 0 */
+		status = "okay";
+	};
+	pcie@9,0 {
+		/* Port 2, Lane 0 */
+		status = "okay";
+	};
+	pcie@10,0 {
+		/* Port 3, Lane 0 */
+		status = "okay";
 	};
 };
 
