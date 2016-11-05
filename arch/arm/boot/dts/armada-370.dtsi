@@ -262,7 +262,7 @@
 			};
 		};
 
-		crypto_sram: sa-sram {
+		crypto_sram: sa-sram@0 {
 			compatible = "mmio-sram";
 			reg = <MBUS_ID(0x09, 0x01) 0 0x800>;
 			reg-names = "sram";
