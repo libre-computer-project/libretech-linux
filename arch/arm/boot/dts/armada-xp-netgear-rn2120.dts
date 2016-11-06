@@ -67,7 +67,7 @@
 			  MBUS_ID(0x09, 0x09) 0 0 0xf1100000 0x10000
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000>;
 
-		internal-regs {
+		internal-regs@f1000000 {
 
 			/* RTC is provided by Intersil ISL12057 I2C RTC chip */
 			rtc@10300 {

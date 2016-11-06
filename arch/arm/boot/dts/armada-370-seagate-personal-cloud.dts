@@ -27,7 +27,7 @@
 	compatible = "seagate,cumulus", "marvell,armada370", "marvell,armada-370-xp";
 
 	soc {
-		internal-regs {
+		internal-regs@f1000000 {
 			sata@a0000 {
 				status = "okay";
 				nr-ports = <1>;

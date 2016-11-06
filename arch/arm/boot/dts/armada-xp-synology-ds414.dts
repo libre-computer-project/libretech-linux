@@ -81,7 +81,7 @@
 			  MBUS_ID(0x09, 0x09) 0 0 0xf1100000 0x10000
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000>;
 
-		internal-regs {
+		internal-regs@f1000000 {
 
 			/* RTC is provided by Seiko S-35390A below */
 			rtc@10300 {

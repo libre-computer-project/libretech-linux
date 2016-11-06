@@ -200,7 +200,7 @@
 			};
 		};
 
-		internal-regs {
+		internal-regs@f1000000 {
 			gpio0: gpio@18100 {
 				compatible = "marvell,orion-gpio";
 				reg = <0x18100 0x40>;

@@ -28,7 +28,7 @@
 	compatible = "seagate,dart-4", "marvell,armada370", "marvell,armada-370-xp";
 
 	soc {
-		internal-regs {
+		internal-regs@f1000000 {
 			ethernet@74000 {
 				status = "okay";
 				pinctrl-0 = <&ge1_rgmii_pins>;

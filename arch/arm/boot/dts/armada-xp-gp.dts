@@ -99,7 +99,7 @@
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000
 			  MBUS_ID(0x0c, 0x04) 0 0 0xf1200000 0x100000>;
 
-		internal-regs {
+		internal-regs@f1000000 {
 			serial@12000 {
 				status = "okay";
 			};
