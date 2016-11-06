@@ -98,7 +98,7 @@
 		};
 	};
 
-	soc {
+	soc@f1000000 {
 		/*
 		 * MV78460 has 4 PCIe units Gen2.0: Two units can be
 		 * configured as x4 or quad x1 lanes. Two units are

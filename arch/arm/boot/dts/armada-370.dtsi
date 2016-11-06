@@ -64,7 +64,7 @@
 		gpio2 = &gpio2;
 	};
 
-	soc {
+	soc@f1000000 {
 		compatible = "marvell,armada370-mbus", "simple-bus";
 
 		bootrom@0 {

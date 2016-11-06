@@ -81,7 +81,7 @@
 		};
 	};
 
-	soc {
+	soc@f1000000 {
 		/*
 		 * MV78260 has 3 PCIe units Gen2.0: Two units can be
 		 * configured as x4 or quad x1 lanes. One unit is

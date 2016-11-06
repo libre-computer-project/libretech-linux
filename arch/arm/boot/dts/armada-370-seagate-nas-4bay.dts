@@ -27,7 +27,7 @@
 	model = "Seagate NAS 4-Bay (Dart, SRPD40)";
 	compatible = "seagate,dart-4", "marvell,armada370", "marvell,armada-370-xp";
 
-	soc {
+	soc@f1000000 {
 		internal-regs@f1000000 {
 			ethernet@74000 {
 				status = "okay";

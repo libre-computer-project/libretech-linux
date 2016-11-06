@@ -26,7 +26,7 @@
 	model = "Seagate Personal Cloud 2-Bay (Cumulus, SRN22C)";
 	compatible = "seagate,cumulus-max", "marvell,armada370", "marvell,armada-370-xp";
 
-	soc {
+	soc@f1000000 {
 		internal-regs@f1000000 {
 			sata@a0000 {
 				status = "okay";

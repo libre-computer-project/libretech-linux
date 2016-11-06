@@ -76,7 +76,7 @@
 		interrupts-extended = <&mpic 3>;
 	};
 
-	soc {
+	soc@f1000000 {
 		#address-cells = <2>;
 		#size-cells = <1>;
 		controller = <&mbusc>;
