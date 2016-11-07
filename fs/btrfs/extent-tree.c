@@ -5002,14 +5002,16 @@ static inline int need_do_async_reclaim(struct btrfs_space_info *space_info,
 			  &root->fs_info->fs_state));
 }
 
-static void wake_all_tickets(struct list_head *head)
+static void wake_all_tickets(struct btrfs_space_info *space_info)
 {
 	struct reserve_ticket *ticket;
+	struct list_head *head = &space_info->tickets;
 
 	while (!list_empty(head)) {
 		ticket = list_first_entry(head, struct reserve_ticket, list);
 		list_del_init(&ticket->list);
 		ticket->error = -ENOSPC;
+		space_info->tickets_id++;
 		wake_up(&ticket->wait);
 	}
 }
@@ -5114,7 +5116,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		}
 
 		if (flush_state > COMMIT_TRANS && reclaim_priority == 0) {
-			wake_all_tickets(&space_info->tickets);
+			wake_all_tickets(space_info);
 			space_info->flush = 0;
 		}
 		spin_unlock(&space_info->lock);
