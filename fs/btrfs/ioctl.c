@@ -33,7 +33,6 @@
 #include <linux/namei.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
-#include <linux/statfs.h>
 #include <linux/compat.h>
 #include <linux/bit_spinlock.h>
 #include <linux/security.h>
@@ -1235,10 +1234,8 @@ again:
 				(page_cnt - i_done) << PAGE_SHIFT);
 	}
 
-
-	set_extent_defrag(&BTRFS_I(inode)->io_tree, page_start, page_end - 1,
-			  &cached_state);
-
+	btrfs_set_extent_defrag(inode, page_start,
+				page_end - 1, &cached_state);
 	unlock_extent_cached(&BTRFS_I(inode)->io_tree,
 			     page_start, page_end - 1, &cached_state,
 			     GFP_NOFS);
