@@ -69,7 +69,12 @@ static const char * const smca_umc_block_names[] = {
 	"misc_umc"
 };
 
-struct smca_bank_name smca_bank_names[] = {
+struct smca_bank_name {
+	const char *name;	/* Short name for sysfs */
+	const char *long_name;	/* Long name for pretty-printing */
+};
+
+static struct smca_bank_name smca_names[] = {
 	[SMCA_LS]	= { "load_store",	"Load Store Unit" },
 	[SMCA_IF]	= { "insn_fetch",	"Instruction Fetch Unit" },
 	[SMCA_L2_CACHE]	= { "l2_cache",		"L2 Cache" },
@@ -84,9 +89,25 @@ struct smca_bank_name smca_bank_names[] = {
 	[SMCA_PSP]	= { "psp",		"Platform Security Processor" },
 	[SMCA_SMU]	= { "smu",		"System Management Unit" },
 };
-EXPORT_SYMBOL_GPL(smca_bank_names);
 
-static struct smca_hwid_mcatype smca_hwid_mcatypes[] = {
+const char *smca_get_name(enum smca_bank_types t)
+{
+	if (t >= N_SMCA_BANK_TYPES)
+		return NULL;
+
+	return smca_names[t].name;
+}
+
+const char *smca_get_long_name(enum smca_bank_types t)
+{
+	if (t >= N_SMCA_BANK_TYPES)
+		return NULL;
+
+	return smca_names[t].long_name;
+}
+EXPORT_SYMBOL_GPL(smca_get_long_name);
+
+static struct smca_hwid smca_hwid_mcatypes[] = {
 	/* { bank_type, hwid_mcatype, xec_bitmap } */
 
 	/* ZN Core (HWID=0xB0) MCA types */
@@ -116,7 +137,7 @@ static struct smca_hwid_mcatype smca_hwid_mcatypes[] = {
 	{ SMCA_SMU,	 HWID_MCATYPE(0x01, 0x0), 0x1 },
 };
 
-struct smca_bank_info smca_banks[MAX_NR_BANKS];
+struct smca_bank smca_banks[MAX_NR_BANKS];
 EXPORT_SYMBOL_GPL(smca_banks);
 
 /*
@@ -142,35 +163,34 @@ static void default_deferred_error_interrupt(void)
 }
 void (*deferred_error_int_vector)(void) = default_deferred_error_interrupt;
 
-/*
- * CPU Initialization
- */
-
 static void get_smca_bank_info(unsigned int bank)
 {
 	unsigned int i, hwid_mcatype, cpu = smp_processor_id();
-	struct smca_hwid_mcatype *type;
-	u32 high, instanceId;
-	u16 hwid, mcatype;
+	struct smca_hwid *s_hwid;
+	u32 high, instance_id;
 
 	/* Collect bank_info using CPU 0 for now. */
 	if (cpu)
 		return;
 
-	if (rdmsr_safe_on_cpu(cpu, MSR_AMD64_SMCA_MCx_IPID(bank), &instanceId, &high)) {
+	if (rdmsr_safe_on_cpu(cpu, MSR_AMD64_SMCA_MCx_IPID(bank), &instance_id, &high)) {
 		pr_warn("Failed to read MCA_IPID for bank %d\n", bank);
 		return;
 	}
 
-	hwid = high & MCI_IPID_HWID;
-	mcatype = (high & MCI_IPID_MCATYPE) >> 16;
-	hwid_mcatype = HWID_MCATYPE(hwid, mcatype);
+	hwid_mcatype = HWID_MCATYPE(high & MCI_IPID_HWID,
+				    (high & MCI_IPID_MCATYPE) >> 16);
 
 	for (i = 0; i < ARRAY_SIZE(smca_hwid_mcatypes); i++) {
-		type = &smca_hwid_mcatypes[i];
-		if (hwid_mcatype == type->hwid_mcatype) {
-			smca_banks[bank].type = type;
-			smca_banks[bank].type_instance = instanceId;
+		s_hwid = &smca_hwid_mcatypes[i];
+		if (hwid_mcatype == s_hwid->hwid_mcatype) {
+
+			WARN(smca_banks[bank].hwid,
+			     "Bank %s already initialized!\n",
+			     smca_get_name(s_hwid->bank_type));
+
+			smca_banks[bank].hwid = s_hwid;
+			smca_banks[bank].id = instance_id;
 			break;
 		}
 	}
@@ -826,10 +846,10 @@ static const char *get_name(unsigned int bank, struct threshold_block *b)
 		return th_names[bank];
 	}
 
-	if (!smca_banks[bank].type)
+	if (!smca_banks[bank].hwid)
 		return NULL;
 
-	bank_type = smca_banks[bank].type->bank_type;
+	bank_type = smca_banks[bank].hwid->bank_type;
 
 	if (b && bank_type == SMCA_UMC) {
 		if (b->block < ARRAY_SIZE(smca_umc_block_names))
@@ -838,8 +858,8 @@ static const char *get_name(unsigned int bank, struct threshold_block *b)
 	}
 
 	snprintf(buf_mcatype, MAX_MCATYPE_NAME_LEN,
-		 "%s_%x", smca_bank_names[bank_type].name,
-			  smca_banks[bank].type_instance);
+		 "%s_%x", smca_get_name(bank_type),
+			  smca_banks[bank].id);
 	return buf_mcatype;
 }
 
