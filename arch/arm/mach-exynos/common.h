@@ -161,6 +161,7 @@ extern void exynos_cpu_restore_register(void);
 extern void exynos_pm_central_suspend(void);
 extern int exynos_pm_central_resume(void);
 extern void exynos_enter_aftr(void);
+extern int exynos_scu_enable(void);
 
 extern struct cpuidle_exynos_data cpuidle_coupled_exynos_data;
 
