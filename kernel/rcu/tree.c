@@ -1504,6 +1504,9 @@ static void print_other_cpu_stall(struct rcu_state *rsp, unsigned long gpnum)
 	       (long)rsp->gpnum, (long)rsp->completed, totqlen);
 	if (ndetected) {
 		rcu_dump_cpu_stacks(rsp);
+
+		/* Complain about tasks blocking the grace period. */
+		rcu_print_detail_task_stall(rsp);
 	} else {
 		if (READ_ONCE(rsp->gpnum) != gpnum ||
 		    READ_ONCE(rsp->completed) == gpnum) {
@@ -1519,9 +1522,6 @@ static void print_other_cpu_stall(struct rcu_state *rsp, unsigned long gpnum)
 			sched_show_task(current);
 		}
 	}
-
-	/* Complain about tasks blocking the grace period. */
-	rcu_print_detail_task_stall(rsp);
 
 	rcu_check_gp_kthread_starvation(rsp);
 
