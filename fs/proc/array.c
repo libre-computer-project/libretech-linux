@@ -232,11 +232,13 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 void render_sigset_t(struct seq_file *m, const char *header,
 				sigset_t *set)
 {
-	int i;
+	char buf[_NSIG / 4 + 2];
+	int i, j;
 
 	seq_puts(m, header);
 
 	i = _NSIG;
+	j = 0;
 	do {
 		int x = 0;
 
@@ -245,10 +247,13 @@ void render_sigset_t(struct seq_file *m, const char *header,
 		if (sigismember(set, i+2)) x |= 2;
 		if (sigismember(set, i+3)) x |= 4;
 		if (sigismember(set, i+4)) x |= 8;
-		seq_printf(m, "%x", x);
+		buf[j++] = hex_asc[x];
 	} while (i >= 4);
 
-	seq_putc(m, '\n');
+	buf[j++] = '\n';
+	buf[j++] = 0;
+
+	seq_puts(m, buf);
 }
 
 static void collect_sigign_sigcatch(struct task_struct *p, sigset_t *ign,
