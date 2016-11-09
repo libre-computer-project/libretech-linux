@@ -2134,6 +2134,8 @@ extern int vfs_ustat(dev_t, struct kstatfs *);
 extern int freeze_super(struct super_block *super);
 extern int thaw_super(struct super_block *super);
 extern bool our_mnt(struct vfsmount *mnt);
+extern bool path_is_mountpoint(struct path *);
+extern bool path_is_mountpoint_rcu(struct path *);
 
 extern int current_umask(void);
 
