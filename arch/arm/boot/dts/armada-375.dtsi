@@ -165,7 +165,7 @@
 			status = "disabled";
 		};
 
-		internal-regs {
+		internal-regs@f1000000 {
 			compatible = "simple-bus";
 			#address-cells = <1>;
 			#size-cells = <1>;
