@@ -35,31 +35,7 @@ struct twl6040_platform_data;
 struct omap_tw4030_pdata;
 struct i2c_board_info;
 
-void omap_pmic_init(int bus, u32 clkrate, const char *pmic_type, int pmic_irq,
-		    struct twl4030_platform_data *pmic_data);
 void omap_pmic_late_init(void);
-
-static inline void omap2_pmic_init(const char *pmic_type,
-				   struct twl4030_platform_data *pmic_data)
-{
-	omap_pmic_init(2, 2600, pmic_type, 7 + OMAP_INTC_START, pmic_data);
-}
-
-static inline void omap3_pmic_init(const char *pmic_type,
-				   struct twl4030_platform_data *pmic_data)
-{
-	omap_pmic_init(1, 2600, pmic_type, 7 + OMAP_INTC_START, pmic_data);
-}
-
-void omap4_pmic_init(const char *pmic_type,
-		    struct twl4030_platform_data *pmic_data,
-		    struct i2c_board_info *devices, int nr_devices);
-
-void omap3_pmic_get_config(struct twl4030_platform_data *pmic_data,
-			   u32 pdata_flags, u32 regulators_flags);
-
-void omap4_pmic_get_config(struct twl4030_platform_data *pmic_data,
-			   u32 pdata_flags, u32 regulators_flags);
 
 void omap_twl4030_audio_init(char *card_name, struct omap_tw4030_pdata *pdata);
 
