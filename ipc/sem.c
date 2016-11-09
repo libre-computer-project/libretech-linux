@@ -744,6 +744,7 @@ static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
 
 		if (sop->sem_flg & SEM_UNDO) {
 			int undo = un->semadj[sop->sem_num] - sem_op;
+
 			un->semadj[sop->sem_num] = undo;
 		}
 		curr->semval += sem_op;
@@ -754,7 +755,7 @@ static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
 
 would_block:
 	q->blocking = sop;
-	return sop->sem_flg & IPC_NOWAIT? -EAGAIN : 1;
+	return sop->sem_flg & IPC_NOWAIT ? -EAGAIN : 1;
 }
 
 static inline void wake_up_sem_queue_prepare(struct sem_queue *q, int error,
