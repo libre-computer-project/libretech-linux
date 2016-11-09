@@ -19,6 +19,18 @@
 
 #include <linux/elf.h>
 
+struct elf_info {
+	/*
+	 * Where the ELF binary contents are kept.
+	 * Memory managed by the user of the struct.
+	 */
+	const char *buffer;
+
+	const struct elfhdr *ehdr;
+	const struct elf_phdr *proghdrs;
+	struct elf_shdr *sechdrs;
+};
+
 /*
  * r2 is the TOC pointer: it actually points 0x8000 into the TOC (this
  * gives the value maximum span in an instruction which uses a signed
@@ -39,5 +51,14 @@ int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs, const char *strtab,
 				  unsigned long address, unsigned long value,
 				  unsigned long my_r2, const char *obj_name,
 				  struct module *me);
+
+static inline bool elf_is_elf_file(const struct elfhdr *ehdr)
+{
+	return memcmp(ehdr->e_ident, ELFMAG, SELFMAG) == 0;
+}
+
+int elf_read_from_buffer(const char *buf, size_t len, struct elfhdr *ehdr,
+			 struct elf_info *elf_info);
+void elf_free_info(struct elf_info *elf_info);
 
 #endif /* _ASM_POWERPC_ELF_UTIL_H */
