@@ -507,15 +507,12 @@ static int restore_r2(u32 *instruction, struct module *me)
 	return 1;
 }
 
-static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
-					 const char *strtab,
-					 const Elf64_Rela *rela,
-					 const Elf64_Sym *sym,
-					 unsigned long *location,
-					 unsigned long value,
-					 unsigned long my_r2,
-					 const char *obj_name,
-					 struct module *me)
+int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs, const char *strtab,
+				  const Elf64_Rela *rela, const Elf64_Sym *sym,
+				  unsigned long *location,
+				  unsigned long address, unsigned long value,
+				  unsigned long my_r2, const char *obj_name,
+				  struct module *me)
 {
 	switch (ELF64_R_TYPE(rela->r_info)) {
 	case R_PPC64_ADDR32:
@@ -588,9 +585,32 @@ static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
 			| (value & 0xffff);
 		break;
 
+	case R_PPC64_REL14:
+		/* Convert value to relative */
+		value -= address;
+		if (value + 0x8000 > 0xffff || (value & 3) != 0) {
+			pr_err("%s: REL14 %li out of range!\n",
+			       obj_name, (long int) value);
+			return -ENOEXEC;
+		}
+
+		/* Only replace bits 2 through 16 */
+		*(uint32_t *)location
+			= (*(uint32_t *)location & ~0xfffc)
+			| (value & 0xfffc);
+		break;
+
 	case R_PPC_REL24:
 		/* FIXME: Handle weak symbols here --RR */
 		if (sym->st_shndx == SHN_UNDEF) {
+			/*
+			 * The purgatory relocation code passes NULL for me,
+			 * but the purgatory doesn't have any REL24 relocations
+			 * for undefined symbols, so if this happens it's a bug.
+			 */
+			if (WARN_ON(!me))
+				return -ENOEXEC;
+
 			/* External: go via stub */
 			value = stub_for_addr(sechdrs, value, me);
 			if (!value)
@@ -603,7 +623,7 @@ static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
 			value += local_entry_offset(sym);
 
 		/* Convert value to relative */
-		value -= (unsigned long)location;
+		value -= address;
 		if (value + 0x2000000 > 0x3ffffff || (value & 3) != 0) {
 			pr_err("%s: REL24 %li out of range!\n",
 			       obj_name, (long int)value);
@@ -618,7 +638,7 @@ static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
 
 	case R_PPC64_REL64:
 		/* 64 bits relative (used by features fixups) */
-		*location = value - (unsigned long)location;
+		*location = value - address;
 		break;
 
 	case R_PPC64_TOCSAVE:
@@ -634,7 +654,7 @@ static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
 		 * Optimize ELFv2 large code model entry point if
 		 * the TOC is within 2GB range of current location.
 		 */
-		value = my_r2 - (unsigned long)location;
+		value = my_r2 - address;
 		if (value + 0x80008000 > 0xffffffff)
 			break;
 		/*
@@ -656,9 +676,27 @@ static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
 		((uint32_t *)location)[1] = 0x38420000 + PPC_LO(value);
 		break;
 
+	case R_PPC64_ADDR16_LO:
+		*(uint16_t *)location = value & 0xffff;
+		break;
+
+	case R_PPC64_ADDR16_HI:
+		*(uint16_t *)location = (value >> 16) & 0xffff;
+		break;
+
+	case R_PPC64_ADDR16_HIGHER:
+		*(uint16_t *)location = (((uint64_t)value >> 32) &
+						0xffff);
+		break;
+
+	case R_PPC64_ADDR16_HIGHEST:
+		*(uint16_t *)location = (((uint64_t)value >> 48) &
+						0xffff);
+		break;
+
 	case R_PPC64_REL16_HA:
 		/* Subtract location pointer */
-		value -= (unsigned long)location;
+		value -= address;
 		value = ((value + 0x8000) >> 16);
 		*((uint16_t *) location)
 			= (*((uint16_t *) location) & ~0xffff)
@@ -667,7 +705,7 @@ static int elf64_apply_relocate_add_item(const Elf64_Shdr *sechdrs,
 
 	case R_PPC64_REL16_LO:
 		/* Subtract location pointer */
-		value -= (unsigned long)location;
+		value -= address;
 		*((uint16_t *) location)
 			= (*((uint16_t *) location) & ~0xffff)
 			| (value & 0xffff);
@@ -725,8 +763,9 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 		value = sym->st_value + rela[i].r_addend;
 
 		ret = elf64_apply_relocate_add_item(sechdrs, strtab, &rela[i],
-						    sym, location, value,
-						    my_r2(sechdrs, me),
+						    sym, location,
+						    (unsigned long) location,
+						    value, my_r2(sechdrs, me),
 						    me->name, me);
 		if (ret)
 			return ret;
