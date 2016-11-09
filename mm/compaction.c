@@ -1710,7 +1710,7 @@ enum compact_result try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
 
 	/*
 	 * Check if the GFP flags allow compaction - GFP_NOIO is really
-	 * tricky context because the migration might require IO and
+	 * tricky context because the migration might require IO
 	 */
 	if (!may_perform_io)
 		return COMPACT_SKIPPED;
