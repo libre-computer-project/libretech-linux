@@ -110,7 +110,7 @@
 		pcie-mem-aperture = <0xe0000000 0x8000000>;
 		pcie-io-aperture  = <0xe8000000 0x100000>;
 
-		bootrom {
+		bootrom@0 {
 			compatible = "marvell,bootrom";
 			reg = <MBUS_ID(0x01, 0x1d) 0 0x100000>;
 		};
