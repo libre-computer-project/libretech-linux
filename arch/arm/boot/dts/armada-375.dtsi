@@ -101,7 +101,7 @@
 		interrupts-extended = <&mpic 3>;
 	};
 
-	soc {
+	soc@f1000000 {
 		compatible = "marvell,armada375-mbus", "simple-bus";
 		#address-cells = <2>;
 		#size-cells = <1>;
