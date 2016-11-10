@@ -38,6 +38,7 @@ struct bsg_job;
 struct blkcg_gq;
 struct blk_flush_queue;
 struct pr_ops;
+struct rq_wb;
 
 #define BLKDEV_MIN_RQ	4
 #define BLKDEV_MAX_RQ	128	/* Default maximum */
@@ -117,6 +118,8 @@ typedef __u32 __bitwise req_flags_t;
 #define RQF_PM			((__force req_flags_t)(1 << 15))
 /* on IO scheduler merge hash */
 #define RQF_HASHED		((__force req_flags_t)(1 << 16))
+/* IO stats tracking on */
+#define RQF_STATS		((__force req_flags_t)(1 << 17))
 
 /* flags that prevent us from merging requests: */
 #define RQF_NOMERGE_FLAGS \
@@ -197,6 +200,7 @@ struct request {
 	struct gendisk *rq_disk;
 	struct hd_struct *part;
 	unsigned long start_time;
+	struct blk_issue_stat issue_stat;
 #ifdef CONFIG_BLK_CGROUP
 	struct request_list *rl;		/* rl this rq is alloced from */
 	unsigned long long start_time_ns;
@@ -380,6 +384,8 @@ struct request_queue {
 	int			nr_rqs[2];	/* # allocated [a]sync rqs */
 	int			nr_rqs_elvpriv;	/* # allocated rqs w/ elvpriv */
 
+	struct rq_wb		*rq_wb;
+
 	/*
 	 * If blkcg is not used, @q->root_rl serves all requests.  If blkcg
 	 * is used, root blkg allocates from @q->root_rl and all other
@@ -492,6 +498,9 @@ struct request_queue {
 
 	unsigned int		nr_sorted;
 	unsigned int		in_flight[2];
+
+	struct blk_rq_stat	rq_stats[2];
+
 	/*
 	 * Number of active block driver functions for which blk_drain_queue()
 	 * must wait. Must be incremented around functions that unlock the
@@ -585,6 +594,7 @@ struct request_queue {
 #define QUEUE_FLAG_FUA	       24	/* device supports FUA writes */
 #define QUEUE_FLAG_FLUSH_NQ    25	/* flush not queueuable */
 #define QUEUE_FLAG_DAX         26	/* device supports DAX */
+#define QUEUE_FLAG_STATS       27	/* track rq completion times */
 
 #define QUEUE_FLAG_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
 				 (1 << QUEUE_FLAG_STACKABLE)	|	\
