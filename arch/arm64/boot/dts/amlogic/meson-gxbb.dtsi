@@ -506,3 +506,11 @@
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 };
+
+&venc_cvbs {
+	compatible = "amlogic,meson-gxbb-cvbs", "amlogic,meson-gx-cvbs";
+};
+
+&vpu {
+	compatible = "amlogic,meson-gxbb-vpu", "amlogic,meson-gx-vpu";
+};

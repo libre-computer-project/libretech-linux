@@ -203,3 +203,7 @@
 	clocks = <&clkc CLKID_FCLK_DIV4>;
 	clock-names = "clkin0";
 };
+
+&venc_cvbs {
+	status = "okay";
+};
