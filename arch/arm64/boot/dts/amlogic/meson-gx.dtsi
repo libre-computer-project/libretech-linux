@@ -153,6 +153,27 @@
 		};
 	};
 
+	venc_cvbs: venc-cvbs {
+		compatible = "amlogic,meson-gx-venc-cvbs";
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			enc_cvbs_in: port@0 {
+				 #address-cells = <1>;
+				 #size-cells = <0>;
+				 reg = <0>;
+
+				 venc_cvbs_in_vpu: endpoint@0 {
+					 reg = <0>;
+					 remote-endpoint = <&vpu_out_venc_cvbs>;
+				};
+			};
+		};
+	};
+
 	soc {
 		compatible = "simple-bus";
 		#address-cells = <2>;
@@ -354,6 +375,31 @@
 				reg = <0x0 0x74000 0x0 0x2000>;
 				interrupts = <GIC_SPI 218 IRQ_TYPE_EDGE_RISING>;
 				status = "disabled";
+			};
+		};
+
+		vpu: vpu@d0100000 {
+			compatible = "amlogic,meson-gx-vpu";
+			reg = <0x0 0xd0100000 0x0 0x100000>,
+			      <0x0 0xc883c000 0x0 0x1000>,
+			      <0x0 0xc8838000 0x0 0x1000>;
+			reg-names = "base", "hhi", "dmc";
+			interrupts = <GIC_SPI 3 IRQ_TYPE_EDGE_RISING>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				vpu_out: port@1 {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					reg = <1>;
+
+					vpu_out_venc_cvbs: endpoint@0 {
+						reg = <0>;
+						remote-endpoint = <&venc_cvbs_in_vpu>;
+					};
+				};
 			};
 		};
 	};

@@ -112,3 +112,12 @@
 		};
 	};
 };
+
+
+&venc_cvbs {
+	compatible = "amlogic,meson-gxm-venc-cvbs", "amlogic,meson-gx-venc-cvbs";
+};
+
+&vpu {
+	compatible = "amlogic,meson-gxm-vpu", "amlogic,meson-gx-vpu";
+};

@@ -167,3 +167,7 @@
 		max-speed = <1000>;
 	};
 };
+
+&venc_cvbs {
+	status = "okay";
+};
