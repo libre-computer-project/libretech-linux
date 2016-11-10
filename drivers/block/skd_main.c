@@ -2945,8 +2945,8 @@ static void skd_completion_worker(struct work_struct *work)
 
 static void skd_isr_msg_from_dev(struct skd_device *skdev);
 
-irqreturn_t
-static skd_isr(int irq, void *ptr)
+static irqreturn_t
+skd_isr(int irq, void *ptr)
 {
 	struct skd_device *skdev;
 	u32 intstat;
@@ -3849,7 +3849,7 @@ static int skd_acquire_msix(struct skd_device *skdev)
 	if (rc < 0) {
 		pr_err("(%s): failed to enable MSI-X %d\n",
 		       skd_name(skdev), rc);
-		goto msix_out;
+		goto out;
 	}
 
 	skdev->msix_entries = kcalloc(SKD_MAX_MSIX_COUNT,
@@ -3858,7 +3858,7 @@ static int skd_acquire_msix(struct skd_device *skdev)
 		rc = -ENOMEM;
 		pr_err("(%s): msix table allocation error\n",
 		       skd_name(skdev));
-		goto msix_out;
+		goto out;
 	}
 
 	/* Enable MSI-X vectors for the base queue */
@@ -3889,6 +3889,7 @@ static int skd_acquire_msix(struct skd_device *skdev)
 msix_out:
 	while (--i >= 0)
 		devm_free_irq(&pdev->dev, pci_irq_vector(pdev, i), skdev);
+out:
 	kfree(skdev->msix_entries);
 	skdev->msix_entries = NULL;
 	return rc;
