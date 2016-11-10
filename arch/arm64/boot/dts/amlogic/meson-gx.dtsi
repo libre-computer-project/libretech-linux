@@ -355,6 +355,12 @@
 				interrupts = <GIC_SPI 218 IRQ_TYPE_EDGE_RISING>;
 				status = "disabled";
 			};
+
+			viu: display-controller@100000 {
+				compatible = "amlogic,meson-gxbb-display";
+				reg = <0x0 0x100000 0x0 0x100000>;
+				interrupts = <GIC_SPI 35 IRQ_TYPE_EDGE_RISING>;
+			};
 		};
 	};
 };
