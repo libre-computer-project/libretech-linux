@@ -434,4 +434,12 @@ depends on (ARCH_QCOM && OF) || COMPILE_TEST
 source "drivers/thermal/qcom/Kconfig"
 endmenu
 
+config BCM2835_THERMAL
+	tristate "Thermal sensors on bcm2835 SoC"
+	depends on ARCH_BCM2835 || COMPILE_TEST
+	depends on HAS_IOMEM
+	depends on OF
+	help
+	  Support for thermal sensors on Broadcom bcm2835 SoCs.
+
 endif
