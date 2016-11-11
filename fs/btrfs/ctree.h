@@ -109,9 +109,11 @@ static const int btrfs_csum_sizes[] = { 4 };
  */
 enum btrfs_metadata_reserve_type {
 	BTRFS_RESERVE_NORMAL,
+	BTRFS_RESERVE_COMPRESS,
 };
 
 u64 btrfs_max_extent_size(enum btrfs_metadata_reserve_type reserve_type);
+int inode_need_compress(struct inode *inode);
 
 struct btrfs_mapping_tree {
 	struct extent_map_tree map_tree;
