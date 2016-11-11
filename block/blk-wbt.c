@@ -96,7 +96,7 @@ static void wb_timestamp(struct rq_wb *rwb, unsigned long *var)
  */
 static bool wb_recent_wait(struct rq_wb *rwb)
 {
-	struct bdi_writeback *wb = &rwb->bdi->wb;
+	struct bdi_writeback *wb = &rwb->queue->backing_dev_info.wb;
 
 	return time_before(jiffies, wb->dirty_sleep + HZ);
 }
@@ -255,8 +255,8 @@ static bool inline stat_sample_valid(struct blk_rq_stat *stat)
 	 * that it's writes impacting us, and not just some sole read on
 	 * a device that is in a lower power state.
 	 */
-	return stat[0].nr_samples >= 1 &&
-		stat[1].nr_samples >= RWB_MIN_WRITE_SAMPLES;
+	return stat[BLK_STAT_READ].nr_samples >= 1 &&
+		stat[BLK_STAT_WRITE].nr_samples >= RWB_MIN_WRITE_SAMPLES;
 }
 
 static u64 rwb_sync_issue_lat(struct rq_wb *rwb)
@@ -279,6 +279,7 @@ enum {
 
 static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 {
+	struct backing_dev_info *bdi = &rwb->queue->backing_dev_info;
 	u64 thislat;
 
 	/*
@@ -292,8 +293,8 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 	 */
 	thislat = rwb_sync_issue_lat(rwb);
 	if (thislat > rwb->cur_win_nsec ||
-	    (thislat > rwb->min_lat_nsec && !stat[0].nr_samples)) {
-		trace_wbt_lat(rwb->bdi, thislat);
+	    (thislat > rwb->min_lat_nsec && !stat[BLK_STAT_READ].nr_samples)) {
+		trace_wbt_lat(bdi, thislat);
 		return LAT_EXCEEDED;
 	}
 
@@ -307,7 +308,7 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 		 * waited or still has writes in flights, consider us doing
 		 * just writes as well.
 		 */
-		if ((stat[1].nr_samples && rwb->stat_ops->is_current(stat)) ||
+		if ((stat[BLK_STAT_WRITE].nr_samples && blk_stat_is_current(stat)) ||
 		    wb_recent_wait(rwb) || wbt_inflight(rwb))
 			return LAT_UNKNOWN_WRITES;
 		return LAT_UNKNOWN;
@@ -316,14 +317,14 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 	/*
 	 * If the 'min' latency exceeds our target, step down.
 	 */
-	if (stat[0].min > rwb->min_lat_nsec) {
-		trace_wbt_lat(rwb->bdi, stat[0].min);
-		trace_wbt_stat(rwb->bdi, stat);
+	if (stat[BLK_STAT_READ].min > rwb->min_lat_nsec) {
+		trace_wbt_lat(bdi, stat[BLK_STAT_READ].min);
+		trace_wbt_stat(bdi, stat);
 		return LAT_EXCEEDED;
 	}
 
 	if (rwb->scale_step)
-		trace_wbt_stat(rwb->bdi, stat);
+		trace_wbt_stat(bdi, stat);
 
 	return LAT_OK;
 }
@@ -332,13 +333,15 @@ static int latency_exceeded(struct rq_wb *rwb)
 {
 	struct blk_rq_stat stat[2];
 
-	rwb->stat_ops->get(rwb->ops_data, stat);
+	blk_queue_stat_get(rwb->queue, stat);
 	return __latency_exceeded(rwb, stat);
 }
 
 static void rwb_trace_step(struct rq_wb *rwb, const char *msg)
 {
-	trace_wbt_step(rwb->bdi, msg, rwb->scale_step, rwb->cur_win_nsec,
+	struct backing_dev_info *bdi = &rwb->queue->backing_dev_info;
+
+	trace_wbt_step(bdi, msg, rwb->scale_step, rwb->cur_win_nsec,
 			rwb->wb_background, rwb->wb_normal, rwb->wb_max);
 }
 
@@ -352,7 +355,7 @@ static void scale_up(struct rq_wb *rwb)
 
 	rwb->scale_step--;
 	rwb->unknown_cnt = 0;
-	rwb->stat_ops->clear(rwb->ops_data);
+	blk_stat_clear(rwb->queue);
 
 	rwb->scaled_max = calc_wb_limits(rwb);
 
@@ -382,7 +385,7 @@ static void scale_down(struct rq_wb *rwb, bool hard_throttle)
 
 	rwb->scaled_max = false;
 	rwb->unknown_cnt = 0;
-	rwb->stat_ops->clear(rwb->ops_data);
+	blk_stat_clear(rwb->queue);
 	calc_wb_limits(rwb);
 	rwb_trace_step(rwb, "step down");
 }
@@ -420,7 +423,8 @@ static void wb_timer_fn(unsigned long data)
 
 	status = latency_exceeded(rwb);
 
-	trace_wbt_timer(rwb->bdi, status, rwb->scale_step, inflight);
+	trace_wbt_timer(&rwb->queue->backing_dev_info, status, rwb->scale_step,
+			inflight);
 
 	/*
 	 * If we exceeded the latency target, step down. If we did not,
@@ -671,7 +675,7 @@ void wbt_disable(struct rq_wb *rwb)
 }
 EXPORT_SYMBOL_GPL(wbt_disable);
 
-int wbt_init(struct request_queue *q, struct wb_stat_ops *ops)
+int wbt_init(struct request_queue *q)
 {
 	struct rq_wb *rwb;
 	int i;
@@ -683,9 +687,6 @@ int wbt_init(struct request_queue *q, struct wb_stat_ops *ops)
 	 */
 	BUILD_BUG_ON(RWB_WINDOW_NSEC > BLK_STAT_NSEC);
 	BUILD_BUG_ON(WBT_NR_BITS > BLK_STAT_RES_BITS);
-
-	if (!ops->get || !ops->is_current || !ops->clear)
-		return -EINVAL;
 
 	rwb = kzalloc(sizeof(*rwb), GFP_KERNEL);
 	if (!rwb)
@@ -700,10 +701,8 @@ int wbt_init(struct request_queue *q, struct wb_stat_ops *ops)
 	rwb->wc = 1;
 	rwb->queue_depth = RWB_DEF_DEPTH;
 	rwb->last_comp = rwb->last_issue = jiffies;
-	rwb->bdi = &q->backing_dev_info;
+	rwb->queue = q;
 	rwb->win_nsec = RWB_WINDOW_NSEC;
-	rwb->stat_ops = ops;
-	rwb->ops_data = q;
 	wbt_update_limits(rwb);
 
 	/*

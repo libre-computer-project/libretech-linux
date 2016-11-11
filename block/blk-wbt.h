@@ -46,12 +46,6 @@ static inline bool wbt_is_read(struct blk_issue_stat *stat)
 	return (stat->time >> BLK_STAT_SHIFT) & WBT_READ;
 }
 
-struct wb_stat_ops {
-	void (*get)(void *, struct blk_rq_stat *);
-	bool (*is_current)(struct blk_rq_stat *);
-	void (*clear)(void *);
-};
-
 struct rq_wait {
 	wait_queue_head_t wait;
 	atomic_t inflight;
@@ -87,11 +81,8 @@ struct rq_wb {
 	unsigned long last_issue;		/* last non-throttled issue */
 	unsigned long last_comp;		/* last non-throttled comp */
 	unsigned long min_lat_nsec;
-	struct backing_dev_info *bdi;
+	struct request_queue *queue;
 	struct rq_wait rq_wait[WBT_NUM_RWQ];
-
-	struct wb_stat_ops *stat_ops;
-	void *ops_data;
 };
 
 static inline unsigned int wbt_inflight(struct rq_wb *rwb)
@@ -104,14 +95,12 @@ static inline unsigned int wbt_inflight(struct rq_wb *rwb)
 	return ret;
 }
 
-struct backing_dev_info;
-
 #ifdef CONFIG_BLK_WBT
 
 void __wbt_done(struct rq_wb *, enum wbt_flags);
 void wbt_done(struct rq_wb *, struct blk_issue_stat *);
 enum wbt_flags wbt_wait(struct rq_wb *, struct bio *, spinlock_t *);
-int wbt_init(struct request_queue *, struct wb_stat_ops *);
+int wbt_init(struct request_queue *);
 void wbt_exit(struct request_queue *);
 void wbt_update_limits(struct rq_wb *);
 void wbt_requeue(struct rq_wb *, struct blk_issue_stat *);
@@ -134,7 +123,7 @@ static inline enum wbt_flags wbt_wait(struct rq_wb *rwb, struct bio *bio,
 {
 	return 0;
 }
-static inline int wbt_init(struct request_queue *q, struct wb_stat_ops *ops)
+static inline int wbt_init(struct request_queue *q)
 {
 	return -EINVAL;
 }
