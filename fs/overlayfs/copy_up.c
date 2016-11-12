@@ -292,8 +292,8 @@ out_cleanup:
  * is possible that the copy up will lock the old parent.  At that point
  * the file will have already been copied up anyway.
  */
-int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
-		    struct path *lowerpath, struct kstat *stat)
+static int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
+			   struct path *lowerpath, struct kstat *stat)
 {
 	DEFINE_DELAYED_CALL(done);
 	struct dentry *workdir = ovl_workdir(dentry);
@@ -344,7 +344,7 @@ out_unlock:
 	return err;
 }
 
-int ovl_copy_up(struct dentry *dentry)
+int ovl_copy_up_flags(struct dentry *dentry, int flags)
 {
 	int err = 0;
 	const struct cred *old_cred = ovl_override_creds(dentry->d_sb);
@@ -374,6 +374,9 @@ int ovl_copy_up(struct dentry *dentry)
 
 		ovl_path_lower(next, &lowerpath);
 		err = vfs_getattr(&lowerpath, &stat);
+		/* maybe truncate regular file. this has no effect on dirs */
+		if (flags & O_TRUNC)
+			stat.size = 0;
 		if (!err)
 			err = ovl_copy_up_one(parent, next, &lowerpath, &stat);
 
@@ -383,4 +386,9 @@ int ovl_copy_up(struct dentry *dentry)
 	revert_creds(old_cred);
 
 	return err;
+}
+
+int ovl_copy_up(struct dentry *dentry)
+{
+	return ovl_copy_up_flags(dentry, 0);
 }
