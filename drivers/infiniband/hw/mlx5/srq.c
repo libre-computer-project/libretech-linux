@@ -31,8 +31,8 @@
  */
 
 #include <linux/module.h>
-#include <linux/mlx5/qp.h>
-#include <linux/mlx5/srq.h>
+#include "lib/qp.h"
+#include "lib/srq.h"
 #include <linux/slab.h>
 #include <rdma/ib_umem.h>
 #include <rdma/ib_user_verbs.h>

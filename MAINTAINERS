@@ -8045,7 +8045,8 @@ L:	netdev@vger.kernel.org
 S:	Supported
 W:	http://www.mellanox.com
 Q:	http://patchwork.ozlabs.org/project/netdev/list/
-F:	drivers/net/ethernet/mellanox/mlx5/core/en_*
+F:	drivers/net/ethernet/mellanox/mlx5/en/
+F:	drivers/net/ethernet/mellanox/mlx5/sriov/
 
 MELLANOX ETHERNET SWITCH DRIVERS
 M:	Jiri Pirko <jiri@mellanox.com>
@@ -8256,9 +8257,9 @@ L:	linux-rdma@vger.kernel.org
 W:	http://www.mellanox.com
 Q:	http://patchwork.ozlabs.org/project/netdev/list/
 S:	Supported
-F:	drivers/net/ethernet/mellanox/mlx5/core/
-F:	include/linux/mlx5/
-F:	include/uapi/rdma/mlx5-abi.h
+F:	drivers/net/ethernet/mellanox/mlx5/*
+F:	drivers/net/ethernet/mellanox/mlx5/lib/
+F:	drivers/net/ethernet/mellanox/mlx5/fs/
 
 MELLANOX MLX5 IB driver
 M:	Matan Barak <matanb@mellanox.com>
@@ -8268,7 +8269,7 @@ W:	http://www.mellanox.com
 Q:	http://patchwork.kernel.org/project/linux-rdma/list/
 S:	Supported
 F:	drivers/infiniband/hw/mlx5/
-F:	include/linux/mlx5/
+F:	include/uapi/rdma/mlx5-abi.h
 
 MELEXIS MLX90614 DRIVER
 M:	Crt Mori <cmo@melexis.com>

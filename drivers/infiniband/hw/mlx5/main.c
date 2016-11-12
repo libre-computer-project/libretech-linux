@@ -45,14 +45,14 @@
 #include <rdma/ib_user_verbs.h>
 #include <rdma/ib_addr.h>
 #include <rdma/ib_cache.h>
-#include <linux/mlx5/port.h>
-#include <linux/mlx5/vport.h>
+#include "lib/port.h"
+#include "lib/vport.h"
 #include <linux/list.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_umem.h>
 #include <linux/in.h>
 #include <linux/etherdevice.h>
-#include <linux/mlx5/fs.h>
+#include "lib/fs.h"
 #include "mlx5_ib.h"
 
 #define DRIVER_NAME "mlx5_ib"

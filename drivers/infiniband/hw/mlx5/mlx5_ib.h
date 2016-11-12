@@ -37,12 +37,12 @@
 #include <linux/sched.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_smi.h>
-#include <linux/mlx5/driver.h>
-#include <linux/mlx5/cq.h>
-#include <linux/mlx5/qp.h>
-#include <linux/mlx5/srq.h>
+#include "lib/driver.h"
+#include "lib/cq.h"
+#include "lib/qp.h"
+#include "lib/srq.h"
 #include <linux/types.h>
-#include <linux/mlx5/transobj.h>
+#include "lib/transobj.h"
 #include <rdma/ib_user_verbs.h>
 #include <rdma/mlx5-abi.h>
 
