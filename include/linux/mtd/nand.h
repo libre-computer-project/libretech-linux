@@ -210,6 +210,16 @@ enum nand_ecc_algo {
  */
 #define NAND_USE_BOUNCE_BUFFER	0x00100000
 
+/*
+ * In case your controller is implementing ->cmd_ctrl() and is relying on the
+ * default ->cmdfunc() implementation, you may want to let the core handle the
+ * tCCS delay which is required when a column change (RNDIN or RNDOUT) is
+ * requested.
+ * If your controller already takes care of this delay, you don't need to set
+ * this flag.
+ */
+#define NAND_WAIT_TCCS		0x00200000
+
 /* Options set by nand scan */
 /* Nand scan has allocated controller struct */
 #define NAND_CONTROLLER_ALLOC	0x80000000
@@ -584,6 +594,10 @@ struct nand_buffers {
  *
  * All these timings are expressed in picoseconds.
  *
+ * @tBERS_max: Block erase time
+ * @tCCS_min: Change column setup time
+ * @tPROG_max: Page program time
+ * @tR_max: Page read time
  * @tALH_min: ALE hold time
  * @tADL_min: ALE to data loading time
  * @tALS_min: ALE setup time
@@ -621,6 +635,10 @@ struct nand_buffers {
  * @tWW_min: WP# transition to WE# low
  */
 struct nand_sdr_timings {
+	u32 tBERS_max;
+	u32 tCCS_min;
+	u32 tPROG_max;
+	u32 tR_max;
 	u32 tALH_min;
 	u32 tADL_min;
 	u32 tALS_min;
