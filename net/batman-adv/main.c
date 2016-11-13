@@ -160,7 +160,7 @@ int batadv_mesh_init(struct net_device *soft_iface)
 
 	INIT_HLIST_HEAD(&bat_priv->forw_bat_list);
 	INIT_HLIST_HEAD(&bat_priv->forw_bcast_list);
-	INIT_HLIST_HEAD(&bat_priv->gw.list);
+	INIT_HLIST_HEAD(&bat_priv->gw.gateway_list);
 #ifdef CONFIG_BATMAN_ADV_MCAST
 	INIT_HLIST_HEAD(&bat_priv->mcast.want_all_unsnoopables_list);
 	INIT_HLIST_HEAD(&bat_priv->mcast.want_all_ipv4_list);
@@ -402,6 +402,8 @@ void batadv_skb_set_priority(struct sk_buff *skb, int offset)
 static int batadv_recv_unhandled_packet(struct sk_buff *skb,
 					struct batadv_hard_iface *recv_if)
 {
+	kfree_skb(skb);
+
 	return NET_RX_DROP;
 }
 
@@ -416,7 +418,6 @@ int batadv_batman_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	struct batadv_ogm_packet *batadv_ogm_packet;
 	struct batadv_hard_iface *hard_iface;
 	u8 idx;
-	int ret;
 
 	hard_iface = container_of(ptype, struct batadv_hard_iface,
 				  batman_adv_ptype);
@@ -466,14 +467,8 @@ int batadv_batman_skb_recv(struct sk_buff *skb, struct net_device *dev,
 	/* reset control block to avoid left overs from previous users */
 	memset(skb->cb, 0, sizeof(struct batadv_skb_cb));
 
-	/* all receive handlers return whether they received or reused
-	 * the supplied skb. if not, we have to free the skb.
-	 */
 	idx = batadv_ogm_packet->packet_type;
-	ret = (*batadv_rx_handler[idx])(skb, hard_iface);
-
-	if (ret == NET_RX_DROP)
-		kfree_skb(skb);
+	(*batadv_rx_handler[idx])(skb, hard_iface);
 
 	batadv_hardif_put(hard_iface);
 

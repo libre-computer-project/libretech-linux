@@ -123,8 +123,8 @@ struct batadv_hard_iface_bat_v {
  * @list: list node for batadv_hardif_list
  * @if_num: identificator of the interface
  * @if_status: status of the interface for batman-adv
- * @net_dev: pointer to the net_device
  * @num_bcasts: number of payload re-broadcasts on this interface (ARQ)
+ * @net_dev: pointer to the net_device
  * @hardif_obj: kobject of the per interface sysfs "mesh" directory
  * @refcount: number of contexts the object is used
  * @batman_adv_ptype: packet type describing packets that should be processed by
@@ -141,8 +141,8 @@ struct batadv_hard_iface {
 	struct list_head list;
 	s16 if_num;
 	char if_status;
-	struct net_device *net_dev;
 	u8 num_bcasts;
+	struct net_device *net_dev;
 	struct kobject *hardif_obj;
 	struct kref refcount;
 	struct packet_type batman_adv_ptype;
@@ -184,7 +184,7 @@ struct batadv_orig_ifinfo {
 
 /**
  * struct batadv_frag_table_entry - head in the fragment buffer table
- * @head: head of list with fragments
+ * @fragment_list: head of list with fragments
  * @lock: lock to protect the list of fragments
  * @timestamp: time (jiffie) of last received fragment
  * @seqno: sequence number of the fragments in the list
@@ -192,8 +192,8 @@ struct batadv_orig_ifinfo {
  * @total_size: expected size of the assembled packet
  */
 struct batadv_frag_table_entry {
-	struct hlist_head head;
-	spinlock_t lock; /* protects head */
+	struct hlist_head fragment_list;
+	spinlock_t lock; /* protects fragment_list */
 	unsigned long timestamp;
 	u16 seqno;
 	u16 size;
@@ -408,6 +408,7 @@ struct batadv_hardif_neigh_node_bat_v {
  * struct batadv_hardif_neigh_node - unique neighbor per hard-interface
  * @list: list node for batadv_hard_iface::neigh_list
  * @addr: the MAC address of the neighboring interface
+ * @orig: the address of the originator this neighbor node belongs to
  * @if_incoming: pointer to incoming hard-interface
  * @last_seen: when last packet via this neighbor was received
  * @bat_v: B.A.T.M.A.N. V private data
@@ -417,6 +418,7 @@ struct batadv_hardif_neigh_node_bat_v {
 struct batadv_hardif_neigh_node {
 	struct hlist_node list;
 	u8 addr[ETH_ALEN];
+	u8 orig[ETH_ALEN];
 	struct batadv_hard_iface *if_incoming;
 	unsigned long last_seen;
 #ifdef CONFIG_BATMAN_ADV_BATMAN_V
@@ -706,8 +708,8 @@ struct batadv_priv_debug_log {
 
 /**
  * struct batadv_priv_gw - per mesh interface gateway data
- * @list: list of available gateway nodes
- * @list_lock: lock protecting gw_list & curr_gw
+ * @gateway_list: list of available gateway nodes
+ * @list_lock: lock protecting gateway_list & curr_gw
  * @curr_gw: pointer to currently selected gateway node
  * @mode: gateway operation: off, client or server (see batadv_gw_modes)
  * @sel_class: gateway selection class (applies if gw_mode client)
@@ -716,8 +718,8 @@ struct batadv_priv_debug_log {
  * @reselect: bool indicating a gateway re-selection is in progress
  */
 struct batadv_priv_gw {
-	struct hlist_head list;
-	spinlock_t list_lock; /* protects gw_list & curr_gw */
+	struct hlist_head gateway_list;
+	spinlock_t list_lock; /* protects gateway_list & curr_gw */
 	struct batadv_gw_node __rcu *curr_gw;  /* rcu protected pointer */
 	atomic_t mode;
 	atomic_t sel_class;
@@ -785,9 +787,10 @@ struct batadv_mcast_querier_state {
  * @num_want_all_ipv6: counter for items in want_all_ipv6_list
  * @want_lists_lock: lock for protecting modifications to mcast want lists
  *  (traversals are rcu-locked)
+ * @work: work queue callback item for multicast TT and TVLV updates
  */
 struct batadv_priv_mcast {
-	struct hlist_head mla_list;
+	struct hlist_head mla_list; /* see __batadv_mcast_mla_update() */
 	struct hlist_head want_all_unsnoopables_list;
 	struct hlist_head want_all_ipv4_list;
 	struct hlist_head want_all_ipv6_list;
@@ -802,6 +805,7 @@ struct batadv_priv_mcast {
 	atomic_t num_want_all_ipv6;
 	/* protects want_all_{unsnoopables,ipv4,ipv6}_list */
 	spinlock_t want_lists_lock;
+	struct delayed_work work;
 };
 #endif
 
@@ -1363,7 +1367,7 @@ struct batadv_skb_cb {
 
 /**
  * struct batadv_forw_packet - structure for bcast packets to be sent/forwarded
- * @list: list node for batadv_socket_client::queue_list
+ * @list: list node for batadv_priv::forw_{bat,bcast}_list
  * @send_time: execution time for delayed_work (packet sending)
  * @own: bool for locally generated packets (local OGMs are re-scheduled after
  *  sending)
