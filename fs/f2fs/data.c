@@ -110,7 +110,7 @@ static inline void __submit_bio(struct f2fs_sb_info *sbi,
 {
 	if (!is_read_io(bio_op(bio))) {
 		atomic_inc(&sbi->nr_wb_bios);
-		if (f2fs_sb_mounted_hmsmr(sbi->sb) &&
+		if (f2fs_sb_mounted_blkzoned(sbi->sb) &&
 			current->plug && (type == DATA || type == NODE))
 			blk_finish_plug(current->plug);
 	}
@@ -277,10 +277,8 @@ void f2fs_submit_page_mbio(struct f2fs_io_info *fio)
 		__submit_merged_bio(io);
 alloc_new:
 	if (io->bio == NULL) {
-		int bio_blocks = MAX_BIO_BLOCKS(sbi);
-
 		io->bio = __bio_alloc(sbi, fio->new_blkaddr,
-						bio_blocks, is_read);
+						BIO_MAX_PAGES, is_read);
 		io->fio = *fio;
 	}
 
@@ -676,7 +674,6 @@ int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map,
 	unsigned int ofs_in_node, last_ofs_in_node;
 	blkcnt_t prealloc;
 	struct extent_info ei;
-	bool allocated = false;
 	block_t blkaddr;
 
 	if (!maxblocks)
@@ -716,7 +713,7 @@ next_dnode:
 	}
 
 	prealloc = 0;
-	ofs_in_node = dn.ofs_in_node;
+	last_ofs_in_node = ofs_in_node = dn.ofs_in_node;
 	end_offset = ADDRS_PER_PAGE(dn.node_page, inode);
 
 next_block:
@@ -735,10 +732,8 @@ next_block:
 				}
 			} else {
 				err = __allocate_data_block(&dn);
-				if (!err) {
+				if (!err)
 					set_inode_flag(inode, FI_APPEND_WRITE);
-					allocated = true;
-				}
 			}
 			if (err)
 				goto sync_out;
@@ -793,7 +788,6 @@ skip:
 		err = reserve_new_blocks(&dn, prealloc);
 		if (err)
 			goto sync_out;
-		allocated = dn.node_changed;
 
 		map->m_len += dn.ofs_in_node - ofs_in_node;
 		if (prealloc && dn.ofs_in_node != last_ofs_in_node + 1) {
@@ -812,9 +806,8 @@ skip:
 
 	if (create) {
 		f2fs_unlock_op(sbi);
-		f2fs_balance_fs(sbi, allocated);
+		f2fs_balance_fs(sbi, dn.node_changed);
 	}
-	allocated = false;
 	goto next_dnode;
 
 sync_out:
@@ -822,7 +815,7 @@ sync_out:
 unlock_out:
 	if (create) {
 		f2fs_unlock_op(sbi);
-		f2fs_balance_fs(sbi, allocated);
+		f2fs_balance_fs(sbi, dn.node_changed);
 	}
 out:
 	trace_f2fs_map_blocks(inode, map, err);
@@ -891,7 +884,6 @@ int f2fs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	struct buffer_head map_bh;
 	sector_t start_blk, last_blk;
 	pgoff_t next_pgofs;
-	loff_t isize;
 	u64 logical = 0, phys = 0, size = 0;
 	u32 flags = 0;
 	int ret = 0;
@@ -907,13 +899,6 @@ int f2fs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	}
 
 	inode_lock(inode);
-
-	isize = i_size_read(inode);
-	if (start >= isize)
-		goto out;
-
-	if (start + len > isize)
-		len = isize - start;
 
 	if (logical_to_blk(inode, len) == 0)
 		len = blk_to_logical(inode, 1);
@@ -933,13 +918,11 @@ next:
 	/* HOLE */
 	if (!buffer_mapped(&map_bh)) {
 		start_blk = next_pgofs;
-		/* Go through holes util pass the EOF */
-		if (blk_to_logical(inode, start_blk) < isize)
+
+		if (blk_to_logical(inode, start_blk) < blk_to_logical(inode,
+					F2FS_I_SB(inode)->max_file_blocks))
 			goto prep_next;
-		/* Found a hole beyond isize means no more extents.
-		 * Note that the premise is that filesystems don't
-		 * punch holes beyond isize and keep size unchanged.
-		 */
+
 		flags |= FIEMAP_EXTENT_LAST;
 	}
 
@@ -1785,12 +1768,14 @@ void f2fs_invalidate_page(struct page *page, unsigned int offset,
 		return;
 
 	if (PageDirty(page)) {
-		if (inode->i_ino == F2FS_META_INO(sbi))
+		if (inode->i_ino == F2FS_META_INO(sbi)) {
 			dec_page_count(sbi, F2FS_DIRTY_META);
-		else if (inode->i_ino == F2FS_NODE_INO(sbi))
+		} else if (inode->i_ino == F2FS_NODE_INO(sbi)) {
 			dec_page_count(sbi, F2FS_DIRTY_NODES);
-		else
+		} else {
 			inode_dec_dirty_pages(inode);
+			remove_dirty_inode(inode);
+		}
 	}
 
 	/* This is atomic written page, keep Private */

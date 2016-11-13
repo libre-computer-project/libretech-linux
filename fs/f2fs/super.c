@@ -412,14 +412,20 @@ static int parse_options(struct super_block *sb, char *options)
 			q = bdev_get_queue(sb->s_bdev);
 			if (blk_queue_discard(q)) {
 				set_opt(sbi, DISCARD);
-			} else {
+			} else if (!f2fs_sb_mounted_blkzoned(sb)) {
 				f2fs_msg(sb, KERN_WARNING,
 					"mounting with \"discard\" option, but "
 					"the device does not support discard");
 			}
 			break;
 		case Opt_nodiscard:
+			if (f2fs_sb_mounted_blkzoned(sb)) {
+				f2fs_msg(sb, KERN_WARNING,
+					"discard is required for zoned block devices");
+				return -EINVAL;
+			}
 			clear_opt(sbi, DISCARD);
+			break;
 		case Opt_noheap:
 			set_opt(sbi, NOHEAP);
 			break;
@@ -512,6 +518,13 @@ static int parse_options(struct super_block *sb, char *options)
 				return -ENOMEM;
 			if (strlen(name) == 8 &&
 					!strncmp(name, "adaptive", 8)) {
+				if (f2fs_sb_mounted_blkzoned(sb)) {
+					f2fs_msg(sb, KERN_WARNING,
+						 "adaptive mode is not allowed with "
+						 "zoned block device feature");
+					kfree(name);
+					return -EINVAL;
+				}
 				set_opt_mode(sbi, F2FS_MOUNT_ADAPTIVE);
 			} else if (strlen(name) == 3 &&
 					!strncmp(name, "lfs", 3)) {
@@ -620,24 +633,25 @@ static int f2fs_drop_inode(struct inode *inode)
 	return generic_drop_inode(inode);
 }
 
-int f2fs_inode_dirtied(struct inode *inode)
+int f2fs_inode_dirtied(struct inode *inode, bool sync)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
+	int ret = 0;
 
 	spin_lock(&sbi->inode_lock[DIRTY_META]);
 	if (is_inode_flag_set(inode, FI_DIRTY_INODE)) {
-		spin_unlock(&sbi->inode_lock[DIRTY_META]);
-		return 1;
+		ret = 1;
+	} else {
+		set_inode_flag(inode, FI_DIRTY_INODE);
+		stat_inc_dirty_inode(sbi, DIRTY_META);
 	}
-
-	set_inode_flag(inode, FI_DIRTY_INODE);
-	list_add_tail(&F2FS_I(inode)->gdirty_list,
+	if (sync && list_empty(&F2FS_I(inode)->gdirty_list)) {
+		list_add_tail(&F2FS_I(inode)->gdirty_list,
 				&sbi->inode_list[DIRTY_META]);
-	inc_page_count(sbi, F2FS_DIRTY_IMETA);
-	stat_inc_dirty_inode(sbi, DIRTY_META);
+		inc_page_count(sbi, F2FS_DIRTY_IMETA);
+	}
 	spin_unlock(&sbi->inode_lock[DIRTY_META]);
-
-	return 0;
+	return ret;
 }
 
 void f2fs_inode_synced(struct inode *inode)
@@ -649,10 +663,12 @@ void f2fs_inode_synced(struct inode *inode)
 		spin_unlock(&sbi->inode_lock[DIRTY_META]);
 		return;
 	}
-	list_del_init(&F2FS_I(inode)->gdirty_list);
+	if (!list_empty(&F2FS_I(inode)->gdirty_list)) {
+		list_del_init(&F2FS_I(inode)->gdirty_list);
+		dec_page_count(sbi, F2FS_DIRTY_IMETA);
+	}
 	clear_inode_flag(inode, FI_DIRTY_INODE);
 	clear_inode_flag(inode, FI_AUTO_RECOVER);
-	dec_page_count(sbi, F2FS_DIRTY_IMETA);
 	stat_dec_dirty_inode(F2FS_I_SB(inode), DIRTY_META);
 	spin_unlock(&sbi->inode_lock[DIRTY_META]);
 }
@@ -676,7 +692,7 @@ static void f2fs_dirty_inode(struct inode *inode, int flags)
 	if (is_inode_flag_set(inode, FI_AUTO_RECOVER))
 		clear_inode_flag(inode, FI_AUTO_RECOVER);
 
-	f2fs_inode_dirtied(inode);
+	f2fs_inode_dirtied(inode, false);
 }
 
 static void f2fs_i_callback(struct rcu_head *head)
@@ -693,10 +709,6 @@ static void f2fs_destroy_inode(struct inode *inode)
 
 static void destroy_percpu_info(struct f2fs_sb_info *sbi)
 {
-	int i;
-
-	for (i = 0; i < NR_COUNT_TYPE; i++)
-		percpu_counter_destroy(&sbi->nr_pages[i]);
 	percpu_counter_destroy(&sbi->alloc_valid_block_count);
 	percpu_counter_destroy(&sbi->total_valid_inode_count);
 }
@@ -738,7 +750,6 @@ static void f2fs_put_super(struct super_block *sb)
 	 * In addition, EIO will skip do checkpoint, we need this as well.
 	 */
 	release_ino_entry(sbi, true);
-	release_discard_addrs(sbi);
 
 	f2fs_leave_shrinker(sbi);
 	mutex_unlock(&sbi->umount_mutex);
@@ -789,13 +800,17 @@ int f2fs_sync_fs(struct super_block *sb, int sync)
 
 static int f2fs_freeze(struct super_block *sb)
 {
-	int err;
-
 	if (f2fs_readonly(sb))
 		return 0;
 
-	err = f2fs_sync_fs(sb, 1);
-	return err;
+	/* IO error happened before */
+	if (unlikely(f2fs_cp_error(F2FS_SB(sb))))
+		return -EIO;
+
+	/* must be clean, since sync_filesystem() was already called */
+	if (is_sbi_flag_set(F2FS_SB(sb), SBI_IS_DIRTY))
+		return -EINVAL;
+	return 0;
 }
 
 static int f2fs_unfreeze(struct super_block *sb)
@@ -974,7 +989,7 @@ static void default_options(struct f2fs_sb_info *sbi)
 	set_opt(sbi, EXTENT_CACHE);
 	sbi->sb->s_flags |= MS_LAZYTIME;
 	set_opt(sbi, FLUSH_MERGE);
-	if (f2fs_sb_mounted_hmsmr(sbi->sb)) {
+	if (f2fs_sb_mounted_blkzoned(sbi->sb)) {
 		set_opt_mode(sbi, F2FS_MOUNT_LFS);
 		set_opt(sbi, DISCARD);
 	} else {
@@ -1447,6 +1462,7 @@ int sanity_check_ckpt(struct f2fs_sb_info *sbi)
 static void init_sb_info(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_super_block *raw_super = sbi->raw_super;
+	int i;
 
 	sbi->log_sectors_per_block =
 		le32_to_cpu(raw_super->log_sectors_per_block);
@@ -1471,6 +1487,9 @@ static void init_sb_info(struct f2fs_sb_info *sbi)
 	sbi->interval_time[REQ_TIME] = DEF_IDLE_INTERVAL;
 	clear_sbi_flag(sbi, SBI_NEED_FSCK);
 
+	for (i = 0; i < NR_COUNT_TYPE; i++)
+		atomic_set(&sbi->nr_pages[i], 0);
+
 	INIT_LIST_HEAD(&sbi->s_list);
 	mutex_init(&sbi->umount_mutex);
 	mutex_init(&sbi->wio_mutex[NODE]);
@@ -1486,13 +1505,7 @@ static void init_sb_info(struct f2fs_sb_info *sbi)
 
 static int init_percpu_info(struct f2fs_sb_info *sbi)
 {
-	int i, err;
-
-	for (i = 0; i < NR_COUNT_TYPE; i++) {
-		err = percpu_counter_init(&sbi->nr_pages[i], 0, GFP_KERNEL);
-		if (err)
-			return err;
-	}
+	int err;
 
 	err = percpu_counter_init(&sbi->alloc_valid_block_count, 0, GFP_KERNEL);
 	if (err)
@@ -1501,6 +1514,65 @@ static int init_percpu_info(struct f2fs_sb_info *sbi)
 	return percpu_counter_init(&sbi->total_valid_inode_count, 0,
 								GFP_KERNEL);
 }
+
+#ifdef CONFIG_BLK_DEV_ZONED
+static int init_blkz_info(struct f2fs_sb_info *sbi)
+{
+	struct block_device *bdev = sbi->sb->s_bdev;
+	sector_t nr_sectors = bdev->bd_part->nr_sects;
+	sector_t sector = 0;
+	struct blk_zone *zones;
+	unsigned int i, nr_zones;
+	unsigned int n = 0;
+	int err = -EIO;
+
+	if (!f2fs_sb_mounted_blkzoned(sbi->sb))
+		return 0;
+
+	sbi->blocks_per_blkz = SECTOR_TO_BLOCK(bdev_zone_size(bdev));
+	sbi->log_blocks_per_blkz = __ilog2_u32(sbi->blocks_per_blkz);
+	sbi->nr_blkz = SECTOR_TO_BLOCK(nr_sectors) >>
+		sbi->log_blocks_per_blkz;
+	if (nr_sectors & (bdev_zone_size(bdev) - 1))
+		sbi->nr_blkz++;
+
+	sbi->blkz_type = kmalloc(sbi->nr_blkz, GFP_KERNEL);
+	if (!sbi->blkz_type)
+		return -ENOMEM;
+
+#define F2FS_REPORT_NR_ZONES   4096
+
+	zones = kcalloc(F2FS_REPORT_NR_ZONES, sizeof(struct blk_zone),
+			GFP_KERNEL);
+	if (!zones)
+		return -ENOMEM;
+
+	/* Get block zones type */
+	while (zones && sector < nr_sectors) {
+
+		nr_zones = F2FS_REPORT_NR_ZONES;
+		err = blkdev_report_zones(bdev, sector,
+					  zones, &nr_zones,
+					  GFP_KERNEL);
+		if (err)
+			break;
+		if (!nr_zones) {
+			err = -EIO;
+			break;
+		}
+
+		for (i = 0; i < nr_zones; i++) {
+			sbi->blkz_type[n] = zones[i].type;
+			sector += zones[i].len;
+			n++;
+		}
+	}
+
+	kfree(zones);
+
+	return err;
+}
+#endif
 
 /*
  * Read f2fs raw super block.
@@ -1641,6 +1713,26 @@ try_onemore:
 	sb->s_fs_info = sbi;
 	sbi->raw_super = raw_super;
 
+	/*
+	 * The BLKZONED feature indicates that the drive was formatted with
+	 * zone alignment optimization. This is optional for host-aware
+	 * devices, but mandatory for host-managed zoned block devices.
+	 */
+#ifndef CONFIG_BLK_DEV_ZONED
+	if (f2fs_sb_mounted_blkzoned(sb)) {
+		f2fs_msg(sb, KERN_ERR,
+			 "Zoned block device support is not enabled\n");
+		goto free_sb_buf;
+	}
+#else
+	if (bdev_zoned_model(sb->s_bdev) == BLK_ZONED_HM &&
+	    !f2fs_sb_mounted_blkzoned(sb)) {
+		f2fs_msg(sb, KERN_ERR,
+			 "Zoned block device feature not enabled\n");
+		goto free_sb_buf;
+	}
+#endif
+
 	default_options(sbi);
 	/* parse mount options */
 	options = kstrdup((const char *)data, GFP_KERNEL);
@@ -1727,6 +1819,15 @@ try_onemore:
 	init_extent_cache_info(sbi);
 
 	init_ino_entry_info(sbi);
+
+#ifdef CONFIG_BLK_DEV_ZONED
+	err = init_blkz_info(sbi);
+	if (err) {
+		f2fs_msg(sb, KERN_ERR,
+			"Failed to initialize F2FS blkzone information");
+		goto free_blkz;
+	}
+#endif
 
 	/* setup f2fs internal modules */
 	err = build_segment_manager(sbi);
@@ -1893,12 +1994,23 @@ free_node_inode:
 	mutex_lock(&sbi->umount_mutex);
 	release_ino_entry(sbi, true);
 	f2fs_leave_shrinker(sbi);
+	/*
+	 * Some dirty meta pages can be produced by recover_orphan_inodes()
+	 * failed by EIO. Then, iput(node_inode) can trigger balance_fs_bg()
+	 * followed by write_checkpoint() through f2fs_write_node_pages(), which
+	 * falls into an infinite loop in sync_meta_pages().
+	 */
+	truncate_inode_pages_final(META_MAPPING(sbi));
 	iput(sbi->node_inode);
 	mutex_unlock(&sbi->umount_mutex);
 free_nm:
 	destroy_node_manager(sbi);
 free_sm:
 	destroy_segment_manager(sbi);
+#ifdef CONFIG_BLK_DEV_ZONED
+free_blkz:
+	kfree(sbi->blkz_type);
+#endif
 	kfree(sbi->ckpt);
 free_meta_inode:
 	make_bad_inode(sbi->meta_inode);
@@ -2044,3 +2156,4 @@ module_exit(exit_f2fs_fs)
 MODULE_AUTHOR("Samsung Electronics's Praesto Team");
 MODULE_DESCRIPTION("Flash Friendly File System");
 MODULE_LICENSE("GPL");
+
