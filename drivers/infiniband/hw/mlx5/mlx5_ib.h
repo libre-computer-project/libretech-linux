@@ -106,6 +106,12 @@ enum {
 	MLX5_CQE_VERSION_V1,
 };
 
+enum {
+	MLX5_TM_TAG_SIZE		= 64,
+	MLX5_TM_HEADER_SIZE		= 16,
+	MLX5_TM_APP_CTX_SIZE		= 32,
+};
+
 struct mlx5_ib_vma_private_data {
 	struct list_head list;
 	struct vm_area_struct *vma;
@@ -387,6 +393,7 @@ struct mlx5_ib_qp {
 	struct list_head	qps_list;
 	struct list_head	cq_recv_list;
 	struct list_head	cq_send_list;
+	u32			rate_limit;
 };
 
 struct mlx5_ib_cq_buf {
