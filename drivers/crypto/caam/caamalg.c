@@ -62,8 +62,6 @@
 #define CAAM_MAX_KEY_SIZE		(AES_MAX_KEY_SIZE + \
 					 CTR_RFC3686_NONCE_SIZE + \
 					 SHA512_DIGEST_SIZE * 2)
-/* max IV is max of AES_BLOCK_SIZE, DES3_EDE_BLOCK_SIZE */
-#define CAAM_MAX_IV_LENGTH		16
 
 #define AEAD_DESC_JOB_IO_LEN		(DESC_JOB_IO_LEN + CAAM_CMD_SZ * 2)
 #define GCM_DESC_JOB_IO_LEN		(AEAD_DESC_JOB_IO_LEN + \
@@ -75,7 +73,7 @@
 #define DESC_AEAD_BASE			(4 * CAAM_CMD_SZ)
 #define DESC_AEAD_ENC_LEN		(DESC_AEAD_BASE + 11 * CAAM_CMD_SZ)
 #define DESC_AEAD_DEC_LEN		(DESC_AEAD_BASE + 15 * CAAM_CMD_SZ)
-#define DESC_AEAD_GIVENC_LEN		(DESC_AEAD_ENC_LEN + 9 * CAAM_CMD_SZ)
+#define DESC_AEAD_GIVENC_LEN		(DESC_AEAD_ENC_LEN + 7 * CAAM_CMD_SZ)
 
 /* Note: Nonce is counted in enckeylen */
 #define DESC_AEAD_CTR_RFC3686_LEN	(4 * CAAM_CMD_SZ)
@@ -117,8 +115,7 @@
 
 static void dbg_dump_sg(const char *level, const char *prefix_str,
 			int prefix_type, int rowsize, int groupsize,
-			struct scatterlist *sg, size_t tlen, bool ascii,
-			bool may_sleep)
+			struct scatterlist *sg, size_t tlen, bool ascii)
 {
 	struct scatterlist *it;
 	void *it_page;
@@ -137,7 +134,7 @@ static void dbg_dump_sg(const char *level, const char *prefix_str,
 		}
 
 		buf = it_page + it->offset;
-		len = min(tlen, it->length);
+		len = min_t(size_t, tlen, it->length);
 		print_hex_dump(level, prefix_str, prefix_type, rowsize,
 			       groupsize, buf, len, ascii);
 		tlen -= len;
@@ -698,9 +695,6 @@ copy_iv:
 	append_math_add(desc, VARSEQINLEN, ZERO, REG3, CAAM_CMD_SZ);
 	append_math_add(desc, VARSEQOUTLEN, ZERO, REG3, CAAM_CMD_SZ);
 
-	/* ivsize + cryptlen = seqoutlen - authsize */
-	append_math_sub_imm_u32(desc, REG3, SEQOUTLEN, IMM, ctx->authsize);
-
 	/* Skip assoc data */
 	append_seq_fifo_store(desc, 0, FIFOST_TYPE_SKIP | FIFOLDST_VLF);
 
@@ -736,7 +730,9 @@ copy_iv:
 
 	/* Will read cryptlen */
 	append_math_add(desc, VARSEQINLEN, SEQINLEN, REG0, CAAM_CMD_SZ);
-	aead_append_src_dst(desc, FIFOLD_TYPE_MSG1OUT2);
+	append_seq_fifo_load(desc, 0, FIFOLD_CLASS_BOTH | KEY_VLF |
+			     FIFOLD_TYPE_MSG1OUT2 | FIFOLD_TYPE_LASTBOTH);
+	append_seq_fifo_store(desc, 0, FIFOST_TYPE_MESSAGE_DATA | KEY_VLF);
 
 	/* Write ICV */
 	append_seq_store(desc, ctx->authsize, LDST_CLASS_2_CCB |
@@ -1875,20 +1871,16 @@ static int xts_ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
 
 /*
  * aead_edesc - s/w-extended aead descriptor
- * @assoc_nents: number of segments in associated data (SPI+Seq) scatterlist
  * @src_nents: number of segments in input scatterlist
  * @dst_nents: number of segments in output scatterlist
- * @iv_dma: dma address of iv for checking continuity and link table
- * @desc: h/w descriptor (variable length; must not exceed MAX_CAAM_DESCSIZE)
  * @sec4_sg_bytes: length of dma mapped sec4_sg space
  * @sec4_sg_dma: bus physical mapped address of h/w link table
+ * @sec4_sg: pointer to h/w link table
  * @hw_desc: the h/w job descriptor followed by any referenced link tables
  */
 struct aead_edesc {
-	int assoc_nents;
 	int src_nents;
 	int dst_nents;
-	dma_addr_t iv_dma;
 	int sec4_sg_bytes;
 	dma_addr_t sec4_sg_dma;
 	struct sec4_sg_entry *sec4_sg;
@@ -1900,9 +1892,9 @@ struct aead_edesc {
  * @src_nents: number of segments in input scatterlist
  * @dst_nents: number of segments in output scatterlist
  * @iv_dma: dma address of iv for checking continuity and link table
- * @desc: h/w descriptor (variable length; must not exceed MAX_CAAM_DESCSIZE)
  * @sec4_sg_bytes: length of dma mapped sec4_sg space
  * @sec4_sg_dma: bus physical mapped address of h/w link table
+ * @sec4_sg: pointer to h/w link table
  * @hw_desc: the h/w job descriptor followed by any referenced link tables
  */
 struct ablkcipher_edesc {
@@ -2019,8 +2011,7 @@ static void ablkcipher_encrypt_done(struct device *jrdev, u32 *desc, u32 err,
 	dev_err(jrdev, "%s %d: err 0x%x\n", __func__, __LINE__, err);
 #endif
 
-	edesc = (struct ablkcipher_edesc *)((char *)desc -
-		 offsetof(struct ablkcipher_edesc, hw_desc));
+	edesc = container_of(desc, struct ablkcipher_edesc, hw_desc[0]);
 
 	if (err)
 		caam_jr_strstatus(jrdev, err);
@@ -2031,7 +2022,7 @@ static void ablkcipher_encrypt_done(struct device *jrdev, u32 *desc, u32 err,
 		       edesc->src_nents > 1 ? 100 : ivsize, 1);
 	dbg_dump_sg(KERN_ERR, "dst    @"__stringify(__LINE__)": ",
 		    DUMP_PREFIX_ADDRESS, 16, 4, req->dst,
-		    edesc->dst_nents > 1 ? 100 : req->nbytes, 1, true);
+		    edesc->dst_nents > 1 ? 100 : req->nbytes, 1);
 #endif
 
 	ablkcipher_unmap(jrdev, edesc, req);
@@ -2052,8 +2043,7 @@ static void ablkcipher_decrypt_done(struct device *jrdev, u32 *desc, u32 err,
 	dev_err(jrdev, "%s %d: err 0x%x\n", __func__, __LINE__, err);
 #endif
 
-	edesc = (struct ablkcipher_edesc *)((char *)desc -
-		 offsetof(struct ablkcipher_edesc, hw_desc));
+	edesc = container_of(desc, struct ablkcipher_edesc, hw_desc[0]);
 	if (err)
 		caam_jr_strstatus(jrdev, err);
 
@@ -2063,7 +2053,7 @@ static void ablkcipher_decrypt_done(struct device *jrdev, u32 *desc, u32 err,
 		       ivsize, 1);
 	dbg_dump_sg(KERN_ERR, "dst    @"__stringify(__LINE__)": ",
 		    DUMP_PREFIX_ADDRESS, 16, 4, req->dst,
-		    edesc->dst_nents > 1 ? 100 : req->nbytes, 1, true);
+		    edesc->dst_nents > 1 ? 100 : req->nbytes, 1);
 #endif
 
 	ablkcipher_unmap(jrdev, edesc, req);
@@ -2218,15 +2208,13 @@ static void init_ablkcipher_job(u32 *sh_desc, dma_addr_t ptr,
 	int len, sec4_sg_index = 0;
 
 #ifdef DEBUG
-	bool may_sleep = ((req->base.flags & (CRYPTO_TFM_REQ_MAY_BACKLOG |
-					      CRYPTO_TFM_REQ_MAY_SLEEP)) != 0);
 	print_hex_dump(KERN_ERR, "presciv@"__stringify(__LINE__)": ",
 		       DUMP_PREFIX_ADDRESS, 16, 4, req->info,
 		       ivsize, 1);
 	printk(KERN_ERR "asked=%d, nbytes%d\n", (int)edesc->src_nents ? 100 : req->nbytes, req->nbytes);
 	dbg_dump_sg(KERN_ERR, "src    @"__stringify(__LINE__)": ",
 		    DUMP_PREFIX_ADDRESS, 16, 4, req->src,
-		    edesc->src_nents ? 100 : req->nbytes, 1, may_sleep);
+		    edesc->src_nents ? 100 : req->nbytes, 1);
 #endif
 
 	len = desc_len(sh_desc);
@@ -2278,14 +2266,12 @@ static void init_ablkcipher_giv_job(u32 *sh_desc, dma_addr_t ptr,
 	int len, sec4_sg_index = 0;
 
 #ifdef DEBUG
-	bool may_sleep = ((req->base.flags & (CRYPTO_TFM_REQ_MAY_BACKLOG |
-					      CRYPTO_TFM_REQ_MAY_SLEEP)) != 0);
 	print_hex_dump(KERN_ERR, "presciv@" __stringify(__LINE__) ": ",
 		       DUMP_PREFIX_ADDRESS, 16, 4, req->info,
 		       ivsize, 1);
 	dbg_dump_sg(KERN_ERR, "src    @" __stringify(__LINE__) ": ",
 		    DUMP_PREFIX_ADDRESS, 16, 4, req->src,
-		    edesc->src_nents ? 100 : req->nbytes, 1, may_sleep);
+		    edesc->src_nents ? 100 : req->nbytes, 1);
 #endif
 
 	len = desc_len(sh_desc);
@@ -2344,10 +2330,8 @@ static struct aead_edesc *aead_edesc_alloc(struct aead_request *req,
 
 	/* Check if data are contiguous. */
 	all_contig = !src_nents;
-	if (!all_contig) {
-		src_nents = src_nents ? : 1;
+	if (!all_contig)
 		sec4_sg_len = src_nents;
-	}
 
 	sec4_sg_len += dst_nents;
 
@@ -2556,11 +2540,9 @@ static int aead_decrypt(struct aead_request *req)
 	int ret = 0;
 
 #ifdef DEBUG
-	bool may_sleep = ((req->base.flags & (CRYPTO_TFM_REQ_MAY_BACKLOG |
-					      CRYPTO_TFM_REQ_MAY_SLEEP)) != 0);
 	dbg_dump_sg(KERN_ERR, "dec src@"__stringify(__LINE__)": ",
 		    DUMP_PREFIX_ADDRESS, 16, 4, req->src,
-		    req->assoclen + req->cryptlen, 1, may_sleep);
+		    req->assoclen + req->cryptlen, 1);
 #endif
 
 	/* allocate extended descriptor */
@@ -2618,16 +2600,33 @@ static struct ablkcipher_edesc *ablkcipher_edesc_alloc(struct ablkcipher_request
 	if (likely(req->src == req->dst)) {
 		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
 				 DMA_BIDIRECTIONAL);
+		if (unlikely(!sgc)) {
+			dev_err(jrdev, "unable to map source\n");
+			return ERR_PTR(-ENOMEM);
+		}
 	} else {
 		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
 				 DMA_TO_DEVICE);
+		if (unlikely(!sgc)) {
+			dev_err(jrdev, "unable to map source\n");
+			return ERR_PTR(-ENOMEM);
+		}
+
 		sgc = dma_map_sg(jrdev, req->dst, dst_nents ? : 1,
 				 DMA_FROM_DEVICE);
+		if (unlikely(!sgc)) {
+			dev_err(jrdev, "unable to map destination\n");
+			dma_unmap_sg(jrdev, req->src, src_nents ? : 1,
+				     DMA_TO_DEVICE);
+			return ERR_PTR(-ENOMEM);
+		}
 	}
 
 	iv_dma = dma_map_single(jrdev, req->info, ivsize, DMA_TO_DEVICE);
 	if (dma_mapping_error(jrdev, iv_dma)) {
 		dev_err(jrdev, "unable to map IV\n");
+		caam_unmap(jrdev, req->src, req->dst, src_nents, dst_nents, 0,
+			   0, 0, 0);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -2647,6 +2646,8 @@ static struct ablkcipher_edesc *ablkcipher_edesc_alloc(struct ablkcipher_request
 			GFP_DMA | flags);
 	if (!edesc) {
 		dev_err(jrdev, "could not allocate extended descriptor\n");
+		caam_unmap(jrdev, req->src, req->dst, src_nents, dst_nents,
+			   iv_dma, ivsize, 0, 0);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -2673,6 +2674,9 @@ static struct ablkcipher_edesc *ablkcipher_edesc_alloc(struct ablkcipher_request
 					    sec4_sg_bytes, DMA_TO_DEVICE);
 	if (dma_mapping_error(jrdev, edesc->sec4_sg_dma)) {
 		dev_err(jrdev, "unable to map S/G table\n");
+		caam_unmap(jrdev, req->src, req->dst, src_nents, dst_nents,
+			   iv_dma, ivsize, 0, 0);
+		kfree(edesc);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -2794,11 +2798,26 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 	if (likely(req->src == req->dst)) {
 		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
 				 DMA_BIDIRECTIONAL);
+		if (unlikely(!sgc)) {
+			dev_err(jrdev, "unable to map source\n");
+			return ERR_PTR(-ENOMEM);
+		}
 	} else {
 		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
 				 DMA_TO_DEVICE);
+		if (unlikely(!sgc)) {
+			dev_err(jrdev, "unable to map source\n");
+			return ERR_PTR(-ENOMEM);
+		}
+
 		sgc = dma_map_sg(jrdev, req->dst, dst_nents ? : 1,
 				 DMA_FROM_DEVICE);
+		if (unlikely(!sgc)) {
+			dev_err(jrdev, "unable to map destination\n");
+			dma_unmap_sg(jrdev, req->src, src_nents ? : 1,
+				     DMA_TO_DEVICE);
+			return ERR_PTR(-ENOMEM);
+		}
 	}
 
 	/*
@@ -2808,6 +2827,8 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 	iv_dma = dma_map_single(jrdev, greq->giv, ivsize, DMA_TO_DEVICE);
 	if (dma_mapping_error(jrdev, iv_dma)) {
 		dev_err(jrdev, "unable to map IV\n");
+		caam_unmap(jrdev, req->src, req->dst, src_nents, dst_nents, 0,
+			   0, 0, 0);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -2823,6 +2844,8 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 			GFP_DMA | flags);
 	if (!edesc) {
 		dev_err(jrdev, "could not allocate extended descriptor\n");
+		caam_unmap(jrdev, req->src, req->dst, src_nents, dst_nents,
+			   iv_dma, ivsize, 0, 0);
 		return ERR_PTR(-ENOMEM);
 	}
 
@@ -2850,6 +2873,9 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 					    sec4_sg_bytes, DMA_TO_DEVICE);
 	if (dma_mapping_error(jrdev, edesc->sec4_sg_dma)) {
 		dev_err(jrdev, "unable to map S/G table\n");
+		caam_unmap(jrdev, req->src, req->dst, src_nents, dst_nents,
+			   iv_dma, ivsize, 0, 0);
+		kfree(edesc);
 		return ERR_PTR(-ENOMEM);
 	}
 	edesc->iv_dma = iv_dma;

@@ -68,14 +68,6 @@ static inline void crypto_set_skcipher_spawn(
 int crypto_grab_skcipher(struct crypto_skcipher_spawn *spawn, const char *name,
 			 u32 type, u32 mask);
 
-static inline int crypto_grab_skcipher2(struct crypto_skcipher_spawn *spawn,
-					const char *name, u32 type, u32 mask)
-{
-	return crypto_grab_skcipher(spawn, name, type, mask);
-}
-
-struct crypto_alg *crypto_lookup_skcipher(const char *name, u32 type, u32 mask);
-
 static inline void crypto_drop_skcipher(struct crypto_skcipher_spawn *spawn)
 {
 	crypto_drop_spawn(&spawn->base);
@@ -97,12 +89,6 @@ static inline struct crypto_skcipher *crypto_spawn_skcipher(
 	struct crypto_skcipher_spawn *spawn)
 {
 	return crypto_spawn_tfm2(&spawn->base);
-}
-
-static inline struct crypto_skcipher *crypto_spawn_skcipher2(
-	struct crypto_skcipher_spawn *spawn)
-{
-	return crypto_spawn_skcipher(spawn);
 }
 
 static inline void crypto_skcipher_set_reqsize(
