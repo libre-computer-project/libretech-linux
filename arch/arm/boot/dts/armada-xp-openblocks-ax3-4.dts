@@ -57,12 +57,12 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory {
+	memory@0 {
 		device_type = "memory";
 		reg = <0 0x00000000 0 0x40000000>; /* 1 GB soldered on */
 	};
 
-	soc {
+	soc@f1000000 {
 		ranges = <MBUS_ID(0xf0, 0x01) 0 0 0xd0000000 0x100000
 			  MBUS_ID(0x01, 0x1d) 0 0 0xfff00000 0x100000
 			  MBUS_ID(0x01, 0x2f) 0 0 0xe8000000 0x8000000
@@ -70,44 +70,7 @@
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000
 			  MBUS_ID(0x0c, 0x04) 0 0 0xd1200000 0x100000>;
 
-		devbus-bootcs {
-			status = "okay";
-
-			/* Device Bus parameters are required */
-
-			/* Read parameters */
-			devbus,bus-width    = <16>;
-			devbus,turn-off-ps  = <60000>;
-			devbus,badr-skew-ps = <0>;
-			devbus,acc-first-ps = <124000>;
-			devbus,acc-next-ps  = <248000>;
-			devbus,rd-setup-ps  = <0>;
-			devbus,rd-hold-ps   = <0>;
-
-			/* Write parameters */
-			devbus,sync-enable = <0>;
-			devbus,wr-high-ps  = <60000>;
-			devbus,wr-low-ps   = <60000>;
-			devbus,ale-wr-ps   = <60000>;
-
-			/* NOR 128 MiB */
-			nor@0 {
-				compatible = "cfi-flash";
-				reg = <0 0x8000000>;
-				bank-width = <2>;
-			};
-		};
-
-		pcie-controller {
-			status = "okay";
-			/* Internal mini-PCIe connector */
-			pcie@1,0 {
-				/* Port 0, Lane 0 */
-				status = "okay";
-			};
-		};
-
-		internal-regs {
+		internal-regs@f1000000 {
 			rtc@10300 {
 				/* No crystal connected to the internal RTC */
 				status = "disabled";
@@ -148,28 +111,10 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 
-				button@1 {
+				init {
 					label = "Init Button";
 					linux,code = <KEY_POWER>;
 					gpios = <&gpio1 28 GPIO_ACTIVE_HIGH>;
-				};
-			};
-
-			mdio {
-				phy0: ethernet-phy@0 {
-					reg = <0>;
-				};
-
-				phy1: ethernet-phy@1 {
-					reg = <1>;
-				};
-
-				phy2: ethernet-phy@2 {
-					reg = <2>;
-				};
-
-				phy3: ethernet-phy@3 {
-					reg = <3>;
 				};
 			};
 
@@ -233,10 +178,65 @@
 				status = "okay";
 			};
 		};
+	};
+};
 
-		bm-bppi {
-			status = "okay";
-		};
+&devbus_bootcs {
+	status = "okay";
+
+	/* Device Bus parameters are required */
+
+	/* Read parameters */
+	devbus,bus-width    = <16>;
+	devbus,turn-off-ps  = <60000>;
+	devbus,badr-skew-ps = <0>;
+	devbus,acc-first-ps = <124000>;
+	devbus,acc-next-ps  = <248000>;
+	devbus,rd-setup-ps  = <0>;
+	devbus,rd-hold-ps   = <0>;
+
+	/* Write parameters */
+	devbus,sync-enable = <0>;
+	devbus,wr-high-ps  = <60000>;
+	devbus,wr-low-ps   = <60000>;
+	devbus,ale-wr-ps   = <60000>;
+
+	/* NOR 128 MiB */
+	nor@0 {
+		compatible = "cfi-flash";
+		reg = <0 0x8000000>;
+		bank-width = <2>;
+	};
+};
+
+&bm_bppi {
+	status = "okay";
+};
+
+&pciec {
+	status = "okay";
+	/* Internal mini-PCIe connector */
+	pcie@1,0 {
+		/* Port 0, Lane 0 */
+		status = "okay";
+	};
+};
+
+&mdio {
+	phy0: ethernet-phy@0 {
+		reg = <0>;
+	};
+
+	phy1: ethernet-phy@1 {
+		reg = <1>;
+	};
+
+	phy2: ethernet-phy@2 {
+		reg = <2>;
+	};
+
+	phy3: ethernet-phy@3 {
+		reg = <3>;
 	};
 };
 
