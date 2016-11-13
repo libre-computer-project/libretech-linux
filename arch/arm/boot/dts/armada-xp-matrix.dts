@@ -55,7 +55,7 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory {
+	memory@0 {
 		device_type = "memory";
 		/*
 		 * This board has 4 GB of RAM, but the last 256 MB of
@@ -65,13 +65,13 @@
 		reg = <0 0x00000000 0 0xf0000000>;
 	};
 
-	soc {
+	soc@f1000000 {
 		ranges = <MBUS_ID(0xf0, 0x01) 0 0 0xf1000000 0x100000
 			  MBUS_ID(0x01, 0x1d) 0 0 0xfff00000 0x100000
 			  MBUS_ID(0x09, 0x09) 0 0 0xf1100000 0x10000
 			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000>;
 
-		internal-regs {
+		internal-regs@f1000000 {
 			serial@12000 {
 				status = "okay";
 			};
@@ -99,18 +99,18 @@
 				};
 			};
 
-			pcie-controller {
-				status = "okay";
-
-				pcie@1,0 {
-					/* Port 0, Lane 0 */
-					status = "okay";
-				};
-			};
-
 			usb@50000 {
 				status = "okay";
 			};
 		};
+	};
+};
+
+&pciec {
+	status = "okay";
+
+	pcie@1,0 {
+		/* Port 0, Lane 0 */
+		status = "okay";
 	};
 };
