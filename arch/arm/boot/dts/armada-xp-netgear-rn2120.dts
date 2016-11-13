@@ -97,7 +97,6 @@
 			};
 
 			i2c@11000 {
-				compatible = "marvell,mv64xxx-i2c";
 				clock-frequency = <400000>;
 				status = "okay";
 
@@ -165,12 +164,18 @@
 			};
 
 			ethernet@70000 {
+				pinctrl-0 = <&ge0_rgmii_pins>;
+				pinctrl-names = "default";
+
 				status = "okay";
 				phy = <&phy0>;
 				phy-mode = "rgmii-id";
 			};
 
 			ethernet@74000 {
+				pinctrl-0 = <&ge1_rgmii_pins>;
+				pinctrl-names = "default";
+
 				status = "okay";
 				phy = <&phy1>;
 				phy-mode = "rgmii-id";
