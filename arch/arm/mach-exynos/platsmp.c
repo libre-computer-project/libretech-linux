@@ -168,6 +168,27 @@ int exynos_cluster_power_state(int cluster)
 		S5P_CORE_LOCAL_PWR_EN);
 }
 
+/**
+ * exynos_scu_enable : enables SCU for Cortex-A9 based system
+ * returns 0 on success else non-zero error code
+ */
+int exynos_scu_enable(void)
+{
+	struct device_node *np;
+	void __iomem *scu_base;
+
+	np = of_find_compatible_node(NULL, NULL, "arm,cortex-a9-scu");
+	scu_base = of_iomap(np, 0);
+	of_node_put(np);
+	if (!scu_base) {
+		pr_err("%s failed to map scu_base\n", __func__);
+		return -ENOMEM;
+	}
+	scu_enable(scu_base);
+	iounmap(scu_base);
+	return 0;
+}
+
 static void __iomem *cpu_boot_reg_base(void)
 {
 	if (soc_is_exynos4210() && samsung_rev() == EXYNOS4210_REV_1_1)
@@ -222,11 +243,6 @@ static void write_pen_release(int val)
 	pen_release = val;
 	smp_wmb();
 	sync_cache_w(&pen_release);
-}
-
-static void __iomem *scu_base_addr(void)
-{
-	return (void __iomem *)(S5P_VA_SCU);
 }
 
 static DEFINE_SPINLOCK(boot_lock);
@@ -385,36 +401,6 @@ fail:
 	return pen_release != -1 ? ret : 0;
 }
 
-/*
- * Initialise the CPU possible map early - this describes the CPUs
- * which may be present or become present in the system.
- */
-
-static void __init exynos_smp_init_cpus(void)
-{
-	void __iomem *scu_base = scu_base_addr();
-	unsigned int i, ncores;
-
-	if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9)
-		ncores = scu_base ? scu_get_core_count(scu_base) : 1;
-	else
-		/*
-		 * CPU Nodes are passed thru DT and set_cpu_possible
-		 * is set by "arm_dt_init_cpu_maps".
-		 */
-		return;
-
-	/* sanity check */
-	if (ncores > nr_cpu_ids) {
-		pr_warn("SMP: %u cores greater than maximum (%u), clipping\n",
-			ncores, nr_cpu_ids);
-		ncores = nr_cpu_ids;
-	}
-
-	for (i = 0; i < ncores; i++)
-		set_cpu_possible(i, true);
-}
-
 static void __init exynos_smp_prepare_cpus(unsigned int max_cpus)
 {
 	int i;
@@ -423,9 +409,11 @@ static void __init exynos_smp_prepare_cpus(unsigned int max_cpus)
 
 	exynos_set_delayed_reset_assertion(true);
 
-	if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9)
-		scu_enable(scu_base_addr());
-
+	if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9) {
+		/* if exynos_scu_enable fails, return */
+		if (exynos_scu_enable())
+			return;
+	}
 	/*
 	 * Write the address of secondary startup into the
 	 * system-wide flags register. The boot monitor waits
@@ -479,7 +467,6 @@ static void exynos_cpu_die(unsigned int cpu)
 #endif /* CONFIG_HOTPLUG_CPU */
 
 const struct smp_operations exynos_smp_ops __initconst = {
-	.smp_init_cpus		= exynos_smp_init_cpus,
 	.smp_prepare_cpus	= exynos_smp_prepare_cpus,
 	.smp_secondary_init	= exynos_secondary_init,
 	.smp_boot_secondary	= exynos_boot_secondary,

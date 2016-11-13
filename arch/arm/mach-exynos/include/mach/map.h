@@ -18,6 +18,4 @@
 
 #define EXYNOS_PA_CHIPID		0x10000000
 
-#define EXYNOS4_PA_COREPERI		0x10500000
-
 #endif /* __ASM_ARCH_MAP_H */
