@@ -30,7 +30,6 @@
 #include <linux/mpage.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
-#include <linux/statfs.h>
 #include <linux/compat.h>
 #include <linux/bit_spinlock.h>
 #include <linux/xattr.h>
@@ -1601,6 +1600,9 @@ static void btrfs_split_extent_hook(struct inode *inode,
 	if (!(orig->state & EXTENT_DELALLOC))
 		return;
 
+	if (btrfs_is_free_space_inode(inode))
+		return;
+
 	size = orig->end - orig->start + 1;
 	if (size > BTRFS_MAX_EXTENT_SIZE) {
 		u64 num_extents;
@@ -1641,6 +1643,9 @@ static void btrfs_merge_extent_hook(struct inode *inode,
 
 	/* not delalloc, ignore it */
 	if (!(other->state & EXTENT_DELALLOC))
+		return;
+
+	if (btrfs_is_free_space_inode(inode))
 		return;
 
 	if (new->start > other->start)
@@ -1738,7 +1743,6 @@ static void btrfs_del_delalloc_inode(struct btrfs_root *root,
 static void btrfs_set_bit_hook(struct inode *inode,
 			       struct extent_state *state, unsigned *bits)
 {
-
 	if ((*bits & EXTENT_DEFRAG) && !(*bits & EXTENT_DELALLOC))
 		WARN_ON(1);
 	/*
@@ -1749,13 +1753,16 @@ static void btrfs_set_bit_hook(struct inode *inode,
 	if (!(state->state & EXTENT_DELALLOC) && (*bits & EXTENT_DELALLOC)) {
 		struct btrfs_root *root = BTRFS_I(inode)->root;
 		u64 len = state->end + 1 - state->start;
+		u64 num_extents = div64_u64(len + BTRFS_MAX_EXTENT_SIZE - 1,
+					    BTRFS_MAX_EXTENT_SIZE);
 		bool do_list = !btrfs_is_free_space_inode(inode);
 
-		if (*bits & EXTENT_FIRST_DELALLOC) {
+		if (*bits & EXTENT_FIRST_DELALLOC)
 			*bits &= ~EXTENT_FIRST_DELALLOC;
-		} else {
+
+		if (do_list) {
 			spin_lock(&BTRFS_I(inode)->lock);
-			BTRFS_I(inode)->outstanding_extents++;
+			BTRFS_I(inode)->outstanding_extents += num_extents;
 			spin_unlock(&BTRFS_I(inode)->lock);
 		}
 
@@ -1803,7 +1810,7 @@ static void btrfs_clear_bit_hook(struct inode *inode,
 
 		if (*bits & EXTENT_FIRST_DELALLOC) {
 			*bits &= ~EXTENT_FIRST_DELALLOC;
-		} else if (!(*bits & EXTENT_DO_ACCOUNTING)) {
+		} else if (!(*bits & EXTENT_DO_ACCOUNTING) && do_list) {
 			spin_lock(&BTRFS_I(inode)->lock);
 			BTRFS_I(inode)->outstanding_extents -= num_extents;
 			spin_unlock(&BTRFS_I(inode)->lock);
@@ -1864,7 +1871,7 @@ int btrfs_merge_bio_hook(struct page *page, unsigned long offset,
 
 	length = bio->bi_iter.bi_size;
 	map_length = length;
-	ret = btrfs_map_block(root->fs_info, bio_op(bio), logical,
+	ret = btrfs_map_block(root->fs_info, btrfs_op(bio), logical,
 			      &map_length, NULL, 0);
 	if (ret < 0)
 		return ret;
@@ -2001,9 +2008,52 @@ static noinline int add_pending_csums(struct btrfs_trans_handle *trans,
 int btrfs_set_extent_delalloc(struct inode *inode, u64 start, u64 end,
 			      struct extent_state **cached_state, int dedupe)
 {
+	int ret;
+	u64 num_extents = div64_u64(end - start + BTRFS_MAX_EXTENT_SIZE,
+				    BTRFS_MAX_EXTENT_SIZE);
+
 	WARN_ON((end & (PAGE_SIZE - 1)) == 0);
-	return set_extent_delalloc(&BTRFS_I(inode)->io_tree, start, end,
-				   cached_state);
+	ret = set_extent_delalloc(&BTRFS_I(inode)->io_tree, start, end,
+				  cached_state);
+
+	/*
+	 * btrfs_delalloc_reserve_metadata() will first add number of
+	 * outstanding extents according to data length, which is inaccurate
+	 * for case like dirtying already dirty pages.
+	 * so here we will decrease such inaccurate numbers, to make
+	 * outstanding_extents only rely on the correct values added by
+	 * set_bit_hook()
+	 *
+	 * Also, we skipped the metadata space reserve for space cache inodes,
+	 * so don't modify the outstanding_extents value.
+	 */
+	if (ret == 0 && !btrfs_is_free_space_inode(inode)) {
+		spin_lock(&BTRFS_I(inode)->lock);
+		BTRFS_I(inode)->outstanding_extents -= num_extents;
+		spin_unlock(&BTRFS_I(inode)->lock);
+	}
+
+	return ret;
+}
+
+int btrfs_set_extent_defrag(struct inode *inode, u64 start, u64 end,
+			    struct extent_state **cached_state)
+{
+	int ret;
+	u64 num_extents = div64_u64(end - start + BTRFS_MAX_EXTENT_SIZE,
+				    BTRFS_MAX_EXTENT_SIZE);
+
+	WARN_ON((end & (PAGE_SIZE - 1)) == 0);
+	ret = set_extent_defrag(&BTRFS_I(inode)->io_tree, start, end,
+				cached_state);
+
+	if (ret == 0 && !btrfs_is_free_space_inode(inode)) {
+		spin_lock(&BTRFS_I(inode)->lock);
+		BTRFS_I(inode)->outstanding_extents -= num_extents;
+		spin_unlock(&BTRFS_I(inode)->lock);
+	}
+
+	return ret;
 }
 
 /* see btrfs_writepage_start_hook for details on why this is required */
@@ -5805,20 +5855,11 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 	int slot;
 	unsigned char d_type;
 	int over = 0;
-	u32 di_cur;
-	u32 di_total;
-	u32 di_len;
-	int key_type = BTRFS_DIR_INDEX_KEY;
 	char tmp_name[32];
 	char *name_ptr;
 	int name_len;
-	int is_curr = 0;	/* ctx->pos points to the current index? */
-	bool emitted;
 	bool put = false;
-
-	/* FIXME, use a real flag for deciding about the key type */
-	if (root->fs_info->tree_root == root)
-		key_type = BTRFS_DIR_ITEM_KEY;
+	struct btrfs_key location;
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
@@ -5829,14 +5870,11 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 
 	path->reada = READA_FORWARD;
 
-	if (key_type == BTRFS_DIR_INDEX_KEY) {
-		INIT_LIST_HEAD(&ins_list);
-		INIT_LIST_HEAD(&del_list);
-		put = btrfs_readdir_get_delayed_items(inode, &ins_list,
-						      &del_list);
-	}
+	INIT_LIST_HEAD(&ins_list);
+	INIT_LIST_HEAD(&del_list);
+	put = btrfs_readdir_get_delayed_items(inode, &ins_list, &del_list);
 
-	key.type = key_type;
+	key.type = BTRFS_DIR_INDEX_KEY;
 	key.offset = ctx->pos;
 	key.objectid = btrfs_ino(inode);
 
@@ -5844,7 +5882,6 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 	if (ret < 0)
 		goto err;
 
-	emitted = false;
 	while (1) {
 		leaf = path->nodes[0];
 		slot = path->slots[0];
@@ -5862,97 +5899,51 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 
 		if (found_key.objectid != key.objectid)
 			break;
-		if (found_key.type != key_type)
+		if (found_key.type != BTRFS_DIR_INDEX_KEY)
 			break;
 		if (found_key.offset < ctx->pos)
 			goto next;
-		if (key_type == BTRFS_DIR_INDEX_KEY &&
-		    btrfs_should_delete_dir_index(&del_list,
-						  found_key.offset))
+		if (btrfs_should_delete_dir_index(&del_list, found_key.offset))
 			goto next;
 
 		ctx->pos = found_key.offset;
-		is_curr = 1;
 
 		di = btrfs_item_ptr(leaf, slot, struct btrfs_dir_item);
-		di_cur = 0;
-		di_total = btrfs_item_size(leaf, item);
+		if (verify_dir_item(root, leaf, di))
+			goto next;
 
-		while (di_cur < di_total) {
-			struct btrfs_key location;
-
-			if (verify_dir_item(root, leaf, di))
-				break;
-
-			name_len = btrfs_dir_name_len(leaf, di);
-			if (name_len <= sizeof(tmp_name)) {
-				name_ptr = tmp_name;
-			} else {
-				name_ptr = kmalloc(name_len, GFP_KERNEL);
-				if (!name_ptr) {
-					ret = -ENOMEM;
-					goto err;
-				}
+		name_len = btrfs_dir_name_len(leaf, di);
+		if (name_len <= sizeof(tmp_name)) {
+			name_ptr = tmp_name;
+		} else {
+			name_ptr = kmalloc(name_len, GFP_KERNEL);
+			if (!name_ptr) {
+				ret = -ENOMEM;
+				goto err;
 			}
-			read_extent_buffer(leaf, name_ptr,
-					   (unsigned long)(di + 1), name_len);
-
-			d_type = btrfs_filetype_table[btrfs_dir_type(leaf, di)];
-			btrfs_dir_item_key_to_cpu(leaf, di, &location);
-
-
-			/* is this a reference to our own snapshot? If so
-			 * skip it.
-			 *
-			 * In contrast to old kernels, we insert the snapshot's
-			 * dir item and dir index after it has been created, so
-			 * we won't find a reference to our own snapshot. We
-			 * still keep the following code for backward
-			 * compatibility.
-			 */
-			if (location.type == BTRFS_ROOT_ITEM_KEY &&
-			    location.objectid == root->root_key.objectid) {
-				over = 0;
-				goto skip;
-			}
-			over = !dir_emit(ctx, name_ptr, name_len,
-				       location.objectid, d_type);
-
-skip:
-			if (name_ptr != tmp_name)
-				kfree(name_ptr);
-
-			if (over)
-				goto nopos;
-			emitted = true;
-			di_len = btrfs_dir_name_len(leaf, di) +
-				 btrfs_dir_data_len(leaf, di) + sizeof(*di);
-			di_cur += di_len;
-			di = (struct btrfs_dir_item *)((char *)di + di_len);
 		}
+		read_extent_buffer(leaf, name_ptr, (unsigned long)(di + 1),
+				   name_len);
+
+		d_type = btrfs_filetype_table[btrfs_dir_type(leaf, di)];
+		btrfs_dir_item_key_to_cpu(leaf, di, &location);
+
+		over = !dir_emit(ctx, name_ptr, name_len, location.objectid,
+				 d_type);
+
+		if (name_ptr != tmp_name)
+			kfree(name_ptr);
+
+		if (over)
+			goto nopos;
+		ctx->pos++;
 next:
 		path->slots[0]++;
 	}
 
-	if (key_type == BTRFS_DIR_INDEX_KEY) {
-		if (is_curr)
-			ctx->pos++;
-		ret = btrfs_readdir_delayed_dir_index(ctx, &ins_list, &emitted);
-		if (ret)
-			goto nopos;
-	}
-
-	/*
-	 * If we haven't emitted any dir entry, we must not touch ctx->pos as
-	 * it was was set to the termination value in previous call. We assume
-	 * that "." and ".." were emitted if we reach this point and set the
-	 * termination value as well for an empty directory.
-	 */
-	if (ctx->pos > 2 && !emitted)
+	ret = btrfs_readdir_delayed_dir_index(ctx, &ins_list);
+	if (ret)
 		goto nopos;
-
-	/* Reached end of directory/root. Bump pos past the last item. */
-	ctx->pos++;
 
 	/*
 	 * Stop new entries from being returned after we return the last
@@ -5971,12 +5962,10 @@ next:
 	 * last entry requires it because doing so has broken 32bit apps
 	 * in the past.
 	 */
-	if (key_type == BTRFS_DIR_INDEX_KEY) {
-		if (ctx->pos >= INT_MAX)
-			ctx->pos = LLONG_MAX;
-		else
-			ctx->pos = INT_MAX;
-	}
+	if (ctx->pos >= INT_MAX)
+		ctx->pos = LLONG_MAX;
+	else
+		ctx->pos = INT_MAX;
 nopos:
 	ret = 0;
 err:
@@ -7783,10 +7772,12 @@ static int btrfs_get_blocks_direct(struct inode *inode, sector_t iblock,
 	}
 
 	/*
-	 * this will cow the extent, reset the len in case we changed
-	 * it above
+	 * this will cow the extent, if em is within [start, len], then
+	 * probably we've found a preallocated/existing extent, let's
+	 * give it a chance to use preallocated space.
 	 */
-	len = bh_result->b_size;
+	len = min_t(u64, bh_result->b_size, em->len - (start - em->start));
+	len = ALIGN(len, root->sectorsize);
 	free_extent_map(em);
 	em = btrfs_new_extent_direct(inode, start, len);
 	if (IS_ERR(em)) {
@@ -8406,7 +8397,7 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	int i;
 
 	map_length = orig_bio->bi_iter.bi_size;
-	ret = btrfs_map_block(root->fs_info, bio_op(orig_bio),
+	ret = btrfs_map_block(root->fs_info, btrfs_op(orig_bio),
 			      start_sector << 9, &map_length, NULL, 0);
 	if (ret)
 		return -EIO;
@@ -8472,7 +8463,7 @@ next_block:
 			btrfs_io_bio(bio)->logical = file_offset;
 
 			map_length = orig_bio->bi_iter.bi_size;
-			ret = btrfs_map_block(root->fs_info, bio_op(orig_bio),
+			ret = btrfs_map_block(root->fs_info, btrfs_op(orig_bio),
 					      start_sector << 9,
 					      &map_length, NULL, 0);
 			if (ret) {
@@ -9227,6 +9218,7 @@ static int btrfs_truncate(struct inode *inode)
 			break;
 		}
 
+		btrfs_block_rsv_release(root, rsv, -1);
 		ret = btrfs_block_rsv_migrate(&root->fs_info->trans_block_rsv,
 					      rsv, min_size, 0);
 		BUG_ON(ret);	/* shouldn't happen */
