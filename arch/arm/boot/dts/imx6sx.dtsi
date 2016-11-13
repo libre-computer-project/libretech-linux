@@ -858,7 +858,7 @@
 				fsl,num-tx-queues=<3>;
 				fsl,num-rx-queues=<3>;
 				status = "disabled";
-                        };
+			};
 
 			mlb: mlb@0218c000 {
 				reg = <0x0218c000 0x4000>;
@@ -1143,7 +1143,7 @@
 				lcdif1: lcdif@02220000 {
 					compatible = "fsl,imx6sx-lcdif", "fsl,imx28-lcdif";
 					reg = <0x02220000 0x4000>;
-					interrupts = <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>;
+					interrupts = <GIC_SPI 5 IRQ_TYPE_EDGE_RISING>;
 					clocks = <&clks IMX6SX_CLK_LCDIF1_PIX>,
 						 <&clks IMX6SX_CLK_LCDIF_APB>,
 						 <&clks IMX6SX_CLK_DISPLAY_AXI>;
@@ -1154,7 +1154,7 @@
 				lcdif2: lcdif@02224000 {
 					compatible = "fsl,imx6sx-lcdif", "fsl,imx28-lcdif";
 					reg = <0x02224000 0x4000>;
-					interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
+					interrupts = <GIC_SPI 6 IRQ_TYPE_EDGE_RISING>;
 					clocks = <&clks IMX6SX_CLK_LCDIF2_PIX>,
 						 <&clks IMX6SX_CLK_LCDIF_APB>,
 						 <&clks IMX6SX_CLK_DISPLAY_AXI>;
@@ -1181,7 +1181,7 @@
 				fsl,adck-max-frequency = <30000000>, <40000000>,
 							 <20000000>;
 				status = "disabled";
-                        };
+			};
 
 			adc2: adc@02284000 {
 				compatible = "fsl,imx6sx-adc", "fsl,vf610-adc";
@@ -1192,7 +1192,7 @@
 				fsl,adck-max-frequency = <30000000>, <40000000>,
 							 <20000000>;
 				status = "disabled";
-                        };
+			};
 
 			wdog3: wdog@02288000 {
 				compatible = "fsl,imx6sx-wdt", "fsl,imx21-wdt";
