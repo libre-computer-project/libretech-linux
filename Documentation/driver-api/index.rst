@@ -24,3 +24,12 @@ available subsections can be seen below.
    i2c
    hsi
    miscellaneous
+   vme
+
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

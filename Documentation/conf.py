@@ -34,7 +34,7 @@ from load_config import loadConfig
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = ['kernel-doc', 'rstFlatTable', 'kernel_include', 'cdomain']
+extensions = ['kerneldoc', 'rstFlatTable', 'kernel_include', 'cdomain']
 
 # The name of the math extension changed on Sphinx 1.4
 if minor > 3:
@@ -136,7 +136,7 @@ pygments_style = 'sphinx'
 todo_include_todos = False
 
 primary_domain = 'C'
-highlight_language = 'guess'
+highlight_language = 'none'
 
 # -- Options for HTML output ----------------------------------------------
 
@@ -336,9 +336,11 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
+    ('admin-guide/index', 'linux-user.tex', 'Linux Kernel User Documentation',
+     'The kernel development community', 'manual'),
     ('kernel-documentation', 'kernel-documentation.tex', 'The Linux Kernel Documentation',
      'The kernel development community', 'manual'),
-    ('development-process/index', 'development-process.tex', 'Linux Kernel Development Documentation',
+    ('process/index', 'development-process.tex', 'Linux Kernel Development Documentation',
      'The kernel development community', 'manual'),
     ('gpu/index', 'gpu.tex', 'Linux GPU Driver Developer\'s Guide',
      'The kernel development community', 'manual'),
