@@ -373,6 +373,9 @@ int tpm_bios_log_setup(struct tpm_chip *chip)
 	const char *name = dev_name(&chip->dev);
 	unsigned int cnt;
 
+	if (chip->flags & TPM_CHIP_FLAG_TPM2)
+		return 0;
+
 	cnt = 0;
 	chip->bios_dir[cnt] = securityfs_create_dir(name, NULL);
 	if (is_bad(chip->bios_dir[cnt]))
