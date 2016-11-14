@@ -287,7 +287,7 @@ static inline int use_cpu_reloc(struct drm_i915_gem_object *obj)
 	if (DBG_USE_CPU_RELOC)
 		return DBG_USE_CPU_RELOC > 0;
 
-	return (HAS_LLC(obj->base.dev) ||
+	return (HAS_LLC(to_i915(obj->base.dev)) ||
 		obj->base.write_domain == I915_GEM_DOMAIN_CPU ||
 		obj->cache_level != I915_CACHE_NONE);
 }
@@ -833,7 +833,7 @@ need_reloc_mappable(struct i915_vma *vma)
 		return false;
 
 	/* See also use_cpu_reloc() */
-	if (HAS_LLC(vma->obj->base.dev))
+	if (HAS_LLC(to_i915(vma->obj->base.dev)))
 		return false;
 
 	if (vma->obj->base.write_domain == I915_GEM_DOMAIN_CPU)
@@ -1624,7 +1624,7 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	}
 
 	if (args->flags & I915_EXEC_RESOURCE_STREAMER) {
-		if (!HAS_RESOURCE_STREAMER(dev)) {
+		if (!HAS_RESOURCE_STREAMER(dev_priv)) {
 			DRM_DEBUG("RS is only allowed for Haswell, Gen8 and above\n");
 			return -EINVAL;
 		}

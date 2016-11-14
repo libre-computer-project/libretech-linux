@@ -30,6 +30,9 @@
 #include "i915_gem.h"
 #include "i915_sw_fence.h"
 
+struct drm_file;
+struct drm_i915_gem_object;
+
 struct intel_wait {
 	struct rb_node node;
 	struct task_struct *tsk;
@@ -161,18 +164,6 @@ i915_gem_request_alloc(struct intel_engine_cs *engine,
 int i915_gem_request_add_to_client(struct drm_i915_gem_request *req,
 				   struct drm_file *file);
 void i915_gem_request_retire_upto(struct drm_i915_gem_request *req);
-
-static inline u32
-i915_gem_request_get_seqno(struct drm_i915_gem_request *req)
-{
-	return req ? req->global_seqno : 0;
-}
-
-static inline struct intel_engine_cs *
-i915_gem_request_get_engine(struct drm_i915_gem_request *req)
-{
-	return req ? req->engine : NULL;
-}
 
 static inline struct drm_i915_gem_request *
 to_request(struct dma_fence *fence)

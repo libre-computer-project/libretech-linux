@@ -60,10 +60,14 @@
 #include "intel_ringbuffer.h"
 
 #include "i915_gem.h"
+#include "i915_gem_fence_reg.h"
+#include "i915_gem_object.h"
 #include "i915_gem_gtt.h"
 #include "i915_gem_render_state.h"
 #include "i915_gem_request.h"
 #include "i915_gem_timeline.h"
+
+#include "i915_vma.h"
 
 #include "intel_gvt.h"
 
@@ -458,23 +462,6 @@ struct intel_opregion {
 
 struct intel_overlay;
 struct intel_overlay_error_state;
-
-struct drm_i915_fence_reg {
-	struct list_head link;
-	struct drm_i915_private *i915;
-	struct i915_vma *vma;
-	int pin_count;
-	int id;
-	/**
-	 * Whether the tiling parameters for the currently
-	 * associated fence register have changed. Note that
-	 * for the purposes of tracking tiling changes we also
-	 * treat the unfenced register, the register slot that
-	 * the object occupies whilst it executes a fenced
-	 * command (such as BLT on gen2/3), as a "fence".
-	 */
-	bool dirty;
-};
 
 struct sdvo_device_mapping {
 	u8 initialized;
@@ -2179,31 +2166,6 @@ enum hdmi_force_audio {
 
 #define I915_GTT_OFFSET_NONE ((u32)-1)
 
-struct drm_i915_gem_object_ops {
-	unsigned int flags;
-#define I915_GEM_OBJECT_HAS_STRUCT_PAGE 0x1
-#define I915_GEM_OBJECT_IS_SHRINKABLE   0x2
-
-	/* Interface between the GEM object and its backing storage.
-	 * get_pages() is called once prior to the use of the associated set
-	 * of pages before to binding them into the GTT, and put_pages() is
-	 * called after we no longer need them. As we expect there to be
-	 * associated cost with migrating pages between the backing storage
-	 * and making them available for the GPU (e.g. clflush), we may hold
-	 * onto the pages after they are no longer referenced by the GPU
-	 * in case they may be used again shortly (for example migrating the
-	 * pages to a different memory domain within the GTT). put_pages()
-	 * will therefore most likely be called when the object itself is
-	 * being released or under memory pressure (where we attempt to
-	 * reap pages for the shrinker).
-	 */
-	struct sg_table *(*get_pages)(struct drm_i915_gem_object *);
-	void (*put_pages)(struct drm_i915_gem_object *, struct sg_table *);
-
-	int (*dmabuf_export)(struct drm_i915_gem_object *);
-	void (*release)(struct drm_i915_gem_object *);
-};
-
 /*
  * Frontbuffer tracking bits. Set in obj->frontbuffer_bits while a gem bo is
  * considered to be the frontbuffer for the given plane interface-wise. This
@@ -2224,292 +2186,6 @@ struct drm_i915_gem_object_ops {
 	(1 << (2 + INTEL_MAX_SPRITE_BITS_PER_PIPE + (INTEL_FRONTBUFFER_BITS_PER_PIPE * (pipe))))
 #define INTEL_FRONTBUFFER_ALL_MASK(pipe) \
 	(0xff << (INTEL_FRONTBUFFER_BITS_PER_PIPE * (pipe)))
-
-struct drm_i915_gem_object {
-	struct drm_gem_object base;
-
-	const struct drm_i915_gem_object_ops *ops;
-
-	/** List of VMAs backed by this object */
-	struct list_head vma_list;
-	struct rb_root vma_tree;
-
-	/** Stolen memory for this object, instead of being backed by shmem. */
-	struct drm_mm_node *stolen;
-	struct list_head global_link;
-	union {
-		struct rcu_head rcu;
-		struct llist_node freed;
-	};
-
-	/**
-	 * Whether the object is currently in the GGTT mmap.
-	 */
-	struct list_head userfault_link;
-
-	/** Used in execbuf to temporarily hold a ref */
-	struct list_head obj_exec_link;
-
-	struct list_head batch_pool_link;
-
-	unsigned long flags;
-
-	/**
-	 * Have we taken a reference for the object for incomplete GPU
-	 * activity?
-	 */
-#define I915_BO_ACTIVE_REF 0
-
-	/*
-	 * Is the object to be mapped as read-only to the GPU
-	 * Only honoured if hardware has relevant pte bit
-	 */
-	unsigned long gt_ro:1;
-	unsigned int cache_level:3;
-	unsigned int cache_dirty:1;
-
-	atomic_t frontbuffer_bits;
-	unsigned int frontbuffer_ggtt_origin; /* write once */
-
-	/** Current tiling stride for the object, if it's tiled. */
-	unsigned int tiling_and_stride;
-#define FENCE_MINIMUM_STRIDE 128 /* See i915_tiling_ok() */
-#define TILING_MASK (FENCE_MINIMUM_STRIDE-1)
-#define STRIDE_MASK (~TILING_MASK)
-
-	/** Count of VMA actually bound by this object */
-	unsigned int bind_count;
-	unsigned int active_count;
-	unsigned int pin_display;
-
-	struct {
-		struct mutex lock; /* protects the pages and their use */
-		atomic_t pages_pin_count;
-
-		struct sg_table *pages;
-		void *mapping;
-
-		struct i915_gem_object_page_iter {
-			struct scatterlist *sg_pos;
-			unsigned int sg_idx; /* in pages, but 32bit eek! */
-
-			struct radix_tree_root radix;
-			struct mutex lock; /* protects this cache */
-		} get_page;
-
-		/**
-		 * Advice: are the backing pages purgeable?
-		 */
-		unsigned int madv:2;
-
-		/**
-		 * This is set if the object has been written to since the
-		 * pages were last acquired.
-		 */
-		bool dirty:1;
-
-		/**
-		 * This is set if the object has been pinned due to unknown
-		 * swizzling.
-		 */
-		bool quirked:1;
-	} mm;
-
-	/** Breadcrumb of last rendering to the buffer.
-	 * There can only be one writer, but we allow for multiple readers.
-	 * If there is a writer that necessarily implies that all other
-	 * read requests are complete - but we may only be lazily clearing
-	 * the read requests. A read request is naturally the most recent
-	 * request on a ring, so we may have two different write and read
-	 * requests on one ring where the write request is older than the
-	 * read request. This allows for the CPU to read from an active
-	 * buffer by only waiting for the write to complete.
-	 */
-	struct reservation_object *resv;
-
-	/** References from framebuffers, locks out tiling changes. */
-	unsigned long framebuffer_references;
-
-	/** Record of address bit 17 of each page at last unbind. */
-	unsigned long *bit_17;
-
-	struct i915_gem_userptr {
-		uintptr_t ptr;
-		unsigned read_only :1;
-
-		struct i915_mm_struct *mm;
-		struct i915_mmu_object *mmu_object;
-		struct work_struct *work;
-	} userptr;
-
-	/** for phys allocated objects */
-	struct drm_dma_handle *phys_handle;
-
-	struct reservation_object __builtin_resv;
-};
-
-static inline struct drm_i915_gem_object *
-to_intel_bo(struct drm_gem_object *gem)
-{
-	/* Assert that to_intel_bo(NULL) == NULL */
-	BUILD_BUG_ON(offsetof(struct drm_i915_gem_object, base));
-
-	return container_of(gem, struct drm_i915_gem_object, base);
-}
-
-/**
- * i915_gem_object_lookup_rcu - look up a temporary GEM object from its handle
- * @filp: DRM file private date
- * @handle: userspace handle
- *
- * Returns:
- *
- * A pointer to the object named by the handle if such exists on @filp, NULL
- * otherwise. This object is only valid whilst under the RCU read lock, and
- * note carefully the object may be in the process of being destroyed.
- */
-static inline struct drm_i915_gem_object *
-i915_gem_object_lookup_rcu(struct drm_file *file, u32 handle)
-{
-#ifdef CONFIG_LOCKDEP
-	WARN_ON(debug_locks && !lock_is_held(&rcu_lock_map));
-#endif
-	return idr_find(&file->object_idr, handle);
-}
-
-static inline struct drm_i915_gem_object *
-i915_gem_object_lookup(struct drm_file *file, u32 handle)
-{
-	struct drm_i915_gem_object *obj;
-
-	rcu_read_lock();
-	obj = i915_gem_object_lookup_rcu(file, handle);
-	if (obj && !kref_get_unless_zero(&obj->base.refcount))
-		obj = NULL;
-	rcu_read_unlock();
-
-	return obj;
-}
-
-__deprecated
-extern struct drm_gem_object *
-drm_gem_object_lookup(struct drm_file *file, u32 handle);
-
-__attribute__((nonnull))
-static inline struct drm_i915_gem_object *
-i915_gem_object_get(struct drm_i915_gem_object *obj)
-{
-	drm_gem_object_reference(&obj->base);
-	return obj;
-}
-
-__deprecated
-extern void drm_gem_object_reference(struct drm_gem_object *);
-
-__attribute__((nonnull))
-static inline void
-i915_gem_object_put(struct drm_i915_gem_object *obj)
-{
-	__drm_gem_object_unreference(&obj->base);
-}
-
-__deprecated
-extern void drm_gem_object_unreference(struct drm_gem_object *);
-
-__deprecated
-extern void drm_gem_object_unreference_unlocked(struct drm_gem_object *);
-
-static inline bool
-i915_gem_object_is_dead(const struct drm_i915_gem_object *obj)
-{
-	return atomic_read(&obj->base.refcount.refcount) == 0;
-}
-
-static inline bool
-i915_gem_object_has_struct_page(const struct drm_i915_gem_object *obj)
-{
-	return obj->ops->flags & I915_GEM_OBJECT_HAS_STRUCT_PAGE;
-}
-
-static inline bool
-i915_gem_object_is_shrinkable(const struct drm_i915_gem_object *obj)
-{
-	return obj->ops->flags & I915_GEM_OBJECT_IS_SHRINKABLE;
-}
-
-static inline bool
-i915_gem_object_is_active(const struct drm_i915_gem_object *obj)
-{
-	return obj->active_count;
-}
-
-static inline bool
-i915_gem_object_has_active_reference(const struct drm_i915_gem_object *obj)
-{
-	return test_bit(I915_BO_ACTIVE_REF, &obj->flags);
-}
-
-static inline void
-i915_gem_object_set_active_reference(struct drm_i915_gem_object *obj)
-{
-	lockdep_assert_held(&obj->base.dev->struct_mutex);
-	__set_bit(I915_BO_ACTIVE_REF, &obj->flags);
-}
-
-static inline void
-i915_gem_object_clear_active_reference(struct drm_i915_gem_object *obj)
-{
-	lockdep_assert_held(&obj->base.dev->struct_mutex);
-	__clear_bit(I915_BO_ACTIVE_REF, &obj->flags);
-}
-
-void __i915_gem_object_release_unless_active(struct drm_i915_gem_object *obj);
-
-static inline unsigned int
-i915_gem_object_get_tiling(struct drm_i915_gem_object *obj)
-{
-	return obj->tiling_and_stride & TILING_MASK;
-}
-
-static inline bool
-i915_gem_object_is_tiled(struct drm_i915_gem_object *obj)
-{
-	return i915_gem_object_get_tiling(obj) != I915_TILING_NONE;
-}
-
-static inline unsigned int
-i915_gem_object_get_stride(struct drm_i915_gem_object *obj)
-{
-	return obj->tiling_and_stride & STRIDE_MASK;
-}
-
-static inline struct intel_engine_cs *
-i915_gem_object_last_write_engine(struct drm_i915_gem_object *obj)
-{
-	struct intel_engine_cs *engine = NULL;
-	struct dma_fence *fence;
-
-	rcu_read_lock();
-	fence = reservation_object_get_excl_rcu(obj->resv);
-	rcu_read_unlock();
-
-	if (fence && dma_fence_is_i915(fence) && !dma_fence_is_signaled(fence))
-		engine = to_request(fence)->engine;
-	dma_fence_put(fence);
-
-	return engine;
-}
-
-static inline struct i915_vma *i915_vma_get(struct i915_vma *vma)
-{
-	i915_gem_object_get(vma->obj);
-	return vma;
-}
-
-static inline void i915_vma_put(struct i915_vma *vma)
-{
-	i915_gem_object_put(vma->obj);
-}
 
 /*
  * Optimised SGL iterator for GEM objects
@@ -2700,7 +2376,7 @@ struct drm_i915_cmd_table {
 #define INTEL_DEVID(dev_priv)	((dev_priv)->info.device_id)
 
 #define REVID_FOREVER		0xff
-#define INTEL_REVID(p)	(__I915__(p)->drm.pdev->revision)
+#define INTEL_REVID(dev_priv)	((dev_priv)->drm.pdev->revision)
 
 #define GEN_FOREVER (0)
 /*
@@ -2851,28 +2527,31 @@ struct drm_i915_cmd_table {
 #define ALL_ENGINES	(~0)
 
 #define HAS_ENGINE(dev_priv, id) \
-	(!!(INTEL_INFO(dev_priv)->ring_mask & ENGINE_MASK(id)))
+	(!!((dev_priv)->info.ring_mask & ENGINE_MASK(id)))
 
 #define HAS_BSD(dev_priv)	HAS_ENGINE(dev_priv, VCS)
 #define HAS_BSD2(dev_priv)	HAS_ENGINE(dev_priv, VCS2)
 #define HAS_BLT(dev_priv)	HAS_ENGINE(dev_priv, BCS)
 #define HAS_VEBOX(dev_priv)	HAS_ENGINE(dev_priv, VECS)
 
-#define HAS_LLC(dev)		(INTEL_INFO(dev)->has_llc)
-#define HAS_SNOOP(dev)		(INTEL_INFO(dev)->has_snoop)
-#define HAS_EDRAM(dev)		(!!(__I915__(dev)->edram_cap & EDRAM_ENABLED))
+#define HAS_LLC(dev_priv)	((dev_priv)->info.has_llc)
+#define HAS_SNOOP(dev_priv)	((dev_priv)->info.has_snoop)
+#define HAS_EDRAM(dev_priv)	(!!((dev_priv)->edram_cap & EDRAM_ENABLED))
 #define HAS_WT(dev_priv)	((IS_HASWELL(dev_priv) || \
 				 IS_BROADWELL(dev_priv)) && HAS_EDRAM(dev_priv))
-#define HWS_NEEDS_PHYSICAL(dev)	(INTEL_INFO(dev)->hws_needs_physical)
 
-#define HAS_HW_CONTEXTS(dev)	(INTEL_INFO(dev)->has_hw_contexts)
-#define HAS_LOGICAL_RING_CONTEXTS(dev)	(INTEL_INFO(dev)->has_logical_ring_contexts)
-#define USES_PPGTT(dev)		(i915.enable_ppgtt)
-#define USES_FULL_PPGTT(dev)	(i915.enable_ppgtt >= 2)
-#define USES_FULL_48BIT_PPGTT(dev)	(i915.enable_ppgtt == 3)
+#define HWS_NEEDS_PHYSICAL(dev_priv)	((dev_priv)->info.hws_needs_physical)
 
-#define HAS_OVERLAY(dev)		(INTEL_INFO(dev)->has_overlay)
-#define OVERLAY_NEEDS_PHYSICAL(dev)	(INTEL_INFO(dev)->overlay_needs_physical)
+#define HAS_HW_CONTEXTS(dev_priv)	    ((dev_priv)->info.has_hw_contexts)
+#define HAS_LOGICAL_RING_CONTEXTS(dev_priv) \
+		((dev_priv)->info.has_logical_ring_contexts)
+#define USES_PPGTT(dev_priv)		(i915.enable_ppgtt)
+#define USES_FULL_PPGTT(dev_priv)	(i915.enable_ppgtt >= 2)
+#define USES_FULL_48BIT_PPGTT(dev_priv)	(i915.enable_ppgtt == 3)
+
+#define HAS_OVERLAY(dev_priv)		 ((dev_priv)->info.has_overlay)
+#define OVERLAY_NEEDS_PHYSICAL(dev_priv) \
+		((dev_priv)->info.overlay_needs_physical)
 
 /* Early gen2 have a totally busted CS tlb and require pinned batches. */
 #define HAS_BROKEN_CS_TLB(dev_priv)	(IS_I830(dev_priv) || IS_845G(dev_priv))
@@ -2889,8 +2568,8 @@ struct drm_i915_cmd_table {
  * legacy irq no. is shared with another device. The kernel then disables that
  * interrupt source and so prevents the other device from working properly.
  */
-#define HAS_AUX_IRQ(dev) (INTEL_INFO(dev)->gen >= 5)
-#define HAS_GMBUS_IRQ(dev) (INTEL_INFO(dev)->has_gmbus_irq)
+#define HAS_AUX_IRQ(dev_priv)   ((dev_priv)->info.gen >= 5)
+#define HAS_GMBUS_IRQ(dev_priv) ((dev_priv)->info.has_gmbus_irq)
 
 /* With the 945 and later, Y tiling got adjusted so that it was 32 128-byte
  * rows, which changed the alignment requirements and fence programming.
@@ -2898,24 +2577,24 @@ struct drm_i915_cmd_table {
 #define HAS_128_BYTE_Y_TILING(dev_priv) (!IS_GEN2(dev_priv) && \
 					 !(IS_I915G(dev_priv) || \
 					 IS_I915GM(dev_priv)))
-#define SUPPORTS_TV(dev)		(INTEL_INFO(dev)->supports_tv)
-#define I915_HAS_HOTPLUG(dev)		 (INTEL_INFO(dev)->has_hotplug)
+#define SUPPORTS_TV(dev_priv)		((dev_priv)->info.supports_tv)
+#define I915_HAS_HOTPLUG(dev_priv)	((dev_priv)->info.has_hotplug)
 
-#define HAS_FW_BLC(dev_priv) (INTEL_GEN(dev_priv) > 2)
-#define HAS_PIPE_CXSR(dev) (INTEL_INFO(dev)->has_pipe_cxsr)
-#define HAS_FBC(dev) (INTEL_INFO(dev)->has_fbc)
+#define HAS_FW_BLC(dev_priv) 	(INTEL_GEN(dev_priv) > 2)
+#define HAS_PIPE_CXSR(dev_priv) ((dev_priv)->info.has_pipe_cxsr)
+#define HAS_FBC(dev_priv)	((dev_priv)->info.has_fbc)
 
 #define HAS_IPS(dev_priv)	(IS_HSW_ULT(dev_priv) || IS_BROADWELL(dev_priv))
 
-#define HAS_DP_MST(dev)	(INTEL_INFO(dev)->has_dp_mst)
+#define HAS_DP_MST(dev_priv)	((dev_priv)->info.has_dp_mst)
 
-#define HAS_DDI(dev_priv)	((dev_priv)->info.has_ddi)
-#define HAS_FPGA_DBG_UNCLAIMED(dev)	(INTEL_INFO(dev)->has_fpga_dbg)
-#define HAS_PSR(dev)		(INTEL_INFO(dev)->has_psr)
-#define HAS_RC6(dev)		(INTEL_INFO(dev)->has_rc6)
-#define HAS_RC6p(dev)		(INTEL_INFO(dev)->has_rc6p)
+#define HAS_DDI(dev_priv)		 ((dev_priv)->info.has_ddi)
+#define HAS_FPGA_DBG_UNCLAIMED(dev_priv) ((dev_priv)->info.has_fpga_dbg)
+#define HAS_PSR(dev_priv)		 ((dev_priv)->info.has_psr)
+#define HAS_RC6(dev_priv)		 ((dev_priv)->info.has_rc6)
+#define HAS_RC6p(dev_priv)		 ((dev_priv)->info.has_rc6p)
 
-#define HAS_CSR(dev)	(INTEL_INFO(dev)->has_csr)
+#define HAS_CSR(dev_priv)	((dev_priv)->info.has_csr)
 
 #define HAS_RUNTIME_PM(dev_priv) ((dev_priv)->info.has_runtime_pm)
 #define HAS_64BIT_RELOC(dev_priv) ((dev_priv)->info.has_64bit_reloc)
@@ -2925,13 +2604,13 @@ struct drm_i915_cmd_table {
  * command submission once loaded. But these are logically independent
  * properties, so we have separate macros to test them.
  */
-#define HAS_GUC(dev)		(INTEL_INFO(dev)->has_guc)
-#define HAS_GUC_UCODE(dev)	(HAS_GUC(dev))
-#define HAS_GUC_SCHED(dev)	(HAS_GUC(dev))
+#define HAS_GUC(dev_priv)	((dev_priv)->info.has_guc)
+#define HAS_GUC_UCODE(dev_priv)	(HAS_GUC(dev_priv))
+#define HAS_GUC_SCHED(dev_priv)	(HAS_GUC(dev_priv))
 
-#define HAS_RESOURCE_STREAMER(dev) (INTEL_INFO(dev)->has_resource_streamer)
+#define HAS_RESOURCE_STREAMER(dev_priv) ((dev_priv)->info.has_resource_streamer)
 
-#define HAS_POOLED_EU(dev)	(INTEL_INFO(dev)->has_pooled_eu)
+#define HAS_POOLED_EU(dev_priv)	((dev_priv)->info.has_pooled_eu)
 
 #define INTEL_PCH_DEVICE_ID_MASK		0xff00
 #define INTEL_PCH_IBX_DEVICE_ID_TYPE		0x3b00
@@ -3222,13 +2901,6 @@ i915_gem_object_ggtt_pin(struct drm_i915_gem_object *obj,
 			 u64 alignment,
 			 u64 flags);
 
-int i915_vma_bind(struct i915_vma *vma, enum i915_cache_level cache_level,
-		  u32 flags);
-void __i915_vma_set_map_and_fenceable(struct i915_vma *vma);
-int __must_check i915_vma_unbind(struct i915_vma *vma);
-void i915_vma_close(struct i915_vma *vma);
-void i915_vma_destroy(struct i915_vma *vma);
-
 int i915_gem_object_unbind(struct drm_i915_gem_object *obj);
 void i915_gem_release_mmap(struct drm_i915_gem_object *obj);
 
@@ -3405,7 +3077,7 @@ static inline u32 i915_reset_count(struct i915_gpu_error *error)
 
 void i915_gem_reset(struct drm_i915_private *dev_priv);
 void i915_gem_set_wedged(struct drm_i915_private *dev_priv);
-bool i915_gem_clflush_object(struct drm_i915_gem_object *obj, bool force);
+void i915_gem_clflush_object(struct drm_i915_gem_object *obj, bool force);
 int __must_check i915_gem_init(struct drm_device *dev);
 int __must_check i915_gem_init_hw(struct drm_device *dev);
 void i915_gem_init_swizzling(struct drm_device *dev);
@@ -3478,53 +3150,9 @@ i915_gem_object_ggtt_offset(struct drm_i915_gem_object *o,
 	return i915_ggtt_offset(i915_gem_object_to_ggtt(o, view));
 }
 
-/* i915_gem_fence.c */
+/* i915_gem_fence_reg.c */
 int __must_check i915_vma_get_fence(struct i915_vma *vma);
 int __must_check i915_vma_put_fence(struct i915_vma *vma);
-
-/**
- * i915_vma_pin_fence - pin fencing state
- * @vma: vma to pin fencing for
- *
- * This pins the fencing state (whether tiled or untiled) to make sure the
- * vma (and its object) is ready to be used as a scanout target. Fencing
- * status must be synchronize first by calling i915_vma_get_fence():
- *
- * The resulting fence pin reference must be released again with
- * i915_vma_unpin_fence().
- *
- * Returns:
- *
- * True if the vma has a fence, false otherwise.
- */
-static inline bool
-i915_vma_pin_fence(struct i915_vma *vma)
-{
-	lockdep_assert_held(&vma->vm->dev->struct_mutex);
-	if (vma->fence) {
-		vma->fence->pin_count++;
-		return true;
-	} else
-		return false;
-}
-
-/**
- * i915_vma_unpin_fence - unpin fencing state
- * @vma: vma to unpin fencing for
- *
- * This releases the fence pin reference acquired through
- * i915_vma_pin_fence. It will handle both objects with and without an
- * attached fence correctly, callers do not need to distinguish this.
- */
-static inline void
-i915_vma_unpin_fence(struct i915_vma *vma)
-{
-	lockdep_assert_held(&vma->vm->dev->struct_mutex);
-	if (vma->fence) {
-		GEM_BUG_ON(vma->fence->pin_count <= 0);
-		vma->fence->pin_count--;
-	}
-}
 
 void i915_gem_restore_fences(struct drm_device *dev);
 
