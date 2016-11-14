@@ -232,11 +232,13 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 void render_sigset_t(struct seq_file *m, const char *header,
 				sigset_t *set)
 {
-	int i;
+	char buf[_NSIG / 4 + 2];
+	int i, j;
 
 	seq_puts(m, header);
 
 	i = _NSIG;
+	j = 0;
 	do {
 		int x = 0;
 
@@ -245,10 +247,13 @@ void render_sigset_t(struct seq_file *m, const char *header,
 		if (sigismember(set, i+2)) x |= 2;
 		if (sigismember(set, i+3)) x |= 4;
 		if (sigismember(set, i+4)) x |= 8;
-		seq_printf(m, "%x", x);
+		buf[j++] = hex_asc[x];
 	} while (i >= 4);
 
-	seq_putc(m, '\n');
+	buf[j++] = '\n';
+	buf[j++] = 0;
+
+	seq_puts(m, buf);
 }
 
 static void collect_sigign_sigcatch(struct task_struct *p, sigset_t *ign,
@@ -342,10 +347,11 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
 
 static inline void task_seccomp(struct seq_file *m, struct task_struct *p)
 {
+	seq_put_decimal_ull(m, "NoNewPrivs:\t", task_no_new_privs(p));
 #ifdef CONFIG_SECCOMP
-	seq_put_decimal_ull(m, "Seccomp:\t", p->seccomp.mode);
-	seq_putc(m, '\n');
+	seq_put_decimal_ull(m, "\nSeccomp:\t", p->seccomp.mode);
 #endif
+	seq_putc(m, '\n');
 }
 
 static inline void task_context_switch_counts(struct seq_file *m,

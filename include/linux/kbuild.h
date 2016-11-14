@@ -2,7 +2,7 @@
 #define __LINUX_KBUILD_H
 
 #define DEFINE(sym, val) \
-        asm volatile("\n->" #sym " %0 " #val : : "i" (val))
+	asm volatile ("#define " #sym " %0 /*" #val :: "i" (val))
 
 #define BLANK() asm volatile("\n->" : : )
 
