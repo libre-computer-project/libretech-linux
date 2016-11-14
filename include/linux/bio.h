@@ -63,6 +63,12 @@
 #define bio_end_sector(bio)	((bio)->bi_iter.bi_sector + bio_sectors((bio)))
 
 /*
+ * Return the data direction, READ or WRITE.
+ */
+#define bio_data_dir(bio) \
+	(op_is_write(bio_op(bio)) ? WRITE : READ)
+
+/*
  * Check whether this bio carries any data or not. A NULL bio is allowed.
  */
 static inline bool bio_has_data(struct bio *bio)
@@ -81,17 +87,6 @@ static inline bool bio_no_advance_iter(struct bio *bio)
 	return bio_op(bio) == REQ_OP_DISCARD ||
 	       bio_op(bio) == REQ_OP_SECURE_ERASE ||
 	       bio_op(bio) == REQ_OP_WRITE_SAME;
-}
-
-static inline bool bio_is_rw(struct bio *bio)
-{
-	if (!bio_has_data(bio))
-		return false;
-
-	if (bio_no_advance_iter(bio))
-		return false;
-
-	return true;
 }
 
 static inline bool bio_mergeable(struct bio *bio)
@@ -409,6 +404,8 @@ static inline struct bio *bio_clone_kmalloc(struct bio *bio, gfp_t gfp_mask)
 
 }
 
+extern blk_qc_t submit_bio(struct bio *);
+
 extern void bio_endio(struct bio *);
 
 static inline void bio_io_error(struct bio *bio)
@@ -430,6 +427,7 @@ void bio_chain(struct bio *, struct bio *);
 extern int bio_add_page(struct bio *, struct page *, unsigned int,unsigned int);
 extern int bio_add_pc_page(struct request_queue *, struct bio *, struct page *,
 			   unsigned int, unsigned int);
+int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter);
 struct rq_map_data;
 extern struct bio *bio_map_user_iov(struct request_queue *,
 				    const struct iov_iter *, gfp_t);

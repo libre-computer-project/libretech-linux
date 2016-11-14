@@ -79,6 +79,20 @@ enum nvme_quirks {
 	NVME_QUIRK_DELAY_BEFORE_CHK_RDY		= (1 << 3),
 };
 
+/*
+ * Common request structure for NVMe passthrough.  All drivers must have
+ * this structure as the first member of their request-private data.
+ */
+struct nvme_request {
+	struct nvme_command	*cmd;
+	union nvme_result	result;
+};
+
+static inline struct nvme_request *nvme_req(struct request *req)
+{
+	return blk_mq_rq_to_pdu(req);
+}
+
 /* The below value is the specific amount of delay needed before checking
  * readiness in case of the PCI_DEVICE(0x1c58, 0x0003), which needs the
  * NVME_QUIRK_DELAY_BEFORE_CHK_RDY quirk enabled. The value (in ms) was
@@ -261,8 +275,8 @@ void nvme_queue_scan(struct nvme_ctrl *ctrl);
 void nvme_remove_namespaces(struct nvme_ctrl *ctrl);
 
 #define NVME_NR_AERS	1
-void nvme_complete_async_event(struct nvme_ctrl *ctrl,
-		struct nvme_completion *cqe);
+void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
+		union nvme_result *res);
 void nvme_queue_async_events(struct nvme_ctrl *ctrl);
 
 void nvme_stop_queues(struct nvme_ctrl *ctrl);
@@ -278,7 +292,7 @@ int nvme_setup_cmd(struct nvme_ns *ns, struct request *req,
 int nvme_submit_sync_cmd(struct request_queue *q, struct nvme_command *cmd,
 		void *buf, unsigned bufflen);
 int __nvme_submit_sync_cmd(struct request_queue *q, struct nvme_command *cmd,
-		struct nvme_completion *cqe, void *buffer, unsigned bufflen,
+		union nvme_result *result, void *buffer, unsigned bufflen,
 		unsigned timeout, int qid, int at_head, int flags);
 int nvme_submit_user_cmd(struct request_queue *q, struct nvme_command *cmd,
 		void __user *ubuffer, unsigned bufflen, u32 *result,
