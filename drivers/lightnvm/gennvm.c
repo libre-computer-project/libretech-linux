@@ -371,12 +371,6 @@ static int gen_blocks_init(struct nvm_dev *dev, struct gen_dev *gn)
 			block->lun = &lun->vlun;
 			block->id = cur_block_id++;
 
-			/* First block is reserved for device */
-			if (unlikely(lun_iter == 0 && blk_iter == 0)) {
-				lun->vlun.nr_free_blocks--;
-				continue;
-			}
-
 			list_add_tail(&block->list, &lun->free_list);
 		}
 
@@ -549,34 +543,11 @@ static void gen_mark_blk(struct nvm_dev *dev, struct ppa_addr ppa, int type)
 	blk->state = type;
 }
 
-/*
- * mark block bad in gen. It is expected that the target recovers separately
- */
-static void gen_mark_blk_bad(struct nvm_dev *dev, struct nvm_rq *rqd)
-{
-	int bit = -1;
-	int max_secs = dev->ops->max_phys_sect;
-	void *comp_bits = &rqd->ppa_status;
-
-	nvm_addr_to_generic_mode(dev, rqd);
-
-	/* look up blocks and mark them as bad */
-	if (rqd->nr_ppas == 1) {
-		gen_mark_blk(dev, rqd->ppa_addr, NVM_BLK_ST_BAD);
-		return;
-	}
-
-	while ((bit = find_next_bit(comp_bits, max_secs, bit + 1)) < max_secs)
-		gen_mark_blk(dev, rqd->ppa_list[bit], NVM_BLK_ST_BAD);
-}
-
 static void gen_end_io(struct nvm_rq *rqd)
 {
 	struct nvm_tgt_instance *ins = rqd->ins;
 
-	if (rqd->error == NVM_RSP_ERR_FAILWRITE)
-		gen_mark_blk_bad(rqd->dev, rqd);
-
+	/* Write failures and bad blocks are managed within the target */
 	ins->tt->end_io(rqd);
 }
 
@@ -593,12 +564,11 @@ static int gen_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 	return dev->ops->submit_io(dev, rqd);
 }
 
-static int gen_erase_blk(struct nvm_dev *dev, struct nvm_block *blk,
-							unsigned long flags)
+static int gen_erase_blk(struct nvm_dev *dev, struct nvm_block *blk, int flags)
 {
 	struct ppa_addr addr = block_to_ppa(dev, blk);
 
-	return nvm_erase_ppa(dev, &addr, 1);
+	return nvm_erase_ppa(dev, &addr, 1, flags);
 }
 
 static int gen_reserve_lun(struct nvm_dev *dev, int lunid)
