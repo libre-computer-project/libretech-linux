@@ -233,6 +233,7 @@ static ssize_t file_name##_show(struct device *dev,		\
 	return sprintf(buf, "%u\n", this_leaf->object);		\
 }
 
+show_one(id, id);
 show_one(level, level);
 show_one(coherency_line_size, coherency_line_size);
 show_one(number_of_sets, number_of_sets);
@@ -314,6 +315,7 @@ static ssize_t write_policy_show(struct device *dev,
 	return n;
 }
 
+static DEVICE_ATTR_RO(id);
 static DEVICE_ATTR_RO(level);
 static DEVICE_ATTR_RO(type);
 static DEVICE_ATTR_RO(coherency_line_size);
@@ -327,6 +329,7 @@ static DEVICE_ATTR_RO(shared_cpu_list);
 static DEVICE_ATTR_RO(physical_line_partition);
 
 static struct attribute *cache_default_attrs[] = {
+	&dev_attr_id.attr,
 	&dev_attr_type.attr,
 	&dev_attr_level.attr,
 	&dev_attr_shared_cpu_map.attr,
@@ -350,6 +353,8 @@ cache_default_attrs_is_visible(struct kobject *kobj,
 	const struct cpumask *mask = &this_leaf->shared_cpu_map;
 	umode_t mode = attr->mode;
 
+	if ((attr == &dev_attr_id.attr) && (this_leaf->attributes & CACHE_ID))
+		return mode;
 	if ((attr == &dev_attr_type.attr) && this_leaf->type)
 		return mode;
 	if ((attr == &dev_attr_level.attr) && this_leaf->level)
@@ -498,57 +503,30 @@ err:
 	return rc;
 }
 
-static void cache_remove_dev(unsigned int cpu)
+static int cacheinfo_cpu_online(unsigned int cpu)
 {
-	if (!cpumask_test_cpu(cpu, &cache_dev_map))
-		return;
-	cpumask_clear_cpu(cpu, &cache_dev_map);
+	int rc = detect_cache_attributes(cpu);
 
-	cpu_cache_sysfs_exit(cpu);
+	if (rc)
+		return rc;
+	rc = cache_add_dev(cpu);
+	if (rc)
+		free_cache_attributes(cpu);
+	return rc;
 }
 
-static int cacheinfo_cpu_callback(struct notifier_block *nfb,
-				  unsigned long action, void *hcpu)
+static int cacheinfo_cpu_pre_down(unsigned int cpu)
 {
-	unsigned int cpu = (unsigned long)hcpu;
-	int rc = 0;
+	if (cpumask_test_and_clear_cpu(cpu, &cache_dev_map))
+		cpu_cache_sysfs_exit(cpu);
 
-	switch (action & ~CPU_TASKS_FROZEN) {
-	case CPU_ONLINE:
-		rc = detect_cache_attributes(cpu);
-		if (!rc)
-			rc = cache_add_dev(cpu);
-		break;
-	case CPU_DEAD:
-		cache_remove_dev(cpu);
-		free_cache_attributes(cpu);
-		break;
-	}
-	return notifier_from_errno(rc);
+	free_cache_attributes(cpu);
+	return 0;
 }
 
 static int __init cacheinfo_sysfs_init(void)
 {
-	int cpu, rc = 0;
-
-	cpu_notifier_register_begin();
-
-	for_each_online_cpu(cpu) {
-		rc = detect_cache_attributes(cpu);
-		if (rc)
-			goto out;
-		rc = cache_add_dev(cpu);
-		if (rc) {
-			free_cache_attributes(cpu);
-			pr_err("error populating cacheinfo..cpu%d\n", cpu);
-			goto out;
-		}
-	}
-	__hotcpu_notifier(cacheinfo_cpu_callback, 0);
-
-out:
-	cpu_notifier_register_done();
-	return rc;
+	return cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "base/cacheinfo:online",
+				 cacheinfo_cpu_online, cacheinfo_cpu_pre_down);
 }
-
 device_initcall(cacheinfo_sysfs_init);
