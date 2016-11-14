@@ -34,8 +34,8 @@
 #include <linux/workqueue.h>
 
 struct srcu_struct_array {
-	unsigned long c[2];
-	unsigned long seq[2];
+	unsigned long lock_count[2];
+	unsigned long unlock_count[2];
 };
 
 struct rcu_batch {

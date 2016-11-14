@@ -269,14 +269,169 @@ void rcu_bh_qs(void)
 
 static DEFINE_PER_CPU(int, rcu_sched_qs_mask);
 
+/*
+ * Steal a bit from the bottom of ->dynticks for idle entry/exit
+ * control.  Initially this is for TLB flushing.
+ */
+#define RCU_DYNTICK_CTRL_MASK 0x1
+#define RCU_DYNTICK_CTRL_CTR  (RCU_DYNTICK_CTRL_MASK + 1)
+#ifndef rcu_eqs_special_exit
+#define rcu_eqs_special_exit() do { } while (0)
+#endif
+
 static DEFINE_PER_CPU(struct rcu_dynticks, rcu_dynticks) = {
 	.dynticks_nesting = DYNTICK_TASK_EXIT_IDLE,
-	.dynticks = ATOMIC_INIT(1),
+	.dynticks = ATOMIC_INIT(RCU_DYNTICK_CTRL_CTR),
 #ifdef CONFIG_NO_HZ_FULL_SYSIDLE
 	.dynticks_idle_nesting = DYNTICK_TASK_NEST_VALUE,
 	.dynticks_idle = ATOMIC_INIT(1),
 #endif /* #ifdef CONFIG_NO_HZ_FULL_SYSIDLE */
 };
+
+/*
+ * Record entry into an extended quiescent state.  This is only to be
+ * called when not already in an extended quiescent state.
+ */
+static void rcu_dynticks_eqs_enter(void)
+{
+	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+	int seq;
+
+	/*
+	 * CPUs seeing atomic_inc_return() must see prior RCU read-side
+	 * critical sections, and we also must force ordering with the
+	 * next idle sojourn.
+	 */
+	seq = atomic_add_return(RCU_DYNTICK_CTRL_CTR, &rdtp->dynticks);
+	/* Better be in an extended quiescent state! */
+	WARN_ON_ONCE(IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
+		     (seq & RCU_DYNTICK_CTRL_CTR));
+	/* Better not have special action (TLB flush) pending! */
+	WARN_ON_ONCE(IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
+		     (seq & RCU_DYNTICK_CTRL_MASK));
+}
+
+/*
+ * Record exit from an extended quiescent state.  This is only to be
+ * called from an extended quiescent state.
+ */
+static void rcu_dynticks_eqs_exit(void)
+{
+	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+	int seq;
+
+	/*
+	 * CPUs seeing atomic_inc_return() must see prior idle sojourns,
+	 * and we also must force ordering with the next RCU read-side
+	 * critical section.
+	 */
+	seq = atomic_add_return(RCU_DYNTICK_CTRL_CTR, &rdtp->dynticks);
+	WARN_ON_ONCE(IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
+		     !(seq & RCU_DYNTICK_CTRL_CTR));
+	if (seq & RCU_DYNTICK_CTRL_MASK) {
+		rcu_eqs_special_exit();
+		/* Prefer duplicate flushes to losing a flush. */
+		smp_mb__before_atomic(); /* NMI safety. */
+		atomic_and(~RCU_DYNTICK_CTRL_MASK, &rdtp->dynticks);
+	}
+}
+
+/*
+ * Reset the current CPU's ->dynticks counter to indicate that the
+ * newly onlined CPU is no longer in an extended quiescent state.
+ * This will either leave the counter unchanged, or increment it
+ * to the next non-quiescent value.
+ *
+ * The non-atomic test/increment sequence works because the upper bits
+ * of the ->dynticks counter are manipulated only by the corresponding CPU,
+ * or when the corresponding CPU is offline.
+ */
+static void rcu_dynticks_eqs_online(void)
+{
+	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+
+	if (atomic_read(&rdtp->dynticks) & RCU_DYNTICK_CTRL_CTR)
+		return;
+	atomic_add(RCU_DYNTICK_CTRL_CTR, &rdtp->dynticks);
+}
+
+/*
+ * Is the current CPU in an extended quiescent state?
+ *
+ * No ordering, as we are sampling CPU-local information.
+ */
+bool rcu_dynticks_curr_cpu_in_eqs(void)
+{
+	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+
+	return !(atomic_read(&rdtp->dynticks) & RCU_DYNTICK_CTRL_CTR);
+}
+
+/*
+ * Snapshot the ->dynticks counter with full ordering so as to allow
+ * stable comparison of this counter with past and future snapshots.
+ */
+int rcu_dynticks_snap(struct rcu_dynticks *rdtp)
+{
+	int snap = atomic_add_return(0, &rdtp->dynticks);
+
+	return snap & ~RCU_DYNTICK_CTRL_MASK;
+}
+
+/*
+ * Return true if the snapshot returned from rcu_dynticks_snap()
+ * indicates that RCU is in an extended quiescent state.
+ */
+static bool rcu_dynticks_in_eqs(int snap)
+{
+	return !(snap & RCU_DYNTICK_CTRL_CTR);
+}
+
+/*
+ * Return true if the CPU corresponding to the specified rcu_dynticks
+ * structure has spent some time in an extended quiescent state since
+ * rcu_dynticks_snap() returned the specified snapshot.
+ */
+static bool rcu_dynticks_in_eqs_since(struct rcu_dynticks *rdtp, int snap)
+{
+	return snap != rcu_dynticks_snap(rdtp);
+}
+
+/*
+ * Do a double-increment of the ->dynticks counter to emulate a
+ * momentary idle-CPU quiescent state.
+ */
+static void rcu_dynticks_momentary_idle(void)
+{
+	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+	int special = atomic_add_return(2 * RCU_DYNTICK_CTRL_CTR,
+					&rdtp->dynticks);
+
+	/* It is illegal to call this from idle state. */
+	WARN_ON_ONCE(!(special & RCU_DYNTICK_CTRL_CTR));
+}
+
+/*
+ * Set the special (bottom) bit of the specified CPU so that it
+ * will take special action (such as flushing its TLB) on the
+ * next exit from an extended quiescent state.  Returns true if
+ * the bit was successfully set, or false if the CPU was not in
+ * an extended quiescent state.
+ */
+bool rcu_eqs_special_set(int cpu)
+{
+	int old;
+	int new;
+	struct rcu_dynticks *rdtp = &per_cpu(rcu_dynticks, cpu);
+
+	do {
+		old = atomic_read(&rdtp->dynticks);
+		if (old & RCU_DYNTICK_CTRL_CTR)
+			return false;
+		new = old | RCU_DYNTICK_CTRL_MASK;
+	} while (atomic_cmpxchg(&rdtp->dynticks, old, new) != old);
+	return true;
+}
 
 DEFINE_PER_CPU_SHARED_ALIGNED(unsigned long, rcu_qs_ctr);
 EXPORT_PER_CPU_SYMBOL_GPL(rcu_qs_ctr);
@@ -297,7 +452,6 @@ EXPORT_PER_CPU_SYMBOL_GPL(rcu_qs_ctr);
 static void rcu_momentary_dyntick_idle(void)
 {
 	struct rcu_data *rdp;
-	struct rcu_dynticks *rdtp;
 	int resched_mask;
 	struct rcu_state *rsp;
 
@@ -324,10 +478,7 @@ static void rcu_momentary_dyntick_idle(void)
 		 * quiescent state, with no need for this CPU to do anything
 		 * further.
 		 */
-		rdtp = this_cpu_ptr(&rcu_dynticks);
-		smp_mb__before_atomic(); /* Earlier stuff before QS. */
-		atomic_add(2, &rdtp->dynticks);  /* QS. */
-		smp_mb__after_atomic(); /* Later stuff after QS. */
+		rcu_dynticks_momentary_idle();
 		break;
 	}
 }
@@ -670,7 +821,7 @@ static void rcu_eqs_enter_common(long long oldval, bool user)
 {
 	struct rcu_state *rsp;
 	struct rcu_data *rdp;
-	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+	struct rcu_dynticks __maybe_unused *rdtp = this_cpu_ptr(&rcu_dynticks);
 
 	trace_rcu_dyntick(TPS("Start"), oldval, rdtp->dynticks_nesting);
 	if (IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
@@ -689,12 +840,7 @@ static void rcu_eqs_enter_common(long long oldval, bool user)
 		do_nocb_deferred_wakeup(rdp);
 	}
 	rcu_prepare_for_idle();
-	/* CPUs seeing atomic_inc() must see prior RCU read-side crit sects */
-	smp_mb__before_atomic();  /* See above. */
-	atomic_inc(&rdtp->dynticks);
-	smp_mb__after_atomic();  /* Force ordering with next sojourn. */
-	WARN_ON_ONCE(IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
-		     atomic_read(&rdtp->dynticks) & 0x1);
+	rcu_dynticks_eqs_enter();
 	rcu_dynticks_task_enter();
 
 	/*
@@ -823,15 +969,10 @@ void rcu_irq_exit_irqson(void)
  */
 static void rcu_eqs_exit_common(long long oldval, int user)
 {
-	struct rcu_dynticks *rdtp = this_cpu_ptr(&rcu_dynticks);
+	struct rcu_dynticks __maybe_unused *rdtp = this_cpu_ptr(&rcu_dynticks);
 
 	rcu_dynticks_task_exit();
-	smp_mb__before_atomic();  /* Force ordering w/previous sojourn. */
-	atomic_inc(&rdtp->dynticks);
-	/* CPUs seeing atomic_inc() must see later RCU read-side crit sects */
-	smp_mb__after_atomic();  /* See above. */
-	WARN_ON_ONCE(IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
-		     !(atomic_read(&rdtp->dynticks) & 0x1));
+	rcu_dynticks_eqs_exit();
 	rcu_cleanup_after_idle();
 	trace_rcu_dyntick(TPS("End"), oldval, rdtp->dynticks_nesting);
 	if (IS_ENABLED(CONFIG_RCU_EQS_DEBUG) &&
@@ -977,12 +1118,8 @@ void rcu_nmi_enter(void)
 	 * to be in the outermost NMI handler that interrupted an RCU-idle
 	 * period (observation due to Andy Lutomirski).
 	 */
-	if (!(atomic_read(&rdtp->dynticks) & 0x1)) {
-		smp_mb__before_atomic();  /* Force delay from prior write. */
-		atomic_inc(&rdtp->dynticks);
-		/* atomic_inc() before later RCU read-side crit sects */
-		smp_mb__after_atomic();  /* See above. */
-		WARN_ON_ONCE(!(atomic_read(&rdtp->dynticks) & 0x1));
+	if (rcu_dynticks_curr_cpu_in_eqs()) {
+		rcu_dynticks_eqs_exit();
 		incby = 1;
 	}
 	rdtp->dynticks_nmi_nesting += incby;
@@ -1007,7 +1144,7 @@ void rcu_nmi_exit(void)
 	 * to us!)
 	 */
 	WARN_ON_ONCE(rdtp->dynticks_nmi_nesting <= 0);
-	WARN_ON_ONCE(!(atomic_read(&rdtp->dynticks) & 0x1));
+	WARN_ON_ONCE(rcu_dynticks_curr_cpu_in_eqs());
 
 	/*
 	 * If the nesting level is not 1, the CPU wasn't RCU-idle, so
@@ -1020,11 +1157,7 @@ void rcu_nmi_exit(void)
 
 	/* This NMI interrupted an RCU-idle CPU, restore RCU-idleness. */
 	rdtp->dynticks_nmi_nesting = 0;
-	/* CPUs seeing atomic_inc() must see prior RCU read-side crit sects */
-	smp_mb__before_atomic();  /* See above. */
-	atomic_inc(&rdtp->dynticks);
-	smp_mb__after_atomic();  /* Force delay to next write. */
-	WARN_ON_ONCE(atomic_read(&rdtp->dynticks) & 0x1);
+	rcu_dynticks_eqs_enter();
 }
 
 /**
@@ -1037,7 +1170,7 @@ void rcu_nmi_exit(void)
  */
 bool notrace __rcu_is_watching(void)
 {
-	return atomic_read(this_cpu_ptr(&rcu_dynticks.dynticks)) & 0x1;
+	return !rcu_dynticks_curr_cpu_in_eqs();
 }
 
 /**
@@ -1120,9 +1253,9 @@ static int rcu_is_cpu_rrupt_from_idle(void)
 static int dyntick_save_progress_counter(struct rcu_data *rdp,
 					 bool *isidle, unsigned long *maxj)
 {
-	rdp->dynticks_snap = atomic_add_return(0, &rdp->dynticks->dynticks);
+	rdp->dynticks_snap = rcu_dynticks_snap(rdp->dynticks);
 	rcu_sysidle_check_cpu(rdp, isidle, maxj);
-	if ((rdp->dynticks_snap & 0x1) == 0) {
+	if (rcu_dynticks_in_eqs(rdp->dynticks_snap)) {
 		trace_rcu_fqs(rdp->rsp->name, rdp->gpnum, rdp->cpu, TPS("dti"));
 		if (ULONG_CMP_LT(READ_ONCE(rdp->gpnum) + ULONG_MAX / 4,
 				 rdp->mynode->gpnum))
@@ -1141,12 +1274,7 @@ static int dyntick_save_progress_counter(struct rcu_data *rdp,
 static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 				    bool *isidle, unsigned long *maxj)
 {
-	unsigned int curr;
 	int *rcrmp;
-	unsigned int snap;
-
-	curr = (unsigned int)atomic_add_return(0, &rdp->dynticks->dynticks);
-	snap = (unsigned int)rdp->dynticks_snap;
 
 	/*
 	 * If the CPU passed through or entered a dynticks idle phase with
@@ -1156,7 +1284,7 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 	 * read-side critical section that started before the beginning
 	 * of the current RCU grace period.
 	 */
-	if ((curr & 0x1) == 0 || UINT_CMP_GE(curr, snap + 2)) {
+	if (rcu_dynticks_in_eqs_since(rdp->dynticks, rdp->dynticks_snap)) {
 		trace_rcu_fqs(rdp->rsp->name, rdp->gpnum, rdp->cpu, TPS("dti"));
 		rdp->dynticks_fqs++;
 		return 1;
@@ -1304,7 +1432,8 @@ static void rcu_stall_kick_kthreads(struct rcu_state *rsp)
 	if (!rcu_kick_kthreads)
 		return;
 	j = READ_ONCE(rsp->jiffies_kick_kthreads);
-	if (time_after(jiffies, j) && rsp->gp_kthread) {
+	if (time_after(jiffies, j) && rsp->gp_kthread &&
+	    (rcu_gp_in_progress(rsp) || READ_ONCE(rsp->gp_flags))) {
 		WARN_ONCE(1, "Kicking %s grace-period kthread\n", rsp->name);
 		rcu_ftrace_dump(DUMP_ALL);
 		wake_up_process(rsp->gp_kthread);
@@ -2828,8 +2957,7 @@ static void rcu_do_batch(struct rcu_state *rsp, struct rcu_data *rdp)
  * Also schedule RCU core processing.
  *
  * This function must be called from hardirq context.  It is normally
- * invoked from the scheduling-clock interrupt.  If rcu_pending returns
- * false, there is no point in invoking rcu_check_callbacks().
+ * invoked from the scheduling-clock interrupt.
  */
 void rcu_check_callbacks(int user)
 {
@@ -3121,7 +3249,9 @@ __call_rcu(struct rcu_head *head, rcu_callback_t func,
 	unsigned long flags;
 	struct rcu_data *rdp;
 
-	WARN_ON_ONCE((unsigned long)head & 0x1); /* Misaligned rcu_head! */
+	/* Misaligned rcu_head! */
+	WARN_ON_ONCE((unsigned long)head & (sizeof(void *) - 1));
+
 	if (debug_rcu_head_queue(head)) {
 		/* Probable double call_rcu(), so leak the callback. */
 		WRITE_ONCE(head->func, rcu_leak_callback);
@@ -3130,13 +3260,6 @@ __call_rcu(struct rcu_head *head, rcu_callback_t func,
 	}
 	head->func = func;
 	head->next = NULL;
-
-	/*
-	 * Opportunistically note grace-period endings and beginnings.
-	 * Note that we might see a beginning right after we see an
-	 * end, but never vice versa, since this CPU has to pass through
-	 * a quiescent state betweentimes.
-	 */
 	local_irq_save(flags);
 	rdp = this_cpu_ptr(rsp->rda);
 
@@ -3750,7 +3873,7 @@ rcu_boot_init_percpu_data(int cpu, struct rcu_state *rsp)
 	rdp->grpmask = leaf_node_cpu_bit(rdp->mynode, cpu);
 	rdp->dynticks = &per_cpu(rcu_dynticks, cpu);
 	WARN_ON_ONCE(rdp->dynticks->dynticks_nesting != DYNTICK_TASK_EXIT_IDLE);
-	WARN_ON_ONCE(atomic_read(&rdp->dynticks->dynticks) != 1);
+	WARN_ON_ONCE(rcu_dynticks_in_eqs(rcu_dynticks_snap(rdp->dynticks)));
 	rdp->cpu = cpu;
 	rdp->rsp = rsp;
 	rcu_boot_init_nocb_percpu_data(rdp);
@@ -3780,8 +3903,7 @@ rcu_init_percpu_data(int cpu, struct rcu_state *rsp)
 		init_callback_list(rdp);  /* Re-enable callbacks on this CPU. */
 	rdp->dynticks->dynticks_nesting = DYNTICK_TASK_EXIT_IDLE;
 	rcu_sysidle_init_percpu_data(rdp->dynticks);
-	atomic_set(&rdp->dynticks->dynticks,
-		   (atomic_read(&rdp->dynticks->dynticks) & ~0x1) + 1);
+	rcu_dynticks_eqs_online();
 	raw_spin_unlock_rcu_node(rnp);		/* irqs remain disabled. */
 
 	/*

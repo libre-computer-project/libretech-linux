@@ -404,6 +404,7 @@ struct rcu_data {
 	atomic_long_t exp_workdone1;	/* # done by others #1. */
 	atomic_long_t exp_workdone2;	/* # done by others #2. */
 	atomic_long_t exp_workdone3;	/* # done by others #3. */
+	int exp_dynticks_snap;		/* Double-check need for IPI. */
 
 	/* 7) Callback offloading. */
 #ifdef CONFIG_RCU_NOCB_CPU
@@ -593,6 +594,9 @@ extern struct rcu_state rcu_bh_state;
 #ifdef CONFIG_PREEMPT_RCU
 extern struct rcu_state rcu_preempt_state;
 #endif /* #ifdef CONFIG_PREEMPT_RCU */
+
+int rcu_dynticks_snap(struct rcu_dynticks *rdtp);
+bool rcu_eqs_special_set(int cpu);
 
 #ifdef CONFIG_RCU_BOOST
 DECLARE_PER_CPU(unsigned int, rcu_cpu_kthread_status);
