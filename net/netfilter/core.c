@@ -462,7 +462,7 @@ static int __net_init netfilter_net_init(struct net *net)
 						net->proc_net);
 	if (!net->nf.proc_netfilter) {
 		if (!net_eq(net, &init_net))
-			pr_err("cannot create netfilter proc entry");
+			pr_err("cannot create netfilter proc entry\n");
 
 		return -ENOMEM;
 	}

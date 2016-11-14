@@ -857,7 +857,7 @@ static void abort_endio(struct request *req, int error)
 	struct nvme_queue *nvmeq = iod->nvmeq;
 	u16 status = req->errors;
 
-	dev_warn(nvmeq->dev->ctrl.device, "Abort status: 0x%x", status);
+	dev_warn(nvmeq->dev->ctrl.device, "Abort status: 0x%x\n", status);
 	atomic_inc(&nvmeq->dev->ctrl.abort_limit);
 	blk_mq_free_request(req);
 }
