@@ -65,8 +65,7 @@ static int vvp_object_print(const struct lu_env *env, void *cookie,
 	struct inode	 *inode = obj->vob_inode;
 	struct ll_inode_info *lli;
 
-	(*p)(env, cookie, "(%s %d %d) inode: %p ",
-	     list_empty(&obj->vob_pending_list) ? "-" : "+",
+	(*p)(env, cookie, "(%d %d) inode: %p ",
 	     atomic_read(&obj->vob_transient_pages),
 	     atomic_read(&obj->vob_mmap_cnt), inode);
 	if (inode) {
@@ -133,7 +132,7 @@ static int vvp_conf_set(const struct lu_env *env, struct cl_object *obj,
 		CDEBUG(D_VFSTRACE, DFID ": losing layout lock\n",
 		       PFID(&lli->lli_fid));
 
-		ll_layout_version_set(lli, LL_LAYOUT_GEN_NONE);
+		ll_layout_version_set(lli, CL_LAYOUT_GEN_NONE);
 
 		/* Clean up page mmap for this inode.
 		 * The reason for us to do this is that if the page has
@@ -146,27 +145,8 @@ static int vvp_conf_set(const struct lu_env *env, struct cl_object *obj,
 		 */
 		unmap_mapping_range(conf->coc_inode->i_mapping,
 				    0, OBD_OBJECT_EOF, 0);
-
-		return 0;
 	}
 
-	if (conf->coc_opc != OBJECT_CONF_SET)
-		return 0;
-
-	if (conf->u.coc_md && conf->u.coc_md->lsm) {
-		CDEBUG(D_VFSTRACE, DFID ": layout version change: %u -> %u\n",
-		       PFID(&lli->lli_fid), lli->lli_layout_gen,
-		       conf->u.coc_md->lsm->lsm_layout_gen);
-
-		lli->lli_has_smd = lsm_has_objects(conf->u.coc_md->lsm);
-		ll_layout_version_set(lli, conf->u.coc_md->lsm->lsm_layout_gen);
-	} else {
-		CDEBUG(D_VFSTRACE, DFID ": layout nuked: %u.\n",
-		       PFID(&lli->lli_fid), lli->lli_layout_gen);
-
-		lli->lli_has_smd = false;
-		ll_layout_version_set(lli, LL_LAYOUT_GEN_EMPTY);
-	}
 	return 0;
 }
 
@@ -240,7 +220,6 @@ static int vvp_object_init(const struct lu_env *env, struct lu_object *obj,
 		const struct cl_object_conf *cconf;
 
 		cconf = lu2cl_conf(conf);
-		INIT_LIST_HEAD(&vob->vob_pending_list);
 		lu_object_add(obj, below);
 		result = vvp_object_init0(env, vob, cconf);
 	} else {

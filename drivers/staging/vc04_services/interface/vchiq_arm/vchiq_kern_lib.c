@@ -70,7 +70,7 @@ vchiq_blocking_bulk_transfer(VCHIQ_SERVICE_HANDLE_T handle, void *data,
 *
 ***************************************************************************/
 #define VCHIQ_INIT_RETRIES 10
-VCHIQ_STATUS_T vchiq_initialise(VCHIQ_INSTANCE_T *instanceOut)
+VCHIQ_STATUS_T vchiq_initialise(VCHIQ_INSTANCE_T *instance_out)
 {
 	VCHIQ_STATUS_T status = VCHIQ_ERROR;
 	VCHIQ_STATE_T *state;
@@ -108,7 +108,7 @@ VCHIQ_STATUS_T vchiq_initialise(VCHIQ_INSTANCE_T *instanceOut)
 	mutex_init(&instance->bulk_waiter_list_mutex);
 	INIT_LIST_HEAD(&instance->bulk_waiter_list);
 
-	*instanceOut = instance;
+	*instance_out = instance;
 
 	status = VCHIQ_SUCCESS;
 
@@ -155,9 +155,8 @@ VCHIQ_STATUS_T vchiq_shutdown(VCHIQ_INSTANCE_T instance)
 					list);
 			list_del(pos);
 			vchiq_log_info(vchiq_arm_log_level,
-					"bulk_waiter - cleaned up %x "
-					"for pid %d",
-					(unsigned int)waiter, waiter->pid);
+					"bulk_waiter - cleaned up %pK for pid %d",
+					waiter, waiter->pid);
 			kfree(waiter);
 		}
 		kfree(instance);
@@ -450,8 +449,8 @@ vchiq_blocking_bulk_transfer(VCHIQ_SERVICE_HANDLE_T handle, void *data,
 		list_add(&waiter->list, &instance->bulk_waiter_list);
 		mutex_unlock(&instance->bulk_waiter_list_mutex);
 		vchiq_log_info(vchiq_arm_log_level,
-				"saved bulk_waiter %x for pid %d",
-				(unsigned int)waiter, current->pid);
+				"saved bulk_waiter %pK for pid %d",
+				waiter, current->pid);
 	}
 
 	return status;

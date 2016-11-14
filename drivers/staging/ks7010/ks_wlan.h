@@ -14,7 +14,6 @@
 
 #define WPS
 
-#include <linux/version.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -25,13 +24,13 @@
 #include <linux/netdevice.h>	/* struct net_device_stats,  struct sk_buff     */
 #include <linux/etherdevice.h>
 #include <linux/wireless.h>
-#include <asm/atomic.h>	/* struct atmic_t                               */
+#include <linux/atomic.h>	/* struct atomic_t */
 #include <linux/timer.h>	/* struct timer_list */
 #include <linux/string.h>
 #include <linux/completion.h>	/* struct completion */
 #include <linux/workqueue.h>
 
-#include <asm/io.h>
+#include <linux/io.h>
 
 #include "ks7010_sdio.h"
 

@@ -170,6 +170,9 @@ int client_import_del_conn(struct obd_import *imp, struct obd_uuid *uuid)
 				ptlrpc_connection_put(dlmexp->exp_connection);
 				dlmexp->exp_connection = NULL;
 			}
+
+			if (dlmexp)
+				class_export_put(dlmexp);
 		}
 
 		list_del(&imp_conn->oic_item);
@@ -399,9 +402,8 @@ int client_obd_setup(struct obd_device *obddev, struct lustre_cfg *lcfg)
 	}
 
 	cli->cl_import = imp;
-	/* cli->cl_max_mds_{easize,cookiesize} updated by mdc_init_ea_size() */
+	/* cli->cl_max_mds_easize updated by mdc_init_ea_size() */
 	cli->cl_max_mds_easize = sizeof(struct lov_mds_md_v3);
-	cli->cl_max_mds_cookiesize = sizeof(struct llog_cookie);
 
 	if (LUSTRE_CFG_BUFLEN(lcfg, 3) > 0) {
 		if (!strcmp(lustre_cfg_string(lcfg, 3), "inactive")) {
@@ -424,8 +426,6 @@ int client_obd_setup(struct obd_device *obddev, struct lustre_cfg *lcfg)
 		rc = -ENOMEM;
 		goto err_import;
 	}
-
-	cli->cl_qchk_stat = CL_NOT_QUOTACHECKED;
 
 	return rc;
 

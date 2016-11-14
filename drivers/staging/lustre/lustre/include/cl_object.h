@@ -267,7 +267,7 @@ struct cl_object_conf {
 		/**
 		 * Object layout. This is consumed by lov.
 		 */
-		struct lustre_md *coc_md;
+		struct lu_buf	  coc_layout;
 		/**
 		 * Description of particular stripe location in the
 		 * cluster. This is consumed by osc.
@@ -299,6 +299,26 @@ enum {
 	OBJECT_CONF_INVALIDATE = 1,
 	/** wait for old layout to go away so that new layout can be set up. */
 	OBJECT_CONF_WAIT = 2
+};
+
+enum {
+	CL_LAYOUT_GEN_NONE	= (u32)-2,	/* layout lock was cancelled */
+	CL_LAYOUT_GEN_EMPTY	= (u32)-1,	/* for empty layout */
+};
+
+struct cl_layout {
+	/** the buffer to return the layout in lov_mds_md format. */
+	struct lu_buf	cl_buf;
+	/** size of layout in lov_mds_md format. */
+	size_t		cl_size;
+	/** Layout generation. */
+	u32		cl_layout_gen;
+	/**
+	 * True if this is a released file.
+	 * Temporarily added for released file truncate in ll_setattr_raw().
+	 * It will be removed later. -Jinshan
+	 */
+	bool		cl_is_released;
 };
 
 /**
@@ -400,6 +420,21 @@ struct cl_object_operations {
 	 */
 	int (*coo_getstripe)(const struct lu_env *env, struct cl_object *obj,
 			     struct lov_user_md __user *lum);
+	/**
+	 * Get FIEMAP mapping from the object.
+	 */
+	int (*coo_fiemap)(const struct lu_env *env, struct cl_object *obj,
+			  struct ll_fiemap_info_key *fmkey,
+			  struct fiemap *fiemap, size_t *buflen);
+	/**
+	 * Get layout and generation of the object.
+	 */
+	int (*coo_layout_get)(const struct lu_env *env, struct cl_object *obj,
+			      struct cl_layout *layout);
+	/**
+	 * Get maximum size of the object.
+	 */
+	loff_t (*coo_maxbytes)(struct cl_object *obj);
 };
 
 /**
@@ -884,26 +919,6 @@ struct cl_page_operations {
 	/** Destructor. Frees resources and slice itself. */
 	void (*cpo_fini)(const struct lu_env *env,
 			 struct cl_page_slice *slice);
-
-	/**
-	 * Checks whether the page is protected by a cl_lock. This is a
-	 * per-layer method, because certain layers have ways to check for the
-	 * lock much more efficiently than through the generic locks scan, or
-	 * implement locking mechanisms separate from cl_lock, e.g.,
-	 * LL_FILE_GROUP_LOCKED in vvp. If \a pending is true, check for locks
-	 * being canceled, or scheduled for cancellation as soon as the last
-	 * user goes away, too.
-	 *
-	 * \retval    -EBUSY: page is protected by a lock of a given mode;
-	 * \retval  -ENODATA: page is not protected by a lock;
-	 * \retval	 0: this layer cannot decide.
-	 *
-	 * \see cl_page_is_under_lock()
-	 */
-	int (*cpo_is_under_lock)(const struct lu_env *env,
-				 const struct cl_page_slice *slice,
-				 struct cl_io *io, pgoff_t *max);
-
 	/**
 	 * Optional debugging helper. Prints given page slice.
 	 *
@@ -1365,7 +1380,6 @@ struct cl_2queue {
  *     (3) sort all locks to avoid dead-locks, and acquire them
  *
  *     (4) process the chunk: call per-page methods
- *	 (cl_io_operations::cio_read_page() for read,
  *	 cl_io_operations::cio_prepare_write(),
  *	 cl_io_operations::cio_commit_write() for write)
  *
@@ -1388,6 +1402,8 @@ enum cl_io_type {
 	CIT_WRITE,
 	/** truncate, utime system calls */
 	CIT_SETATTR,
+	/** get data version */
+	CIT_DATA_VERSION,
 	/**
 	 * page fault handling
 	 */
@@ -1467,6 +1483,31 @@ struct cl_io_slice {
 
 typedef void (*cl_commit_cbt)(const struct lu_env *, struct cl_io *,
 			      struct cl_page *);
+
+struct cl_read_ahead {
+	/*
+	 * Maximum page index the readahead window will end.
+	 * This is determined DLM lock coverage, RPC and stripe boundary.
+	 * cra_end is included.
+	 */
+	pgoff_t cra_end;
+	/*
+	 * Release routine. If readahead holds resources underneath, this
+	 * function should be called to release it.
+	 */
+	void (*cra_release)(const struct lu_env *env, void *cbdata);
+	/* Callback data for cra_release routine */
+	void *cra_cbdata;
+};
+
+static inline void cl_read_ahead_release(const struct lu_env *env,
+					 struct cl_read_ahead *ra)
+{
+	if (ra->cra_release)
+		ra->cra_release(env, ra->cra_cbdata);
+	memset(ra, 0, sizeof(*ra));
+}
+
 /**
  * Per-layer io operations.
  * \see vvp_io_ops, lov_io_ops, lovsub_io_ops, osc_io_ops
@@ -1573,16 +1614,13 @@ struct cl_io_operations {
 				 struct cl_page_list *queue, int from, int to,
 				 cl_commit_cbt cb);
 	/**
-	 * Read missing page.
-	 *
-	 * Called by a top-level cl_io_operations::op[CIT_READ]::cio_start()
-	 * method, when it hits not-up-to-date page in the range. Optional.
+	 * Decide maximum read ahead extent
 	 *
 	 * \pre io->ci_type == CIT_READ
 	 */
-	int (*cio_read_page)(const struct lu_env *env,
-			     const struct cl_io_slice *slice,
-			     const struct cl_page_slice *page);
+	int (*cio_read_ahead)(const struct lu_env *env,
+			      const struct cl_io_slice *slice,
+			      pgoff_t start, struct cl_read_ahead *ra);
 	/**
 	 * Optional debugging helper. Print given io slice.
 	 */
@@ -1765,10 +1803,15 @@ struct cl_io {
 		struct cl_io_rw_common ci_rw;
 		struct cl_setattr_io {
 			struct ost_lvb   sa_attr;
+			unsigned int		 sa_attr_flags;
 			unsigned int     sa_valid;
 			int		sa_stripe_index;
-			struct lu_fid  *sa_parent_fid;
+			const struct lu_fid	*sa_parent_fid;
 		} ci_setattr;
+		struct cl_data_version_io {
+			u64 dv_data_version;
+			int dv_flags;
+		} ci_data_version;
 		struct cl_fault_io {
 			/** page index within file. */
 			pgoff_t	 ft_index;
@@ -2183,6 +2226,12 @@ int cl_object_prune(const struct lu_env *env, struct cl_object *obj);
 void cl_object_kill(const struct lu_env *env, struct cl_object *obj);
 int  cl_object_getstripe(const struct lu_env *env, struct cl_object *obj,
 			 struct lov_user_md __user *lum);
+int cl_object_fiemap(const struct lu_env *env, struct cl_object *obj,
+		     struct ll_fiemap_info_key *fmkey, struct fiemap *fiemap,
+		     size_t *buflen);
+int cl_object_layout_get(const struct lu_env *env, struct cl_object *obj,
+			 struct cl_layout *cl);
+loff_t cl_object_maxbytes(struct cl_object *obj);
 
 /**
  * Returns true, iff \a o0 and \a o1 are slices of the same object.
@@ -2302,8 +2351,6 @@ void cl_page_discard(const struct lu_env *env, struct cl_io *io,
 void cl_page_delete(const struct lu_env *env, struct cl_page *pg);
 int cl_page_is_vmlocked(const struct lu_env *env, const struct cl_page *pg);
 void cl_page_export(const struct lu_env *env, struct cl_page *pg, int uptodate);
-int cl_page_is_under_lock(const struct lu_env *env, struct cl_io *io,
-			  struct cl_page *page, pgoff_t *max_index);
 loff_t cl_offset(const struct cl_object *obj, pgoff_t idx);
 pgoff_t cl_index(const struct cl_object *obj, loff_t offset);
 size_t cl_page_size(const struct cl_object *obj);
@@ -2414,8 +2461,6 @@ int cl_io_lock_add(const struct lu_env *env, struct cl_io *io,
 		   struct cl_io_lock_link *link);
 int cl_io_lock_alloc_add(const struct lu_env *env, struct cl_io *io,
 			 struct cl_lock_descr *descr);
-int cl_io_read_page(const struct lu_env *env, struct cl_io *io,
-		    struct cl_page *page);
 int cl_io_submit_rw(const struct lu_env *env, struct cl_io *io,
 		    enum cl_req_type iot, struct cl_2queue *queue);
 int cl_io_submit_sync(const struct lu_env *env, struct cl_io *io,
@@ -2424,6 +2469,8 @@ int cl_io_submit_sync(const struct lu_env *env, struct cl_io *io,
 int cl_io_commit_async(const struct lu_env *env, struct cl_io *io,
 		       struct cl_page_list *queue, int from, int to,
 		       cl_commit_cbt cb);
+int cl_io_read_ahead(const struct lu_env *env, struct cl_io *io,
+		     pgoff_t start, struct cl_read_ahead *ra);
 int cl_io_is_going(const struct lu_env *env);
 
 /**
@@ -2593,35 +2640,13 @@ void cl_sync_io_end(const struct lu_env *env, struct cl_sync_io *anchor);
  *     - allocation and destruction of environment is amortized by caching no
  *     longer used environments instead of destroying them;
  *
- *     - there is a notion of "current" environment, attached to the kernel
- *     data structure representing current thread Top-level lustre code
- *     allocates an environment and makes it current, then calls into
- *     non-lustre code, that in turn calls lustre back. Low-level lustre
- *     code thus called can fetch environment created by the top-level code
- *     and reuse it, avoiding additional environment allocation.
- *       Right now, three interfaces can attach the cl_env to running thread:
- *       - cl_env_get
- *       - cl_env_implant
- *       - cl_env_reexit(cl_env_reenter had to be called priorly)
- *
  * \see lu_env, lu_context, lu_context_key
  * @{
  */
 
-struct cl_env_nest {
-	int   cen_refcheck;
-	void *cen_cookie;
-};
-
 struct lu_env *cl_env_get(int *refcheck);
 struct lu_env *cl_env_alloc(int *refcheck, __u32 tags);
-struct lu_env *cl_env_nested_get(struct cl_env_nest *nest);
 void cl_env_put(struct lu_env *env, int *refcheck);
-void cl_env_nested_put(struct cl_env_nest *nest, struct lu_env *env);
-void *cl_env_reenter(void);
-void cl_env_reexit(void *cookie);
-void cl_env_implant(struct lu_env *env, int *refcheck);
-void cl_env_unplant(struct lu_env *env, int *refcheck);
 unsigned int cl_env_cache_purge(unsigned int nr);
 struct lu_env *cl_env_percpu_get(void);
 void cl_env_percpu_put(struct lu_env *env);

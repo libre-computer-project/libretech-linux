@@ -63,9 +63,13 @@
 #if __BITS_PER_LONG != 64 || defined(__ARCH_WANT_STAT64)
 typedef struct stat64   lstat_t;
 #define lstat_f  lstat64
+#define fstat_f		fstat64
+#define fstatat_f	fstatat64
 #else
 typedef struct stat     lstat_t;
 #define lstat_f  lstat
+#define fstat_f		fstat
+#define fstatat_f	fstatat
 #endif
 
 #define HAVE_LOV_USER_MDS_DATA
@@ -82,7 +86,6 @@ typedef struct stat     lstat_t;
 #define FSFILT_IOC_SETVERSION	     _IOW('f', 4, long)
 #define FSFILT_IOC_GETVERSION_OLD	 _IOR('v', 1, long)
 #define FSFILT_IOC_SETVERSION_OLD	 _IOW('v', 2, long)
-#define FSFILT_IOC_FIEMAP		 _IOWR('f', 11, struct ll_user_fiemap)
 #endif
 
 /* FIEMAP flags supported by Lustre */
@@ -235,7 +238,7 @@ struct ost_id {
 /* #define LL_IOC_POLL_QUOTACHECK	161 OBD_IOC_POLL_QUOTACHECK */
 /* #define LL_IOC_QUOTACTL		162 OBD_IOC_QUOTACTL */
 #define IOC_OBD_STATFS		  _IOWR('f', 164, struct obd_statfs *)
-#define IOC_LOV_GETINFO		 _IOWR('f', 165, struct lov_user_mds_data *)
+/*	IOC_LOV_GETINFO			165 obsolete */
 #define LL_IOC_FLUSHCTX		 _IOW('f', 166, long)
 /* LL_IOC_RMTACL			167 obsolete */
 #define LL_IOC_GETOBDCOUNT	      _IOR('f', 168, long)
@@ -342,6 +345,9 @@ enum ll_lease_type {
 #define LOV_MAX_STRIPE_COUNT 2000  /* ((12 * 4096 - 256) / 24) */
 #define LOV_ALL_STRIPES       0xffff /* only valid for directories */
 #define LOV_V1_INSANE_STRIPE_COUNT 65532 /* maximum stripe count bz13933 */
+
+#define XATTR_LUSTRE_PREFIX	"lustre."
+#define XATTR_LUSTRE_LOV	"lustre.lov"
 
 #define lov_user_ost_data lov_user_ost_data_v1
 struct lov_user_ost_data_v1 {     /* per-stripe data structure */
@@ -551,22 +557,17 @@ static inline void obd_uuid2fsname(char *buf, char *uuid, int buflen)
 #define Q_FINVALIDATE  0x800104 /* deprecated as of 2.4 */
 
 /* these must be explicitly translated into linux Q_* in ll_dir_ioctl */
-#define LUSTRE_Q_QUOTAON    0x800002     /* turn quotas on */
-#define LUSTRE_Q_QUOTAOFF   0x800003     /* turn quotas off */
+#define LUSTRE_Q_QUOTAON    0x800002	/* deprecated as of 2.4 */
+#define LUSTRE_Q_QUOTAOFF   0x800003	/* deprecated as of 2.4 */
 #define LUSTRE_Q_GETINFO    0x800005     /* get information about quota files */
 #define LUSTRE_Q_SETINFO    0x800006     /* set information about quota files */
 #define LUSTRE_Q_GETQUOTA   0x800007     /* get user quota structure */
 #define LUSTRE_Q_SETQUOTA   0x800008     /* set user quota structure */
 /* lustre-specific control commands */
-#define LUSTRE_Q_INVALIDATE  0x80000b     /* invalidate quota data */
-#define LUSTRE_Q_FINVALIDATE 0x80000c     /* invalidate filter quota data */
+#define LUSTRE_Q_INVALIDATE  0x80000b	/* deprecated as of 2.4 */
+#define LUSTRE_Q_FINVALIDATE 0x80000c	/* deprecated as of 2.4 */
 
 #define UGQUOTA 2       /* set both USRQUOTA and GRPQUOTA */
-
-struct if_quotacheck {
-	char		    obd_type[16];
-	struct obd_uuid	 obd_uuid;
-};
 
 #define IDENTITY_DOWNCALL_MAGIC 0x6d6dd629
 

@@ -217,7 +217,7 @@ struct lov_object {
 
 	union lov_layout_state {
 		struct lov_layout_raid0 {
-			unsigned	       lo_nr;
+			unsigned int	       lo_nr;
 			/**
 			 * When this is true, lov_object::lo_attr contains
 			 * valid up to date attributes for a top-level
@@ -412,7 +412,6 @@ struct lov_io_sub {
 	int		  sub_refcheck;
 	int		  sub_refcheck2;
 	int		  sub_reenter;
-	void		*sub_cookie;
 };
 
 /**
