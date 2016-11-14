@@ -57,7 +57,7 @@
 #include <linux/types.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
-#include <linux/fence.h>
+#include <linux/dma-fence.h>
 
 #include <asm/mman.h>
 #include <asm/pgalloc.h>
@@ -135,6 +135,7 @@ struct dma_buf_attachment;
 #define DRM_UT_PRIME		0x08
 #define DRM_UT_ATOMIC		0x10
 #define DRM_UT_VBL		0x20
+#define DRM_UT_STATE		0x40
 
 extern __printf(6, 7)
 void drm_dev_printk(const struct device *dev, const char *level,
@@ -306,6 +307,27 @@ void drm_printk(const char *level, unsigned int category,
 #define DRM_DEBUG_PRIME_RATELIMITED(fmt, args...)			\
 	DRM_DEV_DEBUG_PRIME_RATELIMITED(NULL, fmt, ##args)
 
+/* Format strings and argument splitters to simplify printing
+ * various "complex" objects
+ */
+#define DRM_MODE_FMT    "%d:\"%s\" %d %d %d %d %d %d %d %d %d %d 0x%x 0x%x"
+#define DRM_MODE_ARG(m) \
+	(m)->base.id, (m)->name, (m)->vrefresh, (m)->clock, \
+	(m)->hdisplay, (m)->hsync_start, (m)->hsync_end, (m)->htotal, \
+	(m)->vdisplay, (m)->vsync_start, (m)->vsync_end, (m)->vtotal, \
+	(m)->type, (m)->flags
+
+#define DRM_RECT_FMT    "%dx%d%+d%+d"
+#define DRM_RECT_ARG(r) drm_rect_width(r), drm_rect_height(r), (r)->x1, (r)->y1
+
+/* for rect's in fixed-point format: */
+#define DRM_RECT_FP_FMT "%d.%06ux%d.%06u%+d.%06u%+d.%06u"
+#define DRM_RECT_FP_ARG(r) \
+		drm_rect_width(r) >> 16, ((drm_rect_width(r) & 0xffff) * 15625) >> 10, \
+		drm_rect_height(r) >> 16, ((drm_rect_height(r) & 0xffff) * 15625) >> 10, \
+		(r)->x1 >> 16, (((r)->x1 & 0xffff) * 15625) >> 10, \
+		(r)->y1 >> 16, (((r)->y1 & 0xffff) * 15625) >> 10
+
 /*@}*/
 
 /***********************************************************************/
@@ -362,7 +384,7 @@ struct drm_ioctl_desc {
 struct drm_pending_event {
 	struct completion *completion;
 	struct drm_event *event;
-	struct fence *fence;
+	struct dma_fence *fence;
 	struct list_head link;
 	struct list_head pending_link;
 	struct drm_file *file_priv;
@@ -941,8 +963,13 @@ static inline bool drm_is_primary_client(const struct drm_file *file_priv)
 extern int drm_ioctl_permit(u32 flags, struct drm_file *file_priv);
 extern long drm_ioctl(struct file *filp,
 		      unsigned int cmd, unsigned long arg);
+#ifdef CONFIG_COMPAT
 extern long drm_compat_ioctl(struct file *filp,
 			     unsigned int cmd, unsigned long arg);
+#else
+/* Let drm_compat_ioctl be assigned to .compat_ioctl unconditionally */
+#define drm_compat_ioctl NULL
+#endif
 extern bool drm_ioctl_flags(unsigned int nr, unsigned int *flags);
 
 /* File Operations (drm_fops.c) */
