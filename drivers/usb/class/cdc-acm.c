@@ -877,9 +877,6 @@ static int get_serial_info(struct acm *acm, struct serial_struct __user *info)
 {
 	struct serial_struct tmp;
 
-	if (!info)
-		return -EINVAL;
-
 	memset(&tmp, 0, sizeof(tmp));
 	tmp.flags = ASYNC_LOW_LATENCY;
 	tmp.xmit_fifo_size = acm->writesize;
@@ -969,25 +966,20 @@ static int wait_serial_change(struct acm *acm, unsigned long arg)
 	return rv;
 }
 
-static int get_serial_usage(struct acm *acm,
-			    struct serial_icounter_struct __user *count)
+static int acm_tty_get_icount(struct tty_struct *tty,
+					struct serial_icounter_struct *icount)
 {
-	struct serial_icounter_struct icount;
-	int rv = 0;
+	struct acm *acm = tty->driver_data;
 
-	memset(&icount, 0, sizeof(icount));
-	icount.dsr = acm->iocount.dsr;
-	icount.rng = acm->iocount.rng;
-	icount.dcd = acm->iocount.dcd;
-	icount.frame = acm->iocount.frame;
-	icount.overrun = acm->iocount.overrun;
-	icount.parity = acm->iocount.parity;
-	icount.brk = acm->iocount.brk;
+	icount->dsr = acm->iocount.dsr;
+	icount->rng = acm->iocount.rng;
+	icount->dcd = acm->iocount.dcd;
+	icount->frame = acm->iocount.frame;
+	icount->overrun = acm->iocount.overrun;
+	icount->parity = acm->iocount.parity;
+	icount->brk = acm->iocount.brk;
 
-	if (copy_to_user(count, &icount, sizeof(icount)) > 0)
-		rv = -EFAULT;
-
-	return rv;
+	return 0;
 }
 
 static int acm_tty_ioctl(struct tty_struct *tty,
@@ -1011,9 +1003,6 @@ static int acm_tty_ioctl(struct tty_struct *tty,
 		}
 		rv = wait_serial_change(acm, arg);
 		usb_autopm_put_interface(acm->control);
-		break;
-	case TIOCGICOUNT:
-		rv = get_serial_usage(acm, (struct serial_icounter_struct __user *) arg);
 		break;
 	}
 
@@ -1927,6 +1916,7 @@ static const struct tty_operations acm_ops = {
 	.set_termios =		acm_tty_set_termios,
 	.tiocmget =		acm_tty_tiocmget,
 	.tiocmset =		acm_tty_tiocmset,
+	.get_icount =		acm_tty_get_icount,
 };
 
 /*
