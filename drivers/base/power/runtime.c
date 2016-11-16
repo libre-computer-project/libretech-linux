@@ -241,7 +241,8 @@ static int rpm_check_suspend_allowed(struct device *dev)
 		retval = -EACCES;
 	else if (atomic_read(&dev->power.usage_count) > 0)
 		retval = -EAGAIN;
-	else if (!pm_children_suspended(dev))
+	else if (!dev->power.ignore_children &&
+			atomic_read(&dev->power.child_count))
 		retval = -EBUSY;
 
 	/* Pending resume requests take precedence over suspends. */
@@ -712,8 +713,8 @@ static int rpm_resume(struct device *dev, int rpmflags)
 
 		spin_lock(&parent->power.lock);
 		/*
-		 * We can resume if the parent's runtime PM is disabled or it
-		 * is set to ignore children.
+		 * Resume the parent if it has runtime PM enabled and not been
+		 * set to ignore its children.
 		 */
 		if (!parent->power.disable_depth
 		    && !parent->power.ignore_children) {
@@ -1027,7 +1028,17 @@ int __pm_runtime_set_status(struct device *dev, unsigned int status)
 		goto out_set;
 
 	if (status == RPM_SUSPENDED) {
-		/* It always is possible to set the status to 'suspended'. */
+		/*
+		 * It is invalid to suspend a device with an active child,
+		 * unless it has been set to ignore its children.
+		 */
+		if (!dev->power.ignore_children &&
+			atomic_read(&dev->power.child_count)) {
+			dev_err(dev, "runtime PM trying to suspend device but active child\n");
+			error = -EBUSY;
+			goto out;
+		}
+
 		if (parent) {
 			atomic_add_unless(&parent->power.child_count, -1, 0);
 			notify_parent = !parent->power.ignore_children;
