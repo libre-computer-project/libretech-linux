@@ -2330,7 +2330,7 @@ static void ext4_orphan_cleanup(struct super_block *sb,
 				struct ext4_super_block *es)
 {
 	unsigned int s_flags = sb->s_flags;
-	int nr_orphans = 0, nr_truncates = 0;
+	int ret, nr_orphans = 0, nr_truncates = 0;
 #ifdef CONFIG_QUOTA
 	int i;
 #endif
@@ -2412,7 +2412,9 @@ static void ext4_orphan_cleanup(struct super_block *sb,
 				  inode->i_ino, inode->i_size);
 			inode_lock(inode);
 			truncate_inode_pages(inode->i_mapping, inode->i_size);
-			ext4_truncate(inode);
+			ret = ext4_truncate(inode);
+			if (ret)
+				ext4_std_error(inode->i_sb, ret);
 			inode_unlock(inode);
 			nr_truncates++;
 		} else {
@@ -4535,7 +4537,8 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 				&EXT4_SB(sb)->s_freeinodes_counter));
 	BUFFER_TRACE(sbh, "marking dirty");
 	ext4_superblock_csum_set(sb);
-	lock_buffer(sbh);
+	if (sync)
+		lock_buffer(sbh);
 	if (buffer_write_io_error(sbh)) {
 		/*
 		 * Oh, dear.  A previous attempt to write the
@@ -4551,8 +4554,8 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 		set_buffer_uptodate(sbh);
 	}
 	mark_buffer_dirty(sbh);
-	unlock_buffer(sbh);
 	if (sync) {
+		unlock_buffer(sbh);
 		error = __sync_dirty_buffer(sbh,
 			test_opt(sb, BARRIER) ? WRITE_FUA : WRITE_SYNC);
 		if (error)
@@ -5351,7 +5354,7 @@ static int ext4_quota_off(struct super_block *sb, int type)
 	handle = ext4_journal_start(inode, EXT4_HT_QUOTA, 1);
 	if (IS_ERR(handle))
 		goto out;
-	inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_mtime = inode->i_ctime = current_time(inode);
 	ext4_mark_inode_dirty(handle, inode);
 	ext4_journal_stop(handle);
 
