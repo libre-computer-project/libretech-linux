@@ -544,7 +544,8 @@ static bool is_alive(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 	return true;
 }
 
-static void move_encrypted_block(struct inode *inode, block_t bidx)
+static void move_encrypted_block(struct inode *inode, block_t bidx,
+							unsigned int segno, int off)
 {
 	struct f2fs_io_info fio = {
 		.sbi = F2FS_I_SB(inode),
@@ -564,6 +565,9 @@ static void move_encrypted_block(struct inode *inode, block_t bidx)
 	page = f2fs_grab_cache_page(inode->i_mapping, bidx, false);
 	if (!page)
 		return;
+
+	if (!check_valid_map(F2FS_I_SB(inode), segno, off))
+		goto out;
 
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
 	err = get_dnode_of_data(&dn, bidx, LOOKUP_NODE);
@@ -645,13 +649,17 @@ out:
 	f2fs_put_page(page, 1);
 }
 
-static void move_data_page(struct inode *inode, block_t bidx, int gc_type)
+static void move_data_page(struct inode *inode, block_t bidx, int gc_type,
+							unsigned int segno, int off)
 {
 	struct page *page;
 
 	page = get_lock_data_page(inode, bidx, true);
 	if (IS_ERR(page))
 		return;
+
+	if (!check_valid_map(F2FS_I_SB(inode), segno, off))
+		goto out;
 
 	if (gc_type == BG_GC) {
 		if (PageWriteback(page))
@@ -673,8 +681,10 @@ static void move_data_page(struct inode *inode, block_t bidx, int gc_type)
 retry:
 		set_page_dirty(page);
 		f2fs_wait_on_page_writeback(page, DATA, true);
-		if (clear_page_dirty_for_io(page))
+		if (clear_page_dirty_for_io(page)) {
 			inode_dec_dirty_pages(inode);
+			remove_dirty_inode(inode);
+		}
 
 		set_cold_data(page);
 
@@ -794,9 +804,9 @@ next_step:
 			start_bidx = start_bidx_of_node(nofs, inode)
 								+ ofs_in_node;
 			if (f2fs_encrypted_inode(inode) && S_ISREG(inode->i_mode))
-				move_encrypted_block(inode, start_bidx);
+				move_encrypted_block(inode, start_bidx, segno, off);
 			else
-				move_data_page(inode, start_bidx, gc_type);
+				move_data_page(inode, start_bidx, gc_type, segno, off);
 
 			if (locked) {
 				up_write(&fi->dio_rwsem[WRITE]);
