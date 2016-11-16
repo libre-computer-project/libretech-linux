@@ -30,7 +30,6 @@
 #include <linux/mpage.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
-#include <linux/statfs.h>
 #include <linux/compat.h>
 #include <linux/bit_spinlock.h>
 #include <linux/xattr.h>
@@ -1864,7 +1863,7 @@ int btrfs_merge_bio_hook(struct page *page, unsigned long offset,
 
 	length = bio->bi_iter.bi_size;
 	map_length = length;
-	ret = btrfs_map_block(root->fs_info, bio_op(bio), logical,
+	ret = btrfs_map_block(root->fs_info, btrfs_op(bio), logical,
 			      &map_length, NULL, 0);
 	if (ret < 0)
 		return ret;
@@ -6277,7 +6276,7 @@ static struct inode *btrfs_new_inode(struct btrfs_trans_handle *trans,
 
 	inode_item = btrfs_item_ptr(path->nodes[0], path->slots[0],
 				  struct btrfs_inode_item);
-	memset_extent_buffer(path->nodes[0], 0, (unsigned long)inode_item,
+	memzero_extent_buffer(path->nodes[0], (unsigned long)inode_item,
 			     sizeof(*inode_item));
 	fill_inode_item(trans, path->nodes[0], inode_item, inode);
 
@@ -7049,11 +7048,11 @@ insert:
 		 * extent causing the -EEXIST.
 		 */
 		if (existing->start == em->start &&
-		    extent_map_end(existing) == extent_map_end(em) &&
+		    extent_map_end(existing) >= extent_map_end(em) &&
 		    em->block_start == existing->block_start) {
 			/*
-			 * these two extents are the same, it happens
-			 * with inlines especially
+			 * The existing extent map already encompasses the
+			 * entire extent map we tried to add.
 			 */
 			free_extent_map(em);
 			em = existing;
@@ -7933,9 +7932,7 @@ static int dio_read_error(struct inode *inode, struct bio *failed_bio,
 		return -EIO;
 	}
 
-	if ((failed_bio->bi_vcnt > 1)
-		|| (failed_bio->bi_io_vec->bv_len
-			> BTRFS_I(inode)->root->sectorsize))
+	if (failed_bio->bi_iter.bi_size > BTRFS_I(inode)->root->sectorsize)
 		read_mode = READ_SYNC | REQ_FAILFAST_DEV;
 	else
 		read_mode = READ_SYNC;
@@ -8394,7 +8391,7 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	struct bio *bio;
 	struct bio *orig_bio = dip->orig_bio;
-	struct bio_vec *bvec = orig_bio->bi_io_vec;
+	struct bio_vec *bvec;
 	u64 start_sector = orig_bio->bi_iter.bi_sector;
 	u64 file_offset = dip->logical_offset;
 	u64 submit_len = 0;
@@ -8403,10 +8400,10 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	int async_submit = 0;
 	int nr_sectors;
 	int ret;
-	int i;
+	int i, j;
 
 	map_length = orig_bio->bi_iter.bi_size;
-	ret = btrfs_map_block(root->fs_info, bio_op(orig_bio),
+	ret = btrfs_map_block(root->fs_info, btrfs_op(orig_bio),
 			      start_sector << 9, &map_length, NULL, 0);
 	if (ret)
 		return -EIO;
@@ -8433,7 +8430,7 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	btrfs_io_bio(bio)->logical = file_offset;
 	atomic_inc(&dip->pending_bios);
 
-	while (bvec <= (orig_bio->bi_io_vec + orig_bio->bi_vcnt - 1)) {
+	bio_for_each_segment_all(bvec, orig_bio, j) {
 		nr_sectors = BTRFS_BYTES_TO_BLKS(root->fs_info, bvec->bv_len);
 		i = 0;
 next_block:
@@ -8472,7 +8469,7 @@ next_block:
 			btrfs_io_bio(bio)->logical = file_offset;
 
 			map_length = orig_bio->bi_iter.bi_size;
-			ret = btrfs_map_block(root->fs_info, bio_op(orig_bio),
+			ret = btrfs_map_block(root->fs_info, btrfs_op(orig_bio),
 					      start_sector << 9,
 					      &map_length, NULL, 0);
 			if (ret) {
@@ -8487,7 +8484,6 @@ next_block:
 				i++;
 				goto next_block;
 			}
-			bvec++;
 		}
 	}
 

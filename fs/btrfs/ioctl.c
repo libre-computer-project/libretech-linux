@@ -33,7 +33,6 @@
 #include <linux/namei.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
-#include <linux/statfs.h>
 #include <linux/compat.h>
 #include <linux/bit_spinlock.h>
 #include <linux/security.h>
@@ -502,17 +501,15 @@ static noinline int create_subvol(struct inode *dir,
 		goto fail;
 	}
 
-	memset_extent_buffer(leaf, 0, 0, sizeof(struct btrfs_header));
+	memzero_extent_buffer(leaf, 0, sizeof(struct btrfs_header));
 	btrfs_set_header_bytenr(leaf, leaf->start);
 	btrfs_set_header_generation(leaf, trans->transid);
 	btrfs_set_header_backref_rev(leaf, BTRFS_MIXED_BACKREF_REV);
 	btrfs_set_header_owner(leaf, objectid);
 
-	write_extent_buffer(leaf, root->fs_info->fsid, btrfs_header_fsid(),
-			    BTRFS_FSID_SIZE);
-	write_extent_buffer(leaf, root->fs_info->chunk_tree_uuid,
-			    btrfs_header_chunk_tree_uuid(leaf),
-			    BTRFS_UUID_SIZE);
+	write_extent_buffer_fsid(leaf, root->fs_info->fsid);
+	write_extent_buffer_chunk_tree_uuid(leaf,
+			root->fs_info->chunk_tree_uuid);
 	btrfs_mark_buffer_dirty(leaf);
 
 	inode_item = &root_item->inode;
