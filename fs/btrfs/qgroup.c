@@ -131,8 +131,15 @@ struct btrfs_qgroup_list {
 	struct btrfs_qgroup *member;
 };
 
-#define ptr_to_u64(x) ((u64)(uintptr_t)x)
-#define u64_to_ptr(x) ((struct btrfs_qgroup *)(uintptr_t)x)
+static inline u64 qgroup_to_aux(struct btrfs_qgroup *qg)
+{
+	return (u64)(uintptr_t)qg;
+}
+
+static inline struct btrfs_qgroup* unode_aux_to_qgroup(struct ulist_node *n)
+{
+	return (struct btrfs_qgroup *)(uintptr_t)n->aux;
+}
 
 static int
 qgroup_rescan_init(struct btrfs_fs_info *fs_info, u64 progress_objectid,
@@ -1031,6 +1038,15 @@ static void qgroup_dirty(struct btrfs_fs_info *fs_info,
 		list_add(&qgroup->dirty, &fs_info->dirty_qgroups);
 }
 
+static void report_reserved_underflow(struct btrfs_fs_info *fs_info,
+				      struct btrfs_qgroup *qgroup,
+				      u64 num_bytes)
+{
+	btrfs_warn(fs_info,
+		"qgroup %llu reserved space underflow, have: %llu, to free: %llu",
+		qgroup->qgroupid, qgroup->reserved, num_bytes);
+	qgroup->reserved = 0;
+}
 /*
  * The easy accounting, if we are adding/removing the only ref for an extent
  * then this qgroup and all of the parent qgroups get their reference and
@@ -1058,15 +1074,19 @@ static int __qgroup_excl_accounting(struct btrfs_fs_info *fs_info,
 	WARN_ON(sign < 0 && qgroup->excl < num_bytes);
 	qgroup->excl += sign * num_bytes;
 	qgroup->excl_cmpr += sign * num_bytes;
-	if (sign > 0)
-		qgroup->reserved -= num_bytes;
+	if (sign > 0) {
+		if (WARN_ON(qgroup->reserved < num_bytes))
+			report_reserved_underflow(fs_info, qgroup, num_bytes);
+		else
+			qgroup->reserved -= num_bytes;
+	}
 
 	qgroup_dirty(fs_info, qgroup);
 
 	/* Get all of the parent groups that contain this qgroup */
 	list_for_each_entry(glist, &qgroup->groups, next_group) {
 		ret = ulist_add(tmp, glist->group->qgroupid,
-				ptr_to_u64(glist->group), GFP_ATOMIC);
+				qgroup_to_aux(glist->group), GFP_ATOMIC);
 		if (ret < 0)
 			goto out;
 	}
@@ -1074,20 +1094,25 @@ static int __qgroup_excl_accounting(struct btrfs_fs_info *fs_info,
 	/* Iterate all of the parents and adjust their reference counts */
 	ULIST_ITER_INIT(&uiter);
 	while ((unode = ulist_next(tmp, &uiter))) {
-		qgroup = u64_to_ptr(unode->aux);
+		qgroup = unode_aux_to_qgroup(unode);
 		qgroup->rfer += sign * num_bytes;
 		qgroup->rfer_cmpr += sign * num_bytes;
 		WARN_ON(sign < 0 && qgroup->excl < num_bytes);
 		qgroup->excl += sign * num_bytes;
-		if (sign > 0)
-			qgroup->reserved -= num_bytes;
+		if (sign > 0) {
+			if (WARN_ON(qgroup->reserved < num_bytes))
+				report_reserved_underflow(fs_info, qgroup,
+							  num_bytes);
+			else
+				qgroup->reserved -= num_bytes;
+		}
 		qgroup->excl_cmpr += sign * num_bytes;
 		qgroup_dirty(fs_info, qgroup);
 
 		/* Add any parents of the parents */
 		list_for_each_entry(glist, &qgroup->groups, next_group) {
 			ret = ulist_add(tmp, glist->group->qgroupid,
-					ptr_to_u64(glist->group), GFP_ATOMIC);
+					qgroup_to_aux(glist->group), GFP_ATOMIC);
 			if (ret < 0)
 				goto out;
 		}
@@ -1535,30 +1560,30 @@ static int qgroup_update_refcnt(struct btrfs_fs_info *fs_info,
 			continue;
 
 		ulist_reinit(tmp);
-		ret = ulist_add(qgroups, qg->qgroupid, ptr_to_u64(qg),
+		ret = ulist_add(qgroups, qg->qgroupid, qgroup_to_aux(qg),
 				GFP_ATOMIC);
 		if (ret < 0)
 			return ret;
-		ret = ulist_add(tmp, qg->qgroupid, ptr_to_u64(qg), GFP_ATOMIC);
+		ret = ulist_add(tmp, qg->qgroupid, qgroup_to_aux(qg), GFP_ATOMIC);
 		if (ret < 0)
 			return ret;
 		ULIST_ITER_INIT(&tmp_uiter);
 		while ((tmp_unode = ulist_next(tmp, &tmp_uiter))) {
 			struct btrfs_qgroup_list *glist;
 
-			qg = u64_to_ptr(tmp_unode->aux);
+			qg = unode_aux_to_qgroup(tmp_unode);
 			if (update_old)
 				btrfs_qgroup_update_old_refcnt(qg, seq, 1);
 			else
 				btrfs_qgroup_update_new_refcnt(qg, seq, 1);
 			list_for_each_entry(glist, &qg->groups, next_group) {
 				ret = ulist_add(qgroups, glist->group->qgroupid,
-						ptr_to_u64(glist->group),
+						qgroup_to_aux(glist->group),
 						GFP_ATOMIC);
 				if (ret < 0)
 					return ret;
 				ret = ulist_add(tmp, glist->group->qgroupid,
-						ptr_to_u64(glist->group),
+						qgroup_to_aux(glist->group),
 						GFP_ATOMIC);
 				if (ret < 0)
 					return ret;
@@ -1619,7 +1644,7 @@ static int qgroup_update_counters(struct btrfs_fs_info *fs_info,
 	while ((unode = ulist_next(qgroups, &uiter))) {
 		bool dirty = false;
 
-		qg = u64_to_ptr(unode->aux);
+		qg = unode_aux_to_qgroup(unode);
 		cur_old_count = btrfs_qgroup_get_old_refcnt(qg, seq);
 		cur_new_count = btrfs_qgroup_get_new_refcnt(qg, seq);
 
@@ -2125,7 +2150,7 @@ static int qgroup_reserve(struct btrfs_root *root, u64 num_bytes)
 		struct btrfs_qgroup *qg;
 		struct btrfs_qgroup_list *glist;
 
-		qg = u64_to_ptr(unode->aux);
+		qg = unode_aux_to_qgroup(unode);
 
 		if ((qg->lim_flags & BTRFS_QGROUP_LIMIT_MAX_RFER) &&
 		    qg->reserved + (s64)qg->rfer + num_bytes >
@@ -2157,7 +2182,7 @@ static int qgroup_reserve(struct btrfs_root *root, u64 num_bytes)
 	while ((unode = ulist_next(fs_info->qgroup_ulist, &uiter))) {
 		struct btrfs_qgroup *qg;
 
-		qg = u64_to_ptr(unode->aux);
+		qg = unode_aux_to_qgroup(unode);
 
 		qg->reserved += num_bytes;
 	}
@@ -2202,9 +2227,12 @@ void btrfs_qgroup_free_refroot(struct btrfs_fs_info *fs_info,
 		struct btrfs_qgroup *qg;
 		struct btrfs_qgroup_list *glist;
 
-		qg = u64_to_ptr(unode->aux);
+		qg = unode_aux_to_qgroup(unode);
 
-		qg->reserved -= num_bytes;
+		if (WARN_ON(qgroup->reserved < num_bytes))
+			report_reserved_underflow(fs_info, qgroup, num_bytes);
+		else
+			qgroup->reserved -= num_bytes;
 
 		list_for_each_entry(glist, &qg->groups, next_group) {
 			ret = ulist_add(fs_info->qgroup_ulist,

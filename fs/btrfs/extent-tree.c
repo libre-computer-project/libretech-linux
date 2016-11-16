@@ -1114,7 +1114,7 @@ static int convert_extent_item_v0(struct btrfs_trans_handle *trans,
 				       BTRFS_BLOCK_FLAG_FULL_BACKREF);
 		bi = (struct btrfs_tree_block_info *)(item + 1);
 		/* FIXME: get first key of the block */
-		memset_extent_buffer(leaf, 0, (unsigned long)bi, sizeof(*bi));
+		memzero_extent_buffer(leaf, (unsigned long)bi, sizeof(*bi));
 		btrfs_set_tree_block_level(leaf, bi, (int)owner);
 	} else {
 		btrfs_set_extent_flags(leaf, item, BTRFS_EXTENT_FLAG_DATA);
@@ -2036,7 +2036,7 @@ int btrfs_discard_extent(struct btrfs_root *root, u64 bytenr,
 	 */
 	btrfs_bio_counter_inc_blocked(root->fs_info);
 	/* Tell the block device(s) that the sectors can be discarded */
-	ret = btrfs_map_block(root->fs_info, REQ_OP_DISCARD,
+	ret = btrfs_map_block(root->fs_info, BTRFS_MAP_DISCARD,
 			      bytenr, &num_bytes, &bbio, 0);
 	/* Error condition is -ENOMEM */
 	if (!ret) {
@@ -2826,7 +2826,7 @@ int btrfs_should_throttle_delayed_refs(struct btrfs_trans_handle *trans,
 	smp_mb();
 	avg_runtime = fs_info->avg_delayed_ref_runtime;
 	val = num_entries * avg_runtime;
-	if (num_entries * avg_runtime >= NSEC_PER_SEC)
+	if (val >= NSEC_PER_SEC)
 		return 1;
 	if (val >= NSEC_PER_SEC / 2)
 		return 2;
@@ -6499,16 +6499,9 @@ void btrfs_wait_block_group_reservations(struct btrfs_block_group_cache *bg)
  * @num_bytes:	The number of bytes in question
  * @delalloc:   The blocks are allocated for the delalloc write
  *
- * This is called by the allocator when it reserves space. Metadata
- * reservations should be called with RESERVE_ALLOC so we do the proper
- * ENOSPC accounting.  For data we handle the reservation through clearing the
- * delalloc bits in the io_tree.  We have to do this since we could end up
- * allocating less disk space for the amount of data we have reserved in the
- * case of compression.
- *
- * If this is a reservation and the block group has become read only we cannot
- * make the reservation and return -EAGAIN, otherwise this function always
- * succeeds.
+ * This is called by the allocator when it reserves space. If this is a
+ * reservation and the block group has become read only we cannot make the
+ * reservation and return -EAGAIN, otherwise this function always succeeds.
  */
 static int btrfs_add_reserved_bytes(struct btrfs_block_group_cache *cache,
 				    u64 ram_bytes, u64 num_bytes, int delalloc)
@@ -8873,7 +8866,7 @@ static noinline int do_walk_down(struct btrfs_trans_handle *trans,
 	bytenr = btrfs_node_blockptr(path->nodes[level], path->slots[level]);
 	blocksize = root->nodesize;
 
-	next = btrfs_find_tree_block(root->fs_info, bytenr);
+	next = find_extent_buffer(root->fs_info, bytenr);
 	if (!next) {
 		next = btrfs_find_create_tree_block(root, bytenr);
 		if (IS_ERR(next))

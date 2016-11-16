@@ -4274,7 +4274,7 @@ static int __insert_orphan_inode(struct btrfs_trans_handle *trans,
 
 	leaf = path->nodes[0];
 	item = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_inode_item);
-	memset_extent_buffer(leaf, 0, (unsigned long)item, sizeof(*item));
+	memzero_extent_buffer(leaf, (unsigned long)item, sizeof(*item));
 	btrfs_set_inode_generation(leaf, item, 1);
 	btrfs_set_inode_size(leaf, item, 0);
 	btrfs_set_inode_mode(leaf, item, S_IFREG | 0600);
@@ -4352,6 +4352,45 @@ static struct reloc_control *alloc_reloc_control(struct btrfs_fs_info *fs_info)
 }
 
 /*
+ * Print the block group being relocated
+ */
+static void describe_relocation(struct btrfs_fs_info *fs_info,
+				struct btrfs_block_group_cache *block_group)
+{
+	char buf[128];		/* prefixed by a '|' that'll be dropped */
+	u64 flags = block_group->flags;
+
+	/* Shouldn't happen */
+	if (!flags) {
+		strcpy(buf, "|NONE");
+	} else {
+		char *bp = buf;
+
+#define DESCRIBE_FLAG(f, d) \
+		if (flags & BTRFS_BLOCK_GROUP_##f) { \
+			bp += snprintf(bp, buf - bp + sizeof(buf), "|%s", d); \
+			flags &= ~BTRFS_BLOCK_GROUP_##f; \
+		}
+		DESCRIBE_FLAG(DATA,     "data");
+		DESCRIBE_FLAG(SYSTEM,   "system");
+		DESCRIBE_FLAG(METADATA, "metadata");
+		DESCRIBE_FLAG(RAID0,    "raid0");
+		DESCRIBE_FLAG(RAID1,    "raid1");
+		DESCRIBE_FLAG(DUP,      "dup");
+		DESCRIBE_FLAG(RAID10,   "raid10");
+		DESCRIBE_FLAG(RAID5,    "raid5");
+		DESCRIBE_FLAG(RAID6,    "raid6");
+		if (flags)
+			snprintf(buf, buf - bp + sizeof(buf), "|0x%llx", flags);
+#undef DESCRIBE_FLAG
+	}
+
+	btrfs_info(fs_info,
+		   "relocating block group %llu flags %s",
+		   block_group->key.objectid, buf + 1);
+}
+
+/*
  * function to relocate all extents in a block group.
  */
 int btrfs_relocate_block_group(struct btrfs_root *extent_root, u64 group_start)
@@ -4407,9 +4446,7 @@ int btrfs_relocate_block_group(struct btrfs_root *extent_root, u64 group_start)
 		goto out;
 	}
 
-	btrfs_info(extent_root->fs_info,
-		   "relocating block group %llu flags %llu",
-		   rc->block_group->key.objectid, rc->block_group->flags);
+	describe_relocation(extent_root->fs_info, rc->block_group);
 
 	btrfs_wait_block_group_reservations(rc->block_group);
 	btrfs_wait_nocow_writers(rc->block_group);
