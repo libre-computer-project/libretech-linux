@@ -7933,9 +7933,7 @@ static int dio_read_error(struct inode *inode, struct bio *failed_bio,
 		return -EIO;
 	}
 
-	if ((failed_bio->bi_vcnt > 1)
-		|| (failed_bio->bi_io_vec->bv_len
-			> BTRFS_I(inode)->root->sectorsize))
+	if (failed_bio->bi_iter.bi_size > BTRFS_I(inode)->root->sectorsize)
 		read_mode = READ_SYNC | REQ_FAILFAST_DEV;
 	else
 		read_mode = READ_SYNC;
