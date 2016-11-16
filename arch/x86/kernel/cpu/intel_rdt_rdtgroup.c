@@ -191,12 +191,40 @@ static int rdtgroup_cpus_show(struct kernfs_open_file *of,
 	return ret;
 }
 
+/*
+ * This is safe against intel_rdt_sched_in() called from __switch_to()
+ * because __switch_to() is executed with interrupts disabled. A local call
+ * from rdt_update_percpu_closid() is proteced against __switch_to() because
+ * preemption is disabled.
+ */
+static void rdt_update_cpu_closid(void *v)
+{
+	this_cpu_write(cpu_closid, *(int *)v);
+	/*
+	 * We cannot unconditionally write the MSR because the current
+	 * executing task might have its own closid selected. Just reuse
+	 * the context switch code.
+	 */
+	intel_rdt_sched_in();
+}
+
+/* Update the per cpu closid and eventually the PGR_ASSOC MSR */
+static void rdt_update_percpu_closid(const struct cpumask *cpu_mask, int closid)
+{
+	int cpu = get_cpu();
+
+	if (cpumask_test_cpu(cpu, cpu_mask))
+		rdt_update_cpu_closid(&closid);
+	smp_call_function_many(cpu_mask, rdt_update_cpu_closid, &closid, 1);
+	put_cpu();
+}
+
 static ssize_t rdtgroup_cpus_write(struct kernfs_open_file *of,
 				   char *buf, size_t nbytes, loff_t off)
 {
 	cpumask_var_t tmpmask, newmask;
 	struct rdtgroup *rdtgrp, *r;
-	int ret, cpu;
+	int ret;
 
 	if (!buf)
 		return -EINVAL;
@@ -207,6 +235,7 @@ static ssize_t rdtgroup_cpus_write(struct kernfs_open_file *of,
 		free_cpumask_var(tmpmask);
 		return -ENOMEM;
 	}
+
 	rdtgrp = rdtgroup_kn_lock_live(of->kn);
 	if (!rdtgrp) {
 		ret = -ENOENT;
@@ -217,12 +246,11 @@ static ssize_t rdtgroup_cpus_write(struct kernfs_open_file *of,
 	if (ret)
 		goto unlock;
 
-	get_online_cpus();
 	/* check that user didn't specify any offline cpus */
 	cpumask_andnot(tmpmask, newmask, cpu_online_mask);
 	if (cpumask_weight(tmpmask)) {
 		ret = -EINVAL;
-		goto end;
+		goto unlock;
 	}
 
 	/* Check whether cpus are dropped from this group */
@@ -231,13 +259,12 @@ static ssize_t rdtgroup_cpus_write(struct kernfs_open_file *of,
 		/* Can't drop from default group */
 		if (rdtgrp == &rdtgroup_default) {
 			ret = -EINVAL;
-			goto end;
+			goto unlock;
 		}
 		/* Give any dropped cpus to rdtgroup_default */
 		cpumask_or(&rdtgroup_default.cpu_mask,
 			   &rdtgroup_default.cpu_mask, tmpmask);
-		for_each_cpu(cpu, tmpmask)
-			per_cpu(cpu_closid, cpu) = 0;
+		rdt_update_percpu_closid(tmpmask, rdtgroup_default.closid);
 	}
 
 	/*
@@ -251,15 +278,12 @@ static ssize_t rdtgroup_cpus_write(struct kernfs_open_file *of,
 				continue;
 			cpumask_andnot(&r->cpu_mask, &r->cpu_mask, tmpmask);
 		}
-		for_each_cpu(cpu, tmpmask)
-			per_cpu(cpu_closid, cpu) = rdtgrp->closid;
+		rdt_update_percpu_closid(tmpmask, rdtgroup_default.closid);
 	}
 
 	/* Done pushing/pulling - update this group with new mask */
 	cpumask_copy(&rdtgrp->cpu_mask, newmask);
 
-end:
-	put_online_cpus();
 unlock:
 	rdtgroup_kn_unlock(of->kn);
 	free_cpumask_var(tmpmask);
@@ -644,15 +668,28 @@ static int parse_rdtgroupfs_options(char *data)
  */
 static struct rdtgroup *kernfs_to_rdtgroup(struct kernfs_node *kn)
 {
-	if (kernfs_type(kn) == KERNFS_DIR)
-		return kn->priv;
-	else
+	if (kernfs_type(kn) == KERNFS_DIR) {
+		/*
+		 * All the resource directories use "kn->priv"
+		 * to point to the "struct rdtgroup" for the
+		 * resource. "info" and its subdirectories don't
+		 * have rdtgroup structures, so return NULL here.
+		 */
+		if (kn == kn_info || kn->parent == kn_info)
+			return NULL;
+		else
+			return kn->priv;
+	} else {
 		return kn->parent->priv;
+	}
 }
 
 struct rdtgroup *rdtgroup_kn_lock_live(struct kernfs_node *kn)
 {
 	struct rdtgroup *rdtgrp = kernfs_to_rdtgroup(kn);
+
+	if (!rdtgrp)
+		return NULL;
 
 	atomic_inc(&rdtgrp->waitcount);
 	kernfs_break_active_protection(kn);
@@ -669,6 +706,9 @@ struct rdtgroup *rdtgroup_kn_lock_live(struct kernfs_node *kn)
 void rdtgroup_kn_unlock(struct kernfs_node *kn)
 {
 	struct rdtgroup *rdtgrp = kernfs_to_rdtgroup(kn);
+
+	if (!rdtgrp)
+		return;
 
 	mutex_unlock(&rdtgroup_mutex);
 
@@ -767,18 +807,6 @@ static int reset_all_cbms(struct rdt_resource *r)
 }
 
 /*
- * MSR_IA32_PQR_ASSOC is scoped per logical CPU, so all updates
- * are always in thread context.
- */
-static void rdt_reset_pqr_assoc_closid(void *v)
-{
-	struct intel_pqr_state *state = this_cpu_ptr(&pqr_state);
-
-	state->closid = 0;
-	wrmsr(MSR_IA32_PQR_ASSOC, state->rmid, 0);
-}
-
-/*
  * Forcibly remove all of subdirectories under root.
  */
 static void rmdir_all_sub(void)
@@ -792,17 +820,22 @@ static void rmdir_all_sub(void)
 		t->closid = 0;
 	read_unlock(&tasklist_lock);
 
-	get_cpu();
-	/* Reset PQR_ASSOC MSR on this cpu. */
-	rdt_reset_pqr_assoc_closid(NULL);
-	/* Reset PQR_ASSOC MSR on the rest of cpus. */
-	smp_call_function_many(cpu_online_mask, rdt_reset_pqr_assoc_closid,
-			       NULL, 1);
-	put_cpu();
 	list_for_each_entry_safe(rdtgrp, tmp, &rdt_all_groups, rdtgroup_list) {
 		/* Remove each rdtgroup other than root */
 		if (rdtgrp == &rdtgroup_default)
 			continue;
+
+		/*
+		 * Give any CPUs back to the default group. We cannot copy
+		 * cpu_online_mask because a CPU might have executed the
+		 * offline callback already, but is still marked online.
+		 */
+		cpumask_or(&rdtgroup_default.cpu_mask,
+			   &rdtgroup_default.cpu_mask, &rdtgrp->cpu_mask);
+
+		rdt_update_percpu_closid(&rdtgrp->cpu_mask,
+					 rdtgroup_default.closid);
+
 		kernfs_remove(rdtgrp->kn);
 		list_del(&rdtgrp->rdtgroup_list);
 		kfree(rdtgrp);
@@ -913,12 +946,11 @@ static int rdtgroup_rmdir(struct kernfs_node *kn)
 {
 	struct task_struct *p, *t;
 	struct rdtgroup *rdtgrp;
-	int cpu, ret = 0;
 
 	rdtgrp = rdtgroup_kn_lock_live(kn);
 	if (!rdtgrp) {
 		rdtgroup_kn_unlock(kn);
-		return -ENOENT;
+		return -EPERM;
 	}
 
 	/* Give any tasks back to the default group */
@@ -932,8 +964,7 @@ static int rdtgroup_rmdir(struct kernfs_node *kn)
 	/* Give any CPUs back to the default group */
 	cpumask_or(&rdtgroup_default.cpu_mask,
 		   &rdtgroup_default.cpu_mask, &rdtgrp->cpu_mask);
-	for_each_cpu(cpu, &rdtgrp->cpu_mask)
-		per_cpu(cpu_closid, cpu) = 0;
+	rdt_update_percpu_closid(&rdtgrp->cpu_mask, rdtgroup_default.closid);
 
 	rdtgrp->flags = RDT_DELETED;
 	closid_free(rdtgrp->closid);
@@ -947,8 +978,7 @@ static int rdtgroup_rmdir(struct kernfs_node *kn)
 	kernfs_remove(rdtgrp->kn);
 
 	rdtgroup_kn_unlock(kn);
-
-	return ret;
+	return 0;
 }
 
 static struct kernfs_syscall_ops rdtgroup_kf_syscall_ops = {
