@@ -2529,8 +2529,11 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 			unsigned long scanned;
 
 			if (mem_cgroup_low(root, memcg)) {
-				if (!sc->may_thrash)
+				if (!sc->may_thrash) {
+					/* Prevent CPU CPU stalls. */
+					cond_resched_rcu_qs();
 					continue;
+				}
 				mem_cgroup_events(memcg, MEMCG_LOW, 1);
 			}
 
@@ -2565,6 +2568,7 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 				mem_cgroup_iter_break(root, memcg);
 				break;
 			}
+			cond_resched_rcu_qs(); /* Prevent CPU CPU stalls. */
 		} while ((memcg = mem_cgroup_iter(root, memcg, &reclaim)));
 
 		/*
