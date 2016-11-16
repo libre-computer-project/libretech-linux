@@ -7932,9 +7932,7 @@ static int dio_read_error(struct inode *inode, struct bio *failed_bio,
 		return -EIO;
 	}
 
-	if ((failed_bio->bi_vcnt > 1)
-		|| (failed_bio->bi_io_vec->bv_len
-			> BTRFS_I(inode)->root->sectorsize))
+	if (failed_bio->bi_iter.bi_size > BTRFS_I(inode)->root->sectorsize)
 		read_mode = READ_SYNC | REQ_FAILFAST_DEV;
 	else
 		read_mode = READ_SYNC;
@@ -8393,7 +8391,7 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	struct bio *bio;
 	struct bio *orig_bio = dip->orig_bio;
-	struct bio_vec *bvec = orig_bio->bi_io_vec;
+	struct bio_vec *bvec;
 	u64 start_sector = orig_bio->bi_iter.bi_sector;
 	u64 file_offset = dip->logical_offset;
 	u64 submit_len = 0;
@@ -8402,7 +8400,7 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	int async_submit = 0;
 	int nr_sectors;
 	int ret;
-	int i;
+	int i, j;
 
 	map_length = orig_bio->bi_iter.bi_size;
 	ret = btrfs_map_block(root->fs_info, btrfs_op(orig_bio),
@@ -8432,7 +8430,7 @@ static int btrfs_submit_direct_hook(struct btrfs_dio_private *dip,
 	btrfs_io_bio(bio)->logical = file_offset;
 	atomic_inc(&dip->pending_bios);
 
-	while (bvec <= (orig_bio->bi_io_vec + orig_bio->bi_vcnt - 1)) {
+	bio_for_each_segment_all(bvec, orig_bio, j) {
 		nr_sectors = BTRFS_BYTES_TO_BLKS(root->fs_info, bvec->bv_len);
 		i = 0;
 next_block:
@@ -8486,7 +8484,6 @@ next_block:
 				i++;
 				goto next_block;
 			}
-			bvec++;
 		}
 	}
 

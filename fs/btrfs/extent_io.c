@@ -2296,7 +2296,7 @@ int btrfs_check_repairable(struct inode *inode, struct bio *failed_bio,
 	 *	a) deliver good data to the caller
 	 *	b) correct the bad sectors on disk
 	 */
-	if (failed_bio->bi_vcnt > 1) {
+	if (failed_bio->bi_iter.bi_size > BTRFS_I(inode)->root->sectorsize) {
 		/*
 		 * to fulfill b), we need to know the exact failing sectors, as
 		 * we don't want to rewrite any more than the failed ones. thus,
@@ -2403,7 +2403,7 @@ static int bio_readpage_error(struct bio *failed_bio, u64 phy_offset,
 		return -EIO;
 	}
 
-	if (failed_bio->bi_vcnt > 1)
+	if (failed_bio->bi_iter.bi_size > BTRFS_I(inode)->root->sectorsize)
 		read_mode = READ_SYNC | REQ_FAILFAST_DEV;
 	else
 		read_mode = READ_SYNC;
