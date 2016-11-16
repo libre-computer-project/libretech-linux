@@ -221,7 +221,8 @@ static inline u32 stmmac_rx_dirty(struct stmmac_priv *priv)
  */
 static inline void stmmac_hw_fix_mac_speed(struct stmmac_priv *priv)
 {
-	struct phy_device *phydev = priv->phydev;
+	struct net_device *ndev = priv->dev;
+	struct phy_device *phydev = ndev->phydev;
 
 	if (likely(priv->plat->fix_mac_speed))
 		priv->plat->fix_mac_speed(priv->plat->bsp_priv, phydev->speed);
@@ -279,6 +280,7 @@ static void stmmac_eee_ctrl_timer(unsigned long arg)
  */
 bool stmmac_eee_init(struct stmmac_priv *priv)
 {
+	struct net_device *ndev = priv->dev;
 	unsigned long flags;
 	bool ret = false;
 
@@ -295,7 +297,7 @@ bool stmmac_eee_init(struct stmmac_priv *priv)
 		int tx_lpi_timer = priv->tx_lpi_timer;
 
 		/* Check if the PHY supports EEE */
-		if (phy_init_eee(priv->phydev, 1)) {
+		if (phy_init_eee(ndev->phydev, 1)) {
 			/* To manage at run-time if the EEE cannot be supported
 			 * anymore (for example because the lp caps have been
 			 * changed).
@@ -327,7 +329,7 @@ bool stmmac_eee_init(struct stmmac_priv *priv)
 						     tx_lpi_timer);
 		}
 		/* Set HW EEE according to the speed */
-		priv->hw->mac->set_eee_pls(priv->hw, priv->phydev->link);
+		priv->hw->mac->set_eee_pls(priv->hw, ndev->phydev->link);
 
 		ret = true;
 		spin_unlock_irqrestore(&priv->lock, flags);
@@ -697,7 +699,7 @@ static void stmmac_release_ptp(struct stmmac_priv *priv)
 static void stmmac_adjust_link(struct net_device *dev)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
-	struct phy_device *phydev = priv->phydev;
+	struct phy_device *phydev = dev->phydev;
 	unsigned long flags;
 	int new_state = 0;
 	unsigned int fc = priv->flow_ctrl, pause_time = priv->pause;
@@ -887,8 +889,6 @@ static int stmmac_init_phy(struct net_device *dev)
 	pr_debug("stmmac_init_phy:  %s: attached to PHY (UID 0x%x)"
 		 " Link = %d\n", dev->name, phydev->phy_id, phydev->link);
 
-	priv->phydev = phydev;
-
 	return 0;
 }
 
@@ -987,9 +987,9 @@ static int stmmac_init_rx_buffers(struct stmmac_priv *priv, struct dma_desc *p,
 	}
 
 	if (priv->synopsys_id >= DWMAC_CORE_4_00)
-		p->des0 = priv->rx_skbuff_dma[i];
+		p->des0 = cpu_to_le32(priv->rx_skbuff_dma[i]);
 	else
-		p->des2 = priv->rx_skbuff_dma[i];
+		p->des2 = cpu_to_le32(priv->rx_skbuff_dma[i]);
 
 	if ((priv->hw->mode->init_desc3) &&
 	    (priv->dma_buf_sz == BUF_SIZE_16KiB))
@@ -1816,8 +1816,8 @@ static int stmmac_open(struct net_device *dev)
 
 	stmmac_init_tx_coalesce(priv);
 
-	if (priv->phydev)
-		phy_start(priv->phydev);
+	if (dev->phydev)
+		phy_start(dev->phydev);
 
 	/* Request the IRQ lines */
 	ret = request_irq(dev->irq, stmmac_interrupt,
@@ -1864,8 +1864,8 @@ wolirq_error:
 init_error:
 	free_dma_desc_resources(priv);
 dma_desc_error:
-	if (priv->phydev)
-		phy_disconnect(priv->phydev);
+	if (dev->phydev)
+		phy_disconnect(dev->phydev);
 
 	return ret;
 }
@@ -1884,10 +1884,9 @@ static int stmmac_release(struct net_device *dev)
 		del_timer_sync(&priv->eee_ctrl_timer);
 
 	/* Stop and disconnect the PHY */
-	if (priv->phydev) {
-		phy_stop(priv->phydev);
-		phy_disconnect(priv->phydev);
-		priv->phydev = NULL;
+	if (dev->phydev) {
+		phy_stop(dev->phydev);
+		phy_disconnect(dev->phydev);
 	}
 
 	netif_stop_queue(dev);
@@ -1947,7 +1946,7 @@ static void stmmac_tso_allocator(struct stmmac_priv *priv, unsigned int des,
 		priv->cur_tx = STMMAC_GET_ENTRY(priv->cur_tx, DMA_TX_SIZE);
 		desc = priv->dma_tx + priv->cur_tx;
 
-		desc->des0 = des + (total_len - tmp_len);
+		desc->des0 = cpu_to_le32(des + (total_len - tmp_len));
 		buff_size = tmp_len >= TSO_MAX_BUFF_SIZE ?
 			    TSO_MAX_BUFF_SIZE : tmp_len;
 
@@ -2049,11 +2048,11 @@ static netdev_tx_t stmmac_tso_xmit(struct sk_buff *skb, struct net_device *dev)
 	priv->tx_skbuff_dma[first_entry].len = skb_headlen(skb);
 	priv->tx_skbuff[first_entry] = skb;
 
-	first->des0 = des;
+	first->des0 = cpu_to_le32(des);
 
 	/* Fill start of payload in buff2 of first descriptor */
 	if (pay_len)
-		first->des1 =  des + proto_hdr_len;
+		first->des1 = cpu_to_le32(des + proto_hdr_len);
 
 	/* If needed take extra descriptors to fill the remaining payload */
 	tmp_pay_len = pay_len - TSO_MAX_BUFF_SIZE;
@@ -2242,13 +2241,11 @@ static netdev_tx_t stmmac_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		priv->tx_skbuff[entry] = NULL;
 
-		if (unlikely(priv->synopsys_id >= DWMAC_CORE_4_00)) {
-			desc->des0 = des;
-			priv->tx_skbuff_dma[entry].buf = desc->des0;
-		} else {
-			desc->des2 = des;
-			priv->tx_skbuff_dma[entry].buf = desc->des2;
-		}
+		priv->tx_skbuff_dma[entry].buf = des;
+		if (unlikely(priv->synopsys_id >= DWMAC_CORE_4_00))
+			desc->des0 = cpu_to_le32(des);
+		else
+			desc->des2 = cpu_to_le32(des);
 
 		priv->tx_skbuff_dma[entry].map_as_page = true;
 		priv->tx_skbuff_dma[entry].len = len;
@@ -2319,13 +2316,11 @@ static netdev_tx_t stmmac_xmit(struct sk_buff *skb, struct net_device *dev)
 		if (dma_mapping_error(priv->device, des))
 			goto dma_map_err;
 
-		if (unlikely(priv->synopsys_id >= DWMAC_CORE_4_00)) {
-			first->des0 = des;
-			priv->tx_skbuff_dma[first_entry].buf = first->des0;
-		} else {
-			first->des2 = des;
-			priv->tx_skbuff_dma[first_entry].buf = first->des2;
-		}
+		priv->tx_skbuff_dma[first_entry].buf = des;
+		if (unlikely(priv->synopsys_id >= DWMAC_CORE_4_00))
+			first->des0 = cpu_to_le32(des);
+		else
+			first->des2 = cpu_to_le32(des);
 
 		priv->tx_skbuff_dma[first_entry].len = nopaged_len;
 		priv->tx_skbuff_dma[first_entry].last_segment = last_segment;
@@ -2439,10 +2434,10 @@ static inline void stmmac_rx_refill(struct stmmac_priv *priv)
 			}
 
 			if (unlikely(priv->synopsys_id >= DWMAC_CORE_4_00)) {
-				p->des0 = priv->rx_skbuff_dma[entry];
+				p->des0 = cpu_to_le32(priv->rx_skbuff_dma[entry]);
 				p->des1 = 0;
 			} else {
-				p->des2 = priv->rx_skbuff_dma[entry];
+				p->des2 = cpu_to_le32(priv->rx_skbuff_dma[entry]);
 			}
 			if (priv->hw->mode->refill_desc3)
 				priv->hw->mode->refill_desc3(priv, p);
@@ -2546,9 +2541,9 @@ static int stmmac_rx(struct stmmac_priv *priv, int limit)
 			unsigned int des;
 
 			if (unlikely(priv->synopsys_id >= DWMAC_CORE_4_00))
-				des = p->des0;
+				des = le32_to_cpu(p->des0);
 			else
-				des = p->des2;
+				des = le32_to_cpu(p->des2);
 
 			frame_len = priv->hw->desc->get_rx_frame_len(p, coe);
 
@@ -2728,25 +2723,9 @@ static void stmmac_set_rx_mode(struct net_device *dev)
  */
 static int stmmac_change_mtu(struct net_device *dev, int new_mtu)
 {
-	struct stmmac_priv *priv = netdev_priv(dev);
-	int max_mtu;
-
 	if (netif_running(dev)) {
 		pr_err("%s: must be stopped to change its MTU\n", dev->name);
 		return -EBUSY;
-	}
-
-	if ((priv->plat->enh_desc) || (priv->synopsys_id >= DWMAC_CORE_4_00))
-		max_mtu = JUMBO_LEN;
-	else
-		max_mtu = SKB_MAX_HEAD(NET_SKB_PAD + NET_IP_ALIGN);
-
-	if (priv->plat->maxmtu < max_mtu)
-		max_mtu = priv->plat->maxmtu;
-
-	if ((new_mtu < 46) || (new_mtu > max_mtu)) {
-		pr_err("%s: invalid MTU, max MTU is: %d\n", dev->name, max_mtu);
-		return -EINVAL;
 	}
 
 	dev->mtu = new_mtu;
@@ -2882,7 +2861,6 @@ static void stmmac_poll_controller(struct net_device *dev)
  */
 static int stmmac_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
-	struct stmmac_priv *priv = netdev_priv(dev);
 	int ret = -EOPNOTSUPP;
 
 	if (!netif_running(dev))
@@ -2892,9 +2870,9 @@ static int stmmac_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	case SIOCGMIIPHY:
 	case SIOCGMIIREG:
 	case SIOCSMIIREG:
-		if (!priv->phydev)
+		if (!dev->phydev)
 			return -EINVAL;
-		ret = phy_mii_ioctl(priv->phydev, rq, cmd);
+		ret = phy_mii_ioctl(dev->phydev, rq, cmd);
 		break;
 	case SIOCSHWTSTAMP:
 		ret = stmmac_hwtstamp_ioctl(dev, rq);
@@ -2922,14 +2900,17 @@ static void sysfs_display_ring(void *head, int size, int extend_desc,
 			x = *(u64 *) ep;
 			seq_printf(seq, "%d [0x%x]: 0x%x 0x%x 0x%x 0x%x\n",
 				   i, (unsigned int)virt_to_phys(ep),
-				   ep->basic.des0, ep->basic.des1,
-				   ep->basic.des2, ep->basic.des3);
+				   le32_to_cpu(ep->basic.des0),
+				   le32_to_cpu(ep->basic.des1),
+				   le32_to_cpu(ep->basic.des2),
+				   le32_to_cpu(ep->basic.des3));
 			ep++;
 		} else {
 			x = *(u64 *) p;
 			seq_printf(seq, "%d [0x%x]: 0x%x 0x%x 0x%x 0x%x\n",
 				   i, (unsigned int)virt_to_phys(ep),
-				   p->des0, p->des1, p->des2, p->des3);
+				   le32_to_cpu(p->des0), le32_to_cpu(p->des1),
+				   le32_to_cpu(p->des2), le32_to_cpu(p->des3));
 			p++;
 		}
 		seq_printf(seq, "\n");
@@ -3331,6 +3312,15 @@ int stmmac_dvr_probe(struct device *device,
 #endif
 	priv->msg_enable = netif_msg_init(debug, default_msg_level);
 
+	/* MTU range: 46 - hw-specific max */
+	ndev->min_mtu = ETH_ZLEN - ETH_HLEN;
+	if ((priv->plat->enh_desc) || (priv->synopsys_id >= DWMAC_CORE_4_00))
+		ndev->max_mtu = JUMBO_LEN;
+	else
+		ndev->max_mtu = SKB_MAX_HEAD(NET_SKB_PAD + NET_IP_ALIGN);
+	if (priv->plat->maxmtu < ndev->max_mtu)
+		ndev->max_mtu = priv->plat->maxmtu;
+
 	if (flow_ctrl)
 		priv->flow_ctrl = FLOW_AUTO;	/* RX/TX pause on */
 
@@ -3447,8 +3437,8 @@ int stmmac_suspend(struct device *dev)
 	if (!ndev || !netif_running(ndev))
 		return 0;
 
-	if (priv->phydev)
-		phy_stop(priv->phydev);
+	if (ndev->phydev)
+		phy_stop(ndev->phydev);
 
 	spin_lock_irqsave(&priv->lock, flags);
 
@@ -3542,8 +3532,8 @@ int stmmac_resume(struct device *dev)
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 
-	if (priv->phydev)
-		phy_start(priv->phydev);
+	if (ndev->phydev)
+		phy_start(ndev->phydev);
 
 	return 0;
 }

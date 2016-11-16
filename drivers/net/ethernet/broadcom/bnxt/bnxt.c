@@ -4954,7 +4954,6 @@ static void bnxt_init_napi(struct bnxt *bp)
 			bnapi = bp->bnapi[cp_nr_rings];
 			netif_napi_add(bp->dev, &bnapi->napi,
 				       bnxt_poll_nitroa0, 64);
-			napi_hash_add(&bnapi->napi);
 		}
 	} else {
 		bnapi = bp->bnapi[0];
@@ -6290,9 +6289,6 @@ static int bnxt_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct bnxt *bp = netdev_priv(dev);
 
-	if (new_mtu < 60 || new_mtu > 9500)
-		return -EINVAL;
-
 	if (netif_running(dev))
 		bnxt_close_nic(bp, false, false);
 
@@ -6870,6 +6866,10 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 			    NETIF_F_HW_VLAN_STAG_RX | NETIF_F_HW_VLAN_STAG_TX;
 	dev->features |= dev->hw_features | NETIF_F_HIGHDMA;
 	dev->priv_flags |= IFF_UNICAST_FLT;
+
+	/* MTU range: 60 - 9500 */
+	dev->min_mtu = ETH_ZLEN;
+	dev->max_mtu = 9500;
 
 #ifdef CONFIG_BNXT_SRIOV
 	init_waitqueue_head(&bp->sriov_cfg_wait);
