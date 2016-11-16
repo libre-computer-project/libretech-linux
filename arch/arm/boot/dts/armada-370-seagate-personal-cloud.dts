@@ -26,8 +26,8 @@
 	model = "Seagate Personal Cloud (Cumulus, SRN21C)";
 	compatible = "seagate,cumulus", "marvell,armada370", "marvell,armada-370-xp";
 
-	soc {
-		internal-regs {
+	soc@f1000000 {
+		internal-regs@f1000000 {
 			sata@a0000 {
 				status = "okay";
 				nr-ports = <1>;

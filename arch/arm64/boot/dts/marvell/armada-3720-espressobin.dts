@@ -1,9 +1,8 @@
 /*
- * Device Tree file for Marvell Armada XP Matrix board
+ * Device Tree file for Globalscale Marvell ESPRESSOBin Board
+ * Copyright (C) 2016 Marvell
  *
- * Copyright (C) 2013 Marvell
- *
- * Lior Amsalem <alior@marvell.com>
+ * Romain Perier <romain.perier@free-electrons.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -45,11 +44,12 @@
  */
 
 /dts-v1/;
-#include "armada-xp-mv78460.dtsi"
+
+#include "armada-372x.dtsi"
 
 / {
-	model = "Marvell Armada XP Matrix Board";
-	compatible = "marvell,axp-matrix", "marvell,armadaxp-mv78460", "marvell,armadaxp", "marvell,armada-370-xp";
+	model = "Globalscale Marvell ESPRESSOBin Board";
+	compatible = "globalscale,espressobin", "marvell,armada3720", "marvell,armada3710";
 
 	chosen {
 		stdout-path = "serial0:115200n8";
@@ -57,60 +57,26 @@
 
 	memory@0 {
 		device_type = "memory";
-		/*
-		 * This board has 4 GB of RAM, but the last 256 MB of
-		 * RAM are not usable due to the overlap with the MBus
-		 * Window address range
-		 */
-		reg = <0 0x00000000 0 0xf0000000>;
-	};
-
-	soc@f1000000 {
-		ranges = <MBUS_ID(0xf0, 0x01) 0 0 0xf1000000 0x100000
-			  MBUS_ID(0x01, 0x1d) 0 0 0xfff00000 0x100000
-			  MBUS_ID(0x09, 0x09) 0 0 0xf1100000 0x10000
-			  MBUS_ID(0x09, 0x05) 0 0 0xf1110000 0x10000>;
-
-		internal-regs@f1000000 {
-			serial@12000 {
-				status = "okay";
-			};
-			serial@12100 {
-				status = "okay";
-			};
-			serial@12200 {
-				status = "okay";
-			};
-			serial@12300 {
-				status = "okay";
-			};
-
-			sata@a0000 {
-				nr-ports = <2>;
-				status = "okay";
-			};
-
-			ethernet@30000 {
-				status = "okay";
-				phy-mode = "sgmii";
-				fixed-link {
-					speed = <1000>;
-					full-duplex;
-				};
-			};
-
-			usb@50000 {
-				status = "okay";
-			};
-		};
+		reg = <0x00000000 0x00000000 0x00000000 0x20000000>;
 	};
 };
 
-&pciec {
+/* J9 */
+&pcie0 {
 	status = "okay";
+};
 
-	pcie@1,0 {
-		/* Port 0, Lane 0 */
-		status = "okay";
-	};
+/* J6 */
+&sata {
+	status = "okay";
+};
+
+/* Exported on the micro USB connector J5 through an FTDI */
+&uart0 {
+	status = "okay";
+};
+
+/* J7 */
+&usb3 {
+	status = "okay";
 };
