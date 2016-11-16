@@ -40,42 +40,28 @@
 
 /dts-v1/;
 
-#include "rk3036.dtsi"
+#include "rk1108.dtsi"
 
 / {
-	model = "Rockchip RK3036 Evaluation board";
-	compatible = "rockchip,rk3036-evb", "rockchip,rk3036";
+	model = "Rockchip RK1108 Evaluation board";
+	compatible = "rockchip,rk1108-evb", "rockchip,rk1108";
 
 	memory@60000000 {
 		device_type = "memory";
-		reg = <0x60000000 0x40000000>;
+		reg = <0x60000000 0x08000000>;
+	};
+
+	chosen {
+		stdout-path = "serial2:1500000n8";
 	};
 };
 
-&emac {
-	pinctrl-names = "default";
-	pinctrl-0 = <&emac_xfer>, <&emac_mdio>;
-	phy = <&phy0>;
-	phy-reset-gpios = <&gpio2 22 GPIO_ACTIVE_LOW>; /* PHY_RST */
-	phy-reset-duration = <10>; /* millisecond */
-
+&uart0 {
 	status = "okay";
-
-	phy0: ethernet-phy@0 {
-		reg = <0>;
-	};
 };
 
-&i2c1 {
+&uart1 {
 	status = "okay";
-
-	hym8563: hym8563@51 {
-		compatible = "haoyu,hym8563";
-		reg = <0x51>;
-		#clock-cells = <0>;
-		clock-frequency = <32768>;
-		clock-output-names = "xin32k";
-	};
 };
 
 &uart2 {
