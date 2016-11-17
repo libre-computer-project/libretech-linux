@@ -318,6 +318,11 @@ static irqreturn_t cppi41_irq(int irq, void *data)
 		while (val) {
 			u32 desc, len;
 
+			status = pm_runtime_get(cdd->ddev.dev);
+			if (status < 0)
+				dev_err(cdd->ddev.dev, "%s pm runtime get: %i\n",
+					__func__, status);
+
 			q_num = __fls(val);
 			val &= ~(1 << q_num);
 			q_num += 32 * i;
@@ -338,7 +343,6 @@ static irqreturn_t cppi41_irq(int irq, void *data)
 			dma_cookie_complete(&c->txd);
 			dmaengine_desc_get_callback_invoke(&c->txd, NULL);
 
-			/* Paired with cppi41_dma_issue_pending */
 			pm_runtime_mark_last_busy(cdd->ddev.dev);
 			pm_runtime_put_autosuspend(cdd->ddev.dev);
 		}
@@ -362,8 +366,11 @@ static int cppi41_dma_alloc_chan_resources(struct dma_chan *chan)
 	int error;
 
 	error = pm_runtime_get_sync(cdd->ddev.dev);
-	if (error < 0)
+	if (error < 0) {
+		pm_runtime_put_noidle(cdd->ddev.dev);
+
 		return error;
+	}
 
 	dma_cookie_init(chan);
 	dma_async_tx_descriptor_init(&c->txd, chan);
@@ -385,8 +392,11 @@ static void cppi41_dma_free_chan_resources(struct dma_chan *chan)
 	int error;
 
 	error = pm_runtime_get_sync(cdd->ddev.dev);
-	if (error < 0)
+	if (error < 0) {
+		pm_runtime_put_noidle(cdd->ddev.dev);
+
 		return;
+	}
 
 	WARN_ON(!list_empty(&cdd->pending));
 
@@ -460,9 +470,9 @@ static void cppi41_dma_issue_pending(struct dma_chan *chan)
 	struct cppi41_dd *cdd = c->cdd;
 	int error;
 
-	/* PM runtime paired with dmaengine_desc_get_callback_invoke */
 	error = pm_runtime_get(cdd->ddev.dev);
 	if ((error != -EINPROGRESS) && error < 0) {
+		pm_runtime_put_noidle(cdd->ddev.dev);
 		dev_err(cdd->ddev.dev, "Failed to pm_runtime_get: %i\n",
 			error);
 
@@ -473,6 +483,9 @@ static void cppi41_dma_issue_pending(struct dma_chan *chan)
 		push_desc_queue(c);
 	else
 		pending_desc(c);
+
+	pm_runtime_mark_last_busy(cdd->ddev.dev);
+	pm_runtime_put_autosuspend(cdd->ddev.dev);
 }
 
 static u32 get_host_pd0(u32 length)
@@ -1072,7 +1085,12 @@ err_get_sync:
 static int cppi41_dma_remove(struct platform_device *pdev)
 {
 	struct cppi41_dd *cdd = platform_get_drvdata(pdev);
+	int error;
 
+	error = pm_runtime_get_sync(&pdev->dev);
+	if (error < 0)
+		dev_err(&pdev->dev, "%s could not pm_runtime_get: %i\n",
+			__func__, error);
 	of_dma_controller_free(pdev->dev.of_node);
 	dma_async_device_unregister(&cdd->ddev);
 
