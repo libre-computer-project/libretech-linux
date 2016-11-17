@@ -77,6 +77,7 @@ struct mlx5_wqe_eth_pad {
 
 enum raw_qp_set_mask_map {
 	MLX5_RAW_QP_MOD_SET_RQ_Q_CTR_ID		= 1UL << 0,
+	MLX5_RAW_QP_RATE_LIMIT			= 1UL << 1,
 };
 
 struct mlx5_modify_raw_qp_param {
@@ -84,6 +85,7 @@ struct mlx5_modify_raw_qp_param {
 
 	u32 set_mask; /* raw_qp_set_mask_map */
 	u8 rq_q_ctr_id;
+	u32 rate_limit;
 };
 
 static void get_cqs(enum ib_qp_type qp_type,
@@ -2442,8 +2444,14 @@ out:
 }
 
 static int modify_raw_packet_qp_sq(struct mlx5_core_dev *dev,
-				   struct mlx5_ib_sq *sq, int new_state)
+				   struct mlx5_ib_sq *sq,
+				   int new_state,
+				   const struct mlx5_modify_raw_qp_param *raw_qp_param)
 {
+	struct mlx5_ib_qp *ibqp = sq->base.container_mibqp;
+	u32 old_rate = ibqp->rate_limit;
+	u32 new_rate = old_rate;
+	u16 rl_index = 0;
 	void *in;
 	void *sqc;
 	int inlen;
@@ -2459,10 +2467,42 @@ static int modify_raw_packet_qp_sq(struct mlx5_core_dev *dev,
 	sqc = MLX5_ADDR_OF(modify_sq_in, in, ctx);
 	MLX5_SET(sqc, sqc, state, new_state);
 
-	err = mlx5_core_modify_sq(dev, sq->base.mqp.qpn, in, inlen);
-	if (err)
-		goto out;
+	if (raw_qp_param->set_mask & MLX5_RAW_QP_RATE_LIMIT)
+		new_rate = raw_qp_param->rate_limit;
 
+	if (old_rate != new_rate) {
+		if (new_rate) {
+			err = mlx5_rl_add_rate(dev, new_rate, &rl_index);
+			if (err) {
+				pr_err("Failed configuring rate %u: %d\n",
+				       new_rate, err);
+				goto out;
+			}
+		}
+
+		MLX5_SET64(modify_sq_in, in, modify_bitmask, 1);
+		MLX5_SET(sqc, sqc, packet_pacing_rate_limit_index, rl_index);
+	}
+
+	err = mlx5_core_modify_sq(dev, sq->base.mqp.qpn, in, inlen);
+	if (err) {
+		/* Remove new rate from table if failed */
+		if (new_rate &&
+		    old_rate != new_rate)
+			mlx5_rl_remove_rate(dev, new_rate);
+		goto out;
+	}
+
+	if ((new_state == MLX5_SQC_STATE_ERR) ||
+	    (new_state == MLX5_SQC_STATE_RST))
+		new_rate = 0;
+
+	/* Only remove the old rate after new rate was set */
+	if (old_rate &&
+	    old_rate != new_rate)
+		mlx5_rl_remove_rate(dev, old_rate);
+
+	ibqp->rate_limit = new_rate;
 	sq->state = new_state;
 
 out:
@@ -2477,6 +2517,8 @@ static int modify_raw_packet_qp(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 	struct mlx5_ib_raw_packet_qp *raw_packet_qp = &qp->raw_packet_qp;
 	struct mlx5_ib_rq *rq = &raw_packet_qp->rq;
 	struct mlx5_ib_sq *sq = &raw_packet_qp->sq;
+	int modify_rq = !!qp->rq.wqe_cnt;
+	int modify_sq = !!qp->sq.wqe_cnt;
 	int rq_state;
 	int sq_state;
 	int err;
@@ -2494,10 +2536,18 @@ static int modify_raw_packet_qp(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 		rq_state = MLX5_RQC_STATE_RST;
 		sq_state = MLX5_SQC_STATE_RST;
 		break;
-	case MLX5_CMD_OP_INIT2INIT_QP:
-	case MLX5_CMD_OP_INIT2RTR_QP:
 	case MLX5_CMD_OP_RTR2RTS_QP:
 	case MLX5_CMD_OP_RTS2RTS_QP:
+		if (raw_qp_param->set_mask ==
+		    MLX5_RAW_QP_RATE_LIMIT) {
+			modify_rq = 0;
+			sq_state = sq->state;
+		} else {
+			return raw_qp_param->set_mask ? -EINVAL : 0;
+		}
+		break;
+	case MLX5_CMD_OP_INIT2INIT_QP:
+	case MLX5_CMD_OP_INIT2RTR_QP:
 		if (raw_qp_param->set_mask)
 			return -EINVAL;
 		else
@@ -2507,13 +2557,13 @@ static int modify_raw_packet_qp(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 		return -EINVAL;
 	}
 
-	if (qp->rq.wqe_cnt) {
-		err = modify_raw_packet_qp_rq(dev, rq, rq_state, raw_qp_param);
+	if (modify_rq) {
+		err =  modify_raw_packet_qp_rq(dev, rq, rq_state, raw_qp_param);
 		if (err)
 			return err;
 	}
 
-	if (qp->sq.wqe_cnt) {
+	if (modify_sq) {
 		if (tx_affinity) {
 			err = modify_raw_packet_tx_affinity(dev->mdev, sq,
 							    tx_affinity);
@@ -2521,7 +2571,7 @@ static int modify_raw_packet_qp(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 				return err;
 		}
 
-		return modify_raw_packet_qp_sq(dev->mdev, sq, sq_state);
+		return modify_raw_packet_qp_sq(dev->mdev, sq, sq_state, raw_qp_param);
 	}
 
 	return 0;
@@ -2775,6 +2825,11 @@ static int __mlx5_ib_modify_qp(struct ib_qp *ibqp,
 		if (cur_state == IB_QPS_RESET && new_state == IB_QPS_INIT) {
 			raw_qp_param.rq_q_ctr_id = mibport->q_cnt_id;
 			raw_qp_param.set_mask |= MLX5_RAW_QP_MOD_SET_RQ_Q_CTR_ID;
+		}
+
+		if (attr_mask & IB_QP_RATE_LIMIT) {
+			raw_qp_param.rate_limit = attr->rate_limit;
+			raw_qp_param.set_mask |= MLX5_RAW_QP_RATE_LIMIT;
 		}
 		err = modify_raw_packet_qp(dev, qp, &raw_qp_param, tx_affinity);
 	} else {

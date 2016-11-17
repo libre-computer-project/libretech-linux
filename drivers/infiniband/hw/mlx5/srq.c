@@ -101,7 +101,7 @@ static int create_srq_user(struct ib_pd *pd, struct mlx5_ib_srq *srq,
 				 udata->inlen - sizeof(ucmd)))
 		return -EINVAL;
 
-	if (in->type == IB_SRQT_XRC) {
+	if (in->type != IB_SRQT_BASIC) {
 		err = get_srq_user_index(to_mucontext(pd->uobject->context),
 					 &ucmd, udata->inlen, &uidx);
 		if (err)
@@ -145,7 +145,7 @@ static int create_srq_user(struct ib_pd *pd, struct mlx5_ib_srq *srq,
 	in->log_page_size = page_shift - MLX5_ADAPTER_PAGE_SHIFT;
 	in->page_offset = offset;
 	if (MLX5_CAP_GEN(dev->mdev, cqe_version) == MLX5_CQE_VERSION_V1 &&
-	    in->type == IB_SRQT_XRC)
+	    in->type != IB_SRQT_BASIC)
 		in->user_index = uidx;
 
 	return 0;
@@ -203,8 +203,6 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
 
 	srq->wrid = kmalloc(srq->msrq.max * sizeof(u64), GFP_KERNEL);
 	if (!srq->wrid) {
-		mlx5_ib_dbg(dev, "kmalloc failed %lu\n",
-			    (unsigned long)(srq->msrq.max * sizeof(u64)));
 		err = -ENOMEM;
 		goto err_in;
 	}
@@ -212,7 +210,7 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
 
 	in->log_page_size = page_shift - MLX5_ADAPTER_PAGE_SHIFT;
 	if (MLX5_CAP_GEN(dev->mdev, cqe_version) == MLX5_CQE_VERSION_V1 &&
-	    in->type == IB_SRQT_XRC)
+	    in->type != IB_SRQT_BASIC)
 		in->user_index = MLX5_IB_DEFAULT_UIDX;
 
 	return 0;
@@ -283,6 +281,8 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 		    desc_size, init_attr->attr.max_wr, srq->msrq.max, srq->msrq.max_gs,
 		    srq->msrq.max_avail_gather);
 
+	in.type = init_attr->srq_type;
+
 	if (pd->uobject)
 		err = create_srq_user(pd, srq, &in, udata, buf_size);
 	else
@@ -294,7 +294,6 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 		goto err_srq;
 	}
 
-	in.type = init_attr->srq_type;
 	in.log_size = ilog2(srq->msrq.max);
 	in.wqe_shift = srq->msrq.wqe_shift - 4;
 	if (srq->wq_sig)
@@ -305,6 +304,12 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 	} else if (init_attr->srq_type == IB_SRQT_BASIC) {
 		in.xrcd = to_mxrcd(dev->devr.x0)->xrcdn;
 		in.cqn = to_mcq(dev->devr.c0)->mcq.cqn;
+	} else if (init_attr->srq_type == IB_SRQT_TAG_MATCHING) {
+		in.xrcd = to_mxrcd(dev->devr.x0)->xrcdn;
+		in.cqn = to_mcq(init_attr->ext.tag_matching.cq)->mcq.cqn;
+		in.tm_log_list_size =
+			ilog2(init_attr->ext.tag_matching.list_size);
+		in.flags |= MLX5_SRQ_FLAG_RNDV;
 	}
 
 	in.pd = to_mpd(pd)->pdn;
