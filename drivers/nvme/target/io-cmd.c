@@ -58,7 +58,7 @@ static void nvmet_execute_rw(struct nvmet_req *req)
 
 	if (req->cmd->rw.opcode == nvme_cmd_write) {
 		op = REQ_OP_WRITE;
-		op_flags = WRITE_ODIRECT;
+		op_flags = REQ_SYNC | REQ_IDLE;
 		if (req->cmd->rw.control & cpu_to_le16(NVME_RW_FUA))
 			op_flags |= REQ_FUA;
 	} else {
@@ -96,7 +96,7 @@ static void nvmet_execute_rw(struct nvmet_req *req)
 
 	cookie = submit_bio(bio);
 
-	blk_poll(bdev_get_queue(req->ns->bdev), cookie);
+	blk_mq_poll(bdev_get_queue(req->ns->bdev), cookie);
 }
 
 static void nvmet_execute_flush(struct nvmet_req *req)
@@ -109,7 +109,7 @@ static void nvmet_execute_flush(struct nvmet_req *req)
 	bio->bi_bdev = req->ns->bdev;
 	bio->bi_private = req;
 	bio->bi_end_io = nvmet_bio_done;
-	bio_set_op_attrs(bio, REQ_OP_WRITE, WRITE_FLUSH);
+	bio->bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
 
 	submit_bio(bio);
 }
