@@ -821,14 +821,6 @@ wakeup_secondary_cpu_via_init(int phys_apicid, unsigned long start_eip)
 	return (send_status | accept_status);
 }
 
-void smp_announce(void)
-{
-	int num_nodes = num_online_nodes();
-
-	printk(KERN_INFO "x86: Booted up %d node%s, %d CPUs\n",
-	       num_nodes, (num_nodes > 1 ? "s" : ""), num_online_cpus());
-}
-
 /* reduce the number of lines printed when booting a large cpu count system */
 static void announce_cpu(int cpu, int apicid)
 {
@@ -964,9 +956,7 @@ static int do_boot_cpu(int apicid, int cpu, struct task_struct *idle)
 	int cpu0_nmi_registered = 0;
 	unsigned long timeout;
 
-	idle->thread.sp = (unsigned long) (((struct pt_regs *)
-			  (THREAD_SIZE +  task_stack_page(idle))) - 1);
-
+	idle->thread.sp = (unsigned long)task_pt_regs(idle);
 	early_gdt_descr.address = (unsigned long)get_cpu_gdt_table(cpu);
 	initial_code = (unsigned long)start_secondary;
 	initial_stack  = idle->thread.sp;
@@ -1111,7 +1101,7 @@ int native_cpu_up(unsigned int cpu, struct task_struct *tidle)
 		return err;
 
 	/* the FPU context is blank, nobody can own it */
-	__cpu_disable_lazy_restore(cpu);
+	per_cpu(fpu_fpregs_owner_ctx, cpu) = NULL;
 
 	common_cpu_up(cpu, tidle);
 
@@ -1331,7 +1321,7 @@ void __init native_smp_prepare_cpus(unsigned int max_cpus)
 	default_setup_apic_routing();
 	cpu0_logical_apicid = apic_bsp_setup(false);
 
-	pr_info("CPU%d: ", 0);
+	pr_info("CPU0: ");
 	print_cpu_info(&cpu_data(0));
 
 	if (is_uv_system())

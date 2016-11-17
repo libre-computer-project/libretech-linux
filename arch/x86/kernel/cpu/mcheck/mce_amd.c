@@ -55,6 +55,8 @@
 /* Threshold LVT offset is at MSR0xC0000410[15:12] */
 #define SMCA_THR_LVT_OFF	0xF000
 
+static bool thresholding_en;
+
 static const char * const th_names[] = {
 	"load_store",
 	"insn_fetch",
@@ -69,7 +71,12 @@ static const char * const smca_umc_block_names[] = {
 	"misc_umc"
 };
 
-struct smca_bank_name smca_bank_names[] = {
+struct smca_bank_name {
+	const char *name;	/* Short name for sysfs */
+	const char *long_name;	/* Long name for pretty-printing */
+};
+
+static struct smca_bank_name smca_names[] = {
 	[SMCA_LS]	= { "load_store",	"Load Store Unit" },
 	[SMCA_IF]	= { "insn_fetch",	"Instruction Fetch Unit" },
 	[SMCA_L2_CACHE]	= { "l2_cache",		"L2 Cache" },
@@ -84,9 +91,25 @@ struct smca_bank_name smca_bank_names[] = {
 	[SMCA_PSP]	= { "psp",		"Platform Security Processor" },
 	[SMCA_SMU]	= { "smu",		"System Management Unit" },
 };
-EXPORT_SYMBOL_GPL(smca_bank_names);
 
-static struct smca_hwid_mcatype smca_hwid_mcatypes[] = {
+const char *smca_get_name(enum smca_bank_types t)
+{
+	if (t >= N_SMCA_BANK_TYPES)
+		return NULL;
+
+	return smca_names[t].name;
+}
+
+const char *smca_get_long_name(enum smca_bank_types t)
+{
+	if (t >= N_SMCA_BANK_TYPES)
+		return NULL;
+
+	return smca_names[t].long_name;
+}
+EXPORT_SYMBOL_GPL(smca_get_long_name);
+
+static struct smca_hwid smca_hwid_mcatypes[] = {
 	/* { bank_type, hwid_mcatype, xec_bitmap } */
 
 	/* ZN Core (HWID=0xB0) MCA types */
@@ -116,7 +139,7 @@ static struct smca_hwid_mcatype smca_hwid_mcatypes[] = {
 	{ SMCA_SMU,	 HWID_MCATYPE(0x01, 0x0), 0x1 },
 };
 
-struct smca_bank_info smca_banks[MAX_NR_BANKS];
+struct smca_bank smca_banks[MAX_NR_BANKS];
 EXPORT_SYMBOL_GPL(smca_banks);
 
 /*
@@ -142,35 +165,34 @@ static void default_deferred_error_interrupt(void)
 }
 void (*deferred_error_int_vector)(void) = default_deferred_error_interrupt;
 
-/*
- * CPU Initialization
- */
-
 static void get_smca_bank_info(unsigned int bank)
 {
 	unsigned int i, hwid_mcatype, cpu = smp_processor_id();
-	struct smca_hwid_mcatype *type;
-	u32 high, instanceId;
-	u16 hwid, mcatype;
+	struct smca_hwid *s_hwid;
+	u32 high, instance_id;
 
 	/* Collect bank_info using CPU 0 for now. */
 	if (cpu)
 		return;
 
-	if (rdmsr_safe_on_cpu(cpu, MSR_AMD64_SMCA_MCx_IPID(bank), &instanceId, &high)) {
+	if (rdmsr_safe_on_cpu(cpu, MSR_AMD64_SMCA_MCx_IPID(bank), &instance_id, &high)) {
 		pr_warn("Failed to read MCA_IPID for bank %d\n", bank);
 		return;
 	}
 
-	hwid = high & MCI_IPID_HWID;
-	mcatype = (high & MCI_IPID_MCATYPE) >> 16;
-	hwid_mcatype = HWID_MCATYPE(hwid, mcatype);
+	hwid_mcatype = HWID_MCATYPE(high & MCI_IPID_HWID,
+				    (high & MCI_IPID_MCATYPE) >> 16);
 
 	for (i = 0; i < ARRAY_SIZE(smca_hwid_mcatypes); i++) {
-		type = &smca_hwid_mcatypes[i];
-		if (hwid_mcatype == type->hwid_mcatype) {
-			smca_banks[bank].type = type;
-			smca_banks[bank].type_instance = instanceId;
+		s_hwid = &smca_hwid_mcatypes[i];
+		if (hwid_mcatype == s_hwid->hwid_mcatype) {
+
+			WARN(smca_banks[bank].hwid,
+			     "Bank %s already initialized!\n",
+			     smca_get_name(s_hwid->bank_type));
+
+			smca_banks[bank].hwid = s_hwid;
+			smca_banks[bank].id = instance_id;
 			break;
 		}
 	}
@@ -645,6 +667,7 @@ static void amd_threshold_interrupt(void)
 {
 	u32 low = 0, high = 0, address = 0;
 	unsigned int bank, block, cpu = smp_processor_id();
+	struct thresh_restart tr;
 
 	/* assume first bank caused it */
 	for (bank = 0; bank < mca_cfg.banks; ++bank) {
@@ -681,6 +704,11 @@ static void amd_threshold_interrupt(void)
 
 log:
 	__log_error(bank, false, true, ((u64)high << 32) | low);
+
+	/* Reset threshold block after logging error. */
+	memset(&tr, 0, sizeof(tr));
+	tr.b = &per_cpu(threshold_banks, cpu)[bank]->blocks[block];
+	threshold_restart_bank(&tr);
 }
 
 /*
@@ -826,10 +854,10 @@ static const char *get_name(unsigned int bank, struct threshold_block *b)
 		return th_names[bank];
 	}
 
-	if (!smca_banks[bank].type)
+	if (!smca_banks[bank].hwid)
 		return NULL;
 
-	bank_type = smca_banks[bank].type->bank_type;
+	bank_type = smca_banks[bank].hwid->bank_type;
 
 	if (b && bank_type == SMCA_UMC) {
 		if (b->block < ARRAY_SIZE(smca_umc_block_names))
@@ -838,8 +866,8 @@ static const char *get_name(unsigned int bank, struct threshold_block *b)
 	}
 
 	snprintf(buf_mcatype, MAX_MCATYPE_NAME_LEN,
-		 "%s_%x", smca_bank_names[bank_type].name,
-			  smca_banks[bank].type_instance);
+		 "%s_%x", smca_get_name(bank_type),
+			  smca_banks[bank].id);
 	return buf_mcatype;
 }
 
@@ -1010,31 +1038,6 @@ static int threshold_create_bank(unsigned int cpu, unsigned int bank)
 	return err;
 }
 
-/* create dir/files for all valid threshold banks */
-static int threshold_create_device(unsigned int cpu)
-{
-	unsigned int bank;
-	struct threshold_bank **bp;
-	int err = 0;
-
-	bp = kzalloc(sizeof(struct threshold_bank *) * mca_cfg.banks,
-		     GFP_KERNEL);
-	if (!bp)
-		return -ENOMEM;
-
-	per_cpu(threshold_banks, cpu) = bp;
-
-	for (bank = 0; bank < mca_cfg.banks; ++bank) {
-		if (!(per_cpu(bank_map, cpu) & (1 << bank)))
-			continue;
-		err = threshold_create_bank(cpu, bank);
-		if (err)
-			return err;
-	}
-
-	return err;
-}
-
 static void deallocate_threshold_block(unsigned int cpu,
 						 unsigned int bank)
 {
@@ -1102,9 +1105,12 @@ free_out:
 	per_cpu(threshold_banks, cpu)[bank] = NULL;
 }
 
-static void threshold_remove_device(unsigned int cpu)
+int mce_threshold_remove_device(unsigned int cpu)
 {
 	unsigned int bank;
+
+	if (!thresholding_en)
+		return 0;
 
 	for (bank = 0; bank < mca_cfg.banks; ++bank) {
 		if (!(per_cpu(bank_map, cpu) & (1 << bank)))
@@ -1112,24 +1118,42 @@ static void threshold_remove_device(unsigned int cpu)
 		threshold_remove_bank(cpu, bank);
 	}
 	kfree(per_cpu(threshold_banks, cpu));
+	per_cpu(threshold_banks, cpu) = NULL;
+	return 0;
 }
 
-/* get notified when a cpu comes on/off */
-static void
-amd_64_threshold_cpu_callback(unsigned long action, unsigned int cpu)
+/* create dir/files for all valid threshold banks */
+int mce_threshold_create_device(unsigned int cpu)
 {
-	switch (action) {
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-		threshold_create_device(cpu);
-		break;
-	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
-		threshold_remove_device(cpu);
-		break;
-	default:
-		break;
+	unsigned int bank;
+	struct threshold_bank **bp;
+	int err = 0;
+
+	if (!thresholding_en)
+		return 0;
+
+	bp = per_cpu(threshold_banks, cpu);
+	if (bp)
+		return 0;
+
+	bp = kzalloc(sizeof(struct threshold_bank *) * mca_cfg.banks,
+		     GFP_KERNEL);
+	if (!bp)
+		return -ENOMEM;
+
+	per_cpu(threshold_banks, cpu) = bp;
+
+	for (bank = 0; bank < mca_cfg.banks; ++bank) {
+		if (!(per_cpu(bank_map, cpu) & (1 << bank)))
+			continue;
+		err = threshold_create_bank(cpu, bank);
+		if (err)
+			goto err;
 	}
+	return err;
+err:
+	mce_threshold_remove_device(cpu);
+	return err;
 }
 
 static __init int threshold_init_device(void)
@@ -1138,12 +1162,13 @@ static __init int threshold_init_device(void)
 
 	/* to hit CPUs online before the notifier is up */
 	for_each_online_cpu(lcpu) {
-		int err = threshold_create_device(lcpu);
+		int err = mce_threshold_create_device(lcpu);
 
 		if (err)
 			return err;
 	}
-	threshold_cpu_callback = amd_64_threshold_cpu_callback;
+
+	thresholding_en = true;
 
 	return 0;
 }
