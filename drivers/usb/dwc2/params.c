@@ -93,6 +93,13 @@ static const struct dwc2_core_params params_bcm2835 = {
 	.host_ls_low_power_phy_clk	= 0,	/* 48 MHz */
 	.ts_dline			= 0,
 	.reload_ctl			= 0,
+
+	/*
+	 * Although this value would normally be invalid, for BCM2835,
+	 * the GAHBCFG.HBSTLEN field has a different meaning from that
+	 * defined by Synopsys. See the BCM2835 databook section 15.2
+	 * for details.
+	 */
 	.ahbcfg				= 0x10,
 	.uframe_sched			= 0,
 	.external_id_pin_ctl		= -1,
@@ -1079,6 +1086,66 @@ static void dwc2_set_param_tx_fifo_sizes(struct dwc2_hsotg *hsotg)
 	}
 }
 
+static const char *const ahb_bursts[] = {
+	[GAHBCFG_HBSTLEN_SINGLE]	= "SINGLE",
+	[GAHBCFG_HBSTLEN_INCR]		= "INCR",
+	[GAHBCFG_HBSTLEN_INCR4]		= "INCR4",
+	[GAHBCFG_HBSTLEN_INCR8]		= "INCR8",
+	[GAHBCFG_HBSTLEN_INCR16]	= "INCR16",
+};
+
+static int dwc2_get_property_ahb_burst(struct dwc2_hsotg *hsotg)
+{
+	struct device_node *node = hsotg->dev->of_node;
+	const char *str = NULL;
+	int burst;
+	int ret;
+
+	ret = device_property_read_string(hsotg->dev,
+					  "snps,ahb-burst", &str);
+	if (ret < 0) {
+		return ret;
+	} else if (of_device_is_compatible(node, "brcm,bcm2835-usb")) {
+		dev_warn(hsotg->dev,
+			 "snps,ahb-burst is not supported on this platform");
+		return -EINVAL;
+	}
+
+	burst = match_string(ahb_bursts,
+			     ARRAY_SIZE(ahb_bursts), str);
+	if (burst < 0) {
+		dev_err(hsotg->dev,
+			"Invalid parameter '%s' for ahb-burst\n", str);
+	}
+
+	return burst;
+}
+
+static void dwc2_set_ahb_burst(struct dwc2_hsotg *hsotg)
+{
+	struct dwc2_core_params *p = &hsotg->params;
+	int burst;
+	int ret;
+
+	/* Default burst value */
+	burst = GAHBCFG_HBSTLEN_INCR4;
+
+	/* Get the legacy param value, if set. */
+	if (p->ahbcfg != -1) {
+		burst = (p->ahbcfg & GAHBCFG_HBSTLEN_MASK) >>
+			GAHBCFG_HBSTLEN_SHIFT;
+	}
+
+	/* Override it from devicetree, if set. */
+	ret = dwc2_get_property_ahb_burst(hsotg);
+	if (ret >= 0)
+		burst = ret;
+
+	/* Set the parameter */
+	p->ahb_burst = (u8)burst;
+	dev_dbg(hsotg->dev, "Setting ahb-burst to %d\n", burst);
+}
+
 static void dwc2_set_gadget_dma(struct dwc2_hsotg *hsotg)
 {
 	struct dwc2_hw_params *hw = &hsotg->hw_params;
@@ -1158,6 +1225,8 @@ static void dwc2_set_parameters(struct dwc2_hsotg *hsotg,
 	dwc2_set_param_uframe_sched(hsotg, params->uframe_sched);
 	dwc2_set_param_external_id_pin_ctl(hsotg, params->external_id_pin_ctl);
 	dwc2_set_param_hibernation(hsotg, params->hibernation);
+
+	dwc2_set_ahb_burst(hsotg);
 
 	/*
 	 * Set devicetree-only parameters. These parameters do not

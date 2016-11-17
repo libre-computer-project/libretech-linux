@@ -430,6 +430,12 @@ enum dwc2_ep0_state {
  *			needed.
  *			0 - No (default)
  *			1 - Yes
+ * @ahb_burst:          Specifies the AHB burst.
+ *                       0 - Single
+ *                       1 - INCR
+ *                       3 - INCR4 (default)
+ *                       5 - INCR8
+ *                       7 - INCR16
  * @g_dma:              Enables gadget dma usage (default: autodetect).
  * @g_dma_desc:         Enables gadget descriptor DMA (default: autodetect).
  * @g_rx_fifo_size:	The periodic rx fifo size for the device, in
@@ -506,6 +512,9 @@ struct dwc2_core_params {
 	 * The following parameters are *only* set via device
 	 * properties and cannot be set directly in this structure.
 	 */
+
+	/* Global parameters */
+	u8 ahb_burst;
 
 	/* Host parameters */
 	bool host_dma;
