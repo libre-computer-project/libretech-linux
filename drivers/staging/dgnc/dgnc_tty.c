@@ -43,14 +43,9 @@
 #include "dgnc_utils.h"
 
 /*
- * internal variables
- */
-static unsigned char		*dgnc_TmpWriteBuf;
-
-/*
  * Default transparent print information.
  */
-static struct digi_t dgnc_digi_init = {
+static const struct digi_t dgnc_digi_init = {
 	.digi_flags =	DIGI_COOK,	/* Flags			*/
 	.digi_maxcps =	100,		/* Max CPS			*/
 	.digi_maxchar =	50,		/* Max chars in print queue	*/
@@ -69,7 +64,7 @@ static struct digi_t dgnc_digi_init = {
  * This defines a raw port at 9600 baud, 8 data bits, no parity,
  * 1 stop bit.
  */
-static struct ktermios DgncDefaultTermios = {
+static struct ktermios default_termios = {
 	.c_iflag =	(DEFAULT_IFLAGS),	/* iflags */
 	.c_oflag =	(DEFAULT_OFLAGS),	/* oflags */
 	.c_cflag =	(DEFAULT_CFLAGS),	/* cflags */
@@ -144,31 +139,6 @@ static const struct tty_operations dgnc_tty_ops = {
  ************************************************************************/
 
 /*
- * dgnc_tty_preinit()
- *
- * Initialize any global tty related data before we download any boards.
- */
-int dgnc_tty_preinit(void)
-{
-	/*
-	 * Allocate a buffer for doing the copy from user space to
-	 * kernel space in dgnc_write().  We only use one buffer and
-	 * control access to it with a semaphore.  If we are paging, we
-	 * are already in trouble so one buffer won't hurt much anyway.
-	 *
-	 * We are okay to sleep in the malloc, as this routine
-	 * is only called during module load, (not in interrupt context),
-	 * and with no locks held.
-	 */
-	dgnc_TmpWriteBuf = kmalloc(WRITEBUFLEN, GFP_KERNEL);
-
-	if (!dgnc_TmpWriteBuf)
-		return -ENOMEM;
-
-	return 0;
-}
-
-/*
  * dgnc_tty_register()
  *
  * Init the tty subsystem for this board.
@@ -194,7 +164,7 @@ int dgnc_tty_register(struct dgnc_board *brd)
 	brd->serial_driver->minor_start = 0;
 	brd->serial_driver->type = TTY_DRIVER_TYPE_SERIAL;
 	brd->serial_driver->subtype = SERIAL_TYPE_NORMAL;
-	brd->serial_driver->init_termios = DgncDefaultTermios;
+	brd->serial_driver->init_termios = default_termios;
 	brd->serial_driver->driver_name = DRVSTR;
 
 	/*
@@ -233,7 +203,7 @@ int dgnc_tty_register(struct dgnc_board *brd)
 	brd->print_driver->minor_start = 0x80;
 	brd->print_driver->type = TTY_DRIVER_TYPE_SERIAL;
 	brd->print_driver->subtype = SERIAL_TYPE_NORMAL;
-	brd->print_driver->init_termios = DgncDefaultTermios;
+	brd->print_driver->init_termios = default_termios;
 	brd->print_driver->driver_name = DRVSTR;
 
 	/*
@@ -362,17 +332,6 @@ err_free_channels:
 		brd->channels[i] = NULL;
 	}
 	return -ENOMEM;
-}
-
-/*
- * dgnc_tty_post_uninit()
- *
- * UnInitialize any global tty related data.
- */
-void dgnc_tty_post_uninit(void)
-{
-	kfree(dgnc_TmpWriteBuf);
-	dgnc_TmpWriteBuf = NULL;
 }
 
 /*
@@ -930,7 +889,7 @@ void dgnc_wakeup_writes(struct channel_t *ch)
 	spin_unlock_irqrestore(&ch->ch_lock, flags);
 }
 
-struct dgnc_board *find_board_by_major(unsigned int major)
+static struct dgnc_board *find_board_by_major(unsigned int major)
 {
 	int i;
 
@@ -1543,7 +1502,7 @@ static int dgnc_tty_write_room(struct tty_struct *tty)
 	int ret = 0;
 	unsigned long flags;
 
-	if (!tty || !dgnc_TmpWriteBuf)
+	if (!tty)
 		return 0;
 
 	un = tty->driver_data;
@@ -1623,7 +1582,7 @@ static int dgnc_tty_write(struct tty_struct *tty,
 	ushort tmask;
 	uint remain;
 
-	if (!tty || !dgnc_TmpWriteBuf)
+	if (!tty)
 		return 0;
 
 	un = tty->driver_data;
@@ -2707,7 +2666,7 @@ static int dgnc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 			uint loopback = 0;
 			/* Let go of locks when accessing user space,
 			 * could sleep
-			*/
+			 */
 			spin_unlock_irqrestore(&ch->ch_lock, flags);
 			rc = get_user(loopback, (unsigned int __user *)arg);
 			if (rc)

@@ -55,8 +55,11 @@ int ptlrpcd_start(struct ptlrpcd_ctl *pc);
 /* client.c */
 void ptlrpc_at_adj_net_latency(struct ptlrpc_request *req,
 			       unsigned int service_time);
-struct ptlrpc_bulk_desc *ptlrpc_new_bulk(unsigned npages, unsigned max_brw,
-					 unsigned type, unsigned portal);
+struct ptlrpc_bulk_desc *ptlrpc_new_bulk(unsigned int nfrags,
+					 unsigned int max_brw,
+					 enum ptlrpc_bulk_op_type type,
+					 unsigned int portal,
+					 const struct ptlrpc_bulk_frag_ops *ops);
 int ptlrpc_request_cache_init(void);
 void ptlrpc_request_cache_fini(void);
 struct ptlrpc_request *ptlrpc_request_cache_alloc(gfp_t flags);
@@ -67,6 +70,7 @@ void ptlrpc_set_add_new_req(struct ptlrpcd_ctl *pc,
 int ptlrpc_expired_set(void *data);
 int ptlrpc_set_next_timeout(struct ptlrpc_request_set *);
 void ptlrpc_resend_req(struct ptlrpc_request *request);
+void ptlrpc_set_bulk_mbits(struct ptlrpc_request *req);
 
 /* events.c */
 int ptlrpc_init_portals(void);
@@ -226,8 +230,6 @@ int ptlrpc_expire_one_request(struct ptlrpc_request *req, int async_unlink);
 /* pers.c */
 void ptlrpc_fill_bulk_md(lnet_md_t *md, struct ptlrpc_bulk_desc *desc,
 			 int mdcnt);
-void ptlrpc_add_bulk_page(struct ptlrpc_bulk_desc *desc, struct page *page,
-			  int pageoffset, int len);
 
 /* pack_generic.c */
 struct ptlrpc_reply_state *

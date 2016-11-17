@@ -396,7 +396,7 @@ void ptlrpc_activate_import(struct obd_import *imp)
 }
 EXPORT_SYMBOL(ptlrpc_activate_import);
 
-static void ptlrpc_pinger_force(struct obd_import *imp)
+void ptlrpc_pinger_force(struct obd_import *imp)
 {
 	CDEBUG(D_HA, "%s: waking up pinger s:%s\n", obd2cli_tgt(imp->imp_obd),
 	       ptlrpc_import_state_name(imp->imp_state));
@@ -408,6 +408,7 @@ static void ptlrpc_pinger_force(struct obd_import *imp)
 	if (imp->imp_state != LUSTRE_IMP_CONNECTING)
 		ptlrpc_pinger_wake_up();
 }
+EXPORT_SYMBOL(ptlrpc_pinger_force);
 
 void ptlrpc_fail_import(struct obd_import *imp, __u32 conn_cnt)
 {
@@ -691,8 +692,6 @@ int ptlrpc_connect_import(struct obd_import *imp)
 	request->rq_timeout = INITIAL_CONNECT_TIMEOUT;
 	lustre_msg_set_timeout(request->rq_reqmsg, request->rq_timeout);
 
-	lustre_msg_add_op_flags(request->rq_reqmsg, MSG_CONNECT_NEXT_VER);
-
 	request->rq_no_resend = 1;
 	request->rq_no_delay = 1;
 	request->rq_send_state = LUSTRE_IMP_CONNECTING;
@@ -859,6 +858,17 @@ static int ptlrpc_connect_set_flags(struct obd_import *imp,
 	client_adjust_max_dirty(cli);
 
 	/*
+	 * Update client max modify RPCs in flight with value returned
+	 * by the server
+	 */
+	if (ocd->ocd_connect_flags & OBD_CONNECT_MULTIMODRPCS)
+		cli->cl_max_mod_rpcs_in_flight = min(
+					cli->cl_max_mod_rpcs_in_flight,
+					ocd->ocd_maxmodrpcs);
+	else
+		cli->cl_max_mod_rpcs_in_flight = 1;
+
+	/*
 	 * Reset ns_connect_flags only for initial connect. It might be
 	 * changed in while using FS and if we reset it in reconnect
 	 * this leads to losing user settings done before such as
@@ -873,8 +883,7 @@ static int ptlrpc_connect_set_flags(struct obd_import *imp,
 			ocd->ocd_connect_flags;
 	}
 
-	if ((ocd->ocd_connect_flags & OBD_CONNECT_AT) &&
-	    (imp->imp_msg_magic == LUSTRE_MSG_MAGIC_V2))
+	if (ocd->ocd_connect_flags & OBD_CONNECT_AT)
 		/*
 		 * We need a per-message support flag, because
 		 * a. we don't know if the incoming connect reply
@@ -889,11 +898,7 @@ static int ptlrpc_connect_set_flags(struct obd_import *imp,
 	else
 		imp->imp_msghdr_flags &= ~MSGHDR_AT_SUPPORT;
 
-	if ((ocd->ocd_connect_flags & OBD_CONNECT_FULL20) &&
-	    (imp->imp_msg_magic == LUSTRE_MSG_MAGIC_V2))
-		imp->imp_msghdr_flags |= MSGHDR_CKSUM_INCOMPAT18;
-	else
-		imp->imp_msghdr_flags &= ~MSGHDR_CKSUM_INCOMPAT18;
+	imp->imp_msghdr_flags |= MSGHDR_CKSUM_INCOMPAT18;
 
 	return 0;
 }
@@ -967,6 +972,16 @@ static int ptlrpc_connect_interpret(const struct lu_env *env,
 
 	spin_unlock(&imp->imp_lock);
 
+	if (!exp) {
+		/* This could happen if export is cleaned during the
+		 * connect attempt
+		 */
+		CERROR("%s: missing export after connect\n",
+		       imp->imp_obd->obd_name);
+		rc = -ENODEV;
+		goto out;
+	}
+
 	/* check that server granted subset of flags we asked for. */
 	if ((ocd->ocd_connect_flags & imp->imp_connect_flags_orig) !=
 	    ocd->ocd_connect_flags) {
@@ -977,15 +992,6 @@ static int ptlrpc_connect_interpret(const struct lu_env *env,
 		goto out;
 	}
 
-	if (!exp) {
-		/* This could happen if export is cleaned during the
-		 * connect attempt
-		 */
-		CERROR("%s: missing export after connect\n",
-		       imp->imp_obd->obd_name);
-		rc = -ENODEV;
-		goto out;
-	}
 	old_connect_flags = exp_connect_flags(exp);
 	exp->exp_connect_data = *ocd;
 	imp->imp_obd->obd_self_export->exp_connect_data = *ocd;
@@ -1124,6 +1130,7 @@ static int ptlrpc_connect_interpret(const struct lu_env *env,
 		imp->imp_remote_handle =
 				*lustre_msg_get_handle(request->rq_repmsg);
 		imp->imp_last_replay_transno = 0;
+		imp->imp_replay_cursor = &imp->imp_committed_list;
 		IMPORT_SET_STATE(imp, LUSTRE_IMP_REPLAY);
 	} else {
 		DEBUG_REQ(D_HA, request, "%s: evicting (reconnect/recover flags not set: %x)",

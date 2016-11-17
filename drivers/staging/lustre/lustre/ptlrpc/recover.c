@@ -111,7 +111,9 @@ int ptlrpc_replay_next(struct obd_import *imp, int *inflight)
 			 * all of it's requests being replayed, it's safe to
 			 * use a cursor to accelerate the search
 			 */
-			imp->imp_replay_cursor = imp->imp_replay_cursor->next;
+			if (!imp->imp_resend_replay ||
+			    imp->imp_replay_cursor == &imp->imp_committed_list)
+				imp->imp_replay_cursor = imp->imp_replay_cursor->next;
 
 			while (imp->imp_replay_cursor !=
 			       &imp->imp_committed_list) {
@@ -194,7 +196,13 @@ int ptlrpc_resend(struct obd_import *imp)
 		LASSERTF((long)req > PAGE_SIZE && req != LP_POISON,
 			 "req %p bad\n", req);
 		LASSERTF(req->rq_type != LI_POISON, "req %p freed\n", req);
-		if (!ptlrpc_no_resend(req))
+
+		/*
+		 * If the request is allowed to be sent during replay and it
+		 * is not timeout yet, then it does not need to be resent.
+		 */
+		if (!ptlrpc_no_resend(req) &&
+		    (req->rq_timedout || !req->rq_allow_replay))
 			ptlrpc_resend_req(req);
 	}
 	spin_unlock(&imp->imp_lock);
