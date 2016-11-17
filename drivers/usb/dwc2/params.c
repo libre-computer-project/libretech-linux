@@ -976,15 +976,6 @@ static void dwc2_set_param_reload_ctl(struct dwc2_hsotg *hsotg, int val)
 	hsotg->params.reload_ctl = val;
 }
 
-static void dwc2_set_param_ahbcfg(struct dwc2_hsotg *hsotg, int val)
-{
-	if (val != -1)
-		hsotg->params.ahbcfg = val;
-	else
-		hsotg->params.ahbcfg = GAHBCFG_HBSTLEN_INCR4 <<
-						GAHBCFG_HBSTLEN_SHIFT;
-}
-
 static void dwc2_set_param_otg_ver(struct dwc2_hsotg *hsotg, int val)
 {
 	if (DWC2_OUT_OF_BOUNDS(val, 0, 1)) {
@@ -1220,7 +1211,6 @@ static void dwc2_set_parameters(struct dwc2_hsotg *hsotg,
 	dwc2_set_param_en_multiple_tx_fifo(hsotg,
 			params->en_multiple_tx_fifo);
 	dwc2_set_param_reload_ctl(hsotg, params->reload_ctl);
-	dwc2_set_param_ahbcfg(hsotg, params->ahbcfg);
 	dwc2_set_param_otg_ver(hsotg, params->otg_ver);
 	dwc2_set_param_uframe_sched(hsotg, params->uframe_sched);
 	dwc2_set_param_external_id_pin_ctl(hsotg, params->external_id_pin_ctl);

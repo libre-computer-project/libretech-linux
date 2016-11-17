@@ -273,11 +273,9 @@ static int dwc2_gahbcfg_init(struct dwc2_hsotg *hsotg)
 
 	case GHWCFG2_INT_DMA_ARCH:
 		dev_dbg(hsotg->dev, "Internal DMA Mode\n");
-		if (hsotg->params.ahbcfg != -1) {
-			ahbcfg &= GAHBCFG_CTRL_MASK;
-			ahbcfg |= hsotg->params.ahbcfg &
-				  ~GAHBCFG_CTRL_MASK;
-		}
+		ahbcfg &= ~GAHBCFG_HBSTLEN_MASK;
+		ahbcfg |= (hsotg->params.ahb_burst <<
+			   GAHBCFG_HBSTLEN_SHIFT);
 		break;
 
 	case GHWCFG2_SLAVE_ONLY_ARCH:
