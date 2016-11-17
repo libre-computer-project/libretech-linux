@@ -332,6 +332,7 @@ static void __blk_mq_free_request(struct blk_mq_hw_ctx *hctx,
 	rq->rq_flags = 0;
 
 	clear_bit(REQ_ATOM_STARTED, &rq->atomic_flags);
+	clear_bit(REQ_ATOM_POLL_SLEPT, &rq->atomic_flags);
 	blk_mq_put_tag(hctx, ctx, tag);
 	blk_queue_exit(q);
 }
@@ -2131,6 +2132,11 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 	 */
 	q->nr_requests = set->queue_depth;
 
+	/*
+	 * Default to classic polling
+	 */
+	q->poll_nsec = -1;
+
 	if (set->ops->complete)
 		blk_queue_softirq_done(q, set->ops->complete);
 
@@ -2468,10 +2474,115 @@ void blk_mq_update_nr_hw_queues(struct blk_mq_tag_set *set, int nr_hw_queues)
 }
 EXPORT_SYMBOL_GPL(blk_mq_update_nr_hw_queues);
 
+static unsigned long blk_mq_poll_nsecs(struct request_queue *q,
+				       struct blk_mq_hw_ctx *hctx,
+				       struct request *rq)
+{
+	struct blk_rq_stat stat[2];
+	unsigned long ret = 0;
+
+	/*
+	 * If stats collection isn't on, don't sleep but turn it on for
+	 * future users
+	 */
+	if (!blk_stat_enable(q))
+		return 0;
+
+	/*
+	 * We don't have to do this once per IO, should optimize this
+	 * to just use the current window of stats until it changes
+	 */
+	memset(&stat, 0, sizeof(stat));
+	blk_hctx_stat_get(hctx, stat);
+
+	/*
+	 * As an optimistic guess, use half of the mean service time
+	 * for this type of request. We can (and should) make this smarter.
+	 * For instance, if the completion latencies are tight, we can
+	 * get closer than just half the mean. This is especially
+	 * important on devices where the completion latencies are longer
+	 * than ~10 usec.
+	 */
+	if (req_op(rq) == REQ_OP_READ && stat[BLK_STAT_READ].nr_samples)
+		ret = (stat[BLK_STAT_READ].mean + 1) / 2;
+	else if (req_op(rq) == REQ_OP_WRITE && stat[BLK_STAT_WRITE].nr_samples)
+		ret = (stat[BLK_STAT_WRITE].mean + 1) / 2;
+
+	return ret;
+}
+
+static bool blk_mq_poll_hybrid_sleep(struct request_queue *q,
+				     struct blk_mq_hw_ctx *hctx,
+				     struct request *rq)
+{
+	struct hrtimer_sleeper hs;
+	enum hrtimer_mode mode;
+	unsigned int nsecs;
+	ktime_t kt;
+
+	if (test_bit(REQ_ATOM_POLL_SLEPT, &rq->atomic_flags))
+		return false;
+
+	/*
+	 * poll_nsec can be:
+	 *
+	 * -1:	don't ever hybrid sleep
+	 *  0:	use half of prev avg
+	 * >0:	use this specific value
+	 */
+	if (q->poll_nsec == -1)
+		return false;
+	else if (q->poll_nsec > 0)
+		nsecs = q->poll_nsec;
+	else
+		nsecs = blk_mq_poll_nsecs(q, hctx, rq);
+
+	if (!nsecs)
+		return false;
+
+	set_bit(REQ_ATOM_POLL_SLEPT, &rq->atomic_flags);
+
+	/*
+	 * This will be replaced with the stats tracking code, using
+	 * 'avg_completion_time / 2' as the pre-sleep target.
+	 */
+	kt = ktime_set(0, nsecs);
+
+	mode = HRTIMER_MODE_REL;
+	hrtimer_init_on_stack(&hs.timer, CLOCK_MONOTONIC, mode);
+	hrtimer_set_expires(&hs.timer, kt);
+
+	hrtimer_init_sleeper(&hs, current);
+	do {
+		if (test_bit(REQ_ATOM_COMPLETE, &rq->atomic_flags))
+			break;
+		set_current_state(TASK_UNINTERRUPTIBLE);
+		hrtimer_start_expires(&hs.timer, mode);
+		if (hs.task)
+			io_schedule();
+		hrtimer_cancel(&hs.timer);
+		mode = HRTIMER_MODE_ABS;
+	} while (hs.task && !signal_pending(current));
+
+	__set_current_state(TASK_RUNNING);
+	destroy_hrtimer_on_stack(&hs.timer);
+	return true;
+}
+
 static bool __blk_mq_poll(struct blk_mq_hw_ctx *hctx, struct request *rq)
 {
 	struct request_queue *q = hctx->queue;
 	long state;
+
+	/*
+	 * If we sleep, have the caller restart the poll loop to reset
+	 * the state. Like for the other success return cases, the
+	 * caller is responsible for checking if the IO completed. If
+	 * the IO isn't complete, we'll get called again and will go
+	 * straight to the busy poll loop.
+	 */
+	if (blk_mq_poll_hybrid_sleep(q, hctx, rq))
+		return true;
 
 	hctx->poll_considered++;
 

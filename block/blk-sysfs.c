@@ -350,6 +350,38 @@ queue_rq_affinity_store(struct request_queue *q, const char *page, size_t count)
 	return ret;
 }
 
+static ssize_t queue_poll_delay_show(struct request_queue *q, char *page)
+{
+	int val;
+
+	if (q->poll_nsec == -1)
+		val = -1;
+	else
+		val = q->poll_nsec / 1000;
+
+	return sprintf(page, "%d\n", val);
+}
+
+static ssize_t queue_poll_delay_store(struct request_queue *q, const char *page,
+				size_t count)
+{
+	int err, val;
+
+	if (!q->mq_ops || !q->mq_ops->poll)
+		return -EINVAL;
+
+	err = kstrtoint(page, 10, &val);
+	if (err < 0)
+		return err;
+
+	if (val == -1)
+		q->poll_nsec = -1;
+	else
+		q->poll_nsec = val * 1000;
+
+	return count;
+}
+
 static ssize_t queue_poll_show(struct request_queue *q, char *page)
 {
 	return queue_var_show(test_bit(QUEUE_FLAG_POLL, &q->queue_flags), page);
@@ -602,6 +634,12 @@ static struct queue_sysfs_entry queue_poll_entry = {
 	.store = queue_poll_store,
 };
 
+static struct queue_sysfs_entry queue_poll_delay_entry = {
+	.attr = {.name = "io_poll_delay", .mode = S_IRUGO | S_IWUSR },
+	.show = queue_poll_delay_show,
+	.store = queue_poll_delay_store,
+};
+
 static struct queue_sysfs_entry queue_wc_entry = {
 	.attr = {.name = "write_cache", .mode = S_IRUGO | S_IWUSR },
 	.show = queue_wc_show,
@@ -655,6 +693,7 @@ static struct attribute *default_attrs[] = {
 	&queue_dax_entry.attr,
 	&queue_stats_entry.attr,
 	&queue_wb_lat_entry.attr,
+	&queue_poll_delay_entry.attr,
 	NULL,
 };
 
