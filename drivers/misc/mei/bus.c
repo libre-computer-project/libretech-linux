@@ -36,12 +36,12 @@
  * @cl: host client
  * @buf: buffer to send
  * @length: buffer length
- * @blocking: wait for write completion
+ * @mode: sending mode
  *
  * Return: written size bytes or < 0 on error
  */
 ssize_t __mei_cl_send(struct mei_cl *cl, u8 *buf, size_t length,
-			bool blocking)
+		      unsigned int mode)
 {
 	struct mei_device *bus;
 	struct mei_cl_cb *cb;
@@ -80,9 +80,11 @@ ssize_t __mei_cl_send(struct mei_cl *cl, u8 *buf, size_t length,
 		goto out;
 	}
 
+	cb->internal = !!(mode & MEI_CL_IO_TX_INTERNAL);
+	cb->blocking = !!(mode & MEI_CL_IO_TX_BLOCKING);
 	memcpy(cb->buf.data, buf, length);
 
-	rets = mei_cl_write(cl, cb, blocking);
+	rets = mei_cl_write(cl, cb);
 
 out:
 	mutex_unlock(&bus->device_lock);
@@ -188,7 +190,7 @@ ssize_t mei_cldev_send(struct mei_cl_device *cldev, u8 *buf, size_t length)
 	if (cl == NULL)
 		return -ENODEV;
 
-	return __mei_cl_send(cl, buf, length, 1);
+	return __mei_cl_send(cl, buf, length, MEI_CL_IO_TX_BLOCKING);
 }
 EXPORT_SYMBOL_GPL(mei_cldev_send);
 
@@ -228,7 +230,7 @@ static void mei_cl_bus_event_work(struct work_struct *work)
 	bus = cldev->bus;
 
 	if (cldev->event_cb)
-		cldev->event_cb(cldev, cldev->events, cldev->event_context);
+		cldev->event_cb(cldev, cldev->events);
 
 	cldev->events = 0;
 
@@ -301,7 +303,6 @@ bool mei_cl_bus_rx_event(struct mei_cl *cl)
  * @cldev: me client devices
  * @event_cb: callback function
  * @events_mask: requested events bitmask
- * @context: driver context data
  *
  * Return: 0 on success
  *         -EALREADY if an callback is already registered
@@ -309,7 +310,7 @@ bool mei_cl_bus_rx_event(struct mei_cl *cl)
  */
 int mei_cldev_register_event_cb(struct mei_cl_device *cldev,
 				unsigned long events_mask,
-				mei_cldev_event_cb_t event_cb, void *context)
+				mei_cldev_event_cb_t event_cb)
 {
 	struct mei_device *bus = cldev->bus;
 	int ret;
@@ -320,7 +321,6 @@ int mei_cldev_register_event_cb(struct mei_cl_device *cldev,
 	cldev->events = 0;
 	cldev->events_mask = events_mask;
 	cldev->event_cb = event_cb;
-	cldev->event_context = context;
 	INIT_WORK(&cldev->event_work, mei_cl_bus_event_work);
 
 	if (cldev->events_mask & BIT(MEI_CL_EVENT_RX)) {
@@ -483,7 +483,7 @@ int mei_cldev_disable(struct mei_cl_device *cldev)
 	mutex_lock(&bus->device_lock);
 
 	if (!mei_cl_is_connected(cl)) {
-		dev_err(bus->dev, "Already disconnected");
+		dev_dbg(bus->dev, "Already disconnected");
 		err = 0;
 		goto out;
 	}
