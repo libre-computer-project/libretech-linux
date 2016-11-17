@@ -152,7 +152,7 @@ static int intel_815_configure(void)
 	/* the Intel 815 chipset spec. says that bits 29-31 in the
 	* ATTBASE register are reserved -> try not to write them */
 	if (agp_bridge->gatt_bus_addr & INTEL_815_ATTBASE_MASK) {
-		dev_emerg(&agp_bridge->dev->dev, "gatt bus addr too high");
+		dev_emerg(&agp_bridge->dev->dev, "gatt bus addr too high\n");
 		return -EINVAL;
 	}
 
