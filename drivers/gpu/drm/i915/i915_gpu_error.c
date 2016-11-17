@@ -573,7 +573,7 @@ int i915_error_state_to_str(struct drm_i915_error_state_buf *m,
 		   pdev->subsystem_device);
 	err_printf(m, "IOMMU enabled?: %d\n", error->iommu);
 
-	if (HAS_CSR(dev)) {
+	if (HAS_CSR(dev_priv)) {
 		struct intel_csr *csr = &dev_priv->csr;
 
 		err_printf(m, "DMC loaded: %s\n",
@@ -861,16 +861,19 @@ out:
 static inline uint32_t
 __active_get_seqno(struct i915_gem_active *active)
 {
-	return i915_gem_request_get_seqno(__i915_gem_active_peek(active));
+	struct drm_i915_gem_request *request;
+
+	request = __i915_gem_active_peek(active);
+	return request ? request->global_seqno : 0;
 }
 
 static inline int
 __active_get_engine_id(struct i915_gem_active *active)
 {
-	struct intel_engine_cs *engine;
+	struct drm_i915_gem_request *request;
 
-	engine = i915_gem_request_get_engine(__i915_gem_active_peek(active));
-	return engine ? engine->id : -1;
+	request = __i915_gem_active_peek(active);
+	return request ? request->engine->id : -1;
 }
 
 static void capture_bo(struct drm_i915_error_buffer *err,
@@ -1489,7 +1492,7 @@ static void i915_capture_reg_state(struct drm_i915_private *dev_priv,
 	}
 
 	/* 4: Everything else */
-	if (HAS_HW_CONTEXTS(dev))
+	if (HAS_HW_CONTEXTS(dev_priv))
 		error->ccid = I915_READ(CCID);
 
 	if (INTEL_INFO(dev)->gen >= 8) {

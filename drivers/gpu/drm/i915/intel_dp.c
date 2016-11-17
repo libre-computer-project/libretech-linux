@@ -942,14 +942,14 @@ intel_dp_aux_ch(struct intel_dp *intel_dp,
 		uint8_t *recv, int recv_size)
 {
 	struct intel_digital_port *intel_dig_port = dp_to_dig_port(intel_dp);
-	struct drm_device *dev = intel_dig_port->base.base.dev;
-	struct drm_i915_private *dev_priv = to_i915(dev);
+	struct drm_i915_private *dev_priv =
+			to_i915(intel_dig_port->base.base.dev);
 	i915_reg_t ch_ctl = intel_dp->aux_ch_ctl_reg;
 	uint32_t aux_clock_divider;
 	int i, ret, recv_bytes;
 	uint32_t status;
 	int try, clock = 0;
-	bool has_aux_irq = HAS_AUX_IRQ(dev);
+	bool has_aux_irq = HAS_AUX_IRQ(dev_priv);
 	bool vdd;
 
 	pps_lock(intel_dp);
@@ -1791,9 +1791,7 @@ static void intel_dp_prepare(struct intel_encoder *encoder,
 			trans_dp &= ~TRANS_DP_ENH_FRAMING;
 		I915_WRITE(TRANS_DP_CTL(crtc->pipe), trans_dp);
 	} else {
-		if (!HAS_PCH_SPLIT(dev_priv) && !IS_VALLEYVIEW(dev_priv) &&
-		    !IS_CHERRYVIEW(dev_priv) &&
-		    pipe_config->limited_color_range)
+		if (IS_G4X(dev_priv) && pipe_config->limited_color_range)
 			intel_dp->DP |= DP_COLOR_RANGE_16_235;
 
 		if (adjusted_mode->flags & DRM_MODE_FLAG_PHSYNC)
@@ -2515,8 +2513,7 @@ static void intel_dp_get_config(struct intel_encoder *encoder,
 
 	pipe_config->base.adjusted_mode.flags |= flags;
 
-	if (!HAS_PCH_SPLIT(dev_priv) && !IS_VALLEYVIEW(dev_priv) &&
-	    !IS_CHERRYVIEW(dev_priv) && tmp & DP_COLOR_RANGE_16_235)
+	if (IS_G4X(dev_priv) && tmp & DP_COLOR_RANGE_16_235)
 		pipe_config->limited_color_range = true;
 
 	pipe_config->lane_count =
@@ -2735,7 +2732,8 @@ static void intel_dp_enable_port(struct intel_dp *intel_dp,
 }
 
 static void intel_enable_dp(struct intel_encoder *encoder,
-			    struct intel_crtc_state *pipe_config)
+			    struct intel_crtc_state *pipe_config,
+			    struct drm_connector_state *conn_state)
 {
 	struct intel_dp *intel_dp = enc_to_intel_dp(&encoder->base);
 	struct drm_device *dev = encoder->base.dev;
@@ -2777,7 +2775,7 @@ static void intel_enable_dp(struct intel_encoder *encoder,
 	if (pipe_config->has_audio) {
 		DRM_DEBUG_DRIVER("Enabling DP audio on pipe %c\n",
 				 pipe_name(pipe));
-		intel_audio_codec_enable(encoder);
+		intel_audio_codec_enable(encoder, pipe_config, conn_state);
 	}
 }
 
@@ -2787,7 +2785,7 @@ static void g4x_enable_dp(struct intel_encoder *encoder,
 {
 	struct intel_dp *intel_dp = enc_to_intel_dp(&encoder->base);
 
-	intel_enable_dp(encoder, pipe_config);
+	intel_enable_dp(encoder, pipe_config, conn_state);
 	intel_edp_backlight_on(intel_dp);
 }
 
@@ -2924,7 +2922,7 @@ static void vlv_pre_enable_dp(struct intel_encoder *encoder,
 {
 	vlv_phy_pre_encoder_enable(encoder);
 
-	intel_enable_dp(encoder, pipe_config);
+	intel_enable_dp(encoder, pipe_config, conn_state);
 }
 
 static void vlv_dp_pre_pll_enable(struct intel_encoder *encoder,
@@ -2942,7 +2940,7 @@ static void chv_pre_enable_dp(struct intel_encoder *encoder,
 {
 	chv_phy_pre_encoder_enable(encoder);
 
-	intel_enable_dp(encoder, pipe_config);
+	intel_enable_dp(encoder, pipe_config, conn_state);
 
 	/* Second common lane will stay alive on its own now */
 	chv_phy_release_cl2_override(encoder);
@@ -5742,7 +5740,7 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 	}
 
 	/* init MST on ports that can support it */
-	if (HAS_DP_MST(dev) && !is_edp(intel_dp) &&
+	if (HAS_DP_MST(dev_priv) && !is_edp(intel_dp) &&
 	    (port == PORT_B || port == PORT_C || port == PORT_D))
 		intel_dp_mst_encoder_init(intel_dig_port,
 					  intel_connector->base.base.id);

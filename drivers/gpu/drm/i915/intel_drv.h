@@ -652,7 +652,6 @@ struct intel_crtc_state {
 
 	bool double_wide;
 
-	bool dp_encoder_is_mst;
 	int pbn;
 
 	struct intel_crtc_scaler_state scaler_state;
@@ -727,9 +726,6 @@ struct intel_crtc {
 		/* allow CxSR on this pipe */
 		bool cxsr_allowed;
 	} wm;
-
-	/* gen9+: ddb allocation currently being used */
-	struct skl_ddb_entry hw_ddb;
 
 	int scanline_offset;
 
@@ -1187,7 +1183,9 @@ u32 intel_fb_stride_alignment(const struct drm_i915_private *dev_priv,
 
 /* intel_audio.c */
 void intel_init_audio_hooks(struct drm_i915_private *dev_priv);
-void intel_audio_codec_enable(struct intel_encoder *encoder);
+void intel_audio_codec_enable(struct intel_encoder *encoder,
+			      const struct intel_crtc_state *crtc_state,
+			      const struct drm_connector_state *conn_state);
 void intel_audio_codec_disable(struct intel_encoder *encoder);
 void i915_audio_component_init(struct drm_i915_private *dev_priv);
 void i915_audio_component_cleanup(struct drm_i915_private *dev_priv);
@@ -1738,18 +1736,9 @@ int intel_enable_sagv(struct drm_i915_private *dev_priv);
 int intel_disable_sagv(struct drm_i915_private *dev_priv);
 bool skl_wm_level_equals(const struct skl_wm_level *l1,
 			 const struct skl_wm_level *l2);
-bool skl_ddb_allocation_equals(const struct skl_ddb_allocation *old,
-			       const struct skl_ddb_allocation *new,
-			       enum pipe pipe);
-bool skl_ddb_allocation_overlaps(struct drm_atomic_state *state,
-				 struct intel_crtc *intel_crtc);
-void skl_write_cursor_wm(struct intel_crtc *intel_crtc,
-			 const struct skl_plane_wm *wm,
-			 const struct skl_ddb_allocation *ddb);
-void skl_write_plane_wm(struct intel_crtc *intel_crtc,
-			const struct skl_plane_wm *wm,
-			const struct skl_ddb_allocation *ddb,
-			int plane);
+bool skl_ddb_allocation_overlaps(const struct skl_ddb_entry **entries,
+				 const struct skl_ddb_entry *ddb,
+				 int ignore);
 uint32_t ilk_pipe_pixel_rate(const struct intel_crtc_state *pipe_config);
 bool ilk_disable_lp_wm(struct drm_device *dev);
 int sanitize_rc6_option(struct drm_i915_private *dev_priv, int enable_rc6);
