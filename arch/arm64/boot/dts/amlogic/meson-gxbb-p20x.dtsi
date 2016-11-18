@@ -56,6 +56,38 @@
 	memory@0 {
 		device_type = "memory";
 		reg = <0x0 0x0 0x0 0x40000000>;
+		usable-memory = <0x0 0x1000000 0x0 0x3f000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		sec0 {
+			reg = <0x0 0x0 0x0 0x1000000>;
+			no-map;
+		};
+
+		secmon {
+			reg = <0x0 0x10000000 0x0 0x200000>;
+			no-map;
+		};
+
+		secos {
+			reg = <0x0 0x05300000 0x0 0x2000000>;
+			no-map;
+		};
+
+		aml_pstore {
+			reg = <0x0 0x07300000 0x0 0x100000>;
+			no-map;
+		};
+
+		sec1 {
+			reg = <0x0 0x3f000000 0x0 0x1000000>;
+			no-map;
+		};
 	};
 
 	usb_pwr: regulator-usb-pwrs {
