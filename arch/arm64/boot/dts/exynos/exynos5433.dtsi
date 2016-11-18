@@ -312,7 +312,7 @@
 
 			clock-names = "oscclk",
 				"sclk_ufs_mphy",
-				"div_aclk_fsys_200",
+				"aclk_fsys_200",
 				"sclk_pcie_100_fsys",
 				"sclk_ufsunipro_fsys",
 				"sclk_mmc2_fsys",
@@ -322,7 +322,7 @@
 				"sclk_usbdrd30_fsys";
 			clocks = <&xxti>,
 				<&cmu_cpif CLK_SCLK_UFS_MPHY>,
-				<&cmu_top CLK_DIV_ACLK_FSYS_200>,
+				<&cmu_top CLK_ACLK_FSYS_200>,
 				<&cmu_top CLK_SCLK_PCIE_100_FSYS>,
 				<&cmu_top CLK_SCLK_UFSUNIPRO_FSYS>,
 				<&cmu_top CLK_SCLK_MMC2_FSYS>,
@@ -374,6 +374,8 @@
 			compatible = "samsung,exynos5433-cmu-aud";
 			reg = <0x114c0000 0x1000>;
 			#clock-cells = <1>;
+			clock-names = "oscclk", "fout_aud_pll";
+			clocks = <&xxti>, <&cmu_top CLK_FOUT_AUD_PLL>;
 		};
 
 		cmu_bus0: clock-controller@13600000 {
@@ -1141,14 +1143,6 @@
 			clocks = <&cmu_fsys CLK_ACLK_USBDRD30>,
 				<&cmu_fsys CLK_SCLK_USBDRD30>;
 			clock-names = "usbdrd30", "usbdrd30_susp_clk";
-			assigned-clocks =
-				<&cmu_fsys CLK_MOUT_SCLK_USBDRD30_USER>,
-				<&cmu_top CLK_MOUT_SCLK_USBDRD30>,
-				<&cmu_top CLK_DIV_SCLK_USBDRD30>;
-			assigned-clock-parents =
-				<&cmu_top CLK_SCLK_USBDRD30_FSYS>,
-				<&cmu_top CLK_MOUT_BUS_PLL_USER>;
-			assigned-clock-rates = <0>, <0>, <66700000>;
 			#address-cells = <1>;
 			#size-cells = <1>;
 			ranges;
@@ -1172,12 +1166,6 @@
 				<&cmu_fsys CLK_SCLK_USBDRD30>;
 			clock-names = "phy", "ref", "phy_utmi", "phy_pipe",
 					"itp";
-			assigned-clocks =
-				<&cmu_fsys CLK_MOUT_PHYCLK_USBDRD30_UDRD30_PIPE_PCLK_USER>,
-				<&cmu_fsys CLK_MOUT_PHYCLK_USBDRD30_UDRD30_PHYCLOCK_USER>;
-			assigned-clock-parents =
-				<&cmu_fsys CLK_PHYCLK_USBDRD30_UDRD30_PIPE_PCLK_PHY>,
-				<&cmu_fsys CLK_PHYCLK_USBDRD30_UDRD30_PHYCLOCK_PHY>;
 			#phy-cells = <1>;
 			samsung,pmu-syscon = <&pmu_system_controller>;
 			status = "disabled";
@@ -1192,12 +1180,6 @@
 				<&cmu_fsys CLK_SCLK_USBHOST30>;
 			clock-names = "phy", "ref", "phy_utmi", "phy_pipe",
 					"itp";
-			assigned-clocks =
-				<&cmu_fsys CLK_MOUT_PHYCLK_USBHOST30_UHOST30_PIPE_PCLK_USER>,
-				<&cmu_fsys CLK_MOUT_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_USER>;
-			assigned-clock-parents =
-				<&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PIPE_PCLK_PHY>,
-				<&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_PHY>;
 			#phy-cells = <1>;
 			samsung,pmu-syscon = <&pmu_system_controller>;
 			status = "disabled";
@@ -1208,14 +1190,6 @@
 			clocks = <&cmu_fsys CLK_ACLK_USBHOST30>,
 				<&cmu_fsys CLK_SCLK_USBHOST30>;
 			clock-names = "usbdrd30", "usbdrd30_susp_clk";
-			assigned-clocks =
-				<&cmu_fsys CLK_MOUT_SCLK_USBHOST30_USER>,
-				<&cmu_top CLK_MOUT_SCLK_USBHOST30>,
-				<&cmu_top CLK_DIV_SCLK_USBHOST30>;
-			assigned-clock-parents =
-				<&cmu_top CLK_SCLK_USBHOST30_FSYS>,
-				<&cmu_top CLK_MOUT_BUS_PLL_USER>;
-			assigned-clock-rates = <0>, <0>, <66700000>;
 			#address-cells = <1>;
 			#size-cells = <1>;
 			ranges;
