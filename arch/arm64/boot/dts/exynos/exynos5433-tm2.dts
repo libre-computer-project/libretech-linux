@@ -23,6 +23,9 @@
 	compatible = "samsung,tm2", "samsung,exynos5433";
 
 	aliases {
+		gsc0 = &gsc_0;
+		gsc1 = &gsc_1;
+		gsc2 = &gsc_2;
 		pinctrl0 = &pinctrl_alive;
 		pinctrl1 = &pinctrl_aud;
 		pinctrl2 = &pinctrl_cpif;
@@ -184,6 +187,29 @@
 		<&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_PHY>;
 	assigned-clock-rates = <0>, <0>, <0>, <0>, <0>, <0>, <0>, <0>,
 			       <66700000>, <66700000>;
+};
+
+&cmu_gscl {
+	assigned-clocks = <&cmu_gscl CLK_MOUT_ACLK_GSCL_111_USER>,
+			  <&cmu_gscl CLK_MOUT_ACLK_GSCL_333_USER>;
+	assigned-clock-parents = <&cmu_top CLK_ACLK_GSCL_111>,
+				 <&cmu_top CLK_ACLK_GSCL_333>;
+};
+
+&cmu_mfc {
+	assigned-clocks = <&cmu_mfc CLK_MOUT_ACLK_MFC_400_USER>;
+	assigned-clock-parents = <&cmu_top CLK_ACLK_MFC_400>;
+};
+
+&cmu_mscl {
+	assigned-clocks = <&cmu_mscl CLK_MOUT_ACLK_MSCL_400_USER>,
+			  <&cmu_mscl CLK_MOUT_SCLK_JPEG_USER>,
+			  <&cmu_mscl CLK_MOUT_SCLK_JPEG>,
+			  <&cmu_top CLK_MOUT_SCLK_JPEG_A>;
+	assigned-clock-parents = <&cmu_top CLK_ACLK_MSCL_400>,
+				 <&cmu_top CLK_SCLK_JPEG_MSCL>,
+				 <&cmu_mscl CLK_MOUT_SCLK_JPEG_USER>,
+				 <&cmu_top CLK_MOUT_BUS_PLL_USER>;
 };
 
 &cpu0 {
