@@ -635,11 +635,14 @@ dtb-$(CONFIG_ARCH_REALVIEW) += \
 	arm-realview-pba8.dtb \
 	arm-realview-pbx-a9.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += \
+	rk1108-evb.dtb \
 	rk3036-evb.dtb \
 	rk3036-kylin.dtb \
 	rk3066a-bqcurie2.dtb \
 	rk3066a-marsboard.dtb \
+	rk3066a-mk808.dtb \
 	rk3066a-rayeager.dtb \
+	rk3188-px3-evb.dtb \
 	rk3188-radxarock.dtb \
 	rk3228-evb.dtb \
 	rk3229-evb.dtb \
