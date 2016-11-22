@@ -295,9 +295,7 @@ void do_machine_check(struct pt_regs *, long);
 /*
  * Threshold handler
  */
-
 extern void (*mce_threshold_vector)(void);
-extern void (*threshold_cpu_callback)(unsigned long action, unsigned int cpu);
 
 /* Deferred error interrupt handler */
 extern void (*deferred_error_int_vector)(void);
@@ -359,6 +357,8 @@ enum smca_bank_types {
 };
 
 #define HWID_MCATYPE(hwid, mcatype) (((hwid) << 16) | (mcatype))
+extern int mce_threshold_create_device(unsigned int cpu);
+extern int mce_threshold_remove_device(unsigned int cpu);
 
 struct smca_hwid {
 	unsigned int bank_type;	/* Use with smca_bank_types for easy indexing. */
@@ -375,6 +375,10 @@ struct smca_bank {
 extern struct smca_bank smca_banks[MAX_NR_BANKS];
 
 extern const char *smca_get_long_name(enum smca_bank_types t);
+
+#else /* !CONFIG_X86_MCE_AMD: */
+static inline int mce_threshold_create_device(unsigned int cpu) { return 0; };
+static inline int mce_threshold_remove_device(unsigned int cpu) { return 0; };
 #endif
 
 #endif /* _ASM_X86_MCE_H */
