@@ -1243,19 +1243,15 @@ static int nvme_configure_admin_queue(struct nvme_dev *dev)
 
 	result = nvme_enable_ctrl(&dev->ctrl, cap);
 	if (result)
-		goto free_nvmeq;
+		return result;
 
 	nvmeq->cq_vector = 0;
 	result = queue_request_irq(nvmeq);
 	if (result) {
 		nvmeq->cq_vector = -1;
-		goto free_nvmeq;
+		return result;
 	}
 
-	return result;
-
- free_nvmeq:
-	nvme_free_queues(dev, 0);
 	return result;
 }
 
@@ -1318,10 +1314,8 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 	max = min(dev->max_qid, dev->queue_count - 1);
 	for (i = dev->online_queues; i <= max; i++) {
 		ret = nvme_create_queue(dev->queues[i], i);
-		if (ret) {
-			nvme_free_queues(dev, i);
+		if (ret)
 			break;
-		}
 	}
 
 	/*
@@ -1461,13 +1455,9 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	result = queue_request_irq(adminq);
 	if (result) {
 		adminq->cq_vector = -1;
-		goto free_queues;
+		return result;
 	}
 	return nvme_create_io_queues(dev);
-
- free_queues:
-	nvme_free_queues(dev, 1);
-	return result;
 }
 
 static void nvme_del_queue_end(struct request *req, int error)
