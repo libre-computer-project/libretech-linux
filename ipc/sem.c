@@ -1850,7 +1850,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 
 	max = 0;
 	for (sop = sops; sop < sops + nsops; sop++) {
-		unsigned long mask = 1 << ((sop->sem_num) % BITS_PER_LONG);
+		unsigned long mask = 1ULL << ((sop->sem_num) % BITS_PER_LONG);
 
 		if (sop->sem_num >= max)
 			max = sop->sem_num;
