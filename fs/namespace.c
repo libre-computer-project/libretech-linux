@@ -1159,6 +1159,49 @@ struct vfsmount *mntget(struct vfsmount *mnt)
 }
 EXPORT_SYMBOL(mntget);
 
+static bool __path_is_mountpoint(struct path *path)
+{
+	struct mount *mount;
+	struct vfsmount *mnt;
+	unsigned seq;
+
+	do {
+		seq = read_seqbegin(&mount_lock);
+		mount = __lookup_mnt(path->mnt, path->dentry);
+		mnt = mount ? &mount->mnt : NULL;
+	} while (mnt &&
+		 !(mnt->mnt_flags & MNT_SYNC_UMOUNT) &&
+		 read_seqretry(&mount_lock, seq));
+
+	return mnt != NULL;
+}
+
+/* Check if path is a mount in current namespace */
+bool path_is_mountpoint(struct path *path)
+{
+	bool res;
+
+	if (!d_mountpoint(path->dentry))
+		return 0;
+
+	rcu_read_lock();
+	res = __path_is_mountpoint(path);
+	rcu_read_unlock();
+
+	return res;
+}
+EXPORT_SYMBOL(path_is_mountpoint);
+
+/* Check if path is a mount in current namespace */
+bool path_is_mountpoint_rcu(struct path *path)
+{
+	if (!d_mountpoint(path->dentry))
+		return 0;
+
+	return __path_is_mountpoint(path);
+}
+EXPORT_SYMBOL(path_is_mountpoint_rcu);
+
 struct vfsmount *mnt_clone_internal(struct path *path)
 {
 	struct mount *p;
