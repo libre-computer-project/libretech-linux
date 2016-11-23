@@ -16,6 +16,9 @@ config HAVE_KEXEC_FILE_PIE_PURGATORY
 	  If an architecture builds a PIE purgatory it should select
 	  this symbol.
 
+config HAVE_IMA_KEXEC
+	bool
+
 config OPROFILE
 	tristate "OProfile system profiling"
 	depends on PROFILING
