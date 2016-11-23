@@ -520,8 +520,10 @@ static inline int get_dumpable(struct mm_struct *mm)
 					/* leave room for more dump flags */
 #define MMF_VM_MERGEABLE	16	/* KSM may merge identical pages */
 #define MMF_VM_HUGEPAGE		17	/* set when VM_HUGEPAGE is set on vma */
-/* This ine-shot flag is droped due to necessivity of changing exe once again
- * on NFS restore */
+/*
+ * This one-shot flag is dropped due to necessity of changing exe once again
+ * on NFS restore
+ */
 //#define MMF_EXE_FILE_CHANGED	18	/* see prctl_set_mm_exe_file() */
 
 #define MMF_HAS_UPROBES		19	/* has uprobes */
