@@ -1059,7 +1059,7 @@ static void freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 	struct sem_queue *q, *tq;
 	struct sem_array *sma = container_of(ipcp, struct sem_array, sem_perm);
 	int i;
-	WAKE_Q(wake_q);
+	DEFINE_WAKE_Q(wake_q);
 
 	/* Free the existing undo structures for this semaphore set.  */
 	ipc_assert_locked_object(&sma->sem_perm);
@@ -1239,7 +1239,7 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 	struct sem_array *sma;
 	struct sem *curr;
 	int err, val;
-	WAKE_Q(wake_q);
+	DEFINE_WAKE_Q(wake_q);
 
 #if defined(CONFIG_64BIT) && defined(__BIG_ENDIAN)
 	/* big-endian 64bit */
@@ -1309,7 +1309,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 	int err, nsems;
 	ushort fast_sem_io[SEMMSL_FAST];
 	ushort *sem_io = fast_sem_io;
-	WAKE_Q(wake_q);
+	DEFINE_WAKE_Q(wake_q);
 
 	rcu_read_lock();
 	sma = sem_obtain_object_check(ns, semid);
@@ -1848,7 +1848,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 
 	error = perform_atomic_semop(sma, &queue);
 	if (error == 0) { /* non-blocking succesfull path */
-		WAKE_Q(wake_q);
+		DEFINE_WAKE_Q(wake_q);
 
 		/*
 		 * If the operation was successful, then do
@@ -2031,7 +2031,7 @@ void exit_sem(struct task_struct *tsk)
 		struct sem_array *sma;
 		struct sem_undo *un;
 		int semid, i;
-		WAKE_Q(wake_q);
+		DEFINE_WAKE_Q(wake_q);
 
 		cond_resched();
 
