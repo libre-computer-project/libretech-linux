@@ -69,16 +69,16 @@ static unsigned long change_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 	pte_t *pte, oldpte;
 	spinlock_t *ptl;
 	unsigned long pages = 0;
-	int target_node = -1;
+	int target_node = NUMA_NO_NODE;
 
 	pte = lock_pte_protection(vma, pmd, addr, prot_numa, &ptl);
 	if (!pte)
 		return 0;
 
-	if (prot_numa &&
-	    !(vma->vm_flags & VM_SHARED) &&
+	/* Get target node for single threaded private VMAs */
+	if (prot_numa && !(vma->vm_flags & VM_SHARED) &&
 	    atomic_read(&vma->vm_mm->mm_users) == 1)
-	    target_node = cpu_to_node(raw_smp_processor_id());
+		target_node = numa_node_id();
 
 	arch_enter_lazy_mmu_mode();
 	do {
