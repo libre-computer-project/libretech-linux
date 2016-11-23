@@ -145,8 +145,8 @@ extern void mpol_rebind_task(struct task_struct *tsk, const nodemask_t *new,
 				enum mpol_rebind_step step);
 extern void mpol_rebind_mm(struct mm_struct *mm, nodemask_t *new);
 
-extern nodemask_t *huge_nodemask(struct vm_area_struct *vma,
-				unsigned long addr);
+extern bool huge_nodemask(struct vm_area_struct *vma,
+				unsigned long addr, nodemask_t *mask);
 extern struct zonelist *huge_zonelist(struct vm_area_struct *vma,
 				unsigned long addr, gfp_t gfp_flags,
 				struct mempolicy **mpol, nodemask_t **nodemask);
@@ -263,10 +263,10 @@ static inline void mpol_rebind_mm(struct mm_struct *mm, nodemask_t *new)
 {
 }
 
-static inline nodemask_t *huge_nodemask(struct vm_area_struct *vma,
-				unsigned long addr)
+static inline bool huge_nodemask(struct vm_area_struct *vma,
+				unsigned long addr, nodemask_t *mask)
 {
-	return NULL;
+	return false;
 }
 
 static inline struct zonelist *huge_zonelist(struct vm_area_struct *vma,

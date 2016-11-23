@@ -1800,23 +1800,50 @@ static inline unsigned interleave_nid(struct mempolicy *pol,
 
 #ifdef CONFIG_HUGETLBFS
 /*
- * huge_nodemask(@vma, @addr)
+ * huge_nodemask(@vma, @addr, @mask)
  * @vma: virtual memory area whose policy is sought
- * @addr: address in @vma for shared policy lookup and interleave policy
+ * @addr: address in @vma
+ * @mask: a nodemask pointer
  *
- * If the effective policy is BIND, returns a pointer to the mempolicy's
- * @nodemask.
+ * Return true if we can succeed in extracting the policy nodemask
+ * for 'bind' or 'interleave' policy into the argument @mask, or
+ * initializing the argument @mask to contain the single node for
+ * 'preferred' or 'local' policy.
  */
-nodemask_t *huge_nodemask(struct vm_area_struct *vma, unsigned long addr)
+bool huge_nodemask(struct vm_area_struct *vma, unsigned long addr,
+			nodemask_t *mask)
 {
-	nodemask_t *nodes_mask = NULL;
-	struct mempolicy *mpol = get_vma_policy(vma, addr);
+	struct mempolicy *mpol;
+	bool ret = true;
+	int nid;
 
-	if (mpol->mode == MPOL_BIND)
-		nodes_mask = &mpol->v.nodes;
+	if (!mask)
+		return false;
+
+	mpol = get_vma_policy(vma, addr);
+
+	switch (mpol->mode) {
+	case MPOL_PREFERRED:
+		if (mpol->flags & MPOL_F_LOCAL)
+			nid = numa_node_id();
+		else
+			nid = mpol->v.preferred_node;
+		init_nodemask_of_node(mask, nid);
+		break;
+
+	case MPOL_BIND:
+		/* Fall through */
+	case MPOL_INTERLEAVE:
+		*mask = mpol->v.nodes;
+		break;
+
+	default:
+		ret = false;
+		break;
+	}
 	mpol_cond_put(mpol);
 
-	return nodes_mask;
+	return ret;
 }
 
 /*
