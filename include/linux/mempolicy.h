@@ -180,6 +180,10 @@ static inline bool vma_migratable(struct vm_area_struct *vma)
 	if (vma->vm_flags & (VM_IO | VM_PFNMAP))
 		return false;
 
+	/*
+	 * DAX device mappings require predictable access latency, so avoid
+	 * incurring periodic faults.
+	 */
 	if (vma_is_dax(vma))
 		return false;
 
