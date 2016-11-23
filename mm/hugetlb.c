@@ -1507,19 +1507,19 @@ int dissolve_free_huge_pages(unsigned long start_pfn, unsigned long end_pfn)
  *    the gigantic page.
  *
  * 2. The NUMA is enabled, but the vma is NULL.
- *    Create a @nodes_allowed, use alloc_fresh_gigantic_page() to get
+ *    Create a @nodes_allowed, and use alloc_fresh_gigantic_page() to get
  *    the gigantic page.
  *
  * 3. The NUMA is enabled, and the vma is valid.
  *    Use the @vma's memory policy.
- *    Get @nodes_mask by huge_nodemask(), and use alloc_fresh_gigantic_page()
+ *    Get @nodes_allowed by huge_nodemask(), and use alloc_fresh_gigantic_page()
  *    to get the gigantic page.
  */
 static struct page *__hugetlb_alloc_gigantic_page(struct hstate *h,
 		struct vm_area_struct *vma, unsigned long addr, int nid)
 {
-	struct page *page;
-	nodemask_t *nodes_mask;
+	NODEMASK_ALLOC(nodemask_t, nodes_allowed, GFP_KERNEL | __GFP_NORETRY);
+	struct page *page = NULL;
 
 	/* Not NUMA */
 	if (!IS_ENABLED(CONFIG_NUMA)) {
@@ -1530,14 +1530,12 @@ static struct page *__hugetlb_alloc_gigantic_page(struct hstate *h,
 		if (page)
 			prep_compound_gigantic_page(page, huge_page_order(h));
 
+		NODEMASK_FREE(nodes_allowed);
 		return page;
 	}
 
 	/* NUMA && !vma */
 	if (!vma) {
-		NODEMASK_ALLOC(nodemask_t, nodes_allowed,
-				GFP_KERNEL | __GFP_NORETRY);
-
 		if (nid == NUMA_NO_NODE) {
 			if (!init_nodemask_of_mempolicy(nodes_allowed)) {
 				NODEMASK_FREE(nodes_allowed);
@@ -1558,13 +1556,11 @@ static struct page *__hugetlb_alloc_gigantic_page(struct hstate *h,
 	}
 
 	/* NUMA && vma */
-	nodes_mask = huge_nodemask(vma, addr);
-	if (nodes_mask) {
-		page = alloc_fresh_gigantic_page(h, nodes_mask, true);
-		if (page)
-			return page;
-	}
-	return NULL;
+	if (huge_nodemask(vma, addr, nodes_allowed))
+		page = alloc_fresh_gigantic_page(h, nodes_allowed, true);
+
+	NODEMASK_FREE(nodes_allowed);
+	return page;
 }
 
 /*
