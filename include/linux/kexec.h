@@ -112,6 +112,10 @@ struct compat_kexec_segment {
 #endif
 
 #ifdef CONFIG_KEXEC_FILE
+#ifndef PURGATORY_ELF_TYPE
+#define PURGATORY_ELF_TYPE ET_REL
+#endif
+
 struct purgatory_info {
 	/* Pointer to elf header of read only purgatory */
 	Elf_Ehdr *ehdr;
