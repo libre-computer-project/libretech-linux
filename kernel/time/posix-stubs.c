@@ -121,3 +121,8 @@ long clock_nanosleep_restart(struct restart_block *restart_block)
 	return hrtimer_nanosleep_restart(restart_block);
 }
 #endif
+
+int posix_timer_event(struct k_itimer *timr, int si_private)
+{
+	return 0;
+}
