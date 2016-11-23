@@ -88,7 +88,7 @@ void __snd_printk(unsigned int level, const char *path, int line,
 		const char *end_of_header = printk_skip_level(vaf.fmt);
 
 		/* Ignore KERN_CONT. We print filename:line for each piece. */
-		if (kern_level >= '0' || kern_level <= '7') {
+		if (kern_level >= '0' && kern_level <= '7') {
 			memcpy(verbose_fmt, vaf.fmt, end_of_header - vaf.fmt);
 			level_found = true;
 		}
