@@ -870,10 +870,15 @@ MODULE_ALIAS("zpool-z3fold");
 
 static int __init init_z3fold(void)
 {
-	/* Make sure the z3fold header will fit in one chunk */
-	BUILD_BUG_ON(sizeof(struct z3fold_header) > ZHDR_SIZE_ALIGNED);
-	zpool_register_driver(&z3fold_zpool_driver);
+	/* Fail the initialization if z3fold header won't fit in one chunk */
+	if (sizeof(struct z3fold_header) > ZHDR_SIZE_ALIGNED) {
+		pr_err("z3fold: z3fold_header size (%d) is bigger than "
+			"the chunk size (%d), can't proceed\n",
+			sizeof(struct z3fold_header) , ZHDR_SIZE_ALIGNED);
+		return -E2BIG;
+	}
 
+	zpool_register_driver(&z3fold_zpool_driver);
 	return 0;
 }
 
