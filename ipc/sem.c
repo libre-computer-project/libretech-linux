@@ -1994,22 +1994,23 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 			schedule();
 
 		/*
-		 * fastpath: the semop has completed, either successfully or not, from
-		 * the syscall pov, is quite irrelevant to us at this point; we're done.
+		 * fastpath: the semop has completed, either successfully or
+		 * not, from the syscall pov, is quite irrelevant to us at this
+		 * point; we're done.
 		 *
 		 * We _do_ care, nonetheless, about being awoken by a signal or
-		 * spuriously.  The queue.status is checked again in the slowpath (aka
-		 * after taking sem_lock), such that we can detect scenarios where we
-		 * were awakened externally, during the window between wake_q_add() and
-		 * wake_up_q().
+		 * spuriously.  The queue.status is checked again in the
+		 * slowpath (aka after taking sem_lock), such that we can detect
+		 * scenarios where we were awakened externally, during the
+		 * window between wake_q_add() and wake_up_q().
 		 */
 		error = READ_ONCE(queue.status);
 		if (error != -EINTR) {
 			/*
-			 * User space could assume that semop() is a memory barrier:
-			 * Without the mb(), the cpu could speculatively read in user
-			 * space stale data that was overwritten by the previous owner
-			 * of the semaphore.
+			 * User space could assume that semop() is a memory
+			 * barrier: Without the mb(), the cpu could
+			 * speculatively read in userspace stale data that was
+			 * overwritten by the previous owner of the semaphore.
 			 */
 			smp_mb();
 			goto out_free;
