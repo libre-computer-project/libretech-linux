@@ -539,11 +539,19 @@ static void z3fold_free(struct z3fold_pool *pool, unsigned long handle)
 		free_z3fold_page(zhdr);
 		atomic64_dec(&pool->pages_nr);
 	} else {
-		z3fold_compact_page(zhdr);
+		int compacted = z3fold_compact_page(zhdr);
 		/* Add to the unbuddied list */
 		spin_lock(&pool->lock);
 		freechunks = num_free_chunks(zhdr);
-		list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
+		/*
+		 * If the page has been compacted, we want to use it
+		 * in the first place.
+		 */
+		if (compacted)
+			list_add(&zhdr->buddy, &pool->unbuddied[freechunks]);
+		else
+			list_add_tail(&zhdr->buddy,
+				      &pool->unbuddied[freechunks]);
 		spin_unlock(&pool->lock);
 		z3fold_page_unlock(zhdr);
 	}
@@ -672,12 +680,16 @@ next:
 				spin_lock(&pool->lock);
 				list_add(&zhdr->buddy, &pool->buddied);
 			} else {
-				z3fold_compact_page(zhdr);
+				int compacted = z3fold_compact_page(zhdr);
 				/* add to unbuddied list */
 				spin_lock(&pool->lock);
 				freechunks = num_free_chunks(zhdr);
-				list_add(&zhdr->buddy,
-					 &pool->unbuddied[freechunks]);
+				if (compacted)
+					list_add(&zhdr->buddy,
+						&pool->unbuddied[freechunks]);
+				else
+					list_add_tail(&zhdr->buddy,
+						&pool->unbuddied[freechunks]);
 			}
 		}
 
