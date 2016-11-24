@@ -29,16 +29,16 @@ static struct clk_hw *uniphier_clk_register(struct device *dev,
 	switch (data->type) {
 	case UNIPHIER_CLK_TYPE_FIXED_FACTOR:
 		return uniphier_clk_register_fixed_factor(dev, data->name,
-							  &data->data.factor);
+							  &data->factor);
 	case UNIPHIER_CLK_TYPE_FIXED_RATE:
 		return uniphier_clk_register_fixed_rate(dev, data->name,
-							&data->data.rate);
+							&data->rate);
 	case UNIPHIER_CLK_TYPE_GATE:
 		return uniphier_clk_register_gate(dev, regmap, data->name,
-						  &data->data.gate);
+						  &data->gate);
 	case UNIPHIER_CLK_TYPE_MUX:
 		return uniphier_clk_register_mux(dev, regmap, data->name,
-						 &data->data.mux);
+						 &data->mux);
 	default:
 		dev_err(dev, "unsupported clock type\n");
 		return ERR_PTR(-EINVAL);

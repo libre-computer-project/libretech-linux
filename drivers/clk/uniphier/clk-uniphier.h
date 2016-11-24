@@ -62,7 +62,7 @@ struct uniphier_clk_data {
 		struct uniphier_clk_fixed_rate_data rate;
 		struct uniphier_clk_gate_data gate;
 		struct uniphier_clk_mux_data mux;
-	} data;
+	};
 };
 
 #define UNIPHIER_CLK_FACTOR(_name, _idx, _parent, _mult, _div)	\
@@ -70,7 +70,7 @@ struct uniphier_clk_data {
 		.name = (_name),				\
 		.type = UNIPHIER_CLK_TYPE_FIXED_FACTOR,		\
 		.idx = (_idx),					\
-		.data.factor = {				\
+		.factor = {					\
 			.parent_name = (_parent),		\
 			.mult = (_mult),			\
 			.div = (_div),				\
@@ -83,7 +83,7 @@ struct uniphier_clk_data {
 		.name = (_name),				\
 		.type = UNIPHIER_CLK_TYPE_GATE,			\
 		.idx = (_idx),					\
-		.data.gate = {					\
+		.gate = {					\
 			.parent_name = (_parent),		\
 			.reg = (_reg),				\
 			.bit = (_bit),				\
