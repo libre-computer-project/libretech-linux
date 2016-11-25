@@ -1,9 +1,8 @@
 /*
- * Device Tree file for Marvell Armada 3720 development board
- * (DB-88F3720-DDR3)
+ * Device Tree file for Globalscale Marvell ESPRESSOBin Board
  * Copyright (C) 2016 Marvell
  *
- * Gregory CLEMENT <gregory.clement@free-electrons.com>
+ * Romain Perier <romain.perier@free-electrons.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -49,8 +48,8 @@
 #include "armada-372x.dtsi"
 
 / {
-	model = "Marvell Armada 3720 Development Board DB-88F3720-DDR3";
-	compatible = "marvell,armada-3720-db", "marvell,armada3720", "marvell,armada3710";
+	model = "Globalscale Marvell ESPRESSOBin Board";
+	compatible = "globalscale,espressobin", "marvell,armada3720", "marvell,armada3710";
 
 	chosen {
 		stdout-path = "serial0:115200n8";
@@ -62,22 +61,22 @@
 	};
 };
 
-/* CON3 */
+/* J9 */
+&pcie0 {
+	status = "okay";
+};
+
+/* J6 */
 &sata {
 	status = "okay";
 };
 
-/* Exported on the micro USB connector CON32 through an FTDI */
+/* Exported on the micro USB connector J5 through an FTDI */
 &uart0 {
 	status = "okay";
 };
 
-/* CON31 */
+/* J7 */
 &usb3 {
-	status = "okay";
-};
-
-/* CON17 (PCIe) / CON12 (mini-PCIe) */
-&pcie0 {
 	status = "okay";
 };
