@@ -3743,6 +3743,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 		alloc_flags |= ALLOC_CMA;
 
 retry_cpuset:
+	cond_resched_rcu_qs();
 	cpuset_mems_cookie = read_mems_allowed_begin();
 
 	/* Dirty zone balancing only done in the fast path */
