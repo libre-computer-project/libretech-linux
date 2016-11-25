@@ -33,6 +33,18 @@ config ARM_BRCMSTB_AVS_CPUFREQ_DEBUG
 
 	  If in doubt, say N.
 
+config ARM_BRCMSTB_CPUFREQ
+	tristate "Broadcom STB CPUfreq driver"
+	depends on ARCH_BRCMSTB || COMPILE_TEST
+	default y
+	help
+	  Some Broadcom SoCs offer multiple operating frequencies that CPUfreq
+	  can take advantage of to improve energy efficiency.
+
+	  Say Y, if you have a supported Broadcom SoC. If your Broadcom SoC
+	  has AVS firmware with support for frequency and voltage scaling,
+	  say N here and enable ARM_BRCMSTB_AVS_CPUFREQ instead.
+
 config ARM_DT_BL_CPUFREQ
 	tristate "Generic probing via DT for ARM big LITTLE CPUfreq driver"
 	depends on ARM_BIG_LITTLE_CPUFREQ && OF
