@@ -2352,6 +2352,7 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 				nr_reclaimed += shrink_list(lru, nr_to_scan,
 							    lruvec, sc);
 			}
+			cond_resched_rcu_qs();
 		}
 
 		if (nr_reclaimed < nr_to_reclaim || scan_adjusted)
