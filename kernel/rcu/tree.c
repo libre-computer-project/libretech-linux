@@ -1345,12 +1345,6 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 		rdp->rsp->jiffies_resched += 5; /* Re-enable beating. */
 	}
 
-	/* And if it has been a really long time, kick the CPU as well. */
-	if (ULONG_CMP_GE(jiffies,
-			 rdp->rsp->gp_start + 2 * jiffies_till_sched_qs) ||
-	    ULONG_CMP_GE(jiffies, rdp->rsp->gp_start + jiffies_till_sched_qs))
-		resched_cpu(rdp->cpu);  /* Force CPU into scheduler. */
-
 	return 0;
 }
 
