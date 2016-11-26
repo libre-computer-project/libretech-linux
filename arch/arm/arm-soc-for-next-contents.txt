@@ -1,27 +1,22 @@
 fixes
-	patch
-		ipmi/bt-bmc: change compatible node to 'aspeed, ast2400-ibt-bmc'
-	<no branch> (8d897006fe9206d64cbe353310be26d7c911e69d)
-		git://git.infradead.org/linux-mvebu tags/mvebu-fixes-4.9-1
-	<no branch> (1bc2f5fac34535aeb3878ce32a762a221be7a851)
-		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.9/fixes-for-rc-cycle
-	<no branch> (e3c9d9d6ebfeeeee29c6240e1b5978d40d31d21f)
-		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.9-2
-	<no branch> (5bf7b6e86f29f064979d7b3e6dd21c5dd1feb855)
-		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.9-rc
-	<no branch> (b7f865ede20c87073216f77fe97f6fc56666e3da)
-		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-fixes-for-4.9
+	<no branch> (e5cd7ff7058dc6f2133455636809a09b691ee419)
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-fixes-for-4.9-2
+	<no branch> (86b4522d19329b3bf9c05722f217568b803439f7)
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.9-rc-round2
 
 next/fixes-non-critical
 	patch
 		ARM: spear: Fix error handling
 		ARM: zx: Fix error handling
-	davinci/fixes
+	<no branch> (36173c2d023bad4dbad6ed0e6e886fde10ec8f2f)
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-fixes-for-v4.9
 	imx/fixes-nc
 		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fix-nc-4.10
 	omap/fixes-nc
 		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.10/fixes-not-urgent-signed
+	patch
+		ARM: ixp4xx: drop duplicate header gpio.h
+		ARM: lpc32xx: drop duplicate header device.h
 
 next/cleanup
 
@@ -54,6 +49,12 @@ next/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-soc2-for-v4.10
 	mvebu/drivers
 		git://git.infradead.org/linux-mvebu tags/mvebu-drivers-4.10-1
+	patch
+		ARM: ARTPEC-6: add select MFD_SYSCON to MACH_ARTPEC6
+	oxnas/soc
+		https://github.com/OXNAS/linux tags/oxnas-arm-soc-for-4.10-v2
+	mvebu/soc
+		git://git.infradead.org/linux-mvebu tags/mvebu-soc-4.10-1
 
 next/arm64
 	patch
@@ -119,6 +120,18 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-dt-bindings
 	tegra/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-arm-dt
+	oxnas/dt
+		https://github.com/OXNAS/linux tags/oxnas-arm-soc-dt-for-4.10
+	patch
+		ARM: dts: artpec: add pcie support
+	pxa/dt
+		https://github.com/rjarzmik/linux tags/pxa-dt-4.10
+	qcom/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-dts-for-4.10-1
+	mvebu/dt
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.10-1
+	sunxi/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt-for-4.10-bis
 
 next/dt64
 	juno/dt
@@ -149,6 +162,10 @@ next/dt64
 		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.10-1
 	samsung/dt64-gic-flags
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-gic-flags-4.10
+	patch
+		ARM: dts: artpec: add pcie support
+	mvebu/dt64-2
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.10-2
 
 next/defconfig
 	patch
@@ -179,6 +196,10 @@ next/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.10/defconfig-signed
 	tegra/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-arm-defconfig
+	config/v4.9-rc2-arm-configs-pata
+		https://github.com/bzolnier/linux v4.9-rc2-arm-configs-pata
+	patch
+		ARM: configs: Add new config fragment to change RAM start point
 
 next/drivers
 	renesas/drivers
@@ -205,4 +226,7 @@ next/drivers
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-bus
 	tegra/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-soc
+	patch
+		drivers: psci: PSCI checker module
+		drivers: psci: Allow PSCI node to be disabled
 
