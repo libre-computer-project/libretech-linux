@@ -35,6 +35,7 @@
 #include <linux/root_dev.h>
 #include <linux/console.h>
 #include <linux/kernel_stat.h>
+#include <linux/dma-contiguous.h>
 #include <linux/device.h>
 #include <linux/notifier.h>
 #include <linux/pfn.h>
@@ -329,10 +330,10 @@ static void __init setup_lowcore(void)
 	lc->panic_stack = (unsigned long)
 		__alloc_bootmem(PAGE_SIZE, PAGE_SIZE, 0)
 		+ PAGE_SIZE - STACK_FRAME_OVERHEAD - sizeof(struct pt_regs);
-	lc->current_task = (unsigned long) init_thread_union.thread_info.task;
-	lc->thread_info = (unsigned long) &init_thread_union;
+	lc->current_task = (unsigned long)&init_task;
 	lc->lpp = LPP_MAGIC;
 	lc->machine_flags = S390_lowcore.machine_flags;
+	lc->preempt_count = S390_lowcore.preempt_count;
 	lc->stfl_fac_list = S390_lowcore.stfl_fac_list;
 	memcpy(lc->stfle_fac_list, S390_lowcore.stfle_fac_list,
 	       MAX_FACILITY_BIT/8);
@@ -903,6 +904,7 @@ void __init setup_arch(char **cmdline_p)
 
 	setup_memory_end();
 	setup_memory();
+	dma_contiguous_reserve(memory_end);
 
 	check_initrd();
 	reserve_crashkernel();
