@@ -21,6 +21,7 @@
 #define EXTENT_NORESERVE	(1U << 15)
 #define EXTENT_QGROUP_RESERVED	(1U << 16)
 #define EXTENT_CLEAR_DATA_RESV	(1U << 17)
+#define EXTENT_COMPRESS		(1U << 18)
 #define EXTENT_IOBITS		(EXTENT_LOCKED | EXTENT_WRITEBACK)
 #define EXTENT_CTLBITS		(EXTENT_DO_ACCOUNTING | EXTENT_FIRST_DELALLOC)
 
@@ -248,6 +249,10 @@ int clear_extent_bit(struct extent_io_tree *tree, u64 start, u64 end,
 		     unsigned bits, int wake, int delete,
 		     struct extent_state **cached, gfp_t mask);
 
+enum btrfs_metadata_reserve_type;
+void adjust_outstanding_extents(struct inode *inode, u64 start, u64 end,
+		enum btrfs_metadata_reserve_type reserve_type);
+
 static inline int unlock_extent(struct extent_io_tree *tree, u64 start, u64 end)
 {
 	return clear_extent_bit(tree, start, end, EXTENT_LOCKED, 1, 0, NULL,
@@ -405,8 +410,13 @@ void read_extent_buffer(struct extent_buffer *eb, void *dst,
 int read_extent_buffer_to_user(struct extent_buffer *eb, void __user *dst,
 			       unsigned long start,
 			       unsigned long len);
+void write_extent_buffer_fsid(struct extent_buffer *eb, const void *src);
+void write_extent_buffer_chunk_tree_uuid(struct extent_buffer *eb,
+		const void *src);
 void write_extent_buffer(struct extent_buffer *eb, const void *src,
 			 unsigned long start, unsigned long len);
+void copy_extent_buffer_full(struct extent_buffer *dst,
+			     struct extent_buffer *src);
 void copy_extent_buffer(struct extent_buffer *dst, struct extent_buffer *src,
 			unsigned long dst_offset, unsigned long src_offset,
 			unsigned long len);
@@ -414,8 +424,8 @@ void memcpy_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
 			   unsigned long src_offset, unsigned long len);
 void memmove_extent_buffer(struct extent_buffer *dst, unsigned long dst_offset,
 			   unsigned long src_offset, unsigned long len);
-void memset_extent_buffer(struct extent_buffer *eb, char c,
-			  unsigned long start, unsigned long len);
+void memzero_extent_buffer(struct extent_buffer *eb, unsigned long start,
+			   unsigned long len);
 int extent_buffer_test_bit(struct extent_buffer *eb, unsigned long start,
 			   unsigned long pos);
 void extent_buffer_bitmap_set(struct extent_buffer *eb, unsigned long start,
