@@ -2047,3 +2047,4 @@ module_exit(cleanup_ipmi_ssif);
 MODULE_AUTHOR("Todd C Davis <todd.c.davis@intel.com>, Corey Minyard <minyard@acm.org>");
 MODULE_DESCRIPTION("IPMI driver for management controllers on a SMBus");
 MODULE_LICENSE("GPL");
+MODULE_SOFTDEP("post: ipmi_devintf");
