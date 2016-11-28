@@ -423,7 +423,7 @@ static int nvme_nvm_get_bb_tbl(struct nvm_dev *nvmdev, struct ppa_addr ppa,
 	if (le32_to_cpu(bb_tbl->tblks) != nr_blks) {
 		ret = -EINVAL;
 		dev_err(ctrl->device,
-				"bbt unsuspected blocks returned (%u!=%u)",
+				"bbt unsuspected blocks returned (%u!=%u)\n",
 				le32_to_cpu(bb_tbl->tblks), nr_blks);
 		goto out;
 	}
