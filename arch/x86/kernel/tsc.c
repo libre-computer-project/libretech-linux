@@ -702,6 +702,20 @@ unsigned long native_calibrate_tsc(void)
 		}
 	}
 
+	/*
+	 * TSC frequency determined by CPUID is a "hardware reported"
+	 * frequency and is the most accurate one so far we have. This
+	 * is considered a known frequency.
+	 */
+	setup_force_cpu_cap(X86_FEATURE_TSC_KNOWN_FREQ);
+
+	/*
+	 * For Atom SoCs TSC is the only reliable clocksource.
+	 * Mark TSC reliable so no watchdog on it.
+	 */
+	if (boot_cpu_data.x86_model == INTEL_FAM6_ATOM_GOLDMONT)
+		setup_force_cpu_cap(X86_FEATURE_TSC_RELIABLE);
+
 	return crystal_khz * ebx_numerator / eax_denominator;
 }
 
@@ -1283,10 +1297,10 @@ static int __init init_tsc_clocksource(void)
 		clocksource_tsc.flags |= CLOCK_SOURCE_SUSPEND_NONSTOP;
 
 	/*
-	 * Trust the results of the earlier calibration on systems
-	 * exporting a reliable TSC.
+	 * When TSC frequency is known (retrieved via MSR or CPUID), we skip
+	 * the refined calibration and directly register it as a clocksource.
 	 */
-	if (boot_cpu_has(X86_FEATURE_TSC_RELIABLE)) {
+	if (boot_cpu_has(X86_FEATURE_TSC_KNOWN_FREQ)) {
 		clocksource_register_khz(&clocksource_tsc, tsc_khz);
 		return 0;
 	}

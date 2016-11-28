@@ -103,8 +103,6 @@ struct pv_cpu_ops {
 	unsigned long (*get_debugreg)(int regno);
 	void (*set_debugreg)(int regno, unsigned long value);
 
-	void (*clts)(void);
-
 	unsigned long (*read_cr0)(void);
 	void (*write_cr0)(unsigned long);
 
@@ -310,6 +308,8 @@ struct pv_lock_ops {
 
 	void (*wait)(u8 *ptr, u8 val);
 	void (*kick)(int cpu);
+
+	struct paravirt_callee_save vcpu_is_preempted;
 };
 
 /* This contains all the paravirt structures: we get a convenient
