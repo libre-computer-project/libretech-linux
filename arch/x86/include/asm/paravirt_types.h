@@ -310,6 +310,8 @@ struct pv_lock_ops {
 
 	void (*wait)(u8 *ptr, u8 val);
 	void (*kick)(int cpu);
+
+	struct paravirt_callee_save vcpu_is_preempted;
 };
 
 /* This contains all the paravirt structures: we get a convenient
