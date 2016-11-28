@@ -21,6 +21,15 @@ enum {
 	WBT_NUM_RWQ		= 2,
 };
 
+/*
+ * Enable states. Either off, or on by default (done at init time),
+ * or on through manual setup in sysfs.
+ */
+enum {
+	WBT_STATE_ON_DEFAULT	= 1,
+	WBT_STATE_ON_MANUAL	= 2,
+};
+
 static inline void wbt_clear_state(struct blk_issue_stat *stat)
 {
 	stat->time &= BLK_STAT_TIME_MASK;
@@ -60,6 +69,8 @@ struct rq_wb {
 	unsigned int wb_max;			/* max throughput writeback */
 	int scale_step;
 	bool scaled_max;
+
+	short enable_state;			/* WBT_STATE_* */
 
 	/*
 	 * Number of consecutive periods where we don't have enough
@@ -105,10 +116,12 @@ void wbt_exit(struct request_queue *);
 void wbt_update_limits(struct rq_wb *);
 void wbt_requeue(struct rq_wb *, struct blk_issue_stat *);
 void wbt_issue(struct rq_wb *, struct blk_issue_stat *);
-void wbt_disable(struct rq_wb *);
+void wbt_disable_default(struct request_queue *);
 
 void wbt_set_queue_depth(struct rq_wb *, unsigned int);
 void wbt_set_write_cache(struct rq_wb *, bool);
+
+u64 wbt_default_latency_nsec(struct request_queue *);
 
 #else
 
@@ -139,7 +152,7 @@ static inline void wbt_requeue(struct rq_wb *rwb, struct blk_issue_stat *stat)
 static inline void wbt_issue(struct rq_wb *rwb, struct blk_issue_stat *stat)
 {
 }
-static inline void wbt_disable(struct rq_wb *rwb)
+static inline void wbt_disable_default(struct request_queue *q)
 {
 }
 static inline void wbt_set_queue_depth(struct rq_wb *rwb, unsigned int depth)
@@ -147,6 +160,10 @@ static inline void wbt_set_queue_depth(struct rq_wb *rwb, unsigned int depth)
 }
 static inline void wbt_set_write_cache(struct rq_wb *rwb, bool wc)
 {
+}
+static inline u64 wbt_default_latency_nsec(struct request_queue *q)
+{
+	return 0;
 }
 
 #endif /* CONFIG_BLK_WBT */

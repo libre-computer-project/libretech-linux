@@ -665,15 +665,33 @@ void wbt_set_write_cache(struct rq_wb *rwb, bool write_cache_on)
 		rwb->wc = write_cache_on;
 }
 
-void wbt_disable(struct rq_wb *rwb)
+ /*
+ * Disable wbt, if enabled by default. Only called from CFQ, if we have
+ * cgroups enabled
+ */
+void wbt_disable_default(struct request_queue *q)
 {
-	if (rwb) {
+	struct rq_wb *rwb = q->rq_wb;
+
+	if (rwb && rwb->enable_state == WBT_STATE_ON_DEFAULT) {
 		del_timer_sync(&rwb->window_timer);
 		rwb->win_nsec = rwb->min_lat_nsec = 0;
 		wbt_update_limits(rwb);
 	}
 }
-EXPORT_SYMBOL_GPL(wbt_disable);
+EXPORT_SYMBOL_GPL(wbt_disable_default);
+
+u64 wbt_default_latency_nsec(struct request_queue *q)
+{
+	/*
+	 * We default to 2msec for non-rotational storage, and 75msec
+	 * for rotational storage.
+	 */
+	if (blk_queue_nonrot(q))
+		return 2000000ULL;
+	else
+		return 75000000ULL;
+}
 
 int wbt_init(struct request_queue *q)
 {
@@ -703,6 +721,7 @@ int wbt_init(struct request_queue *q)
 	rwb->last_comp = rwb->last_issue = jiffies;
 	rwb->queue = q;
 	rwb->win_nsec = RWB_WINDOW_NSEC;
+	rwb->enable_state = WBT_STATE_ON_DEFAULT;
 	wbt_update_limits(rwb);
 
 	/*
@@ -711,10 +730,7 @@ int wbt_init(struct request_queue *q)
 	q->rq_wb = rwb;
 	blk_stat_enable(q);
 
-	if (blk_queue_nonrot(q))
-		rwb->min_lat_nsec = 2000000ULL;
-	else
-		rwb->min_lat_nsec = 75000000ULL;
+	rwb->min_lat_nsec = wbt_default_latency_nsec(q);
 
 	wbt_set_queue_depth(rwb, blk_queue_depth(q));
 	wbt_set_write_cache(rwb, test_bit(QUEUE_FLAG_WC, &q->queue_flags));

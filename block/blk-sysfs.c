@@ -42,12 +42,12 @@ queue_var_store(unsigned long *var, const char *page, size_t count)
 	return count;
 }
 
-static ssize_t queue_var_store64(u64 *var, const char *page)
+static ssize_t queue_var_store64(s64 *var, const char *page)
 {
 	int err;
-	u64 v;
+	s64 v;
 
-	err = kstrtou64(page, 10, &v);
+	err = kstrtos64(page, 10, &v);
 	if (err < 0)
 		return err;
 
@@ -421,18 +421,36 @@ static ssize_t queue_wb_lat_show(struct request_queue *q, char *page)
 static ssize_t queue_wb_lat_store(struct request_queue *q, const char *page,
 				  size_t count)
 {
+	struct rq_wb *rwb;
 	ssize_t ret;
-	u64 val;
-
-	if (!q->rq_wb)
-		return -EINVAL;
+	s64 val;
 
 	ret = queue_var_store64(&val, page);
 	if (ret < 0)
 		return ret;
+	if (val < -1)
+		return -EINVAL;
 
-	q->rq_wb->min_lat_nsec = val * 1000ULL;
-	wbt_update_limits(q->rq_wb);
+	rwb = q->rq_wb;
+	if (!rwb) {
+		ret = wbt_init(q);
+		if (ret)
+			return ret;
+
+		rwb = q->rq_wb;
+		if (!rwb)
+			return -EINVAL;
+	}
+
+	if (val == -1)
+		rwb->min_lat_nsec = wbt_default_latency_nsec(q);
+	else if (val >= 0)
+		rwb->min_lat_nsec = val * 1000ULL;
+
+	if (rwb->enable_state == WBT_STATE_ON_DEFAULT)
+		rwb->enable_state = WBT_STATE_ON_MANUAL;
+
+	wbt_update_limits(rwb);
 	return count;
 }
 
