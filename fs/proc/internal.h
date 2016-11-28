@@ -202,7 +202,7 @@ static inline bool is_empty_pde(const struct proc_dir_entry *pde)
 struct pde_opener {
 	struct file *file;
 	struct list_head lh;
-	int closing;
+	bool closing;
 	struct completion *c;
 };
 extern const struct inode_operations proc_link_inode_operations;

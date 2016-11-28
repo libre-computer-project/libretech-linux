@@ -19,6 +19,7 @@
 #include <linux/mutex.h>
 #include <linux/list.h>
 #include <linux/fs.h>
+#include <linux/ima.h>
 #include <crypto/hash.h>
 #include <crypto/sha.h>
 #include <linux/syscalls.h>
@@ -131,6 +132,9 @@ kimage_file_prepare_segments(struct kimage *image, int kernel_fd, int initrd_fd,
 	if (ret)
 		return ret;
 	image->kernel_buf_len = size;
+
+	/* IMA needs to pass the measurement list to the next kernel. */
+	ima_add_kexec_buffer(image);
 
 	/* Call arch image probe handlers */
 	ret = arch_kexec_kernel_image_probe(image, image->kernel_buf,
@@ -428,25 +432,65 @@ static int locate_mem_hole_callback(u64 start, u64 end, void *arg)
 	return locate_mem_hole_bottom_up(start, end, kbuf);
 }
 
-/*
- * Helper function for placing a buffer in a kexec segment. This assumes
- * that kexec_mutex is held.
+/**
+ * arch_kexec_walk_mem - call func(data) on free memory regions
+ * @kbuf:	Context info for the search. Also passed to @func.
+ * @func:	Function to call for each memory region.
+ *
+ * Return: The memory walk will stop when func returns a non-zero value
+ * and that value will be returned. If all free regions are visited without
+ * func returning non-zero, then zero will be returned.
  */
-int kexec_add_buffer(struct kimage *image, char *buffer, unsigned long bufsz,
-		     unsigned long memsz, unsigned long buf_align,
-		     unsigned long buf_min, unsigned long buf_max,
-		     bool top_down, unsigned long *load_addr)
+int __weak arch_kexec_walk_mem(struct kexec_buf *kbuf,
+			       int (*func)(u64, u64, void *))
+{
+	if (kbuf->image->type == KEXEC_TYPE_CRASH)
+		return walk_iomem_res_desc(crashk_res.desc,
+					   IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY,
+					   crashk_res.start, crashk_res.end,
+					   kbuf, func);
+	else
+		return walk_system_ram_res(0, ULONG_MAX, kbuf, func);
+}
+
+/**
+ * kexec_locate_mem_hole - find free memory for the purgatory or the next kernel
+ * @kbuf:	Parameters for the memory search.
+ *
+ * On success, kbuf->mem will have the start address of the memory region found.
+ *
+ * Return: 0 on success, negative errno on error.
+ */
+int kexec_locate_mem_hole(struct kexec_buf *kbuf)
+{
+	int ret;
+
+	ret = arch_kexec_walk_mem(kbuf, locate_mem_hole_callback);
+
+	return ret == 1 ? 0 : -EADDRNOTAVAIL;
+}
+
+/**
+ * kexec_add_buffer - place a buffer in a kexec segment
+ * @kbuf:	Buffer contents and memory parameters.
+ *
+ * This function assumes that kexec_mutex is held.
+ * On successful return, @kbuf->mem will have the physical address of
+ * the buffer in memory.
+ *
+ * Return: 0 on success, negative errno on error.
+ */
+int kexec_add_buffer(struct kexec_buf *kbuf)
 {
 
 	struct kexec_segment *ksegment;
-	struct kexec_buf buf, *kbuf;
 	int ret;
 
 	/* Currently adding segment this way is allowed only in file mode */
-	if (!image->file_mode)
+	if (!kbuf->image->file_mode)
 		return -EINVAL;
 
-	if (image->nr_segments >= KEXEC_SEGMENT_MAX)
+	if (kbuf->image->nr_segments >= KEXEC_SEGMENT_MAX)
 		return -EINVAL;
 
 	/*
@@ -456,45 +500,27 @@ int kexec_add_buffer(struct kimage *image, char *buffer, unsigned long bufsz,
 	 * logic goes through list of segments to make sure there are
 	 * no destination overlaps.
 	 */
-	if (!list_empty(&image->control_pages)) {
+	if (!list_empty(&kbuf->image->control_pages)) {
 		WARN_ON(1);
 		return -EINVAL;
 	}
 
-	memset(&buf, 0, sizeof(struct kexec_buf));
-	kbuf = &buf;
-	kbuf->image = image;
-	kbuf->buffer = buffer;
-	kbuf->bufsz = bufsz;
-
-	kbuf->memsz = ALIGN(memsz, PAGE_SIZE);
-	kbuf->buf_align = max(buf_align, PAGE_SIZE);
-	kbuf->buf_min = buf_min;
-	kbuf->buf_max = buf_max;
-	kbuf->top_down = top_down;
+	/* Ensure minimum alignment needed for segments. */
+	kbuf->memsz = ALIGN(kbuf->memsz, PAGE_SIZE);
+	kbuf->buf_align = max(kbuf->buf_align, PAGE_SIZE);
 
 	/* Walk the RAM ranges and allocate a suitable range for the buffer */
-	if (image->type == KEXEC_TYPE_CRASH)
-		ret = walk_iomem_res_desc(crashk_res.desc,
-				IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY,
-				crashk_res.start, crashk_res.end, kbuf,
-				locate_mem_hole_callback);
-	else
-		ret = walk_system_ram_res(0, -1, kbuf,
-					  locate_mem_hole_callback);
-	if (ret != 1) {
-		/* A suitable memory range could not be found for buffer */
-		return -EADDRNOTAVAIL;
-	}
+	ret = kexec_locate_mem_hole(kbuf);
+	if (ret)
+		return ret;
 
 	/* Found a suitable memory range */
-	ksegment = &image->segment[image->nr_segments];
+	ksegment = &kbuf->image->segment[kbuf->image->nr_segments];
 	ksegment->kbuf = kbuf->buffer;
 	ksegment->bufsz = kbuf->bufsz;
 	ksegment->mem = kbuf->mem;
 	ksegment->memsz = kbuf->memsz;
-	image->nr_segments++;
-	*load_addr = ksegment->mem;
+	kbuf->image->nr_segments++;
 	return 0;
 }
 
@@ -611,18 +637,263 @@ out:
 	return ret;
 }
 
-/* Actually load purgatory. Lot of code taken from kexec-tools */
+#ifdef CONFIG_HAVE_KEXEC_FILE_PIE_PURGATORY
+/*
+ * Load position independent executable purgatory using program header
+ * information.
+ */
+static int __kexec_really_load_purgatory(const Elf_Ehdr *ehdr,
+					 Elf_Shdr *sechdrs,
+					 struct kexec_buf *kbuf,
+					 unsigned long *entry_addr)
+{
+	int ret;
+	unsigned long entry, dst_mem;
+	void *dst;
+	const Elf_Phdr *phdr, *first_load_seg = NULL, *last_load_seg = NULL;
+	const Elf_Phdr *prev_load_seg;
+	const Elf_Phdr *phdrs = (const void *) ehdr + ehdr->e_phoff;
+
+	/* Determine how much memory is needed to load the executable. */
+	for (phdr = phdrs; phdr < phdrs + ehdr->e_phnum; phdr++) {
+		if (phdr->p_type != PT_LOAD)
+			continue;
+
+		if (!first_load_seg)
+			first_load_seg = phdr;
+
+		if (kbuf->buf_align < phdr->p_align)
+			kbuf->buf_align = phdr->p_align;
+
+		last_load_seg = phdr;
+	}
+
+	kbuf->memsz = kbuf->bufsz = last_load_seg->p_paddr +
+					    last_load_seg->p_memsz -
+					    first_load_seg->p_paddr +
+					    first_load_seg->p_offset;
+
+	/* Allocate buffer for purgatory. */
+	kbuf->buffer = vzalloc(kbuf->bufsz);
+	if (!kbuf->buffer) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/* Add buffer to segment list. */
+	ret = kexec_add_buffer(kbuf);
+	if (ret)
+		goto out;
+
+	/* Load executable. */
+	prev_load_seg = NULL;
+	entry = ehdr->e_entry;
+	dst = kbuf->buffer;
+	dst_mem = kbuf->mem;
+	for (phdr = phdrs; phdr < phdrs + ehdr->e_phnum; phdr++) {
+		const void *src;
+		int i;
+		unsigned long p_offset;
+
+		if (phdr->p_type != PT_LOAD)
+			continue;
+
+		if (!prev_load_seg)
+			p_offset = phdr->p_offset;
+		else
+			p_offset = phdr->p_paddr - prev_load_seg->p_paddr;
+
+		src = (const void *) ehdr + phdr->p_offset;
+		dst += p_offset;
+		dst_mem += p_offset;
+		memcpy(dst, src, phdr->p_filesz);
+
+		/*
+		 * If the entry point is in this segment, find its final
+		 * location in memory.
+		 */
+		if (entry >= phdr->p_paddr &&
+		    entry < phdr->p_paddr + phdr->p_memsz)
+			entry = dst_mem + entry - phdr->p_paddr;
+
+		/*
+		 * Find sections within this segment and update their
+		 * ->sh_offset to point to within the buffer.
+		 */
+		for (i = 0; i < ehdr->e_shnum; i++) {
+			Elf_Shdr *sechdr = &sechdrs[i];
+			Elf_Addr start = sechdr->sh_addr;
+			Elf_Addr size = sechdr->sh_size;
+
+			if (!(sechdr->sh_flags & SHF_ALLOC))
+				continue;
+
+			if (start >= phdr->p_paddr &&
+			    start + size <= phdr->p_paddr + phdr->p_memsz) {
+				unsigned long s_offset = start - phdr->p_paddr;
+				void *p = dst + s_offset;
+
+				sechdr->sh_addr = dst_mem + s_offset;
+				sechdr->sh_offset = (unsigned long long) p;
+			}
+		}
+
+		prev_load_seg = phdr;
+	}
+
+	*entry_addr = entry;
+
+	return 0;
+out:
+	vfree(kbuf->buffer);
+
+	return ret;
+}
+#else /* CONFIG_HAVE_KEXEC_FILE_PIE_PURGATORY */
+/*
+ * Load relocatable object purgatory using the section header information.
+ * A lot of code taken from kexec-tools.
+ */
+static int __kexec_really_load_purgatory(const Elf_Ehdr *ehdr,
+					 Elf_Shdr *sechdrs,
+					 struct kexec_buf *kbuf,
+					 unsigned long *entry_addr)
+{
+	unsigned long align, bss_align, bss_sz, bss_pad;
+	unsigned long entry, load_addr, curr_load_addr, bss_addr, offset;
+	unsigned char *buf_addr, *src;
+	int i, ret, entry_sidx = -1;
+
+	/*
+	 * Identify entry point section and make entry relative to section
+	 * start.
+	 */
+	entry = ehdr->e_entry;
+	for (i = 0; i < ehdr->e_shnum; i++) {
+		if (!(sechdrs[i].sh_flags & SHF_ALLOC))
+			continue;
+
+		if (!(sechdrs[i].sh_flags & SHF_EXECINSTR))
+			continue;
+
+		/* Make entry section relative */
+		if (sechdrs[i].sh_addr <= ehdr->e_entry &&
+		    ((sechdrs[i].sh_addr + sechdrs[i].sh_size) >
+		     ehdr->e_entry)) {
+			entry_sidx = i;
+			entry -= sechdrs[i].sh_addr;
+			break;
+		}
+	}
+
+	/* Determine how much memory is needed to load relocatable object. */
+	bss_align = 1;
+	bss_sz = 0;
+
+	for (i = 0; i < ehdr->e_shnum; i++) {
+		if (!(sechdrs[i].sh_flags & SHF_ALLOC))
+			continue;
+
+		align = sechdrs[i].sh_addralign;
+		if (sechdrs[i].sh_type != SHT_NOBITS) {
+			if (kbuf->buf_align < align)
+				kbuf->buf_align = align;
+			kbuf->bufsz = ALIGN(kbuf->bufsz, align);
+			kbuf->bufsz += sechdrs[i].sh_size;
+		} else {
+			/* bss section */
+			if (bss_align < align)
+				bss_align = align;
+			bss_sz = ALIGN(bss_sz, align);
+			bss_sz += sechdrs[i].sh_size;
+		}
+	}
+
+	/* Determine the bss padding required to align bss properly */
+	bss_pad = 0;
+	if (kbuf->bufsz & (bss_align - 1))
+		bss_pad = bss_align - (kbuf->bufsz & (bss_align - 1));
+
+	kbuf->memsz = kbuf->bufsz + bss_pad + bss_sz;
+
+	/* Allocate buffer for purgatory */
+	kbuf->buffer = vzalloc(kbuf->bufsz);
+	if (!kbuf->buffer) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	if (kbuf->buf_align < bss_align)
+		kbuf->buf_align = bss_align;
+
+	/* Add buffer to segment list */
+	ret = kexec_add_buffer(kbuf);
+	if (ret)
+		goto out;
+
+	/* Load SHF_ALLOC sections */
+	buf_addr = kbuf->buffer;
+	load_addr = curr_load_addr = kbuf->mem;
+	bss_addr = load_addr + kbuf->bufsz + bss_pad;
+
+	for (i = 0; i < ehdr->e_shnum; i++) {
+		if (!(sechdrs[i].sh_flags & SHF_ALLOC))
+			continue;
+
+		align = sechdrs[i].sh_addralign;
+		if (sechdrs[i].sh_type != SHT_NOBITS) {
+			curr_load_addr = ALIGN(curr_load_addr, align);
+			offset = curr_load_addr - load_addr;
+			/* We already modifed ->sh_offset to keep src addr */
+			src = (char *) sechdrs[i].sh_offset;
+			memcpy(buf_addr + offset, src, sechdrs[i].sh_size);
+
+			/* Store load address and source address of section */
+			sechdrs[i].sh_addr = curr_load_addr;
+
+			/*
+			 * This section got copied to temporary buffer. Update
+			 * ->sh_offset accordingly.
+			 */
+			sechdrs[i].sh_offset = (unsigned long)(buf_addr + offset);
+
+			/* Advance to the next address */
+			curr_load_addr += sechdrs[i].sh_size;
+		} else {
+			bss_addr = ALIGN(bss_addr, align);
+			sechdrs[i].sh_addr = bss_addr;
+			bss_addr += sechdrs[i].sh_size;
+		}
+	}
+
+	/* Update entry point based on load address of text section */
+	if (entry_sidx >= 0)
+		entry += sechdrs[entry_sidx].sh_addr;
+
+	*entry_addr = entry;
+
+	return 0;
+out:
+	vfree(kbuf->buffer);
+
+	return ret;
+}
+#endif /* CONFIG_HAVE_KEXEC_FILE_PIE_PURGATORY */
+
+/*
+ * Adjust the section headers to point to the temporary copy of their contents
+ * and load the purgatory binary.
+ */
 static int __kexec_load_purgatory(struct kimage *image, unsigned long min,
 				  unsigned long max, int top_down)
 {
 	struct purgatory_info *pi = &image->purgatory_info;
-	unsigned long align, buf_align, bss_align, buf_sz, bss_sz, bss_pad;
-	unsigned long memsz, entry, load_addr, curr_load_addr, bss_addr, offset;
-	unsigned char *buf_addr, *src;
-	int i, ret = 0, entry_sidx = -1;
 	const Elf_Shdr *sechdrs_c;
-	Elf_Shdr *sechdrs = NULL;
-	void *purgatory_buf = NULL;
+	Elf_Shdr *sechdrs;
+	int i, ret;
+	struct kexec_buf kbuf = { .image = image, .buf_align = 1,
+				  .buf_min = min, .buf_max = max,
+				  .top_down = top_down };
 
 	/*
 	 * sechdrs_c points to section headers in purgatory and are read
@@ -665,118 +936,10 @@ static int __kexec_load_purgatory(struct kimage *image, unsigned long min,
 						sechdrs[i].sh_offset;
 	}
 
-	/*
-	 * Identify entry point section and make entry relative to section
-	 * start.
-	 */
-	entry = pi->ehdr->e_entry;
-	for (i = 0; i < pi->ehdr->e_shnum; i++) {
-		if (!(sechdrs[i].sh_flags & SHF_ALLOC))
-			continue;
-
-		if (!(sechdrs[i].sh_flags & SHF_EXECINSTR))
-			continue;
-
-		/* Make entry section relative */
-		if (sechdrs[i].sh_addr <= pi->ehdr->e_entry &&
-		    ((sechdrs[i].sh_addr + sechdrs[i].sh_size) >
-		     pi->ehdr->e_entry)) {
-			entry_sidx = i;
-			entry -= sechdrs[i].sh_addr;
-			break;
-		}
-	}
-
-	/* Determine how much memory is needed to load relocatable object. */
-	buf_align = 1;
-	bss_align = 1;
-	buf_sz = 0;
-	bss_sz = 0;
-
-	for (i = 0; i < pi->ehdr->e_shnum; i++) {
-		if (!(sechdrs[i].sh_flags & SHF_ALLOC))
-			continue;
-
-		align = sechdrs[i].sh_addralign;
-		if (sechdrs[i].sh_type != SHT_NOBITS) {
-			if (buf_align < align)
-				buf_align = align;
-			buf_sz = ALIGN(buf_sz, align);
-			buf_sz += sechdrs[i].sh_size;
-		} else {
-			/* bss section */
-			if (bss_align < align)
-				bss_align = align;
-			bss_sz = ALIGN(bss_sz, align);
-			bss_sz += sechdrs[i].sh_size;
-		}
-	}
-
-	/* Determine the bss padding required to align bss properly */
-	bss_pad = 0;
-	if (buf_sz & (bss_align - 1))
-		bss_pad = bss_align - (buf_sz & (bss_align - 1));
-
-	memsz = buf_sz + bss_pad + bss_sz;
-
-	/* Allocate buffer for purgatory */
-	purgatory_buf = vzalloc(buf_sz);
-	if (!purgatory_buf) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	if (buf_align < bss_align)
-		buf_align = bss_align;
-
-	/* Add buffer to segment list */
-	ret = kexec_add_buffer(image, purgatory_buf, buf_sz, memsz,
-				buf_align, min, max, top_down,
-				&pi->purgatory_load_addr);
+	ret = __kexec_really_load_purgatory(pi->ehdr, sechdrs, &kbuf,
+					    &image->start);
 	if (ret)
 		goto out;
-
-	/* Load SHF_ALLOC sections */
-	buf_addr = purgatory_buf;
-	load_addr = curr_load_addr = pi->purgatory_load_addr;
-	bss_addr = load_addr + buf_sz + bss_pad;
-
-	for (i = 0; i < pi->ehdr->e_shnum; i++) {
-		if (!(sechdrs[i].sh_flags & SHF_ALLOC))
-			continue;
-
-		align = sechdrs[i].sh_addralign;
-		if (sechdrs[i].sh_type != SHT_NOBITS) {
-			curr_load_addr = ALIGN(curr_load_addr, align);
-			offset = curr_load_addr - load_addr;
-			/* We already modifed ->sh_offset to keep src addr */
-			src = (char *) sechdrs[i].sh_offset;
-			memcpy(buf_addr + offset, src, sechdrs[i].sh_size);
-
-			/* Store load address and source address of section */
-			sechdrs[i].sh_addr = curr_load_addr;
-
-			/*
-			 * This section got copied to temporary buffer. Update
-			 * ->sh_offset accordingly.
-			 */
-			sechdrs[i].sh_offset = (unsigned long)(buf_addr + offset);
-
-			/* Advance to the next address */
-			curr_load_addr += sechdrs[i].sh_size;
-		} else {
-			bss_addr = ALIGN(bss_addr, align);
-			sechdrs[i].sh_addr = bss_addr;
-			bss_addr += sechdrs[i].sh_size;
-		}
-	}
-
-	/* Update entry point based on load address of text section */
-	if (entry_sidx >= 0)
-		entry += sechdrs[entry_sidx].sh_addr;
-
-	/* Make kernel jump to purgatory after shutdown */
-	image->start = entry;
 
 	/* Used later to get/set symbol values */
 	pi->sechdrs = sechdrs;
@@ -785,11 +948,13 @@ static int __kexec_load_purgatory(struct kimage *image, unsigned long min,
 	 * Used later to identify which section is purgatory and skip it
 	 * from checksumming.
 	 */
-	pi->purgatory_buf = purgatory_buf;
-	return ret;
+	pi->purgatory_buf = kbuf.buffer;
+	pi->purgatory_load_addr = kbuf.mem;
+
+	return 0;
 out:
 	vfree(sechdrs);
-	vfree(purgatory_buf);
+
 	return ret;
 }
 
@@ -865,7 +1030,7 @@ int kexec_load_purgatory(struct kimage *image, unsigned long min,
 	pi->ehdr = (Elf_Ehdr *)kexec_purgatory;
 
 	if (memcmp(pi->ehdr->e_ident, ELFMAG, SELFMAG) != 0
-	    || pi->ehdr->e_type != ET_REL
+	    || pi->ehdr->e_type != PURGATORY_ELF_TYPE
 	    || !elf_check_arch(pi->ehdr)
 	    || pi->ehdr->e_shentsize != sizeof(Elf_Shdr))
 		return -ENOEXEC;
@@ -892,6 +1057,28 @@ out:
 	vfree(pi->purgatory_buf);
 	pi->purgatory_buf = NULL;
 	return ret;
+}
+
+/**
+ * sym_value_offset - return symbol value as a section-relative offset
+ *
+ * In position-independent executables the symbol value is an absolute address,
+ * so convert it to a section-relative offset. In relocatable objects the symbol
+ * value already is a section-relative offset.
+ */
+static Elf_Addr sym_value_offset(struct purgatory_info *pi, Elf_Sym *sym)
+{
+	Elf_Addr base_addr;
+
+	if (IS_ENABLED(CONFIG_HAVE_KEXEC_FILE_PIE_PURGATORY)) {
+		const Elf_Shdr *sechdrs_c;
+
+		sechdrs_c = (const void *) pi->ehdr + pi->ehdr->e_shoff;
+		base_addr = sechdrs_c[sym->st_shndx].sh_addr;
+	} else
+		base_addr = 0;
+
+	return sym->st_value - base_addr;
 }
 
 static Elf_Sym *kexec_purgatory_find_symbol(struct purgatory_info *pi,
@@ -958,7 +1145,7 @@ void *kexec_purgatory_get_symbol_addr(struct kimage *image, const char *name)
 	 * Returns the address where symbol will finally be loaded after
 	 * kexec_load_segment()
 	 */
-	return (void *)(sechdr->sh_addr + sym->st_value);
+	return (void *)(sechdr->sh_addr + sym_value_offset(pi, sym));
 }
 
 /*
@@ -992,7 +1179,7 @@ int kexec_purgatory_get_set_symbol(struct kimage *image, const char *name,
 	}
 
 	sym_buf = (unsigned char *)sechdrs[sym->st_shndx].sh_offset +
-					sym->st_value;
+					sym_value_offset(pi, sym);
 
 	if (get_value)
 		memcpy((void *)buf, sym_buf, size);
