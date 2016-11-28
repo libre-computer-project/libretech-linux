@@ -40,6 +40,7 @@
 #include <linux/poll.h>
 #include <linux/nmi.h>
 #include <linux/fs.h>
+#include <linux/trace.h>
 #include <linux/sched/rt.h>
 
 #include "trace.h"
@@ -2128,6 +2129,129 @@ void trace_buffer_unlock_commit_regs(struct trace_array *tr,
 	ftrace_trace_userstack(buffer, flags, pc);
 }
 
+static void
+trace_process_export(struct trace_export *export,
+	       struct ring_buffer_event *event)
+{
+	struct trace_entry *entry;
+	unsigned int size = 0;
+
+	entry = ring_buffer_event_data(event);
+	size = ring_buffer_event_length(event);
+	export->write(entry, size);
+}
+
+static DEFINE_MUTEX(ftrace_export_lock);
+
+static struct trace_export __rcu *ftrace_exports_list __read_mostly;
+
+static DEFINE_STATIC_KEY_FALSE(ftrace_exports_enabled);
+
+static inline void ftrace_exports_enable(void)
+{
+	static_branch_enable(&ftrace_exports_enabled);
+}
+
+static inline void ftrace_exports_disable(void)
+{
+	static_branch_disable(&ftrace_exports_enabled);
+}
+
+void ftrace_exports(struct ring_buffer_event *event)
+{
+	struct trace_export *export;
+
+	preempt_disable_notrace();
+
+	export = rcu_dereference_raw_notrace(ftrace_exports_list);
+	while (export) {
+		trace_process_export(export, event);
+		export = rcu_dereference_raw_notrace(export->next);
+	}
+
+	preempt_enable_notrace();
+}
+
+static inline void
+add_trace_export(struct trace_export **list, struct trace_export *export)
+{
+	rcu_assign_pointer(export->next, *list);
+	/*
+	 * We are entering export into the list but another
+	 * CPU might be walking that list. We need to make sure
+	 * the export->next pointer is valid before another CPU sees
+	 * the export pointer included into the list.
+	 */
+	rcu_assign_pointer(*list, export);
+}
+
+static inline int
+rm_trace_export(struct trace_export **list, struct trace_export *export)
+{
+	struct trace_export **p;
+
+	for (p = list; *p != NULL; p = &(*p)->next)
+		if (*p == export)
+			break;
+
+	if (*p != export)
+		return -1;
+
+	rcu_assign_pointer(*p, (*p)->next);
+
+	return 0;
+}
+
+static inline void
+add_ftrace_export(struct trace_export **list, struct trace_export *export)
+{
+	if (*list == NULL)
+		ftrace_exports_enable();
+
+	add_trace_export(list, export);
+}
+
+static inline int
+rm_ftrace_export(struct trace_export **list, struct trace_export *export)
+{
+	int ret;
+
+	ret = rm_trace_export(list, export);
+	if (*list == NULL)
+		ftrace_exports_disable();
+
+	return ret;
+}
+
+int register_ftrace_export(struct trace_export *export)
+{
+	if (WARN_ON_ONCE(!export->write))
+		return -1;
+
+	mutex_lock(&ftrace_export_lock);
+
+	add_ftrace_export(&ftrace_exports_list, export);
+
+	mutex_unlock(&ftrace_export_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(register_ftrace_export);
+
+int unregister_ftrace_export(struct trace_export *export)
+{
+	int ret;
+
+	mutex_lock(&ftrace_export_lock);
+
+	ret = rm_ftrace_export(&ftrace_exports_list, export);
+
+	mutex_unlock(&ftrace_export_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(unregister_ftrace_export);
+
 void
 trace_function(struct trace_array *tr,
 	       unsigned long ip, unsigned long parent_ip, unsigned long flags,
@@ -2146,8 +2270,11 @@ trace_function(struct trace_array *tr,
 	entry->ip			= ip;
 	entry->parent_ip		= parent_ip;
 
-	if (!call_filter_check_discard(call, entry, buffer, event))
+	if (!call_filter_check_discard(call, entry, buffer, event)) {
+		if (static_branch_unlikely(&ftrace_exports_enabled))
+			ftrace_exports(event);
 		__buffer_unlock_commit(buffer, event);
+	}
 }
 
 #ifdef CONFIG_STACKTRACE
@@ -4054,6 +4181,7 @@ static const char readme_msg[] =
 	"     x86-tsc:   TSC cycle counter\n"
 #endif
 	"\n  trace_marker\t\t- Writes into this file writes into the kernel buffer\n"
+	"\n  trace_marker_raw\t\t- Writes into this file writes binary data into the kernel buffer\n"
 	"  tracing_cpumask\t- Limit which CPUs to trace\n"
 	"  instances\t\t- Make sub-buffers with: mkdir instances/foo\n"
 	"\t\t\t  Remove sub-buffer with rmdir\n"
@@ -4065,7 +4193,7 @@ static const char readme_msg[] =
 	"\n  available_filter_functions - list of functions that can be filtered on\n"
 	"  set_ftrace_filter\t- echo function name in here to only trace these\n"
 	"\t\t\t  functions\n"
-	"\t     accepts: func_full_name, *func_end, func_begin*, *func_middle*\n"
+	"\t     accepts: func_full_name or glob-matching-pattern\n"
 	"\t     modules: Can select a group via module\n"
 	"\t      Format: :mod:<module-name>\n"
 	"\t     example: echo :mod:ext3 > set_ftrace_filter\n"
@@ -5514,34 +5642,14 @@ tracing_free_buffer_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static ssize_t
-tracing_mark_write(struct file *filp, const char __user *ubuf,
-					size_t cnt, loff_t *fpos)
+static inline int lock_user_pages(const char __user *ubuf, size_t cnt,
+				  struct page **pages, void **map_page,
+				  int *offset)
 {
 	unsigned long addr = (unsigned long)ubuf;
-	struct trace_array *tr = filp->private_data;
-	struct ring_buffer_event *event;
-	struct ring_buffer *buffer;
-	struct print_entry *entry;
-	unsigned long irq_flags;
-	struct page *pages[2];
-	void *map_page[2];
 	int nr_pages = 1;
-	ssize_t written;
-	int offset;
-	int size;
-	int len;
 	int ret;
 	int i;
-
-	if (tracing_disabled)
-		return -EINVAL;
-
-	if (!(tr->trace_flags & TRACE_ITER_MARKERS))
-		return -EINVAL;
-
-	if (cnt > TRACE_BUF_SIZE)
-		cnt = TRACE_BUF_SIZE;
 
 	/*
 	 * Userspace is injecting traces into the kernel trace buffer.
@@ -5557,25 +5665,69 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 	 * pages directly. We then write the data directly into the
 	 * ring buffer.
 	 */
-	BUILD_BUG_ON(TRACE_BUF_SIZE >= PAGE_SIZE);
 
 	/* check if we cross pages */
 	if ((addr & PAGE_MASK) != ((addr + cnt) & PAGE_MASK))
 		nr_pages = 2;
 
-	offset = addr & (PAGE_SIZE - 1);
+	*offset = addr & (PAGE_SIZE - 1);
 	addr &= PAGE_MASK;
 
 	ret = get_user_pages_fast(addr, nr_pages, 0, pages);
 	if (ret < nr_pages) {
 		while (--ret >= 0)
 			put_page(pages[ret]);
-		written = -EFAULT;
-		goto out;
+		return -EFAULT;
 	}
 
 	for (i = 0; i < nr_pages; i++)
 		map_page[i] = kmap_atomic(pages[i]);
+
+	return nr_pages;
+}
+
+static inline void unlock_user_pages(struct page **pages,
+				     void **map_page, int nr_pages)
+{
+	int i;
+
+	for (i = nr_pages - 1; i >= 0; i--) {
+		kunmap_atomic(map_page[i]);
+		put_page(pages[i]);
+	}
+}
+
+static ssize_t
+tracing_mark_write(struct file *filp, const char __user *ubuf,
+					size_t cnt, loff_t *fpos)
+{
+	struct trace_array *tr = filp->private_data;
+	struct ring_buffer_event *event;
+	struct ring_buffer *buffer;
+	struct print_entry *entry;
+	unsigned long irq_flags;
+	struct page *pages[2];
+	void *map_page[2];
+	int nr_pages = 1;
+	ssize_t written;
+	int offset;
+	int size;
+	int len;
+
+	if (tracing_disabled)
+		return -EINVAL;
+
+	if (!(tr->trace_flags & TRACE_ITER_MARKERS))
+		return -EINVAL;
+
+	if (cnt > TRACE_BUF_SIZE)
+		cnt = TRACE_BUF_SIZE;
+
+	BUILD_BUG_ON(TRACE_BUF_SIZE >= PAGE_SIZE);
+
+	nr_pages = lock_user_pages(ubuf, cnt, pages, map_page, &offset);
+	if (nr_pages < 0)
+		return nr_pages;
 
 	local_save_flags(irq_flags);
 	size = sizeof(*entry) + cnt + 2; /* possible \n added */
@@ -5611,11 +5763,79 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 	*fpos += written;
 
  out_unlock:
-	for (i = nr_pages - 1; i >= 0; i--) {
-		kunmap_atomic(map_page[i]);
-		put_page(pages[i]);
+	unlock_user_pages(pages, map_page, nr_pages);
+
+	return written;
+}
+
+/* Limit it for now to 3K (including tag) */
+#define RAW_DATA_MAX_SIZE (1024*3)
+
+static ssize_t
+tracing_mark_raw_write(struct file *filp, const char __user *ubuf,
+					size_t cnt, loff_t *fpos)
+{
+	struct trace_array *tr = filp->private_data;
+	struct ring_buffer_event *event;
+	struct ring_buffer *buffer;
+	struct raw_data_entry *entry;
+	unsigned long irq_flags;
+	struct page *pages[2];
+	void *map_page[2];
+	int nr_pages = 1;
+	ssize_t written;
+	int offset;
+	int size;
+	int len;
+
+	if (tracing_disabled)
+		return -EINVAL;
+
+	if (!(tr->trace_flags & TRACE_ITER_MARKERS))
+		return -EINVAL;
+
+	/* The marker must at least have a tag id */
+	if (cnt < sizeof(unsigned int) || cnt > RAW_DATA_MAX_SIZE)
+		return -EINVAL;
+
+	if (cnt > TRACE_BUF_SIZE)
+		cnt = TRACE_BUF_SIZE;
+
+	BUILD_BUG_ON(TRACE_BUF_SIZE >= PAGE_SIZE);
+
+	nr_pages = lock_user_pages(ubuf, cnt, pages, map_page, &offset);
+	if (nr_pages < 0)
+		return nr_pages;
+
+	local_save_flags(irq_flags);
+	size = sizeof(*entry) + cnt;
+	buffer = tr->trace_buffer.buffer;
+	event = trace_buffer_lock_reserve(buffer, TRACE_RAW_DATA, size,
+					  irq_flags, preempt_count());
+	if (!event) {
+		/* Ring buffer disabled, return as if not open for write */
+		written = -EBADF;
+		goto out_unlock;
 	}
- out:
+
+	entry = ring_buffer_event_data(event);
+
+	if (nr_pages == 2) {
+		len = PAGE_SIZE - offset;
+		memcpy(&entry->id, map_page[0] + offset, len);
+		memcpy(((char *)&entry->id) + len, map_page[1], cnt - len);
+	} else
+		memcpy(&entry->id, map_page[0] + offset, cnt);
+
+	__buffer_unlock_commit(buffer, event);
+
+	written = cnt;
+
+	*fpos += written;
+
+ out_unlock:
+	unlock_user_pages(pages, map_page, nr_pages);
+
 	return written;
 }
 
@@ -5941,6 +6161,13 @@ static const struct file_operations tracing_free_buffer_fops = {
 static const struct file_operations tracing_mark_fops = {
 	.open		= tracing_open_generic_tr,
 	.write		= tracing_mark_write,
+	.llseek		= generic_file_llseek,
+	.release	= tracing_release_generic_tr,
+};
+
+static const struct file_operations tracing_mark_raw_fops = {
+	.open		= tracing_open_generic_tr,
+	.write		= tracing_mark_raw_write,
 	.llseek		= generic_file_llseek,
 	.release	= tracing_release_generic_tr,
 };
@@ -7213,6 +7440,9 @@ init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
 
 	trace_create_file("trace_marker", 0220, d_tracer,
 			  tr, &tracing_mark_fops);
+
+	trace_create_file("trace_marker_raw", 0220, d_tracer,
+			  tr, &tracing_mark_raw_fops);
 
 	trace_create_file("trace_clock", 0644, d_tracer, tr,
 			  &trace_clock_fops);
