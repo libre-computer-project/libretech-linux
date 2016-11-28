@@ -578,3 +578,8 @@ int __qcom_scm_video_set_state(struct device *dev, u32 state, u32 spare)
 
 	return ret ? : le32_to_cpu(scm_ret);
 }
+
+int __qcom_scm_gpu_zap_resume(struct device *dev)
+{
+	return -ENOTSUPP;
+}

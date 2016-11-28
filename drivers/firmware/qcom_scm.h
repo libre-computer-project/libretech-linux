@@ -57,6 +57,7 @@ extern int  __qcom_scm_pas_mem_setup(struct device *dev, u32 peripheral,
 extern int  __qcom_scm_pas_auth_and_reset(struct device *dev, u32 peripheral);
 extern int  __qcom_scm_pas_shutdown(struct device *dev, u32 peripheral);
 extern int  __qcom_scm_pas_mss_reset(struct device *dev, bool reset);
+extern int  __qcom_scm_gpu_zap_resume(struct device *dev);
 
 /* common error codes */
 #define QCOM_SCM_V2_EBUSY	-12

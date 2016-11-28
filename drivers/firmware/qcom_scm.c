@@ -315,6 +315,12 @@ static const struct reset_control_ops qcom_scm_pas_reset_ops = {
 	.deassert = qcom_scm_pas_reset_deassert,
 };
 
+int qcom_scm_gpu_zap_resume(void)
+{
+	return __qcom_scm_gpu_zap_resume(__scm->dev);
+}
+EXPORT_SYMBOL(qcom_scm_gpu_zap_resume);
+
 /**
  * qcom_scm_is_available() - Checks if SCM is available
  */

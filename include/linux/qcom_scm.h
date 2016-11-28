@@ -40,6 +40,7 @@ extern int qcom_scm_pas_shutdown(u32 peripheral);
 extern void qcom_scm_cpu_power_down(u32 flags);
 extern u32 qcom_scm_get_version(void);
 extern int qcom_scm_video_set_state(u32 state, u32 spare);
+extern int qcom_scm_gpu_zap_resume(void);
 #else
 static inline
 int qcom_scm_set_cold_boot_addr(void *entry, const cpumask_t *cpus)
@@ -67,6 +68,7 @@ static inline void qcom_scm_cpu_power_down(u32 flags) {}
 static inline u32 qcom_scm_get_version(void) { return 0; }
 static inline int
 qcom_scm_video_set_state(u32 state, u32 spare) { return -ENODEV; }
+static inline int qcom_scm_gpu_zap_resume(void) { return -ENODEV; }
 #endif
 
 #endif
