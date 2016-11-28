@@ -47,10 +47,6 @@
 static struct class *cpuid_class;
 static enum cpuhp_state cpuhp_cpuid_state;
 
-struct cpuid_regs {
-	u32 eax, ebx, ecx, edx;
-};
-
 static void cpuid_smp_cpuid(void *cmd_block)
 {
 	struct cpuid_regs *cmd = (struct cpuid_regs *)cmd_block;
