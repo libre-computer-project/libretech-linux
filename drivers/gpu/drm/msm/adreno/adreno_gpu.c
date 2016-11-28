@@ -218,19 +218,18 @@ void adreno_flush(struct msm_gpu *gpu)
 	adreno_gpu_write(adreno_gpu, REG_ADRENO_CP_RB_WPTR, wptr);
 }
 
-void adreno_idle(struct msm_gpu *gpu)
+bool adreno_idle(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	uint32_t wptr = get_wptr(gpu->rb);
-	int ret;
 
 	/* wait for CP to drain ringbuffer: */
-	ret = spin_until(get_rptr(adreno_gpu) == wptr);
-
-	if (ret)
-		DRM_ERROR("%s: timeout waiting to drain ringbuffer!\n", gpu->name);
+	if (!spin_until(get_rptr(adreno_gpu) == wptr))
+		return true;
 
 	/* TODO maybe we need to reset GPU here to recover from hang? */
+	DRM_ERROR("%s: timeout waiting to drain ringbuffer!\n", gpu->name);
+	return false;
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -278,7 +277,6 @@ void adreno_show(struct msm_gpu *gpu, struct seq_file *m)
 void adreno_dump_info(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
-	int i;
 
 	printk("revision: %d (%d.%d.%d.%d)\n",
 			adreno_gpu->info->revn, adreno_gpu->rev.core,
@@ -290,11 +288,6 @@ void adreno_dump_info(struct msm_gpu *gpu)
 	printk("rptr:     %d\n", get_rptr(adreno_gpu));
 	printk("wptr:     %d\n", adreno_gpu->memptrs->wptr);
 	printk("rb wptr:  %d\n", get_wptr(gpu->rb));
-
-	for (i = 0; i < 8; i++) {
-		printk("CP_SCRATCH_REG%d: %u\n", i,
-			gpu_read(gpu, REG_AXXX_CP_SCRATCH_REG0 + i));
-	}
 }
 
 /* would be nice to not have to duplicate the _show() stuff with printk(): */
@@ -381,7 +374,7 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 		return ret;
 	}
 
-	mmu = gpu->mmu;
+	mmu = gpu->aspace->mmu;
 	if (mmu) {
 		ret = mmu->funcs->attach(mmu, iommu_ports,
 				ARRAY_SIZE(iommu_ports));
