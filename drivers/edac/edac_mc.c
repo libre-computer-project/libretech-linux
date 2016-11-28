@@ -453,8 +453,8 @@ void edac_mc_free(struct mem_ctl_info *mci)
 }
 EXPORT_SYMBOL_GPL(edac_mc_free);
 
-
-struct mem_ctl_info *find_mci_by_dev(struct device *dev)
+/* Caller must hold mem_ctls_mutex */
+static struct mem_ctl_info *__find_mci_by_dev(struct device *dev)
 {
 	struct mem_ctl_info *mci;
 	struct list_head *item;
@@ -469,6 +469,17 @@ struct mem_ctl_info *find_mci_by_dev(struct device *dev)
 	}
 
 	return NULL;
+}
+
+struct mem_ctl_info *find_mci_by_dev(struct device *dev)
+{
+	struct mem_ctl_info *ret;
+
+	mutex_lock(&mem_ctls_mutex);
+	ret = __find_mci_by_dev(dev);
+	mutex_unlock(&mem_ctls_mutex);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(find_mci_by_dev);
 
@@ -552,7 +563,7 @@ static int add_mc_to_global_list(struct mem_ctl_info *mci)
 
 	insert_before = &mc_devices;
 
-	p = find_mci_by_dev(mci->pdev);
+	p = __find_mci_by_dev(mci->pdev);
 	if (unlikely(p != NULL))
 		goto fail0;
 
@@ -601,21 +612,25 @@ static int del_mc_from_global_list(struct mem_ctl_info *mci)
 
 struct mem_ctl_info *edac_mc_find(int idx)
 {
+	struct mem_ctl_info *mci = NULL;
 	struct list_head *item;
-	struct mem_ctl_info *mci;
+
+	mutex_lock(&mem_ctls_mutex);
 
 	list_for_each(item, &mc_devices) {
 		mci = list_entry(item, struct mem_ctl_info, link);
 
 		if (mci->mc_idx >= idx) {
-			if (mci->mc_idx == idx)
-				return mci;
-
+			if (mci->mc_idx == idx) {
+				goto unlock;
+			}
 			break;
 		}
 	}
 
-	return NULL;
+unlock:
+	mutex_unlock(&mem_ctls_mutex);
+	return mci;
 }
 EXPORT_SYMBOL(edac_mc_find);
 
@@ -718,7 +733,7 @@ struct mem_ctl_info *edac_mc_del_mc(struct device *dev)
 	mutex_lock(&mem_ctls_mutex);
 
 	/* find the requested mci struct in the global list */
-	mci = find_mci_by_dev(dev);
+	mci = __find_mci_by_dev(dev);
 	if (mci == NULL) {
 		mutex_unlock(&mem_ctls_mutex);
 		return NULL;
