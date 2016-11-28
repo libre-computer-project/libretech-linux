@@ -35,6 +35,45 @@ static const struct block_device_operations gen_fops = {
 	.owner		= THIS_MODULE,
 };
 
+static int gen_reserve_luns(struct nvm_dev *dev, struct nvm_target *t,
+			    int lun_begin, int lun_end)
+{
+	struct gen_dev *gn = dev->mp;
+	struct nvm_lun *lun;
+	int i;
+
+	for (i = lun_begin; i <= lun_end; i++) {
+		if (test_and_set_bit(i, dev->lun_map)) {
+			pr_err("nvm: lun %d already allocated\n", i);
+			goto err;
+		}
+
+		lun = &gn->luns[i];
+		list_add_tail(&lun->list, &t->lun_list);
+	}
+
+	return 0;
+
+err:
+	while (--i > lun_begin) {
+		lun = &gn->luns[i];
+		clear_bit(i, dev->lun_map);
+		list_del(&lun->list);
+	}
+
+	return -EBUSY;
+}
+
+static void gen_release_luns(struct nvm_dev *dev, struct nvm_target *t)
+{
+	struct nvm_lun *lun, *tmp;
+
+	list_for_each_entry_safe(lun, tmp, &t->lun_list, list) {
+		WARN_ON(!test_and_clear_bit(lun->id, dev->lun_map));
+		list_del(&lun->list);
+	}
+}
+
 static int gen_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 {
 	struct gen_dev *gn = dev->mp;
@@ -64,9 +103,14 @@ static int gen_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 	if (!t)
 		return -ENOMEM;
 
+	INIT_LIST_HEAD(&t->lun_list);
+
+	if (gen_reserve_luns(dev, t, s->lun_begin, s->lun_end))
+		goto err_t;
+
 	tqueue = blk_alloc_queue_node(GFP_KERNEL, dev->q->node);
 	if (!tqueue)
-		goto err_t;
+		goto err_reserve;
 	blk_queue_make_request(tqueue, tt->make_rq);
 
 	tdisk = alloc_disk(0);
@@ -105,6 +149,8 @@ err_init:
 	put_disk(tdisk);
 err_queue:
 	blk_cleanup_queue(tqueue);
+err_reserve:
+	gen_release_luns(dev, t);
 err_t:
 	kfree(t);
 	return -ENOMEM;
@@ -122,6 +168,7 @@ static void __gen_remove_target(struct nvm_target *t)
 	if (tt->exit)
 		tt->exit(tdisk->private_data);
 
+	gen_release_luns(t->dev, t);
 	put_disk(tdisk);
 
 	list_del(&t->list);
@@ -223,13 +270,13 @@ static void gen_put_area(struct nvm_dev *dev, sector_t begin)
 static void gen_blocks_free(struct nvm_dev *dev)
 {
 	struct gen_dev *gn = dev->mp;
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	int i;
 
 	gen_for_each_lun(gn, lun, i) {
-		if (!lun->vlun.blocks)
+		if (!lun->blocks)
 			break;
-		vfree(lun->vlun.blocks);
+		vfree(lun->blocks);
 	}
 }
 
@@ -242,24 +289,25 @@ static void gen_luns_free(struct nvm_dev *dev)
 
 static int gen_luns_init(struct nvm_dev *dev, struct gen_dev *gn)
 {
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	int i;
 
-	gn->luns = kcalloc(dev->nr_luns, sizeof(struct gen_lun), GFP_KERNEL);
+	gn->luns = kcalloc(dev->nr_luns, sizeof(struct nvm_lun), GFP_KERNEL);
 	if (!gn->luns)
 		return -ENOMEM;
 
 	gen_for_each_lun(gn, lun, i) {
-		spin_lock_init(&lun->vlun.lock);
 		INIT_LIST_HEAD(&lun->free_list);
 		INIT_LIST_HEAD(&lun->used_list);
 		INIT_LIST_HEAD(&lun->bb_list);
+		INIT_LIST_HEAD(&lun->list);
 
-		lun->reserved_blocks = 2; /* for GC only */
-		lun->vlun.id = i;
-		lun->vlun.lun_id = i % dev->luns_per_chnl;
-		lun->vlun.chnl_id = i / dev->luns_per_chnl;
-		lun->vlun.nr_free_blocks = dev->blks_per_lun;
+		spin_lock_init(&lun->lock);
+
+		lun->id = i;
+		lun->lun_id = i % dev->luns_per_chnl;
+		lun->chnl_id = i / dev->luns_per_chnl;
+		lun->nr_free_blocks = dev->blks_per_lun;
 	}
 	return 0;
 }
@@ -268,7 +316,7 @@ static int gen_block_bb(struct gen_dev *gn, struct ppa_addr ppa,
 							u8 *blks, int nr_blks)
 {
 	struct nvm_dev *dev = gn->dev;
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	struct nvm_block *blk;
 	int i;
 
@@ -279,12 +327,13 @@ static int gen_block_bb(struct gen_dev *gn, struct ppa_addr ppa,
 	lun = &gn->luns[(dev->luns_per_chnl * ppa.g.ch) + ppa.g.lun];
 
 	for (i = 0; i < nr_blks; i++) {
-		if (blks[i] == 0)
+		if (blks[i] == NVM_BLK_T_FREE)
 			continue;
 
-		blk = &lun->vlun.blocks[i];
+		blk = &lun->blocks[i];
 		list_move_tail(&blk->list, &lun->bb_list);
-		lun->vlun.nr_free_blocks--;
+		blk->state = NVM_BLK_ST_BAD;
+		lun->nr_free_blocks--;
 	}
 
 	return 0;
@@ -295,7 +344,7 @@ static int gen_block_map(u64 slba, u32 nlb, __le64 *entries, void *private)
 	struct nvm_dev *dev = private;
 	struct gen_dev *gn = dev->mp;
 	u64 elba = slba + nlb;
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	struct nvm_block *blk;
 	u64 i;
 	int lun_id;
@@ -326,7 +375,7 @@ static int gen_block_map(u64 slba, u32 nlb, __le64 *entries, void *private)
 
 		/* Calculate block offset into lun */
 		pba = pba - (dev->sec_per_lun * lun_id);
-		blk = &lun->vlun.blocks[div_u64(pba, dev->sec_per_blk)];
+		blk = &lun->blocks[div_u64(pba, dev->sec_per_blk)];
 
 		if (!blk->state) {
 			/* at this point, we don't know anything about the
@@ -335,7 +384,7 @@ static int gen_block_map(u64 slba, u32 nlb, __le64 *entries, void *private)
 			 */
 			list_move_tail(&blk->list, &lun->used_list);
 			blk->state = NVM_BLK_ST_TGT;
-			lun->vlun.nr_free_blocks--;
+			lun->nr_free_blocks--;
 		}
 	}
 
@@ -344,7 +393,7 @@ static int gen_block_map(u64 slba, u32 nlb, __le64 *entries, void *private)
 
 static int gen_blocks_init(struct nvm_dev *dev, struct gen_dev *gn)
 {
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	struct nvm_block *block;
 	sector_t lun_iter, blk_iter, cur_block_id = 0;
 	int ret, nr_blks;
@@ -356,26 +405,20 @@ static int gen_blocks_init(struct nvm_dev *dev, struct gen_dev *gn)
 		return -ENOMEM;
 
 	gen_for_each_lun(gn, lun, lun_iter) {
-		lun->vlun.blocks = vzalloc(sizeof(struct nvm_block) *
+		lun->blocks = vzalloc(sizeof(struct nvm_block) *
 							dev->blks_per_lun);
-		if (!lun->vlun.blocks) {
+		if (!lun->blocks) {
 			kfree(blks);
 			return -ENOMEM;
 		}
 
 		for (blk_iter = 0; blk_iter < dev->blks_per_lun; blk_iter++) {
-			block = &lun->vlun.blocks[blk_iter];
+			block = &lun->blocks[blk_iter];
 
 			INIT_LIST_HEAD(&block->list);
 
-			block->lun = &lun->vlun;
+			block->lun = lun;
 			block->id = cur_block_id++;
-
-			/* First block is reserved for device */
-			if (unlikely(lun_iter == 0 && blk_iter == 0)) {
-				lun->vlun.nr_free_blocks--;
-				continue;
-			}
 
 			list_add_tail(&block->list, &lun->free_list);
 		}
@@ -384,8 +427,8 @@ static int gen_blocks_init(struct nvm_dev *dev, struct gen_dev *gn)
 			struct ppa_addr ppa;
 
 			ppa.ppa = 0;
-			ppa.g.ch = lun->vlun.chnl_id;
-			ppa.g.lun = lun->vlun.lun_id;
+			ppa.g.ch = lun->chnl_id;
+			ppa.g.lun = lun->lun_id;
 
 			ret = nvm_get_bb_tbl(dev, ppa, blks);
 			if (ret)
@@ -474,41 +517,39 @@ static void gen_unregister(struct nvm_dev *dev)
 }
 
 static struct nvm_block *gen_get_blk(struct nvm_dev *dev,
-				struct nvm_lun *vlun, unsigned long flags)
+				struct nvm_lun *lun, unsigned long flags)
 {
-	struct gen_lun *lun = container_of(vlun, struct gen_lun, vlun);
 	struct nvm_block *blk = NULL;
 	int is_gc = flags & NVM_IOTYPE_GC;
 
-	spin_lock(&vlun->lock);
+	spin_lock(&lun->lock);
 	if (list_empty(&lun->free_list)) {
 		pr_err_ratelimited("gen: lun %u have no free pages available",
-								lun->vlun.id);
+								lun->id);
 		goto out;
 	}
 
-	if (!is_gc && lun->vlun.nr_free_blocks < lun->reserved_blocks)
+	if (!is_gc && lun->nr_free_blocks < lun->reserved_blocks)
 		goto out;
 
 	blk = list_first_entry(&lun->free_list, struct nvm_block, list);
 
 	list_move_tail(&blk->list, &lun->used_list);
 	blk->state = NVM_BLK_ST_TGT;
-	lun->vlun.nr_free_blocks--;
+	lun->nr_free_blocks--;
 out:
-	spin_unlock(&vlun->lock);
+	spin_unlock(&lun->lock);
 	return blk;
 }
 
 static void gen_put_blk(struct nvm_dev *dev, struct nvm_block *blk)
 {
-	struct nvm_lun *vlun = blk->lun;
-	struct gen_lun *lun = container_of(vlun, struct gen_lun, vlun);
+	struct nvm_lun *lun = blk->lun;
 
-	spin_lock(&vlun->lock);
+	spin_lock(&lun->lock);
 	if (blk->state & NVM_BLK_ST_TGT) {
 		list_move_tail(&blk->list, &lun->free_list);
-		lun->vlun.nr_free_blocks++;
+		lun->nr_free_blocks++;
 		blk->state = NVM_BLK_ST_FREE;
 	} else if (blk->state & NVM_BLK_ST_BAD) {
 		list_move_tail(&blk->list, &lun->bb_list);
@@ -519,13 +560,13 @@ static void gen_put_blk(struct nvm_dev *dev, struct nvm_block *blk)
 							blk->id, blk->state);
 		list_move_tail(&blk->list, &lun->bb_list);
 	}
-	spin_unlock(&vlun->lock);
+	spin_unlock(&lun->lock);
 }
 
 static void gen_mark_blk(struct nvm_dev *dev, struct ppa_addr ppa, int type)
 {
 	struct gen_dev *gn = dev->mp;
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	struct nvm_block *blk;
 
 	pr_debug("gen: ppa  (ch: %u lun: %u blk: %u pg: %u) -> %u\n",
@@ -543,39 +584,15 @@ static void gen_mark_blk(struct nvm_dev *dev, struct ppa_addr ppa, int type)
 	}
 
 	lun = &gn->luns[(dev->luns_per_chnl * ppa.g.ch) + ppa.g.lun];
-	blk = &lun->vlun.blocks[ppa.g.blk];
+	blk = &lun->blocks[ppa.g.blk];
 
 	/* will be moved to bb list on put_blk from target */
 	blk->state = type;
 }
 
-/*
- * mark block bad in gen. It is expected that the target recovers separately
- */
-static void gen_mark_blk_bad(struct nvm_dev *dev, struct nvm_rq *rqd)
-{
-	int bit = -1;
-	int max_secs = dev->ops->max_phys_sect;
-	void *comp_bits = &rqd->ppa_status;
-
-	nvm_addr_to_generic_mode(dev, rqd);
-
-	/* look up blocks and mark them as bad */
-	if (rqd->nr_ppas == 1) {
-		gen_mark_blk(dev, rqd->ppa_addr, NVM_BLK_ST_BAD);
-		return;
-	}
-
-	while ((bit = find_next_bit(comp_bits, max_secs, bit + 1)) < max_secs)
-		gen_mark_blk(dev, rqd->ppa_list[bit], NVM_BLK_ST_BAD);
-}
-
 static void gen_end_io(struct nvm_rq *rqd)
 {
 	struct nvm_tgt_instance *ins = rqd->ins;
-
-	if (rqd->error == NVM_RSP_ERR_FAILWRITE)
-		gen_mark_blk_bad(rqd->dev, rqd);
 
 	ins->tt->end_io(rqd);
 }
@@ -593,22 +610,11 @@ static int gen_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 	return dev->ops->submit_io(dev, rqd);
 }
 
-static int gen_erase_blk(struct nvm_dev *dev, struct nvm_block *blk,
-							unsigned long flags)
+static int gen_erase_blk(struct nvm_dev *dev, struct nvm_block *blk, int flags)
 {
 	struct ppa_addr addr = block_to_ppa(dev, blk);
 
-	return nvm_erase_ppa(dev, &addr, 1);
-}
-
-static int gen_reserve_lun(struct nvm_dev *dev, int lunid)
-{
-	return test_and_set_bit(lunid, dev->lun_map);
-}
-
-static void gen_release_lun(struct nvm_dev *dev, int lunid)
-{
-	WARN_ON(!test_and_clear_bit(lunid, dev->lun_map));
+	return nvm_erase_ppa(dev, &addr, 1, flags);
 }
 
 static struct nvm_lun *gen_get_lun(struct nvm_dev *dev, int lunid)
@@ -618,23 +624,23 @@ static struct nvm_lun *gen_get_lun(struct nvm_dev *dev, int lunid)
 	if (unlikely(lunid >= dev->nr_luns))
 		return NULL;
 
-	return &gn->luns[lunid].vlun;
+	return &gn->luns[lunid];
 }
 
 static void gen_lun_info_print(struct nvm_dev *dev)
 {
 	struct gen_dev *gn = dev->mp;
-	struct gen_lun *lun;
+	struct nvm_lun *lun;
 	unsigned int i;
 
 
 	gen_for_each_lun(gn, lun, i) {
-		spin_lock(&lun->vlun.lock);
+		spin_lock(&lun->lock);
 
 		pr_info("%s: lun%8u\t%u\n", dev->name, i,
-						lun->vlun.nr_free_blocks);
+						lun->nr_free_blocks);
 
-		spin_unlock(&lun->vlun.lock);
+		spin_unlock(&lun->lock);
 	}
 }
 
@@ -657,8 +663,6 @@ static struct nvmm_type gen = {
 	.mark_blk		= gen_mark_blk,
 
 	.get_lun		= gen_get_lun,
-	.reserve_lun		= gen_reserve_lun,
-	.release_lun		= gen_release_lun,
 	.lun_info_print		= gen_lun_info_print,
 
 	.get_area		= gen_get_area,

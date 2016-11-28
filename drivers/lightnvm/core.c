@@ -27,8 +27,6 @@
 #include <linux/lightnvm.h>
 #include <linux/sched/sysctl.h>
 
-#include "lightnvm.h"
-
 static LIST_HEAD(nvm_tgt_types);
 static DECLARE_RWSEM(nvm_tgtt_lock);
 static LIST_HEAD(nvm_mgrs);
@@ -198,15 +196,42 @@ void nvm_mark_blk(struct nvm_dev *dev, struct ppa_addr ppa, int type)
 }
 EXPORT_SYMBOL(nvm_mark_blk);
 
+int nvm_set_bb_tbl(struct nvm_dev *dev, struct ppa_addr *ppas, int nr_ppas,
+								int type)
+{
+	struct nvm_rq rqd;
+	int ret;
+
+	if (nr_ppas > dev->ops->max_phys_sect) {
+		pr_err("nvm: unable to update all sysblocks atomically\n");
+		return -EINVAL;
+	}
+
+	memset(&rqd, 0, sizeof(struct nvm_rq));
+
+	nvm_set_rqd_ppalist(dev, &rqd, ppas, nr_ppas, 1);
+	nvm_generic_to_addr_mode(dev, &rqd);
+
+	ret = dev->ops->set_bb_tbl(dev, &rqd.ppa_addr, rqd.nr_ppas, type);
+	nvm_free_rqd_ppalist(dev, &rqd);
+	if (ret) {
+		pr_err("nvm: sysblk failed bb mark\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(nvm_set_bb_tbl);
+
 int nvm_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 {
 	return dev->mt->submit_io(dev, rqd);
 }
 EXPORT_SYMBOL(nvm_submit_io);
 
-int nvm_erase_blk(struct nvm_dev *dev, struct nvm_block *blk)
+int nvm_erase_blk(struct nvm_dev *dev, struct nvm_block *blk, int flags)
 {
-	return dev->mt->erase_blk(dev, blk, 0);
+	return dev->mt->erase_blk(dev, blk, flags);
 }
 EXPORT_SYMBOL(nvm_erase_blk);
 
@@ -287,7 +312,8 @@ void nvm_free_rqd_ppalist(struct nvm_dev *dev, struct nvm_rq *rqd)
 }
 EXPORT_SYMBOL(nvm_free_rqd_ppalist);
 
-int nvm_erase_ppa(struct nvm_dev *dev, struct ppa_addr *ppas, int nr_ppas)
+int nvm_erase_ppa(struct nvm_dev *dev, struct ppa_addr *ppas, int nr_ppas,
+								int flags)
 {
 	struct nvm_rq rqd;
 	int ret;
@@ -302,6 +328,8 @@ int nvm_erase_ppa(struct nvm_dev *dev, struct ppa_addr *ppas, int nr_ppas)
 		return ret;
 
 	nvm_generic_to_addr_mode(dev, &rqd);
+
+	rqd.flags = flags;
 
 	ret = dev->ops->erase_block(dev, &rqd);
 
@@ -657,11 +685,6 @@ err:
 	return ret;
 }
 
-static void nvm_exit(struct nvm_dev *dev)
-{
-	nvm_sysfs_unregister_dev(dev);
-}
-
 struct nvm_dev *nvm_alloc_dev(int node)
 {
 	return kzalloc_node(sizeof(struct nvm_dev), GFP_KERNEL, node);
@@ -691,10 +714,6 @@ int nvm_register(struct nvm_dev *dev)
 		}
 	}
 
-	ret = nvm_sysfs_register_dev(dev);
-	if (ret)
-		goto err_ppalist;
-
 	if (dev->identity.cap & NVM_ID_DCAP_BBLKMGMT) {
 		ret = nvm_get_sysblock(dev, &dev->sb);
 		if (!ret)
@@ -711,8 +730,6 @@ int nvm_register(struct nvm_dev *dev)
 	up_write(&nvm_lock);
 
 	return 0;
-err_ppalist:
-	dev->ops->destroy_dma_pool(dev->dma_pool);
 err_init:
 	kfree(dev->lun_map);
 	return ret;
@@ -725,7 +742,7 @@ void nvm_unregister(struct nvm_dev *dev)
 	list_del(&dev->devices);
 	up_write(&nvm_lock);
 
-	nvm_exit(dev);
+	nvm_free(dev);
 }
 EXPORT_SYMBOL(nvm_unregister);
 
@@ -762,140 +779,6 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 
 	return dev->mt->create_tgt(dev, create);
 }
-
-#ifdef CONFIG_NVM_DEBUG
-static int nvm_configure_show(const char *val)
-{
-	struct nvm_dev *dev;
-	char opcode, devname[DISK_NAME_LEN];
-	int ret;
-
-	ret = sscanf(val, "%c %32s", &opcode, devname);
-	if (ret != 2) {
-		pr_err("nvm: invalid command. Use \"opcode devicename\".\n");
-		return -EINVAL;
-	}
-
-	down_write(&nvm_lock);
-	dev = nvm_find_nvm_dev(devname);
-	up_write(&nvm_lock);
-	if (!dev) {
-		pr_err("nvm: device not found\n");
-		return -EINVAL;
-	}
-
-	if (!dev->mt)
-		return 0;
-
-	dev->mt->lun_info_print(dev);
-
-	return 0;
-}
-
-static int nvm_configure_remove(const char *val)
-{
-	struct nvm_ioctl_remove remove;
-	struct nvm_dev *dev;
-	char opcode;
-	int ret = 0;
-
-	ret = sscanf(val, "%c %256s", &opcode, remove.tgtname);
-	if (ret != 2) {
-		pr_err("nvm: invalid command. Use \"d targetname\".\n");
-		return -EINVAL;
-	}
-
-	remove.flags = 0;
-
-	list_for_each_entry(dev, &nvm_devices, devices) {
-		ret = dev->mt->remove_tgt(dev, &remove);
-		if (!ret)
-			break;
-	}
-
-	return ret;
-}
-
-static int nvm_configure_create(const char *val)
-{
-	struct nvm_ioctl_create create;
-	char opcode;
-	int lun_begin, lun_end, ret;
-
-	ret = sscanf(val, "%c %256s %256s %48s %u:%u", &opcode, create.dev,
-						create.tgtname, create.tgttype,
-						&lun_begin, &lun_end);
-	if (ret != 6) {
-		pr_err("nvm: invalid command. Use \"opcode device name tgttype lun_begin:lun_end\".\n");
-		return -EINVAL;
-	}
-
-	create.flags = 0;
-	create.conf.type = NVM_CONFIG_TYPE_SIMPLE;
-	create.conf.s.lun_begin = lun_begin;
-	create.conf.s.lun_end = lun_end;
-
-	return __nvm_configure_create(&create);
-}
-
-
-/* Exposes administrative interface through /sys/module/lnvm/configure_by_str */
-static int nvm_configure_by_str_event(const char *val,
-					const struct kernel_param *kp)
-{
-	char opcode;
-	int ret;
-
-	ret = sscanf(val, "%c", &opcode);
-	if (ret != 1) {
-		pr_err("nvm: string must have the format of \"cmd ...\"\n");
-		return -EINVAL;
-	}
-
-	switch (opcode) {
-	case 'a':
-		return nvm_configure_create(val);
-	case 'd':
-		return nvm_configure_remove(val);
-	case 's':
-		return nvm_configure_show(val);
-	default:
-		pr_err("nvm: invalid command\n");
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int nvm_configure_get(char *buf, const struct kernel_param *kp)
-{
-	int sz;
-	struct nvm_dev *dev;
-
-	sz = sprintf(buf, "available devices:\n");
-	down_write(&nvm_lock);
-	list_for_each_entry(dev, &nvm_devices, devices) {
-		if (sz > 4095 - DISK_NAME_LEN - 2)
-			break;
-		sz += sprintf(buf + sz, " %32s\n", dev->name);
-	}
-	up_write(&nvm_lock);
-
-	return sz;
-}
-
-static const struct kernel_param_ops nvm_configure_by_str_event_param_ops = {
-	.set	= nvm_configure_by_str_event,
-	.get	= nvm_configure_get,
-};
-
-#undef MODULE_PARAM_PREFIX
-#define MODULE_PARAM_PREFIX	"lnvm."
-
-module_param_cb(configure_debug, &nvm_configure_by_str_event_param_ops, NULL,
-									0644);
-
-#endif /* CONFIG_NVM_DEBUG */
 
 static long nvm_ioctl_info(struct file *file, void __user *arg)
 {
