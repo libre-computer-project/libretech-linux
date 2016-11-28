@@ -147,4 +147,35 @@ int x86_pci_root_bus_node(int bus);
 void x86_pci_root_bus_resources(int bus, struct list_head *resources);
 
 extern bool x86_topology_update;
+
+#ifdef CONFIG_SCHED_ITMT
+#include <asm/percpu.h>
+
+DECLARE_PER_CPU_READ_MOSTLY(int, sched_core_priority);
+extern unsigned int __read_mostly sysctl_sched_itmt_enabled;
+
+/* Interface to set priority of a cpu */
+void sched_set_itmt_core_prio(int prio, int core_cpu);
+
+/* Interface to notify scheduler that system supports ITMT */
+int sched_set_itmt_support(void);
+
+/* Interface to notify scheduler that system revokes ITMT support */
+void sched_clear_itmt_support(void);
+
+#else /* CONFIG_SCHED_ITMT */
+
+#define sysctl_sched_itmt_enabled	0
+static inline void sched_set_itmt_core_prio(int prio, int core_cpu)
+{
+}
+static inline int sched_set_itmt_support(void)
+{
+	return 0;
+}
+static inline void sched_clear_itmt_support(void)
+{
+}
+#endif /* CONFIG_SCHED_ITMT */
+
 #endif /* _ASM_X86_TOPOLOGY_H */
