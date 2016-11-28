@@ -82,6 +82,7 @@ static int vc4_get_param_ioctl(struct drm_device *dev, void *data,
 		break;
 	case DRM_VC4_PARAM_SUPPORTS_BRANCHES:
 	case DRM_VC4_PARAM_SUPPORTS_ETC1:
+	case DRM_VC4_PARAM_SUPPORTS_THREADED_FS:
 		args->value = true;
 		break;
 	default:
@@ -107,9 +108,7 @@ static const struct file_operations vc4_drm_fops = {
 	.mmap = vc4_mmap,
 	.poll = drm_poll,
 	.read = drm_read,
-#ifdef CONFIG_COMPAT
 	.compat_ioctl = drm_compat_ioctl,
-#endif
 	.llseek = noop_llseek,
 };
 
