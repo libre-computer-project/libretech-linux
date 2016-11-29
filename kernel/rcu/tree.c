@@ -3418,6 +3418,18 @@ void synchronize_sched(void)
 EXPORT_SYMBOL_GPL(synchronize_sched);
 
 /**
+ * rcu_sched_trivial_gp - Are RCU-sched grace periods trivially zero cost?
+ *
+ * Returns true if RCU-sched grace periods are currently zero cost, which
+ * they are if there is only one CPU.  Note that unless you take steps to
+ * prevent it, the number of CPUs might change at any time.
+ */
+bool rcu_sched_trivial_gp(void)
+{
+	return rcu_blocking_is_gp();
+}
+
+/**
  * synchronize_rcu_bh - wait until an rcu_bh grace period has elapsed.
  *
  * Control will return to the caller some time after a full rcu_bh grace
@@ -3443,6 +3455,18 @@ void synchronize_rcu_bh(void)
 		wait_rcu_gp(call_rcu_bh);
 }
 EXPORT_SYMBOL_GPL(synchronize_rcu_bh);
+
+/**
+ * rcu_bh_trivial_gp - Are RCU-bh grace periods trivially zero cost?
+ *
+ * Returns true if RCU-bh grace periods are currently zero cost, which
+ * they are if there is only one CPU.  Note that unless you take steps to
+ * prevent it, the number of CPUs might change at any time.
+ */
+bool rcu_bh_trivial_gp(void)
+{
+	return rcu_blocking_is_gp();
+}
 
 /**
  * get_state_synchronize_rcu - Snapshot current RCU state
