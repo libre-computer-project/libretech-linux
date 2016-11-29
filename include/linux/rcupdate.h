@@ -423,7 +423,7 @@ extern struct srcu_struct tasks_rcu_exit_srcu;
  */
 #define cond_resched_rcu_qs() \
 do { \
-	if (!cond_resched()) \
+	if (!is_idle_task(current) && !cond_resched()) \
 		rcu_note_voluntary_context_switch(current); \
 } while (0)
 
