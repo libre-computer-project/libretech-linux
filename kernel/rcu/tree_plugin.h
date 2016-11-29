@@ -680,6 +680,17 @@ void synchronize_rcu(void)
 EXPORT_SYMBOL_GPL(synchronize_rcu);
 
 /**
+ * rcu_trivial_gp - Are RCU grace periods trivially zero cost?
+ *
+ * Returns true if RCU grace periods are currently zero cost, which
+ * they are during boot.
+ */
+bool rcu_trivial_gp(void)
+{
+	return !rcu_scheduler_active;
+}
+
+/**
  * rcu_barrier - Wait until all in-flight call_rcu() callbacks complete.
  *
  * Note that this primitive does not necessarily wait for an RCU grace period

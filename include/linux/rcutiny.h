@@ -93,6 +93,16 @@ static inline void synchronize_sched_expedited(void)
 	synchronize_sched();
 }
 
+static inline bool rcu_sched_trivial_gp(void)
+{
+	return true;
+}
+
+static inline bool rcu_bh_trivial_gp(void)
+{
+	return true;
+}
+
 static inline void kfree_call_rcu(struct rcu_head *head,
 				  rcu_callback_t func)
 {
