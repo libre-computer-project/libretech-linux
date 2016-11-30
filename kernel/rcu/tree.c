@@ -1275,6 +1275,7 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 				    bool *isidle, unsigned long *maxj)
 {
 	int *rcrmp;
+	struct rcu_node *rnp;
 
 	/*
 	 * If the CPU passed through or entered a dynticks idle phase with
@@ -1287,6 +1288,19 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 	if (rcu_dynticks_in_eqs_since(rdp->dynticks, rdp->dynticks_snap)) {
 		trace_rcu_fqs(rdp->rsp->name, rdp->gpnum, rdp->cpu, TPS("dti"));
 		rdp->dynticks_fqs++;
+		return 1;
+	}
+
+	/*
+	 * Has this CPU encountered a cond_resched_rcu_qs() since the
+	 * beginning of the grace period?  For this to be the case,
+	 * the CPU has to have noticed the current grace period.  This
+	 * might not be the case for nohz_full CPUs looping in the kernel.
+	 */
+	rnp = rdp->mynode;
+	if (READ_ONCE(rdp->rcu_qs_ctr_snap) != per_cpu(rcu_qs_ctr, rdp->cpu) &&
+	    READ_ONCE(rdp->gpnum) == rnp->gpnum && !rdp->gpwrap) {
+		trace_rcu_fqs(rdp->rsp->name, rdp->gpnum, rdp->cpu, TPS("rqc"));
 		return 1;
 	}
 
@@ -2595,10 +2609,8 @@ rcu_report_qs_rdp(int cpu, struct rcu_state *rsp, struct rcu_data *rdp)
 
 	rnp = rdp->mynode;
 	raw_spin_lock_irqsave_rcu_node(rnp, flags);
-	if ((rdp->cpu_no_qs.b.norm &&
-	     rdp->rcu_qs_ctr_snap == __this_cpu_read(rcu_qs_ctr)) ||
-	    rdp->gpnum != rnp->gpnum || rnp->completed == rnp->gpnum ||
-	    rdp->gpwrap) {
+	if (rdp->cpu_no_qs.b.norm || rdp->gpnum != rnp->gpnum ||
+	    rnp->completed == rnp->gpnum || rdp->gpwrap) {
 
 		/*
 		 * The grace period in which this quiescent state was
@@ -2653,8 +2665,7 @@ rcu_check_quiescent_state(struct rcu_state *rsp, struct rcu_data *rdp)
 	 * Was there a quiescent state since the beginning of the grace
 	 * period? If no, then exit and wait for the next call.
 	 */
-	if (rdp->cpu_no_qs.b.norm &&
-	    rdp->rcu_qs_ctr_snap == __this_cpu_read(rcu_qs_ctr))
+	if (rdp->cpu_no_qs.b.norm)
 		return;
 
 	/*
@@ -3632,9 +3643,7 @@ static int __rcu_pending(struct rcu_state *rsp, struct rcu_data *rdp)
 	    rdp->core_needs_qs && rdp->cpu_no_qs.b.norm &&
 	    rdp->rcu_qs_ctr_snap == __this_cpu_read(rcu_qs_ctr)) {
 		rdp->n_rp_core_needs_qs++;
-	} else if (rdp->core_needs_qs &&
-		   (!rdp->cpu_no_qs.b.norm ||
-		    rdp->rcu_qs_ctr_snap != __this_cpu_read(rcu_qs_ctr))) {
+	} else if (rdp->core_needs_qs && !rdp->cpu_no_qs.b.norm) {
 		rdp->n_rp_report_qs++;
 		return 1;
 	}
