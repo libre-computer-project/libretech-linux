@@ -1057,17 +1057,19 @@ static void detect_art(void)
 	if (boot_cpu_data.cpuid_level < ART_CPUID_LEAF)
 		return;
 
+	/* Don't enable ART in a VM, non-stop TSC and TSC_ADJUST required */
+	if (boot_cpu_has(X86_FEATURE_HYPERVISOR) ||
+	    !boot_cpu_has(X86_FEATURE_NONSTOP_TSC) ||
+	    !boot_cpu_has(X86_FEATURE_TSC_ADJUST))
+		return;
+
 	cpuid(ART_CPUID_LEAF, &art_to_tsc_denominator,
 	      &art_to_tsc_numerator, unused, unused+1);
 
-	/* Don't enable ART in a VM, non-stop TSC required */
-	if (boot_cpu_has(X86_FEATURE_HYPERVISOR) ||
-	    !boot_cpu_has(X86_FEATURE_NONSTOP_TSC) ||
-	    art_to_tsc_denominator < ART_MIN_DENOMINATOR)
+	if (art_to_tsc_denominator < ART_MIN_DENOMINATOR)
 		return;
 
-	if (rdmsrl_safe(MSR_IA32_TSC_ADJUST, &art_to_tsc_offset))
-		return;
+	rdmsrl(MSR_IA32_TSC_ADJUST, art_to_tsc_offset);
 
 	/* Make this sticky over multiple CPU init calls */
 	setup_force_cpu_cap(X86_FEATURE_ART);
@@ -1377,6 +1379,8 @@ void __init tsc_init(void)
 
 	if (unsynchronized_tsc())
 		mark_tsc_unstable("TSCs unsynchronized");
+	else
+		tsc_store_and_check_tsc_adjust();
 
 	check_system_tsc_reliable();
 
