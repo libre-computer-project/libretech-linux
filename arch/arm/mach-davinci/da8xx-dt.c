@@ -39,7 +39,7 @@ static struct of_dev_auxdata da850_auxdata_lookup[] __initdata = {
 	OF_DEV_AUXDATA("ti,da830-mcasp-audio", 0x01d00000, "davinci-mcasp.0", NULL),
 	OF_DEV_AUXDATA("ti,da850-aemif", 0x68000000, "ti-aemif", NULL),
 	OF_DEV_AUXDATA("ti,da850-tilcdc", 0x01e13000, "da8xx_lcdc.0", NULL),
-	OF_DEV_AUXDATA("ti,da830-ohci", 0x01e25000, "ohci", NULL),
+	OF_DEV_AUXDATA("ti,da830-ohci", 0x01e25000, "ohci-da8xx", NULL),
 	OF_DEV_AUXDATA("ti,da830-musb", 0x01e00000, "musb-da8xx", NULL),
 	OF_DEV_AUXDATA("ti,da830-usb-phy", 0x01c1417c, "da8xx-usb-phy", NULL),
 	{}
@@ -61,6 +61,7 @@ static void __init da850_init_machine(void)
 			__func__, ret);
 
 	of_platform_default_populate(NULL, da850_auxdata_lookup, NULL);
+	davinci_pm_init();
 }
 
 static const char *const da850_boards_compat[] __initconst = {
