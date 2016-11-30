@@ -3,6 +3,8 @@ fixes
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-fixes-for-4.9-2
 	<no branch> (86b4522d19329b3bf9c05722f217568b803439f7)
 		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.9-rc-round2
+	patch
+		arm64: dts: juno: Correct PCI IO window
 
 next/fixes-non-critical
 	patch
@@ -19,8 +21,9 @@ next/fixes-non-critical
 		ARM: lpc32xx: drop duplicate header device.h
 	socfpga/updates
 		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_updates_for_v4.10
-
-next/cleanup
+	patch
+		soc: ti: qmss: fix the case when !SMP
+		bus: vexpress-config: fix device reference leak
 
 next/soc
 	vexpress/fixes
@@ -81,6 +84,14 @@ next/arm64
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-arm64-defconfig
 	patch
 		arm64: defconfig: Do not lower CONFIG_LOG_BUF_SHIFT
+	broadcom/maintainer
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/maintainers-arm64
+	<no branch> (9efacfc80902c6ddf538a2f396e0112c1f6d1e23)
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/defconfig-arm64
+	patch
+		arm64: defconfig: drop GPIO_SYSFS on multiplatforms
+	rockchip/defconfig64
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.10-rockchip-defconfig64
 
 next/dt
 	sti/dt
@@ -155,8 +166,19 @@ next/dt
 	socfpga/dts-3
 		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_dts_for_v4.10_part_3
 	broadcom/dt
-broadcom/dt64
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/devicetree
+	samsung/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-4.10-2
+	qcom/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-dts-for-4.10-2
+	rockchip/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.10-rockchip-dts32-2
+	berlin/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/jszhang/linux-berlin tags/berlin-dt-for-v4.10-1
+	<no branch> (26ca8b52d6e18c10109cabda0f775dd9345bbfdf)
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.10-2
+	<no branch> (5817430ba7250cfc5a9c4a397935b07da16c9762)
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.10/dt-late-signed
 
 next/dt64
 	juno/dt
@@ -199,6 +221,18 @@ next/dt64
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-arm64-dt-numeric-ids
 	broadcom/dt64-2
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/devicetree-arm64
+	samsung/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.10-2
+	qcom/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-arm64-for-4.10-2
+	rockchip/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.10-rockchip-dts64-2
+	berlin/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/jszhang/linux-berlin tags/berlin64-dt-for-v4.10-1
+	zte/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/zte-dt64-4.10
+	amlogic/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-dt64-2-v2
 
 next/defconfig
 	patch
@@ -235,6 +269,12 @@ next/defconfig
 		ARM: configs: Add new config fragment to change RAM start point
 	davinci/defconfig-3
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/defconfig-3
+	broadcom/defconfig
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/defconfig
+	patch
+		ARM: defconfig: drop GPIO_SYSFS on multiplatforms
+	sti/defconfig-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-defconfig-for-4.10-round3
 
 next/drivers
 	renesas/drivers
@@ -278,3 +318,7 @@ next/drivers
 		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/scpi-updates-4.10
 	keystone/ti-sci
 		https://github.com/t-kristo/linux-pm for-4.10-ti-sci-base
+	qcom/drivers-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-drivers-for-4.10-2
+
+
