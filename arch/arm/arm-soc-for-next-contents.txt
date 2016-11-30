@@ -8,7 +8,7 @@ next/fixes-non-critical
 	patch
 		ARM: spear: Fix error handling
 		ARM: zx: Fix error handling
-	<no branch> (36173c2d023bad4dbad6ed0e6e886fde10ec8f2f)
+	davinci/fixes
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-fixes-for-v4.9
 	imx/fixes-nc
 		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fix-nc-4.10
@@ -17,6 +17,8 @@ next/fixes-non-critical
 	patch
 		ARM: ixp4xx: drop duplicate header gpio.h
 		ARM: lpc32xx: drop duplicate header device.h
+	socfpga/updates
+		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_updates_for_v4.10
 
 next/cleanup
 
@@ -55,6 +57,14 @@ next/soc
 		https://github.com/OXNAS/linux tags/oxnas-arm-soc-for-4.10-v2
 	mvebu/soc
 		git://git.infradead.org/linux-mvebu tags/mvebu-soc-4.10-1
+	davinci/cleanup-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/cleanup-2
+	davinci/soc-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/soc-2
+	davinci/soc-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/soc-3
+	broadcom/soc
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/soc
 
 next/arm64
 	patch
@@ -69,6 +79,8 @@ next/arm64
 		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-defconfig
 	tegra/arm64-defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-arm64-defconfig
+	patch
+		arm64: defconfig: Do not lower CONFIG_LOG_BUF_SHIFT
 
 next/dt
 	sti/dt
@@ -132,6 +144,19 @@ next/dt
 		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.10-1
 	sunxi/dt
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt-for-4.10-bis
+	davinci/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/dt-2
+	davinci/dt-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/dt-3
+	renesas/rzg-clock-defs
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-drivers tags/rzg-clock-defs-tag1
+	renesas/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-dt2-for-v4.10
+	socfpga/dts-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_dts_for_v4.10_part_3
+	broadcom/dt
+broadcom/dt64
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/devicetree
 
 next/dt64
 	juno/dt
@@ -166,6 +191,14 @@ next/dt64
 		ARM: dts: artpec: add pcie support
 	mvebu/dt64-2
 		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.10-2
+	patch
+		arm64: dts: fix build errors from missing dependencies
+	renesas/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-dt2-for-v4.10
+	tagra/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.10-arm64-dt-numeric-ids
+	broadcom/dt64-2
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/devicetree-arm64
 
 next/defconfig
 	patch
@@ -200,6 +233,8 @@ next/defconfig
 		https://github.com/bzolnier/linux v4.9-rc2-arm-configs-pata
 	patch
 		ARM: configs: Add new config fragment to change RAM start point
+	davinci/defconfig-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/defconfig-3
 
 next/drivers
 	renesas/drivers
@@ -229,4 +264,17 @@ next/drivers
 	patch
 		drivers: psci: PSCI checker module
 		drivers: psci: Allow PSCI node to be disabled
-
+	davinci/drivers-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.10/drivers-2
+	patch
+		misc: sram: remove useless #ifdef
+	renesas/r8a7745-sysc
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-r8a7745-sysc-for-v4.10
+	soc-device/match-tag1
+		git://git.kernel.org/pub/scm/linux/kernel/git/geert/renesas-drivers tags/soc-device-match-tag1
+	renesas/soc-match
+		git://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-soc-match-for-v4.10
+	drivers/scpi
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/scpi-updates-4.10
+	keystone/ti-sci
+		https://github.com/t-kristo/linux-pm for-4.10-ti-sci-base
