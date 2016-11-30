@@ -1,23 +1,20 @@
 /*
- * Copyright (c) 2016 Endless Computers, Inc.
- * Author: Carlo Caione <carlo@endlessm.com>
- *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
  * licensing only applies to this file, and not this project as a
  * whole.
  *
- *  a) This library is free software; you can redistribute it and/or
+ *  a) This file is free software; you can redistribute it and/or
  *     modify it under the terms of the GNU General Public License as
  *     published by the Free Software Foundation; either version 2 of the
  *     License, or (at your option) any later version.
  *
- *     This library is distributed in the hope that it will be useful,
+ *     This file is distributed in the hope that it will be useful,
  *     but WITHOUT ANY WARRANTY; without even the implied warranty of
  *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *     GNU General Public License for more details.
  *
- * Or, alternatively,
+ *  Or, alternatively,
  *
  *  b) Permission is hereby granted, free of charge, to any person
  *     obtaining a copy of this software and associated documentation
@@ -43,16 +40,30 @@
 
 /dts-v1/;
 
-#include "meson-gxl-s905d.dtsi"
-#include "meson-gx-p23x-q20x.dtsi"
+#include "rk1108.dtsi"
 
 / {
-	compatible = "amlogic,p231", "amlogic,s905d", "amlogic,meson-gxl";
-	model = "Amlogic Meson GXL (S905D) P231 Development Board";
+	model = "Rockchip RK1108 Evaluation board";
+	compatible = "rockchip,rk1108-evb", "rockchip,rk1108";
+
+	memory@60000000 {
+		device_type = "memory";
+		reg = <0x60000000 0x08000000>;
+	};
+
+	chosen {
+		stdout-path = "serial2:1500000n8";
+	};
 };
 
-/* P231 has only internal PHY port */
-&ethmac {
-	phy-mode = "rmii";
-	phy-handle = <&internal_phy>;
+&uart0 {
+	status = "okay";
+};
+
+&uart1 {
+	status = "okay";
+};
+
+&uart2 {
+	status = "okay";
 };
