@@ -1364,7 +1364,7 @@ int may_umount_tree(struct vfsmount *m)
 	mnt_get_tree_refs(&mtr);
 	/*
 	 * Caller holds a mount reference so minimum references
-	 * to the tree at mnt is one greater than the minumum
+	 * to the tree at mnt is one greater than the minimum
 	 * references.
 	 */
 	mtr.min_refs++;
