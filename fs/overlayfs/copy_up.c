@@ -153,6 +153,13 @@ static int ovl_copy_up_data(struct path *old, struct path *new, loff_t len)
 		goto out_fput;
 	}
 
+	/* Try to use clone_file_range to clone up within the same fs */
+	error = vfs_clone_file_range(old_file, 0, new_file, 0, len);
+	if (!error)
+		goto out;
+	/* Couldn't clone, so now we try to copy the data */
+	error = 0;
+
 	/* FIXME: copy up sparse files efficiently */
 	while (len) {
 		size_t this_len = OVL_COPY_UP_CHUNK_SIZE;
@@ -177,7 +184,7 @@ static int ovl_copy_up_data(struct path *old, struct path *new, loff_t len)
 
 		len -= bytes;
 	}
-
+out:
 	if (!error)
 		error = vfs_fsync(new_file, 0);
 	fput(new_file);
@@ -296,12 +303,6 @@ static int ovl_copy_up_locked(struct dentry *workdir, struct dentry *upperdir,
 	ovl_dentry_update(dentry, newdentry);
 	ovl_inode_update(d_inode(dentry), d_inode(newdentry));
 	newdentry = NULL;
-
-	/*
-	 * Non-directores become opaque when copied up.
-	 */
-	if (!S_ISDIR(stat->mode))
-		ovl_dentry_set_opaque(dentry, true);
 out2:
 	dput(upper);
 out1:
@@ -317,17 +318,11 @@ out_cleanup:
 /*
  * Copy up a single dentry
  *
- * Directory renames only allowed on "pure upper" (already created on
- * upper filesystem, never copied up).  Directories which are on lower or
- * are merged may not be renamed.  For these -EXDEV is returned and
- * userspace has to deal with it.  This means, when copying up a
- * directory we can rely on it and ancestors being stable.
- *
- * Non-directory renames start with copy up of source if necessary.  The
- * actual rename will only proceed once the copy up was successful.  Copy
- * up uses upper parent i_mutex for exclusion.  Since rename can change
- * d_parent it is possible that the copy up will lock the old parent.  At
- * that point the file will have already been copied up anyway.
+ * All renames start with copy up of source if necessary.  The actual
+ * rename will only proceed once the copy up was successful.  Copy up uses
+ * upper parent i_mutex for exclusion.  Since rename can change d_parent it
+ * is possible that the copy up will lock the old parent.  At that point
+ * the file will have already been copied up anyway.
  */
 int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 		    struct path *lowerpath, struct kstat *stat)
@@ -339,7 +334,6 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 	struct path parentpath;
 	struct dentry *lowerdentry = lowerpath->dentry;
 	struct dentry *upperdir;
-	struct dentry *upperdentry;
 	const char *link = NULL;
 
 	if (WARN_ON(!workdir))
@@ -365,8 +359,7 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 		pr_err("overlayfs: failed to lock workdir+upperdir\n");
 		goto out_unlock;
 	}
-	upperdentry = ovl_dentry_upper(dentry);
-	if (upperdentry) {
+	if (ovl_dentry_upper(dentry)) {
 		/* Raced with another copy-up?  Nothing to do, then... */
 		err = 0;
 		goto out_unlock;
