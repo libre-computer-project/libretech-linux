@@ -1159,12 +1159,23 @@ struct vfsmount *mntget(struct vfsmount *mnt)
 }
 EXPORT_SYMBOL(mntget);
 
-static bool __path_is_mountpoint(struct path *path)
+/* __path_is_mountpoint() - Check if path is a mount in the current
+ *                          namespace.
+ *
+ *  d_mountpoint() can only be used reliably to establish if a dentry is
+ *  not mounted in any namespace and that common case is handled inline.
+ *  d_mountpoint() isn't aware of the possibility there may be multiple
+ *  mounts using a given dentry in a different namespace. This function
+ *  checks if the passed in path is a mountpoint rather than the dentry
+ *  alone.
+ */
+bool __path_is_mountpoint(const struct path *path)
 {
 	struct mount *mount;
 	struct vfsmount *mnt;
 	unsigned seq;
 
+	rcu_read_lock();
 	do {
 		seq = read_seqbegin(&mount_lock);
 		mount = __lookup_mnt(path->mnt, path->dentry);
@@ -1172,35 +1183,11 @@ static bool __path_is_mountpoint(struct path *path)
 	} while (mnt &&
 		 !(mnt->mnt_flags & MNT_SYNC_UMOUNT) &&
 		 read_seqretry(&mount_lock, seq));
+	rcu_read_unlock();
 
 	return mnt != NULL;
 }
-
-/* Check if path is a mount in current namespace */
-bool path_is_mountpoint(struct path *path)
-{
-	bool res;
-
-	if (!d_mountpoint(path->dentry))
-		return false;
-
-	rcu_read_lock();
-	res = __path_is_mountpoint(path);
-	rcu_read_unlock();
-
-	return res;
-}
-EXPORT_SYMBOL(path_is_mountpoint);
-
-/* Check if path is a mount in current namespace */
-bool path_is_mountpoint_rcu(struct path *path)
-{
-	if (!d_mountpoint(path->dentry))
-		return false;
-
-	return __path_is_mountpoint(path);
-}
-EXPORT_SYMBOL(path_is_mountpoint_rcu);
+EXPORT_SYMBOL(__path_is_mountpoint);
 
 struct vfsmount *mnt_clone_internal(struct path *path)
 {

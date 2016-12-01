@@ -437,13 +437,8 @@ static int autofs4_d_manage(struct path *path, bool rcu_walk)
 
 	/* The daemon never waits. */
 	if (autofs4_oz_mode(sbi)) {
-		if (rcu_walk) {
-			if (!path_is_mountpoint_rcu(path))
-				return -EISDIR;
-		} else {
-			if (!path_is_mountpoint(path))
-				return -EISDIR;
-		}
+		if (!path_is_mountpoint(path))
+			return -EISDIR;
 		return 0;
 	}
 
@@ -471,7 +466,7 @@ static int autofs4_d_manage(struct path *path, bool rcu_walk)
 
 		if (ino->flags & AUTOFS_INF_WANT_EXPIRE)
 			return 0;
-		if (path_is_mountpoint_rcu(path))
+		if (path_is_mountpoint(path))
 			return 0;
 		inode = d_inode_rcu(dentry);
 		if (inode && S_ISLNK(inode->i_mode))

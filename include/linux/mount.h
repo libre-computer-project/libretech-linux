@@ -15,6 +15,8 @@
 #include <linux/spinlock.h>
 #include <linux/seqlock.h>
 #include <linux/atomic.h>
+#include <linux/path.h>
+#include <linux/dcache.h>
 
 struct super_block;
 struct vfsmount;
@@ -97,5 +99,14 @@ extern void mark_mounts_for_expiry(struct list_head *mounts);
 extern dev_t name_to_dev_t(const char *name);
 
 extern unsigned int sysctl_mount_max;
+
+extern bool __path_is_mountpoint(const struct path *path);
+static inline bool path_is_mountpoint(const struct path *path)
+{
+	if (!d_mountpoint(path->dentry))
+		return 0;
+
+	return __path_is_mountpoint(path);
+}
 
 #endif /* _LINUX_MOUNT_H */
