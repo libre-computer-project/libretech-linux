@@ -154,7 +154,10 @@ struct qed_qm_iids {
 	u32 tids;
 };
 
-enum QED_RESOURCES {
+/* HW / FW resources, output of features supported below, most information
+ * is received from MFW.
+ */
+enum qed_resources {
 	QED_SB,
 	QED_L2_QUEUE,
 	QED_VPORT,
@@ -166,6 +169,7 @@ enum QED_RESOURCES {
 	QED_RDMA_CNQ_RAM,
 	QED_ILT,
 	QED_LL2_QUEUE,
+	QED_CMDQS_CQS,
 	QED_RDMA_STATS_QUEUE,
 	QED_MAX_RESC,
 };
@@ -174,6 +178,7 @@ enum QED_FEATURE {
 	QED_PF_L2_QUE,
 	QED_VF,
 	QED_RDMA_CNQ,
+	QED_VF_L2_QUE,
 	QED_MAX_FEATURES,
 };
 
@@ -193,6 +198,11 @@ enum qed_dev_cap {
 	QED_DEV_CAP_ETH,
 	QED_DEV_CAP_ISCSI,
 	QED_DEV_CAP_ROCE,
+};
+
+enum qed_wol_support {
+	QED_WOL_SUPPORT_NONE,
+	QED_WOL_SUPPORT_PME,
 };
 
 struct qed_hw_info {
@@ -226,15 +236,9 @@ struct qed_hw_info {
 	u32				port_mode;
 	u32				hw_mode;
 	unsigned long		device_capabilities;
-};
+	u16				mtu;
 
-struct qed_hw_cid_data {
-	u32	cid;
-	bool	b_cid_allocated;
-
-	/* Additional identifiers */
-	u16	opaque_fid;
-	u8	vport_id;
+	enum qed_wol_support b_wol_support;
 };
 
 /* maximun size of read/write commands (HW limit) */
@@ -403,9 +407,6 @@ struct qed_hwfn {
 
 	struct qed_dcbx_info		*p_dcbx_info;
 
-	struct qed_hw_cid_data		*p_tx_cids;
-	struct qed_hw_cid_data		*p_rx_cids;
-
 	struct qed_dmae_info		dmae_info;
 
 	/* QM init */
@@ -538,7 +539,9 @@ struct qed_dev {
 	u8				mcp_rev;
 	u8				boot_mode;
 
-	u8				wol;
+	/* WoL related configurations */
+	u8 wol_config;
+	u8 wol_mac[ETH_ALEN];
 
 	u32				int_mode;
 	enum qed_coalescing_mode	int_coalescing_mode;

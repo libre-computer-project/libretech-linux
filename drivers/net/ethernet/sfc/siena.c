@@ -20,7 +20,6 @@
 #include "nic.h"
 #include "farch_regs.h"
 #include "io.h"
-#include "phy.h"
 #include "workarounds.h"
 #include "mcdi.h"
 #include "mcdi_pcol.h"
@@ -977,6 +976,7 @@ const struct efx_nic_type siena_a0_nic_type = {
 	.tx_init = efx_farch_tx_init,
 	.tx_remove = efx_farch_tx_remove,
 	.tx_write = efx_farch_tx_write,
+	.tx_limit_len = efx_farch_tx_limit_len,
 	.rx_push_rss_config = siena_rx_push_rss_config,
 	.rx_probe = efx_farch_rx_probe,
 	.rx_init = efx_farch_rx_init,

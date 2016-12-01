@@ -400,21 +400,10 @@ static void efx_rx_packet__check_len(struct efx_rx_queue *rx_queue,
 	 */
 	rx_buf->flags |= EFX_RX_PKT_DISCARD;
 
-	if ((len > rx_buf->len) && EFX_WORKAROUND_8071(efx)) {
-		if (net_ratelimit())
-			netif_err(efx, rx_err, efx->net_dev,
-				  " RX queue %d seriously overlength "
-				  "RX event (0x%x > 0x%x+0x%x). Leaking\n",
-				  efx_rx_queue_index(rx_queue), len, max_len,
-				  efx->type->rx_buffer_padding);
-		efx_schedule_reset(efx, RESET_TYPE_RX_RECOVERY);
-	} else {
-		if (net_ratelimit())
-			netif_err(efx, rx_err, efx->net_dev,
-				  " RX queue %d overlength RX event "
-				  "(0x%x > 0x%x)\n",
-				  efx_rx_queue_index(rx_queue), len, max_len);
-	}
+	if (net_ratelimit())
+		netif_err(efx, rx_err, efx->net_dev,
+			  "RX queue %d overlength RX event (%#x > %#x)\n",
+			  efx_rx_queue_index(rx_queue), len, max_len);
 
 	efx_rx_queue_channel(rx_queue)->n_rx_overlength++;
 }
