@@ -153,7 +153,7 @@ static long swap_inode_boot_loader(struct super_block *sb,
 
 	swap_inode_data(inode, inode_bl);
 
-	inode->i_ctime = inode_bl->i_ctime = ext4_current_time(inode);
+	inode->i_ctime = inode_bl->i_ctime = current_time(inode);
 
 	spin_lock(&sbi->s_next_gen_lock);
 	inode->i_generation = sbi->s_next_generation++;
@@ -248,8 +248,11 @@ static int ext4_ioctl_setflags(struct inode *inode,
 			err = -EOPNOTSUPP;
 			goto flags_out;
 		}
-	} else if (oldflags & EXT4_EOFBLOCKS_FL)
-		ext4_truncate(inode);
+	} else if (oldflags & EXT4_EOFBLOCKS_FL) {
+		err = ext4_truncate(inode);
+		if (err)
+			goto flags_out;
+	}
 
 	handle = ext4_journal_start(inode, EXT4_HT_INODE, 1);
 	if (IS_ERR(handle)) {
@@ -272,7 +275,7 @@ static int ext4_ioctl_setflags(struct inode *inode,
 	}
 
 	ext4_set_inode_flags(inode);
-	inode->i_ctime = ext4_current_time(inode);
+	inode->i_ctime = current_time(inode);
 
 	err = ext4_mark_iloc_dirty(handle, inode, &iloc);
 flags_err:
@@ -368,7 +371,7 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 	}
 
 	EXT4_I(inode)->i_projid = kprojid;
-	inode->i_ctime = ext4_current_time(inode);
+	inode->i_ctime = current_time(inode);
 out_dirty:
 	rc = ext4_mark_iloc_dirty(handle, inode, &iloc);
 	if (!err)
@@ -500,7 +503,7 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 		err = ext4_reserve_inode_write(handle, inode, &iloc);
 		if (err == 0) {
-			inode->i_ctime = ext4_current_time(inode);
+			inode->i_ctime = current_time(inode);
 			inode->i_generation = generation;
 			err = ext4_mark_iloc_dirty(handle, inode, &iloc);
 		}
