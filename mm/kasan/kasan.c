@@ -776,7 +776,7 @@ void __asan_poison_stack_memory(const void *addr, size_t size)
 }
 EXPORT_SYMBOL(__asan_poison_stack_memory);
 
-/* Emitted by compiler to unpoison large objects when they go into of scope. */
+/* Emitted by compiler to unpoison large objects when they go into scope. */
 void __asan_unpoison_stack_memory(const void *addr, size_t size)
 {
 	kasan_unpoison_shadow(addr, size);
