@@ -171,7 +171,7 @@ static void page_cache_tree_delete(struct address_space *mapping,
 {
 	int i, nr;
 
-	/* hugetlb pages represented by one entry on radix-tree */
+	/* hugetlb pages are represented by one entry in the radix tree */
 	nr = PageHuge(page) ? 1 : hpage_nr_pages(page);
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
