@@ -1683,9 +1683,9 @@ static struct zonelist *policy_zonelist(gfp_t gfp, struct mempolicy *policy,
 		nd = policy->v.preferred_node;
 	else {
 		/*
-		 * __GFP_THISNODE shouldn't even be used with the bind policy because
-		 * we might easily break the expectation to stay on the requested node
-		 * and not break the policy.
+		 * __GFP_THISNODE shouldn't even be used with the bind policy
+		 * because we might easily break the expectation to stay on the
+		 * requested node and not break the policy.
 		 */
 		WARN_ON_ONCE(policy->mode == MPOL_BIND && (gfp & __GFP_THISNODE));
 	}
