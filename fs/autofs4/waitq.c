@@ -250,7 +250,7 @@ autofs4_find_wait(struct autofs_sb_info *sbi, const struct qstr *qstr)
 static int validate_request(struct autofs_wait_queue **wait,
 			    struct autofs_sb_info *sbi,
 			    const struct qstr *qstr,
-			    struct path *path, enum autofs_notify notify)
+			    const struct path *path, enum autofs_notify notify)
 {
 	struct dentry *dentry = path->dentry;
 	struct autofs_wait_queue *wq;
@@ -349,7 +349,7 @@ static int validate_request(struct autofs_wait_queue **wait,
 }
 
 int autofs4_wait(struct autofs_sb_info *sbi,
-		 struct path *path, enum autofs_notify notify)
+		 const struct path *path, enum autofs_notify notify)
 {
 	struct dentry *dentry = path->dentry;
 	struct autofs_wait_queue *wq;

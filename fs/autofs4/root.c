@@ -272,7 +272,7 @@ next:
 	return NULL;
 }
 
-static int autofs4_mount_wait(struct path *path, bool rcu_walk)
+static int autofs4_mount_wait(const struct path *path, bool rcu_walk)
 {
 	struct autofs_sb_info *sbi = autofs4_sbi(path->dentry->d_sb);
 	struct autofs_info *ino = autofs4_dentry_ino(path->dentry);
@@ -289,7 +289,7 @@ static int autofs4_mount_wait(struct path *path, bool rcu_walk)
 	return status;
 }
 
-static int do_expire_wait(struct path *path, bool rcu_walk)
+static int do_expire_wait(const struct path *path, bool rcu_walk)
 {
 	struct dentry *dentry = path->dentry;
 	struct dentry *expiring;
@@ -300,7 +300,7 @@ static int do_expire_wait(struct path *path, bool rcu_walk)
 	if (!expiring)
 		return autofs4_expire_wait(path, rcu_walk);
 	else {
-		struct path this = { .mnt = path->mnt, .dentry = expiring };
+		const struct path this = { .mnt = path->mnt, .dentry = expiring };
 		/*
 		 * If we are racing with expire the request might not
 		 * be quite complete, but the directory has been removed
