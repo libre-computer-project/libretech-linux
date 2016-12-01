@@ -1800,6 +1800,26 @@ static inline unsigned interleave_nid(struct mempolicy *pol,
 
 #ifdef CONFIG_HUGETLBFS
 /*
+ * huge_nodemask(@vma, @addr)
+ * @vma: virtual memory area whose policy is sought
+ * @addr: address in @vma for shared policy lookup and interleave policy
+ *
+ * If the effective policy is BIND, returns a pointer to the mempolicy's
+ * @nodemask.
+ */
+nodemask_t *huge_nodemask(struct vm_area_struct *vma, unsigned long addr)
+{
+	nodemask_t *nodes_mask = NULL;
+	struct mempolicy *mpol = get_vma_policy(vma, addr);
+
+	if (mpol->mode == MPOL_BIND)
+		nodes_mask = &mpol->v.nodes;
+	mpol_cond_put(mpol);
+
+	return nodes_mask;
+}
+
+/*
  * huge_zonelist(@vma, @addr, @gfp_flags, @mpol)
  * @vma: virtual memory area whose policy is sought
  * @addr: address in @vma for shared policy lookup and interleave policy
