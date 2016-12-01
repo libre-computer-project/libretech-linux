@@ -1346,6 +1346,13 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 		rdp->rsp->jiffies_resched += 5; /* Re-enable beating. */
 	}
 
+	/*
+	 * If more than halfway to RCU CPU stall-warning time, do
+	 * a resched_cpu() to try to loosen things up a bit.
+	 */
+	if (jiffies - rdp->rsp->gp_start > rcu_jiffies_till_stall_check() / 2)
+		resched_cpu(rdp->cpu);
+
 	return 0;
 }
 
