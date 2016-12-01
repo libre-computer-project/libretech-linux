@@ -214,7 +214,7 @@ void btrfs_printk(const struct btrfs_fs_info *fs_info, const char *fmt, ...)
 	while ((kern_level = printk_get_level(fmt)) != 0) {
 		size_t size = printk_skip_level(fmt) - fmt;
 
-		if (kern_level >= '0' || kern_level <= '7') {
+		if (kern_level >= '0' && kern_level <= '7') {
 			memcpy(lvl, fmt,  size);
 			lvl[size] = '\0';
 			type = logtypes[kern_level - '0'];
