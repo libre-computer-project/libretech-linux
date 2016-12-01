@@ -2905,6 +2905,17 @@ void __init hugetlb_add_hstate(unsigned int order)
 					huge_page_size(h)/1024);
 
 	parsed_hstate = h;
+
+	/*
+	 * PGD_SIZE isn't widely made available by architecures,
+	 * so use PUD_SIZE*PTRS_PER_PUD as a substitute.
+	 *
+	 * Check for sizes that might be mapped by a PGD.  There
+	 * are none of these known today, but be on the lookout.
+	 * If this trips, we will need to update the mss->rss_*
+	 * code in fs/proc/task_mmu.c.
+	 */
+	WARN_ON_ONCE((PAGE_SIZE << order) >= PUD_SIZE * PTRS_PER_PUD);
 }
 
 static int __init hugetlb_nrpages_setup(char *s)

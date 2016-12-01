@@ -689,6 +689,30 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_HUGETLB_PAGE
+/*
+ * Most architectures have a 1:1 mapping of PTEs to hugetlb page
+ * sizes, but there are some outliers like arm64 that use
+ * multiple hardware PTEs to make a hugetlb "page".  Do not
+ * assume that all 'hpage_size's are not exactly at a page table
+ * size boundary.  Instead, accept arbitrary 'hpage_size's and
+ * assume they are made up of the next-smallest size.  We do not
+ * handle PGD-sized hpages and hugetlb_add_hstate() will WARN()
+ * if it sees one.
+ *
+ * Note also that the page walker code only calls us once per
+ * huge 'struct page', *not* once per PTE in the page tables.
+ */
+static void smaps_hugetlb_present_hpage(struct mem_size_stats *mss,
+					unsigned long hpage_size)
+{
+	if (hpage_size >= PUD_SIZE)
+		mss->rss_pud += hpage_size;
+	else if (hpage_size >= PMD_SIZE)
+		mss->rss_pmd += hpage_size;
+	else
+		mss->rss_pte += hpage_size;
+}
+
 static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 				 unsigned long addr, unsigned long end,
 				 struct mm_walk *walk)
@@ -709,7 +733,8 @@ static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 		int mapcount = page_mapcount(page);
 		unsigned long hpage_size = huge_page_size(hstate_vma(vma));
 
-		mss->rss_pud += hpage_size;
+		smaps_hugetlb_present_hpage(mss, hpage_size);
+
 		if (mapcount >= 2)
 			mss->shared_hugetlb += hpage_size;
 		else
