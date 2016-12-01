@@ -52,7 +52,7 @@ static int autofs4_mount_busy(struct vfsmount *mnt, struct dentry *dentry)
 			goto done;
 	}
 
-	/* Update the expiry counter if fs is busy */
+	/* Update the expiry counter if fs is busy in any namespace */
 	if (!may_umount_tree(path.mnt)) {
 		struct autofs_info *ino;
 
@@ -191,7 +191,7 @@ static int autofs4_direct_busy(struct vfsmount *mnt,
 {
 	pr_debug("top %p %pd\n", top, top);
 
-	/* If it's busy update the expiry counters */
+	/* If it's busy in any namespace update the expiry counters */
 	if (!may_umount_tree(mnt)) {
 		struct autofs_info *ino;
 
