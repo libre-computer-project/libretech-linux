@@ -293,6 +293,7 @@ static noinline __init void setup_lowcore_early(void)
 	psw.addr = (unsigned long) s390_base_pgm_handler;
 	S390_lowcore.program_new_psw = psw;
 	s390_base_pgm_handler_fn = early_pgm_check_handler;
+	S390_lowcore.preempt_count = INIT_PREEMPT_COUNT;
 }
 
 static noinline __init void setup_facility_list(void)
@@ -467,7 +468,7 @@ void __init startup_init(void)
 	ipl_save_parameters();
 	rescue_initrd();
 	clear_bss_section();
-	ptff_init();
+	time_early_init();
 	init_kernel_storage_key();
 	lockdep_off();
 	setup_lowcore_early();

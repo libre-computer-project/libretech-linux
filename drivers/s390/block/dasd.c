@@ -3121,6 +3121,7 @@ static int dasd_alloc_queue(struct dasd_block *block)
  */
 static void dasd_setup_queue(struct dasd_block *block)
 {
+	struct request_queue *q = block->request_queue;
 	int max;
 
 	if (block->base->features & DASD_FEATURE_USERAW) {
@@ -3135,17 +3136,16 @@ static void dasd_setup_queue(struct dasd_block *block)
 	} else {
 		max = block->base->discipline->max_blocks << block->s2b_shift;
 	}
-	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, block->request_queue);
-	block->request_queue->limits.max_dev_sectors = max;
-	blk_queue_logical_block_size(block->request_queue,
-				     block->bp_block);
-	blk_queue_max_hw_sectors(block->request_queue, max);
-	blk_queue_max_segments(block->request_queue, -1L);
+	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, q);
+	q->limits.max_dev_sectors = max;
+	blk_queue_logical_block_size(q, block->bp_block);
+	blk_queue_max_hw_sectors(q, max);
+	blk_queue_max_segments(q, USHRT_MAX);
 	/* with page sized segments we can translate each segement into
 	 * one idaw/tidaw
 	 */
-	blk_queue_max_segment_size(block->request_queue, PAGE_SIZE);
-	blk_queue_segment_boundary(block->request_queue, PAGE_SIZE - 1);
+	blk_queue_max_segment_size(q, PAGE_SIZE);
+	blk_queue_segment_boundary(q, PAGE_SIZE - 1);
 }
 
 /*
@@ -3517,11 +3517,15 @@ int dasd_generic_set_offline(struct ccw_device *cdev)
 	struct dasd_device *device;
 	struct dasd_block *block;
 	int max_count, open_count, rc;
+	unsigned long flags;
 
 	rc = 0;
-	device = dasd_device_from_cdev(cdev);
-	if (IS_ERR(device))
+	spin_lock_irqsave(get_ccwdev_lock(cdev), flags);
+	device = dasd_device_from_cdev_locked(cdev);
+	if (IS_ERR(device)) {
+		spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
 		return PTR_ERR(device);
+	}
 
 	/*
 	 * We must make sure that this device is currently not in use.
@@ -3540,8 +3544,7 @@ int dasd_generic_set_offline(struct ccw_device *cdev)
 				pr_warn("%s: The DASD cannot be set offline while it is in use\n",
 					dev_name(&cdev->dev));
 			clear_bit(DASD_FLAG_OFFLINE, &device->flags);
-			dasd_put_device(device);
-			return -EBUSY;
+			goto out_busy;
 		}
 	}
 
@@ -3551,19 +3554,19 @@ int dasd_generic_set_offline(struct ccw_device *cdev)
 		 * could only be called by normal offline so safe_offline flag
 		 * needs to be removed to run normal offline and kill all I/O
 		 */
-		if (test_and_set_bit(DASD_FLAG_OFFLINE, &device->flags)) {
+		if (test_and_set_bit(DASD_FLAG_OFFLINE, &device->flags))
 			/* Already doing normal offline processing */
-			dasd_put_device(device);
-			return -EBUSY;
-		} else
+			goto out_busy;
+		else
 			clear_bit(DASD_FLAG_SAFE_OFFLINE, &device->flags);
-
-	} else
-		if (test_bit(DASD_FLAG_OFFLINE, &device->flags)) {
+	} else {
+		if (test_bit(DASD_FLAG_OFFLINE, &device->flags))
 			/* Already doing offline processing */
-			dasd_put_device(device);
-			return -EBUSY;
-		}
+			goto out_busy;
+	}
+
+	set_bit(DASD_FLAG_OFFLINE, &device->flags);
+	spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
 
 	/*
 	 * if safe_offline called set safe_offline_running flag and
@@ -3591,7 +3594,6 @@ int dasd_generic_set_offline(struct ccw_device *cdev)
 			goto interrupted;
 	}
 
-	set_bit(DASD_FLAG_OFFLINE, &device->flags);
 	dasd_set_target_state(device, DASD_STATE_NEW);
 	/* dasd_delete_device destroys the device reference. */
 	block = device->block;
@@ -3610,7 +3612,14 @@ interrupted:
 	clear_bit(DASD_FLAG_SAFE_OFFLINE_RUNNING, &device->flags);
 	clear_bit(DASD_FLAG_OFFLINE, &device->flags);
 	dasd_put_device(device);
+
 	return rc;
+
+out_busy:
+	dasd_put_device(device);
+	spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
+
+	return -EBUSY;
 }
 EXPORT_SYMBOL_GPL(dasd_generic_set_offline);
 
