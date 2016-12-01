@@ -984,8 +984,13 @@ int btrfs_ordered_update_i_size(struct inode *inode, u64 offset,
 	}
 	disk_i_size = BTRFS_I(inode)->disk_i_size;
 
-	/* truncate file */
-	if (disk_i_size > i_size) {
+	/*
+	 * truncate file.
+	 * If ordered is not NULL, then this is called from endio and
+	 * disk_i_size will be updated by either truncate itself or any
+	 * in-flight IOs which are inside the disk_i_size.
+	 */
+	if (!ordered && disk_i_size > i_size) {
 		BTRFS_I(inode)->disk_i_size = orig_offset;
 		ret = 0;
 		goto out;
