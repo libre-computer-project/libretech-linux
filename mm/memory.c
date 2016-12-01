@@ -3004,7 +3004,7 @@ out:
 	 * If we are going to fallback to pte mapping, do a
 	 * withdraw with pmd lock held.
 	 */
-	if (arch_needs_pgtable_deposit() && (ret == VM_FAULT_FALLBACK))
+	if (arch_needs_pgtable_deposit() && ret == VM_FAULT_FALLBACK)
 		fe->prealloc_pte = pgtable_trans_huge_withdraw(vma->vm_mm,
 							       fe->pmd);
 	spin_unlock(fe->ptl);
