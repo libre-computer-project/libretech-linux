@@ -368,7 +368,7 @@ static unsigned LM93_IN_FROM_REG(int nr, u8 reg)
  * IN: mV, limits determined by channel nr
  * REG: scaling determined by channel nr
  */
-static u8 LM93_IN_TO_REG(int nr, unsigned val)
+static u8 LM93_IN_TO_REG(int nr, unsigned long val)
 {
 	/* range limit */
 	const long mv = clamp_val(val,
@@ -407,9 +407,13 @@ static unsigned LM93_IN_REL_FROM_REG(u8 reg, int upper, int vid)
  * upper also determines which nibble of the register is returned
  * (the other nibble will be 0x0)
  */
-static u8 LM93_IN_REL_TO_REG(unsigned val, int upper, int vid)
+static u8 LM93_IN_REL_TO_REG(unsigned long val, int upper, int vid)
 {
-	long uv_offset = vid * 1000 - val * 10000;
+	long uv_offset;
+
+	val = clamp_val(val, 0, 1000000);
+	uv_offset = vid * 1000 - val * 10000;
+
 	if (upper) {
 		uv_offset = clamp_val(uv_offset, 12500, 200000);
 		return (u8)((uv_offset /  12500 - 1) << 4);
@@ -453,28 +457,23 @@ static int LM93_TEMP_OFFSET_MODE_FROM_REG(u8 sfc2, int nr)
  * This function is common to all 4-bit temperature offsets
  * reg is 4 bits right justified
  * mode 0 => 1C/bit, mode !0 => 0.5C/bit
+ * Return value in milli-degrees C.
  */
 static int LM93_TEMP_OFFSET_FROM_REG(u8 reg, int mode)
 {
-	return (reg & 0x0f) * (mode ? 5 : 10);
+	return (reg & 0x0f) * (mode ? 500 : 1000);
 }
-
-#define LM93_TEMP_OFFSET_MIN  (0)
-#define LM93_TEMP_OFFSET_MAX0 (150)
-#define LM93_TEMP_OFFSET_MAX1 (75)
 
 /*
  * This function is common to all 4-bit temperature offsets
  * returns 4 bits right justified
  * mode 0 => 1C/bit, mode !0 => 0.5C/bit
+ * Input value is in milli-degrees C.
  */
-static u8 LM93_TEMP_OFFSET_TO_REG(int off, int mode)
+static u8 LM93_TEMP_OFFSET_TO_REG(long off, int mode)
 {
-	int factor = mode ? 5 : 10;
-
-	off = clamp_val(off, LM93_TEMP_OFFSET_MIN,
-		mode ? LM93_TEMP_OFFSET_MAX1 : LM93_TEMP_OFFSET_MAX0);
-	return (u8)((off + factor/2) / factor);
+	off = clamp_val(off, 0, mode ? 7500 : 15000);
+	return DIV_ROUND_CLOSEST(off, mode ? 500 : 1000);
 }
 
 /* 0 <= nr <= 3 */
@@ -494,7 +493,8 @@ static int LM93_TEMP_AUTO_OFFSET_FROM_REG(u8 reg, int nr, int mode)
  * REG: 1.0C/bit (mode 0) or 0.5C/bit (mode non-zero)
  * 0 <= nr <= 3
  */
-static u8 LM93_TEMP_AUTO_OFFSET_TO_REG(u8 old, int off, int nr, int mode)
+static u8 LM93_TEMP_AUTO_OFFSET_TO_REG(u8 old, unsigned long off, int nr,
+				       int mode)
 {
 	u8 new = LM93_TEMP_OFFSET_TO_REG(off, mode);
 
@@ -532,10 +532,13 @@ static int LM93_AUTO_BOOST_HYST_FROM_REGS(struct lm93_data *data, int nr,
 			LM93_TEMP_OFFSET_FROM_REG(reg, mode);
 }
 
-static u8 LM93_AUTO_BOOST_HYST_TO_REG(struct lm93_data *data, long hyst,
-		int nr, int mode)
+static u8 LM93_AUTO_BOOST_HYST_TO_REG(struct lm93_data *data,
+				      long hyst, int nr, int mode)
 {
-	u8 reg = LM93_TEMP_OFFSET_TO_REG(
+	u8 reg;
+
+	hyst = clamp_val(hyst, LM93_TEMP_MIN, LM93_TEMP_MAX);
+	reg = LM93_TEMP_OFFSET_TO_REG(
 			(LM93_TEMP_FROM_REG(data->boost[nr]) - hyst), mode);
 
 	switch (nr) {
@@ -592,7 +595,7 @@ static int LM93_PWM_FROM_REG(u8 reg, enum pwm_freq freq)
 }
 
 /* round up to nearest match */
-static u8 LM93_PWM_TO_REG(int pwm, enum pwm_freq freq)
+static u8 LM93_PWM_TO_REG(unsigned long pwm, enum pwm_freq freq)
 {
 	int i;
 	for (i = 0; i < 13; i++)
@@ -642,7 +645,7 @@ static int LM93_PWM_FREQ_FROM_REG(u8 reg)
 }
 
 /* round up to nearest match */
-static u8 LM93_PWM_FREQ_TO_REG(int freq)
+static u8 LM93_PWM_FREQ_TO_REG(unsigned long freq)
 {
 	int i;
 	for (i = 7; i > 0; i--)
@@ -1471,10 +1474,10 @@ static ssize_t store_temp_auto_boost_hyst(struct device *dev,
 	int nr = (to_sensor_dev_attr(attr))->index;
 	struct lm93_data *data = dev_get_drvdata(dev);
 	struct i2c_client *client = data->client;
-	unsigned long val;
+	long val;
 	int err;
 
-	err = kstrtoul(buf, 10, &val);
+	err = kstrtol(buf, 10, &val);
 	if (err)
 		return err;
 

@@ -174,25 +174,25 @@ a "0" disables it. The h/w default is 0x0f (all temperatures bound).
 
 The function y = f(x) takes a source temperature x to a PWM output y.  This
 function of the LM93 is derived from a base temperature and a table of 12
-temperature offsets.  The base temperature is expressed in degrees C in the
-sysfs files temp<n>_auto_base.  The offsets are expressed in cumulative
-degrees C, with the value of offset <i> for temperature value <n> being
+temperature offsets.  The base temperature is expressed in milli-degrees C in
+the sysfs files temp<n>_auto_base.  The offsets are expressed in cumulative
+milli-degrees C, with the value of offset <i> for temperature value <n> being
 contained in the file temp<n>_auto_offset<i>.  E.g. if the base temperature
 is 40C:
 
      offset #	temp<n>_auto_offset<i>	range		pwm
 	 1		0		-		 25.00%
 	 2		0		-		 28.57%
-	 3		1		40C - 41C	 32.14%
-	 4		1		41C - 42C	 35.71%
-	 5		2		42C - 44C	 39.29%
-	 6		2		44C - 46C	 42.86%
-	 7		2		48C - 50C	 46.43%
-	 8		2		50C - 52C	 50.00%
-	 9		2		52C - 54C	 53.57%
-	10		2		54C - 56C	 57.14%
-	11		2		56C - 58C	 71.43%
-	12		2		58C - 60C	 85.71%
+	 3		500		40C - 41C	 32.14%
+	 4		500		41C - 42C	 35.71%
+	 5		1000		42C - 44C	 39.29%
+	 6		1000		44C - 46C	 42.86%
+	 7		1000		48C - 50C	 46.43%
+	 8		1000		50C - 52C	 50.00%
+	 9		1000		52C - 54C	 53.57%
+	10		1000		54C - 56C	 57.14%
+	11		1000		56C - 58C	 71.43%
+	12		1000		58C - 60C	 85.71%
 					> 60C		100.00%
 
 Valid offsets are in the range 0C <= x <= 7.5C in 0.5C increments.
