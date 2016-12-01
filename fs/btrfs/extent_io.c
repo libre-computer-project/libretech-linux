@@ -603,7 +603,7 @@ static int __clear_extent_bit(struct extent_io_tree *tree, u64 start, u64 end,
 	btrfs_debug_check_extent_io_range(tree, start, end);
 
 	if (bits & EXTENT_DELALLOC)
-		bits |= EXTENT_NORESERVE;
+		bits |= EXTENT_NORESERVE | EXTENT_COMPRESS;
 
 	if (delete)
 		bits |= ~EXTENT_CTLBITS;
@@ -740,6 +740,60 @@ out:
 
 	return 0;
 
+}
+
+static void adjust_one_outstanding_extent(struct inode *inode, u64 len,
+				enum btrfs_metadata_reserve_type reserve_type)
+{
+	unsigned old_extents, new_extents;
+	u64 max_extent_size = btrfs_max_extent_size(reserve_type);
+
+	old_extents = div64_u64(len + max_extent_size - 1, max_extent_size);
+	new_extents = div64_u64(len + BTRFS_MAX_EXTENT_SIZE - 1,
+				BTRFS_MAX_EXTENT_SIZE);
+	if (old_extents <= new_extents)
+		return;
+
+	spin_lock(&BTRFS_I(inode)->lock);
+	BTRFS_I(inode)->outstanding_extents -= old_extents - new_extents;
+	spin_unlock(&BTRFS_I(inode)->lock);
+}
+
+/*
+ * For a extent with EXTENT_COMPRESS flag, if later it does not go through
+ * compress path, we need to adjust the number of outstanding_extents.
+ * It's because for extent with EXTENT_COMPRESS flag, its number of outstanding
+ * extents is calculated by 128KB, so here we need to adjust it.
+ */
+void adjust_outstanding_extents(struct inode *inode, u64 start, u64 end,
+				enum btrfs_metadata_reserve_type reserve_type)
+{
+	struct rb_node *node;
+	struct extent_state *state;
+	struct extent_io_tree *tree = &BTRFS_I(inode)->io_tree;
+
+	spin_lock(&tree->lock);
+	node = tree_search(tree, start);
+	if (!node)
+		goto out;
+
+	while (1) {
+		state = rb_entry(node, struct extent_state, rb_node);
+		if (state->start > end)
+			goto out;
+		/*
+		 * The whole range is locked, so we can safely clear
+		 * EXTENT_COMPRESS flag.
+		 */
+		state->state &= ~EXTENT_COMPRESS;
+		adjust_one_outstanding_extent(inode,
+				state->end - state->start + 1, reserve_type);
+		node = rb_next(node);
+		if (!node)
+			break;
+	}
+out:
+	spin_unlock(&tree->lock);
 }
 
 static void wait_on_state(struct extent_io_tree *tree,
@@ -1504,6 +1558,7 @@ static noinline u64 find_delalloc_range(struct extent_io_tree *tree,
 	u64 cur_start = *start;
 	u64 found = 0;
 	u64 total_bytes = 0;
+	unsigned pre_state;
 
 	spin_lock(&tree->lock);
 
@@ -1521,7 +1576,8 @@ static noinline u64 find_delalloc_range(struct extent_io_tree *tree,
 	while (1) {
 		state = rb_entry(node, struct extent_state, rb_node);
 		if (found && (state->start != cur_start ||
-			      (state->state & EXTENT_BOUNDARY))) {
+			      (state->state & EXTENT_BOUNDARY) ||
+			      (state->state ^ pre_state) & EXTENT_COMPRESS)) {
 			goto out;
 		}
 		if (!(state->state & EXTENT_DELALLOC)) {
@@ -1537,6 +1593,7 @@ static noinline u64 find_delalloc_range(struct extent_io_tree *tree,
 		found++;
 		*end = state->end;
 		cur_start = state->end + 1;
+		pre_state = state->state;
 		node = rb_next(node);
 		total_bytes += state->end - state->start + 1;
 		if (total_bytes >= max_bytes)
@@ -2029,7 +2086,7 @@ int repair_io_failure(struct inode *inode, u64 start, u64 length, u64 logical,
 	 * read repair operation.
 	 */
 	btrfs_bio_counter_inc_blocked(fs_info);
-	ret = btrfs_map_block(fs_info, WRITE, logical,
+	ret = btrfs_map_block(fs_info, BTRFS_MAP_WRITE, logical,
 			      &map_length, &bbio, mirror_num);
 	if (ret) {
 		btrfs_bio_counter_dec(fs_info);
@@ -3743,7 +3800,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 	if (btrfs_header_level(eb) > 0) {
 		end = btrfs_node_key_ptr_offset(nritems);
 
-		memset_extent_buffer(eb, 0, end, eb->len - end);
+		memzero_extent_buffer(eb, end, eb->len - end);
 	} else {
 		/*
 		 * leaf:
@@ -3752,7 +3809,7 @@ static noinline_for_stack int write_one_eb(struct extent_buffer *eb,
 		start = btrfs_item_nr_offset(nritems);
 		end = btrfs_leaf_data(eb) +
 		      leaf_data_end(fs_info->tree_root, eb);
-		memset_extent_buffer(eb, 0, start, end - start);
+		memzero_extent_buffer(eb, start, end - start);
 	}
 
 	for (i = 0; i < num_pages; i++) {
@@ -4720,9 +4777,9 @@ struct extent_buffer *btrfs_clone_extent_buffer(struct extent_buffer *src)
 		WARN_ON(PageDirty(p));
 		SetPageUptodate(p);
 		new->pages[i] = p;
+		copy_page(page_address(p), page_address(src->pages[i]));
 	}
 
-	copy_extent_buffer(new, src, 0, 0, src->len);
 	set_bit(EXTENT_BUFFER_UPTODATE, &new->bflags);
 	set_bit(EXTENT_BUFFER_DUMMY, &new->bflags);
 
@@ -5465,6 +5522,27 @@ int memcmp_extent_buffer(struct extent_buffer *eb, const void *ptrv,
 	return ret;
 }
 
+void write_extent_buffer_chunk_tree_uuid(struct extent_buffer *eb,
+		const void *srcv)
+{
+	char *kaddr;
+
+	WARN_ON(!PageUptodate(eb->pages[0]));
+	kaddr = page_address(eb->pages[0]);
+	memcpy(kaddr + offsetof(struct btrfs_header, chunk_tree_uuid), srcv,
+			BTRFS_FSID_SIZE);
+}
+
+void write_extent_buffer_fsid(struct extent_buffer *eb, const void *srcv)
+{
+	char *kaddr;
+
+	WARN_ON(!PageUptodate(eb->pages[0]));
+	kaddr = page_address(eb->pages[0]);
+	memcpy(kaddr + offsetof(struct btrfs_header, fsid), srcv,
+			BTRFS_FSID_SIZE);
+}
+
 void write_extent_buffer(struct extent_buffer *eb, const void *srcv,
 			 unsigned long start, unsigned long len)
 {
@@ -5496,8 +5574,8 @@ void write_extent_buffer(struct extent_buffer *eb, const void *srcv,
 	}
 }
 
-void memset_extent_buffer(struct extent_buffer *eb, char c,
-			  unsigned long start, unsigned long len)
+void memzero_extent_buffer(struct extent_buffer *eb, unsigned long start,
+		unsigned long len)
 {
 	size_t cur;
 	size_t offset;
@@ -5517,12 +5595,26 @@ void memset_extent_buffer(struct extent_buffer *eb, char c,
 
 		cur = min(len, PAGE_SIZE - offset);
 		kaddr = page_address(page);
-		memset(kaddr + offset, c, cur);
+		memset(kaddr + offset, 0, cur);
 
 		len -= cur;
 		offset = 0;
 		i++;
 	}
+}
+
+void copy_extent_buffer_full(struct extent_buffer *dst,
+			     struct extent_buffer *src)
+{
+	int i;
+	unsigned num_pages;
+
+	ASSERT(dst->len == src->len);
+
+	num_pages = num_extent_pages(dst->start, dst->len);
+	for (i = 0; i < num_pages; i++)
+		copy_page(page_address(dst->pages[i]),
+				page_address(src->pages[i]));
 }
 
 void copy_extent_buffer(struct extent_buffer *dst, struct extent_buffer *src,
