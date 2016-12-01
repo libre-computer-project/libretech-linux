@@ -1298,7 +1298,7 @@ static enum d_walk_ret path_check_mount(void *data, struct dentry *dentry)
  * Return true if the parent or its subdirectories contain
  * a mount point in the current namespace.
  */
-int path_has_submounts(struct path *parent)
+int path_has_submounts(const struct path *parent)
 {
 	struct check_mount data = { .mnt = parent->mnt, .mounted = 0 };
 
