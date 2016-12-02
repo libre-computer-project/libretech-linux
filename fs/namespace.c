@@ -1160,6 +1160,36 @@ struct vfsmount *mntget(struct vfsmount *mnt)
 }
 EXPORT_SYMBOL(mntget);
 
+/* __path_is_mountpoint() - Check if path is a mount in the current
+ *                          namespace.
+ *
+ *  d_mountpoint() can only be used reliably to establish if a dentry is
+ *  not mounted in any namespace and that common case is handled inline.
+ *  d_mountpoint() isn't aware of the possibility there may be multiple
+ *  mounts using a given dentry in a different namespace. This function
+ *  checks if the passed in path is a mountpoint rather than the dentry
+ *  alone.
+ */
+bool __path_is_mountpoint(const struct path *path)
+{
+	struct mount *mount;
+	struct vfsmount *mnt;
+	unsigned seq;
+
+	rcu_read_lock();
+	do {
+		seq = read_seqbegin(&mount_lock);
+		mount = __lookup_mnt(path->mnt, path->dentry);
+		mnt = mount ? &mount->mnt : NULL;
+	} while (mnt &&
+		 !(mnt->mnt_flags & MNT_SYNC_UMOUNT) &&
+		 read_seqretry(&mount_lock, seq));
+	rcu_read_unlock();
+
+	return mnt != NULL;
+}
+EXPORT_SYMBOL(__path_is_mountpoint);
+
 struct vfsmount *mnt_clone_internal(struct path *path)
 {
 	struct mount *p;
@@ -1281,6 +1311,33 @@ const struct seq_operations mounts_op = {
 };
 #endif  /* CONFIG_PROC_FS */
 
+struct mnt_tree_refs {
+	struct mount *root;
+	unsigned int refs;
+	unsigned int min_refs;
+};
+
+static void mnt_get_tree_refs(struct mnt_tree_refs *mtr)
+{
+	struct mount *mnt = mtr->root;
+	struct mount *p;
+
+	/*
+	 * Each propagated tree contribues 2 * #mounts - 1 to
+	 * the minimal reference count. But when a mount is
+	 * umounted and connected the mount doesn't hold a
+	 * reference to its parent so it contributes a single
+	 * reference.
+	 */
+	for (p = mnt; p; p = next_mnt(p, mnt)) {
+		mtr->refs += mnt_get_count(p);
+		if (p == mnt || p->mnt.mnt_flags & MNT_UMOUNT)
+			mtr->min_refs++;
+		else
+			mtr->min_refs += 2;
+	}
+}
+
 /**
  * may_umount_tree - check if a mount tree is busy
  * @mnt: root of mount tree
@@ -1292,25 +1349,51 @@ const struct seq_operations mounts_op = {
 int may_umount_tree(struct vfsmount *m)
 {
 	struct mount *mnt = real_mount(m);
-	int actual_refs = 0;
-	int minimum_refs = 0;
-	struct mount *p;
+	struct mount *parent = mnt->mnt_parent;
+	struct mnt_tree_refs mtr;
+	struct mount *p, *child;
+
 	BUG_ON(!m);
 
-	/* write lock needed for mnt_get_count */
+	down_read(&namespace_sem);
 	lock_mount_hash();
-	for (p = mnt; p; p = next_mnt(p, mnt)) {
-		actual_refs += mnt_get_count(p);
-		minimum_refs += 2;
+
+	mtr.root = mnt;
+	mtr.refs = 0;
+	mtr.min_refs = 0;
+
+	mnt_get_tree_refs(&mtr);
+	/*
+	 * Caller holds a mount reference so minimum references
+	 * to the tree at mnt is one greater than the minimum
+	 * references.
+	 */
+	mtr.min_refs++;
+
+	/* The pnode.c propagation_next() function (as used below)
+	 * returns each mount propogated from a given mount. Using
+	 * the parent of mnt and matching the mnt->mnt_mountpoint
+	 * gets the list of mounts propogated from mnt. To work
+	 * out if the tree is in use (eg. open file or pwd) the
+	 * reference counts of each of these mounts needs to be
+	 * checked as well as mnt itself.
+	 */
+	for (p = propagation_next(parent, parent); p;
+			p = propagation_next(p, parent)) {
+		child = __lookup_mnt_last(&p->mnt, mnt->mnt_mountpoint);
+		if (child) {
+			mtr.root = child;
+			mnt_get_tree_refs(&mtr);
+		}
 	}
 	unlock_mount_hash();
+	up_read(&namespace_sem);
 
-	if (actual_refs > minimum_refs)
+	if (mtr.refs > mtr.min_refs)
 		return 0;
 
 	return 1;
 }
-
 EXPORT_SYMBOL(may_umount_tree);
 
 /**

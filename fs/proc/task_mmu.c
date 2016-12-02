@@ -445,6 +445,9 @@ struct mem_size_stats {
 	unsigned long swap;
 	unsigned long shared_hugetlb;
 	unsigned long private_hugetlb;
+	unsigned long rss_pte;
+	unsigned long rss_pmd;
+	unsigned long rss_pud;
 	u64 pss;
 	u64 swap_pss;
 	bool check_shmem_swap;
@@ -519,6 +522,7 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 
 	if (pte_present(*pte)) {
 		page = vm_normal_page(vma, addr, *pte);
+		mss->rss_pte += PAGE_SIZE;
 	} else if (is_swap_pte(*pte)) {
 		swp_entry_t swpent = pte_to_swp_entry(*pte);
 
@@ -578,6 +582,7 @@ static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 		/* pass */;
 	else
 		VM_BUG_ON_PAGE(1, page);
+	mss->rss_pmd += PMD_SIZE;
 	smaps_account(mss, page, true, pmd_young(*pmd), pmd_dirty(*pmd));
 }
 #else
@@ -684,6 +689,30 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_HUGETLB_PAGE
+/*
+ * Most architectures have a 1:1 mapping of PTEs to hugetlb page
+ * sizes, but there are some outliers like arm64 that use
+ * multiple hardware PTEs to make a hugetlb "page".  Do not
+ * assume that all 'hpage_size's are not exactly at a page table
+ * size boundary.  Instead, accept arbitrary 'hpage_size's and
+ * assume they are made up of the next-smallest size.  We do not
+ * handle PGD-sized hpages and hugetlb_add_hstate() will WARN()
+ * if it sees one.
+ *
+ * Note also that the page walker code only calls us once per
+ * huge 'struct page', *not* once per PTE in the page tables.
+ */
+static void smaps_hugetlb_present_hpage(struct mem_size_stats *mss,
+					unsigned long hpage_size)
+{
+	if (hpage_size >= PUD_SIZE)
+		mss->rss_pud += hpage_size;
+	else if (hpage_size >= PMD_SIZE)
+		mss->rss_pmd += hpage_size;
+	else
+		mss->rss_pte += hpage_size;
+}
+
 static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 				 unsigned long addr, unsigned long end,
 				 struct mm_walk *walk)
@@ -702,11 +731,14 @@ static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 	}
 	if (page) {
 		int mapcount = page_mapcount(page);
+		unsigned long hpage_size = huge_page_size(hstate_vma(vma));
+
+		smaps_hugetlb_present_hpage(mss, hpage_size);
 
 		if (mapcount >= 2)
-			mss->shared_hugetlb += huge_page_size(hstate_vma(vma));
+			mss->shared_hugetlb += hpage_size;
 		else
-			mss->private_hugetlb += huge_page_size(hstate_vma(vma));
+			mss->private_hugetlb += hpage_size;
 	}
 	return 0;
 }
@@ -714,6 +746,75 @@ static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 
 void __weak arch_show_smap(struct seq_file *m, struct vm_area_struct *vma)
 {
+}
+
+/*
+ * What units should we use for a given number?  We want
+ * 2048 to be 2k, so we return 'k'.  1048576 should be
+ * 1M, so we return 'M'.
+ */
+static char size_unit(unsigned long long nr)
+{
+	/*
+	 * This ' ' might look a bit goofy in the output.  But, why
+	 * bother doing anything.  Do we even have a <1k page size?
+	 */
+	if (nr < (1ULL<<10))
+		return ' ';
+	if (nr < (1ULL<<20))
+		return 'k';
+	if (nr < (1ULL<<30))
+		return 'M';
+	if (nr < (1ULL<<40))
+		return 'G';
+	if (nr < (1ULL<<50))
+		return 'T';
+	if (nr < (1ULL<<60))
+		return 'P';
+	return 'E';
+}
+
+/*
+ * How should we shift down a a given number to scale it
+ * with the units we are printing it as? 2048 to be 2k,
+ * so we want it shifted down by 10.  1048576 should be
+ * 1M, so we want it shifted down by 20.
+ */
+static int size_shift(unsigned long long nr)
+{
+	if (nr < (1ULL<<10))
+		return 0;
+	if (nr < (1ULL<<20))
+		return 10;
+	if (nr < (1ULL<<30))
+		return 20;
+	if (nr < (1ULL<<40))
+		return 30;
+	if (nr < (1ULL<<50))
+		return 40;
+	if (nr < (1ULL<<60))
+		return 50;
+	return 60;
+}
+
+static void show_one_smap_pte(struct seq_file *m, unsigned long bytes_rss,
+		unsigned long pte_size)
+{
+	seq_printf(m, "Ptes@%ld%cB:	%8lu kB\n",
+			pte_size >> size_shift(pte_size),
+			size_unit(pte_size),
+			bytes_rss >> 10);
+}
+
+static void show_smap_ptes(struct seq_file *m, struct mem_size_stats *mss)
+{
+	/* Only print the entries for page sizes present in the VMA */
+	if (mss->rss_pte)
+		show_one_smap_pte(m, mss->rss_pte, PAGE_SIZE);
+	if (mss->rss_pmd)
+		show_one_smap_pte(m, mss->rss_pmd, PMD_SIZE);
+	if (mss->rss_pud)
+		show_one_smap_pte(m, mss->rss_pud, PUD_SIZE);
 }
 
 static int show_smap(struct seq_file *m, void *v, int is_pid)
@@ -799,6 +900,7 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
 		   (vma->vm_flags & VM_LOCKED) ?
 			(unsigned long)(mss.pss >> (10 + PSS_SHIFT)) : 0);
 
+	show_smap_ptes(m, &mss);
 	arch_show_smap(m, vma);
 	show_smap_vma_flags(m, vma);
 	m_cache_vma(m, vma);
