@@ -162,8 +162,8 @@ out:
 	hisi_sas_slot_task_free(hisi_hba, task, abort_slot);
 	if (task->task_done)
 		task->task_done(task);
-	if (sas_dev && sas_dev->running_req)
-		sas_dev->running_req--;
+	if (sas_dev)
+		atomic64_dec(&sas_dev->running_req);
 }
 
 static int hisi_sas_task_prep(struct sas_task *task, struct hisi_hba *hisi_hba,
@@ -232,8 +232,8 @@ static int hisi_sas_task_prep(struct sas_task *task, struct hisi_hba *hisi_hba,
 		rc = hisi_sas_slot_index_alloc(hisi_hba, &slot_idx);
 	if (rc)
 		goto err_out;
-	rc = hisi_hba->hw->get_free_slot(hisi_hba, &dlvry_queue,
-					 &dlvry_queue_slot);
+	rc = hisi_hba->hw->get_free_slot(hisi_hba, sas_dev->device_id,
+					&dlvry_queue, &dlvry_queue_slot);
 	if (rc)
 		goto err_out_tag;
 
@@ -303,7 +303,7 @@ static int hisi_sas_task_prep(struct sas_task *task, struct hisi_hba *hisi_hba,
 
 	hisi_hba->slot_prep = slot;
 
-	sas_dev->running_req++;
+	atomic64_inc(&sas_dev->running_req);
 	++(*pass);
 
 	return 0;
@@ -369,9 +369,14 @@ static void hisi_sas_bytes_dmaed(struct hisi_hba *hisi_hba, int phy_no)
 		struct sas_phy *sphy = sas_phy->phy;
 
 		sphy->negotiated_linkrate = sas_phy->linkrate;
-		sphy->minimum_linkrate = phy->minimum_linkrate;
 		sphy->minimum_linkrate_hw = SAS_LINK_RATE_1_5_GBPS;
-		sphy->maximum_linkrate = phy->maximum_linkrate;
+		sphy->maximum_linkrate_hw =
+			hisi_hba->hw->phy_get_max_linkrate();
+		if (sphy->minimum_linkrate == SAS_LINK_RATE_UNKNOWN)
+			sphy->minimum_linkrate = phy->minimum_linkrate;
+
+		if (sphy->maximum_linkrate == SAS_LINK_RATE_UNKNOWN)
+			sphy->maximum_linkrate = phy->maximum_linkrate;
 	}
 
 	if (phy->phy_type & PORT_TYPE_SAS) {
@@ -537,7 +542,7 @@ static void hisi_sas_port_notify_formed(struct asd_sas_phy *sas_phy)
 	struct hisi_hba *hisi_hba = sas_ha->lldd_ha;
 	struct hisi_sas_phy *phy = sas_phy->lldd_phy;
 	struct asd_sas_port *sas_port = sas_phy->port;
-	struct hisi_sas_port *port = &hisi_hba->port[sas_phy->id];
+	struct hisi_sas_port *port = &hisi_hba->port[phy->port_id];
 	unsigned long flags;
 
 	if (!sas_port)
@@ -645,6 +650,9 @@ static int hisi_sas_control_phy(struct asd_sas_phy *sas_phy, enum phy_func func,
 		break;
 
 	case PHY_FUNC_SET_LINK_RATE:
+		hisi_hba->hw->phy_set_linkrate(hisi_hba, phy_no, funcdata);
+		break;
+
 	case PHY_FUNC_RELEASE_SPINUP_HOLD:
 	default:
 		return -EOPNOTSUPP;
@@ -764,7 +772,8 @@ static int hisi_sas_exec_internal_tmf_task(struct domain_device *device,
 		task = NULL;
 	}
 ex_err:
-	WARN_ON(retry == TASK_RETRY);
+	if (retry == TASK_RETRY)
+		dev_warn(dev, "abort tmf: executing internal task failed!\n");
 	sas_free_task(task);
 	return res;
 }
@@ -960,6 +969,9 @@ static int hisi_sas_query_task(struct sas_task *task)
 		case TMF_RESP_FUNC_FAILED:
 		case TMF_RESP_FUNC_COMPLETE:
 			break;
+		default:
+			rc = TMF_RESP_FUNC_FAILED;
+			break;
 		}
 	}
 	return rc;
@@ -987,8 +999,8 @@ hisi_sas_internal_abort_task_exec(struct hisi_hba *hisi_hba, u64 device_id,
 	rc = hisi_sas_slot_index_alloc(hisi_hba, &slot_idx);
 	if (rc)
 		goto err_out;
-	rc = hisi_hba->hw->get_free_slot(hisi_hba, &dlvry_queue,
-					 &dlvry_queue_slot);
+	rc = hisi_hba->hw->get_free_slot(hisi_hba, sas_dev->device_id,
+					&dlvry_queue, &dlvry_queue_slot);
 	if (rc)
 		goto err_out_tag;
 
@@ -1023,7 +1035,8 @@ hisi_sas_internal_abort_task_exec(struct hisi_hba *hisi_hba, u64 device_id,
 
 	hisi_hba->slot_prep = slot;
 
-	sas_dev->running_req++;
+	atomic64_inc(&sas_dev->running_req);
+
 	/* send abort command to our chip */
 	hisi_hba->hw->start_delivery(hisi_hba);
 
