@@ -867,6 +867,7 @@ out_unlock:
 out:
 	if (prev && prev != root)
 		css_put(&prev->css);
+	cond_resched_rcu_qs();
 
 	return memcg;
 }
