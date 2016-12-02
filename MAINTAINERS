@@ -4698,12 +4698,14 @@ L:	linux-efi@vger.kernel.org
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/efi/efi.git
 S:	Maintained
 F:	Documentation/efi-stub.txt
-F:	arch/ia64/kernel/efi.c
+F:	arch/*/kernel/efi.c
 F:	arch/x86/boot/compressed/eboot.[ch]
-F:	arch/x86/include/asm/efi.h
+F:	arch/*/include/asm/efi.h
 F:	arch/x86/platform/efi/
 F:	drivers/firmware/efi/
 F:	include/linux/efi*.h
+F:	arch/arm/boot/compressed/efi-header.S
+F:	arch/arm64/kernel/efi-entry.S
 
 EFI VARIABLE FILESYSTEM
 M:	Matthew Garrett <matthew.garrett@nebula.com>
@@ -6172,12 +6174,6 @@ L:	linux-ide@vger.kernel.org
 S:	Maintained
 F:	Documentation/cdrom/ide-cd
 F:	drivers/ide/ide-cd*
-
-IDLE-I7300
-M:	Andy Henroid <andrew.d.henroid@intel.com>
-L:	linux-pm@vger.kernel.org
-S:	Supported
-F:	drivers/idle/i7300_idle.c
 
 IEEE 802.15.4 SUBSYSTEM
 M:	Alexander Aring <aar@pengutronix.de>
@@ -10247,6 +10243,14 @@ M:	Dennis Dalessandro <dennis.dalessandro@intel.com>
 L:	linux-rdma@vger.kernel.org
 S:	Supported
 F:	drivers/infiniband/sw/rdmavt
+
+RDT - RESOURCE ALLOCATION
+M:	Fenghua Yu <fenghua.yu@intel.com>
+L:	linux-kernel@vger.kernel.org
+S:	Supported
+F:	arch/x86/kernel/cpu/intel_rdt*
+F:	arch/x86/include/asm/intel_rdt*
+F:	Documentation/x86/intel_rdt*
 
 READ-COPY UPDATE (RCU)
 M:	"Paul E. McKenney" <paulmck@linux.vnet.ibm.com>
