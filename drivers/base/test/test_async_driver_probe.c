@@ -36,7 +36,6 @@ static int test_probe(struct platform_device *pdev)
 static struct platform_driver async_driver = {
 	.driver = {
 		.name = "test_async_driver",
-		.owner = THIS_MODULE,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = test_probe,
@@ -45,7 +44,6 @@ static struct platform_driver async_driver = {
 static struct platform_driver sync_driver = {
 	.driver = {
 		.name = "test_sync_driver",
-		.owner = THIS_MODULE,
 		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 	},
 	.probe = test_probe,
@@ -118,7 +116,7 @@ static int __init test_async_probe_init(void)
 	calltime = ktime_get();
 	sync_dev_1 = platform_device_register_simple("test_sync_driver", 1,
 						     NULL, 0);
-	if (IS_ERR(async_dev_1)) {
+	if (IS_ERR(sync_dev_1)) {
 		error = PTR_ERR(sync_dev_1);
 		pr_err("failed to create sync_dev_1: %d", error);
 		goto err_unregister_sync_driver;
