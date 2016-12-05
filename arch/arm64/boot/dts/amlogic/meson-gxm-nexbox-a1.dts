@@ -1,7 +1,9 @@
 /*
- * Copyright (c) 2016 Andreas Färber
- * Copyright (c) 2016 BayLibre, Inc.
- * Author: Kevin Hilman <khilman@kernel.org>
+ * Copyright (c) 2016 BayLibre, SAS.
+ * Author: Neil Armstrong <narmstrong@baylibre.com>
+ *
+ * Copyright (c) 2016 Endless Computers, Inc.
+ * Author: Carlo Caione <carlo@endlessm.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -42,9 +44,14 @@
  *     OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "meson-gxbb.dtsi"
+/dts-v1/;
+
+#include "meson-gxm.dtsi"
 
 / {
+	compatible = "nexbox,a1", "amlogic,s912", "amlogic,meson-gxm";
+	model = "NEXBOX A1";
+
 	aliases {
 		serial0 = &uart_AO;
 	};
@@ -55,52 +62,24 @@
 
 	memory@0 {
 		device_type = "memory";
-		reg = <0x0 0x0 0x0 0x40000000>;
+		reg = <0x0 0x0 0x0 0x80000000>;
 	};
 
-	usb_pwr: regulator-usb-pwrs {
-		compatible = "regulator-fixed";
-
-		regulator-name = "USB_PWR";
-
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-
-		/* signal name in schematic: USB_PWR_EN */
-		gpio = <&gpio GPIODV_24 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-	};
-
-	vddio_card: gpio-regulator {
-		compatible = "regulator-gpio";
-
-		regulator-name = "VDDIO_CARD";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <3300000>;
-
-		gpios = <&gpio_ao GPIOAO_5 GPIO_ACTIVE_HIGH>;
-		gpios-states = <1>;
-
-		/* Based on P200 schematics, signal CARD_1.8V/3.3V_CTR */
-		states = <1800000 0
-			  3300000 1>;
-	};
-
-	vddio_boot: regulator-vddio_boot {
+	vddio_boot: regulator-vddio-boot {
 		compatible = "regulator-fixed";
 		regulator-name = "VDDIO_BOOT";
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
 	};
 
-	vddao_3v3: regulator-vddao_3v3 {
+	vddao_3v3: regulator-vddao-3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "VDDAO_3V3";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 	};
 
-	vcc_3v3: regulator-vcc_3v3 {
+	vcc_3v3: regulator-vcc-3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "VCC_3V3";
 		regulator-min-microvolt = <3300000>;
@@ -111,20 +90,6 @@
 		compatible = "mmc-pwrseq-emmc";
 		reset-gpios = <&gpio BOOT_9 GPIO_ACTIVE_LOW>;
 	};
-
-	wifi32k: wifi32k {
-		compatible = "pwm-clock";
-		#clock-cells = <0>;
-		clock-frequency = <32768>;
-		pwms = <&pwm_ef 0 30518 0>; /* PWM_E at 32.768KHz */
-	};
-
-	sdio_pwrseq: sdio-pwrseq {
-		compatible = "mmc-pwrseq-simple";
-		reset-gpios = <&gpio GPIOX_6 GPIO_ACTIVE_LOW>;
-		clocks = <&wifi32k>;
-		clock-names = "ext_clock";
-	};
 };
 
 /* This UART is brought out to the DB9 connector */
@@ -134,59 +99,10 @@
 	pinctrl-names = "default";
 };
 
-&ethmac {
-	status = "okay";
-	pinctrl-0 = <&eth_rgmii_pins>;
-	pinctrl-names = "default";
-};
-
 &ir {
 	status = "okay";
 	pinctrl-0 = <&remote_input_ao_pins>;
 	pinctrl-names = "default";
-};
-
-&usb0_phy {
-	status = "okay";
-	phy-supply = <&usb_pwr>;
-};
-
-&usb1_phy {
-	status = "okay";
-};
-
-&usb0 {
-	status = "okay";
-};
-
-&usb1 {
-	status = "okay";
-};
-
-/* Wireless SDIO Module */
-&sd_emmc_a {
-	status = "okay";
-	pinctrl-0 = <&sdio_pins>;
-	pinctrl-names = "default";
-	#address-cells = <1>;
-	#size-cells = <0>;
-
-	bus-width = <4>;
-	cap-sd-highspeed;
-	max-frequency = <100000000>;
-
-	non-removable;
-	disable-wp;
-
-	mmc-pwrseq = <&sdio_pwrseq>;
-
-	vmmc-supply = <&vddao_3v3>;
-	vqmmc-supply = <&vddio_boot>;
-
-	brcmf: bcrmf@1 {
-		reg = <1>;
-		compatible = "brcm,bcm4329-fmac";
-	};
 };
 
 /* SD card */
@@ -204,7 +120,7 @@
 	cd-inverted;
 
 	vmmc-supply = <&vddao_3v3>;
-	vqmmc-supply = <&vddio_card>;
+	vqmmc-supply = <&vddio_boot>;
 };
 
 /* eMMC */
@@ -227,10 +143,27 @@
 	vqmmc-supply = <&vddio_boot>;
 };
 
-&pwm_ef {
+&ethmac {
 	status = "okay";
-	pinctrl-0 = <&pwm_e_pins>;
+
+	pinctrl-0 = <&eth_pins>;
 	pinctrl-names = "default";
-	clocks = <&clkc CLKID_FCLK_DIV4>;
-	clock-names = "clkin0";
+
+	/* Select external PHY by default */
+	phy-handle = <&external_phy>;
+
+	snps,reset-gpio = <&gpio GPIOZ_14 0>;
+	snps,reset-delays-us = <0 10000 1000000>;
+	snps,reset-active-low;
+
+	/* External PHY is in RGMII */
+	phy-mode = "rgmii";
+};
+
+&external_mdio {
+	external_phy: ethernet-phy@0 {
+		compatible = "ethernet-phy-id001c.c916", "ethernet-phy-ieee802.3-c22";
+		reg = <0>;
+		max-speed = <1000>;
+	};
 };
