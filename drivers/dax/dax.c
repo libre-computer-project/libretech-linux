@@ -111,8 +111,61 @@ static ssize_t available_size_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(available_size);
 
+static ssize_t id_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dax_region *dax_region;
+	ssize_t rc = -ENXIO;
+
+	device_lock(dev);
+	dax_region = dev_get_drvdata(dev);
+	if (dax_region)
+		rc = sprintf(buf, "%d\n", dax_region->id);
+	device_unlock(dev);
+
+	return rc;
+}
+static DEVICE_ATTR_RO(id);
+
+static ssize_t region_size_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dax_region *dax_region;
+	ssize_t rc = -ENXIO;
+
+	device_lock(dev);
+	dax_region = dev_get_drvdata(dev);
+	if (dax_region)
+		rc = sprintf(buf, "%llu\n", (unsigned long long)
+				resource_size(&dax_region->res));
+	device_unlock(dev);
+
+	return rc;
+}
+static struct device_attribute dev_attr_region_size = __ATTR(size, 0444,
+		region_size_show, NULL);
+
+static ssize_t align_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dax_region *dax_region;
+	ssize_t rc = -ENXIO;
+
+	device_lock(dev);
+	dax_region = dev_get_drvdata(dev);
+	if (dax_region)
+		rc = sprintf(buf, "%u\n", dax_region->align);
+	device_unlock(dev);
+
+	return rc;
+}
+static DEVICE_ATTR_RO(align);
+
 static struct attribute *dax_region_attributes[] = {
 	&dev_attr_available_size.attr,
+	&dev_attr_region_size.attr,
+	&dev_attr_align.attr,
+	&dev_attr_id.attr,
 	NULL,
 };
 
