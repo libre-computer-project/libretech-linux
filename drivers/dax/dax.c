@@ -97,8 +97,11 @@ static unsigned long long dax_region_avail_size(
 	WARN_ON_ONCE(!mutex_is_locked(&dax_region->lock));
 
 	size = resource_size(&dax_region->res);
-	for_each_dax_region_resource(dax_region, res)
+	for_each_dax_region_resource(dax_region, res) {
+		dev_dbg(dax_region->dev, "%s: %pr offset: %lx\n",
+				res->name, res, res->desc);
 		size -= resource_size(res);
+	}
 
 	return size;
 }
@@ -372,6 +375,7 @@ struct dax_region *alloc_dax_region(struct device *parent, int region_id,
 	dax_region->res.name = dev_name(parent);
 	dax_region->res.start = res->start;
 	dax_region->res.end = res->end;
+	dax_region->res.flags = IORESOURCE_MEM;
 	dax_region->pfn_flags = pfn_flags;
 	mutex_init(&dax_region->lock);
 	kref_init(&dax_region->kref);
