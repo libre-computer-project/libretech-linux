@@ -4632,7 +4632,7 @@ int vfs_whiteout(struct inode *dir, struct dentry *dentry)
 }
 EXPORT_SYMBOL(vfs_whiteout);
 
-int readlink_copy(char __user *buffer, int buflen, const char *link)
+static int readlink_copy(char __user *buffer, int buflen, const char *link)
 {
 	int len = PTR_ERR(link);
 	if (IS_ERR(link))
