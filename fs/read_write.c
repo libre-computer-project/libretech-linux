@@ -1515,6 +1515,9 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	struct inode *inode_out = file_inode(file_out);
 	ssize_t ret;
 
+	if (S_ISDIR(inode_in->i_mode) || S_ISDIR(inode_out->i_mode))
+		return -EISDIR;
+
 	if (flags != 0)
 		return -EINVAL;
 
@@ -1542,13 +1545,22 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	if (ret)
 		return ret;
 
-	ret = -EOPNOTSUPP;
-	if (file_out->f_op->copy_file_range)
-		ret = file_out->f_op->copy_file_range(file_in, pos_in, file_out,
-						      pos_out, len, flags);
-	if (ret == -EOPNOTSUPP)
+	if (!S_ISREG(inode_in->i_mode) || !S_ISREG(inode_out->i_mode))
+		goto fallback;
+
+	if (!file_out->f_op->copy_file_range)
+		goto fallback;
+
+	/* Should be symmetric: */
+	WARN_ON_ONCE(!file_in->f_op->copy_file_range);
+
+	ret = file_out->f_op->copy_file_range(file_in, pos_in, file_out,
+					      pos_out, len, flags);
+	if (ret == -EOPNOTSUPP) {
+fallback:
 		ret = do_splice_direct(file_in, &pos_in, file_out, &pos_out,
 				len > MAX_RW_COUNT ? MAX_RW_COUNT : len, 0);
+	}
 
 	if (ret > 0) {
 		fsnotify_access(file_in);
