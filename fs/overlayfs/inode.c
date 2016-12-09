@@ -11,6 +11,7 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 #include <linux/posix_acl.h>
+#include <linux/module.h>
 #include "overlayfs.h"
 
 static int ovl_copy_up_truncate(struct dentry *dentry)
@@ -354,6 +355,22 @@ static const struct inode_operations ovl_symlink_inode_operations = {
 	.update_time	= ovl_update_time,
 };
 
+static int ovl_open(struct inode *inode, struct file *file)
+{
+	int ret = 0;
+
+	/* Want fops from real inode */
+	replace_fops(file, inode->i_fop);
+	if (file->f_op->open)
+		ret = file->f_op->open(inode, file);
+
+	return ret;
+}
+
+static const struct file_operations ovl_file_operations = {
+	.open		= ovl_open,
+};
+
 static void ovl_fill_inode(struct inode *inode, umode_t mode)
 {
 	inode->i_ino = get_next_ino();
@@ -379,6 +396,7 @@ static void ovl_fill_inode(struct inode *inode, umode_t mode)
 		/* Fall through */
 
 	case S_IFREG:
+		inode->i_fop = &ovl_file_operations;
 	case S_IFSOCK:
 	case S_IFBLK:
 	case S_IFCHR:
