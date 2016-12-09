@@ -1521,14 +1521,6 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	if (flags != 0)
 		return -EINVAL;
 
-	ret = rw_verify_area(READ, file_in, &pos_in, len);
-	if (unlikely(ret))
-		return ret;
-
-	ret = rw_verify_area(WRITE, file_out, &pos_out, len);
-	if (unlikely(ret))
-		return ret;
-
 	if (!(file_in->f_mode & FMODE_PREAD) ||
 	    !(file_out->f_mode & FMODE_PWRITE))
 		return -ESPIPE;
@@ -1537,6 +1529,14 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	    !(file_out->f_mode & FMODE_WRITE) ||
 	    (file_out->f_flags & O_APPEND))
 		return -EBADF;
+
+	ret = rw_verify_area(READ, file_in, &pos_in, len);
+	if (unlikely(ret))
+		return ret;
+
+	ret = rw_verify_area(WRITE, file_out, &pos_out, len);
+	if (unlikely(ret))
+		return ret;
 
 	/* this could be relaxed once a method supports cross-fs copies */
 	if (inode_in->i_sb != inode_out->i_sb)
