@@ -300,6 +300,28 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 
 	ret = security_mmap_file(file, prot, flag);
 	if (!ret) {
+		/*
+		 * Special treatment for overlayfs:
+		 *
+		 * Take MAP_SHARED/PROT_READ as hint about future writes to the
+		 * file (through another file descriptor).  Caller might not
+		 * have had such an intent, but we hope MAP_PRIVATE will be used
+		 * in most such cases.
+		 *
+		 * If we don't copy up now and the file is modified, it becomes
+		 * really difficult to change the mapping to match that of the
+		 * file's content later.
+		 *
+		 * Copy up needs to be done without mmap_sem since it takes vfs
+		 * locks which would potentially deadlock under mmap_sem.
+		 */
+		if ((flag & MAP_SHARED) && !(prot & PROT_WRITE) && file) {
+			void *p = d_real(file->f_path.dentry, NULL, O_WRONLY);
+
+			if (IS_ERR(p))
+				return PTR_ERR(p);
+		}
+
 		if (down_write_killable(&mm->mmap_sem))
 			return -EINTR;
 		ret = do_mmap_pgoff(file, addr, len, prot, flag, pgoff,
