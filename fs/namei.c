@@ -4753,17 +4753,6 @@ void page_put_link(void *arg)
 }
 EXPORT_SYMBOL(page_put_link);
 
-int page_readlink(struct dentry *dentry, char __user *buffer, int buflen)
-{
-	DEFINE_DELAYED_CALL(done);
-	int res = readlink_copy(buffer, buflen,
-				page_get_link(dentry, d_inode(dentry),
-					      &done));
-	do_delayed_call(&done);
-	return res;
-}
-EXPORT_SYMBOL(page_readlink);
-
 /*
  * The nofs argument instructs pagecache_write_begin to pass AOP_FLAG_NOFS
  */
