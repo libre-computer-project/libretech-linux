@@ -321,6 +321,9 @@ enum iwl_mvm_agg_state {
  *	Basically when next_reclaimed reaches ssn, we can tell mac80211 that
  *	we are ready to finish the Tx AGG stop / start flow.
  * @tx_time: medium time consumed by this A-MPDU
+ * @is_tid_active: has this TID sent traffic in the last
+ *	%IWL_MVM_DQA_QUEUE_TIMEOUT time period. If %txq_id is invalid, this
+ *	field should be ignored.
  */
 struct iwl_mvm_tid_data {
 	struct sk_buff_head deferred_tx_frames;
@@ -333,6 +336,7 @@ struct iwl_mvm_tid_data {
 	u16 txq_id;
 	u16 ssn;
 	u16 tx_time;
+	bool is_tid_active;
 };
 
 static inline u16 iwl_mvm_tid_queued(struct iwl_mvm_tid_data *tid_data)
@@ -347,6 +351,15 @@ struct iwl_mvm_key_pn {
 		u8 pn[IWL_MAX_TID_COUNT][IEEE80211_CCMP_PN_LEN];
 	} ____cacheline_aligned_in_smp q[];
 };
+
+struct iwl_mvm_delba_data {
+	u32 baid;
+} __packed;
+
+struct iwl_mvm_delba_notif {
+	struct iwl_mvm_internal_rxq_notif metadata;
+	struct iwl_mvm_delba_data delba;
+} __packed;
 
 /**
  * struct iwl_mvm_rxq_dup_data - per station per rx queue data
@@ -373,6 +386,7 @@ struct iwl_mvm_rxq_dup_data {
  * @lock: lock to protect the whole struct. Since %tid_data is access from Tx
  * and from Tx response flow, it needs a spinlock.
  * @tid_data: per tid data + mgmt. Look at %iwl_mvm_tid_data.
+ * @tid_to_baid: a simple map of TID to baid
  * @reserved_queue: the queue reserved for this STA for DQA purposes
  *	Every STA has is given one reserved queue to allow it to operate. If no
  *	such queue can be guaranteed, the STA addition will fail.
@@ -406,6 +420,7 @@ struct iwl_mvm_sta {
 	bool next_status_eosp;
 	spinlock_t lock;
 	struct iwl_mvm_tid_data tid_data[IWL_MAX_TID_COUNT + 1];
+	u8 tid_to_baid[IWL_MAX_TID_COUNT];
 	struct iwl_lq_sta lq_sta;
 	struct ieee80211_vif *vif;
 	struct iwl_mvm_key_pn __rcu *ptk_pn[4];
@@ -423,6 +438,7 @@ struct iwl_mvm_sta {
 	bool tlc_amsdu;
 	u8 agg_tids;
 	u8 sleep_tx_count;
+	u8 avg_energy;
 };
 
 static inline struct iwl_mvm_sta *
@@ -457,9 +473,14 @@ int iwl_mvm_sta_send_to_fw(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
 int iwl_mvm_add_sta(struct iwl_mvm *mvm,
 		    struct ieee80211_vif *vif,
 		    struct ieee80211_sta *sta);
-int iwl_mvm_update_sta(struct iwl_mvm *mvm,
-		       struct ieee80211_vif *vif,
-		       struct ieee80211_sta *sta);
+
+static inline int iwl_mvm_update_sta(struct iwl_mvm *mvm,
+				     struct ieee80211_vif *vif,
+				     struct ieee80211_sta *sta)
+{
+	return iwl_mvm_sta_send_to_fw(mvm, sta, true, 0);
+}
+
 int iwl_mvm_rm_sta(struct iwl_mvm *mvm,
 		   struct ieee80211_vif *vif,
 		   struct ieee80211_sta *sta);
@@ -487,7 +508,7 @@ void iwl_mvm_rx_eosp_notif(struct iwl_mvm *mvm,
 
 /* AMPDU */
 int iwl_mvm_sta_rx_agg(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
-		       int tid, u16 ssn, bool start, u8 buf_size);
+		       int tid, u16 ssn, bool start, u8 buf_size, u16 timeout);
 int iwl_mvm_sta_tx_agg_start(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 			struct ieee80211_sta *sta, u16 tid, u16 *ssn);
 int iwl_mvm_sta_tx_agg_oper(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
@@ -497,6 +518,9 @@ int iwl_mvm_sta_tx_agg_stop(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 			    struct ieee80211_sta *sta, u16 tid);
 int iwl_mvm_sta_tx_agg_flush(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 			    struct ieee80211_sta *sta, u16 tid);
+
+int iwl_mvm_sta_tx_agg(struct iwl_mvm *mvm, struct ieee80211_sta *sta,
+		       int tid, u8 queue, bool start);
 
 int iwl_mvm_add_aux_sta(struct iwl_mvm *mvm);
 void iwl_mvm_del_aux_sta(struct iwl_mvm *mvm);
@@ -534,5 +558,9 @@ void iwl_mvm_modify_all_sta_disable_tx(struct iwl_mvm *mvm,
 				       bool disable);
 void iwl_mvm_csa_client_absent(struct iwl_mvm *mvm, struct ieee80211_vif *vif);
 void iwl_mvm_add_new_dqa_stream_wk(struct work_struct *wk);
+
+int iwl_mvm_scd_queue_redirect(struct iwl_mvm *mvm, int queue, int tid,
+			       int ac, int ssn, unsigned int wdg_timeout,
+			       bool force);
 
 #endif /* __sta_h__ */

@@ -32,8 +32,6 @@ enum mctrl_gpio_idx {
 	UART_GPIO_RI = UART_GPIO_RNG,
 	UART_GPIO_RTS,
 	UART_GPIO_DTR,
-	UART_GPIO_OUT1,
-	UART_GPIO_OUT2,
 	UART_GPIO_MAX,
 };
 
@@ -50,10 +48,17 @@ struct mctrl_gpios;
 void mctrl_gpio_set(struct mctrl_gpios *gpios, unsigned int mctrl);
 
 /*
- * Get state of the modem control output lines from GPIOs.
+ * Get state of the modem control input lines from GPIOs.
  * The mctrl flags are updated and returned.
  */
 unsigned int mctrl_gpio_get(struct mctrl_gpios *gpios, unsigned int *mctrl);
+
+/*
+ * Get state of the modem control output lines from GPIOs.
+ * The mctrl flags are updated and returned.
+ */
+unsigned int
+mctrl_gpio_get_outputs(struct mctrl_gpios *gpios, unsigned int *mctrl);
 
 /*
  * Returns the associated struct gpio_desc to the modem line gidx
@@ -105,6 +110,12 @@ void mctrl_gpio_set(struct mctrl_gpios *gpios, unsigned int mctrl)
 
 static inline
 unsigned int mctrl_gpio_get(struct mctrl_gpios *gpios, unsigned int *mctrl)
+{
+	return *mctrl;
+}
+
+static inline unsigned int
+mctrl_gpio_get_outputs(struct mctrl_gpios *gpios, unsigned int *mctrl)
 {
 	return *mctrl;
 }

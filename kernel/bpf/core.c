@@ -231,7 +231,7 @@ bpf_jit_binary_alloc(unsigned int proglen, u8 **image_ptr,
 	hdr->pages = size / PAGE_SIZE;
 	hole = min_t(unsigned int, size - (proglen + sizeof(*hdr)),
 		     PAGE_SIZE - sizeof(*hdr));
-	start = (prandom_u32() % hole) & ~(alignment - 1);
+	start = (get_random_int() % hole) & ~(alignment - 1);
 
 	/* Leave a random number of instructions before BPF code. */
 	*image_ptr = &hdr->image[start];
@@ -251,7 +251,7 @@ static int bpf_jit_blind_insn(const struct bpf_insn *from,
 			      struct bpf_insn *to_buff)
 {
 	struct bpf_insn *to = to_buff;
-	u32 imm_rnd = prandom_u32();
+	u32 imm_rnd = get_random_int();
 	s16 off;
 
 	BUILD_BUG_ON(BPF_REG_AX  + 1 != MAX_BPF_JIT_REG);
@@ -719,14 +719,13 @@ select_insn:
 
 		if (unlikely(index >= array->map.max_entries))
 			goto out;
-
 		if (unlikely(tail_call_cnt > MAX_TAIL_CALL_CNT))
 			goto out;
 
 		tail_call_cnt++;
 
 		prog = READ_ONCE(array->ptrs[index]);
-		if (unlikely(!prog))
+		if (!prog)
 			goto out;
 
 		/* ARG1 at this point is guaranteed to point to CTX from
@@ -1019,7 +1018,7 @@ void bpf_user_rnd_init_once(void)
 	prandom_init_once(&bpf_user_rnd_state);
 }
 
-u64 bpf_user_rnd_u32(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
+BPF_CALL_0(bpf_user_rnd_u32)
 {
 	/* Should someone ever have the rather unwise idea to use some
 	 * of the registers passed into this function, then note that
@@ -1032,7 +1031,7 @@ u64 bpf_user_rnd_u32(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
 
 	state = &get_cpu_var(bpf_user_rnd_state);
 	res = prandom_u32_state(state);
-	put_cpu_var(state);
+	put_cpu_var(bpf_user_rnd_state);
 
 	return res;
 }
@@ -1055,9 +1054,11 @@ const struct bpf_func_proto * __weak bpf_get_trace_printk_proto(void)
 	return NULL;
 }
 
-const struct bpf_func_proto * __weak bpf_get_event_output_proto(void)
+u64 __weak
+bpf_event_output(struct bpf_map *map, u64 flags, void *meta, u64 meta_size,
+		 void *ctx, u64 ctx_size, bpf_ctx_copy_t ctx_copy)
 {
-	return NULL;
+	return -ENOTSUPP;
 }
 
 /* Always built-in helper functions. */

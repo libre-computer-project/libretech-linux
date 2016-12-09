@@ -30,7 +30,7 @@
 #include <linux/stmmac.h>
 #include <linux/phy.h>
 #include <linux/module.h>
-#if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
 #define STMMAC_VLAN_TAG_USED
 #include <linux/if_vlan.h>
 #endif
@@ -120,14 +120,17 @@ struct stmmac_extra_stats {
 	unsigned long ip_csum_bypassed;
 	unsigned long ipv4_pkt_rcvd;
 	unsigned long ipv6_pkt_rcvd;
-	unsigned long rx_msg_type_ext_no_ptp;
-	unsigned long rx_msg_type_sync;
-	unsigned long rx_msg_type_follow_up;
-	unsigned long rx_msg_type_delay_req;
-	unsigned long rx_msg_type_delay_resp;
-	unsigned long rx_msg_type_pdelay_req;
-	unsigned long rx_msg_type_pdelay_resp;
-	unsigned long rx_msg_type_pdelay_follow_up;
+	unsigned long no_ptp_rx_msg_type_ext;
+	unsigned long ptp_rx_msg_type_sync;
+	unsigned long ptp_rx_msg_type_follow_up;
+	unsigned long ptp_rx_msg_type_delay_req;
+	unsigned long ptp_rx_msg_type_delay_resp;
+	unsigned long ptp_rx_msg_type_pdelay_req;
+	unsigned long ptp_rx_msg_type_pdelay_resp;
+	unsigned long ptp_rx_msg_type_pdelay_follow_up;
+	unsigned long ptp_rx_msg_type_announce;
+	unsigned long ptp_rx_msg_type_management;
+	unsigned long ptp_rx_msg_pkt_reserved_type;
 	unsigned long ptp_frame_type;
 	unsigned long ptp_ver;
 	unsigned long timestamp_dropped;
@@ -232,6 +235,11 @@ struct stmmac_extra_stats {
 #define DMA_HW_FEAT_ACTPHYIF	0x70000000	/* Active/selected PHY iface */
 #define DEFAULT_DMA_PBL		8
 
+/* PCS status and mask defines */
+#define	PCS_ANE_IRQ		BIT(2)	/* PCS Auto-Negotiation */
+#define	PCS_LINK_IRQ		BIT(1)	/* PCS Link */
+#define	PCS_RGSMIIIS_IRQ	BIT(0)	/* RGMII or SMII Interrupt */
+
 /* Max/Min RI Watchdog Timer count value */
 #define MAX_DMA_RIWT		0xff
 #define MIN_DMA_RIWT		0x20
@@ -272,9 +280,6 @@ enum dma_irq_status {
 #define	CORE_IRQ_RX_PATH_IN_LPI_MODE	(1 << 2)
 #define	CORE_IRQ_RX_PATH_EXIT_LPI_MODE	(1 << 3)
 
-#define	CORE_PCS_ANE_COMPLETE		(1 << 5)
-#define	CORE_PCS_LINK_STATUS		(1 << 6)
-#define	CORE_RGMII_IRQ			(1 << 7)
 #define CORE_IRQ_MTL_RX_OVERFLOW	BIT(8)
 
 /* Physical Coding Sublayer */
@@ -469,19 +474,23 @@ struct stmmac_ops {
 	void (*reset_eee_mode)(struct mac_device_info *hw);
 	void (*set_eee_timer)(struct mac_device_info *hw, int ls, int tw);
 	void (*set_eee_pls)(struct mac_device_info *hw, int link);
-	void (*ctrl_ane)(struct mac_device_info *hw, bool restart);
-	void (*get_adv)(struct mac_device_info *hw, struct rgmii_adv *adv);
 	void (*debug)(void __iomem *ioaddr, struct stmmac_extra_stats *x);
+	/* PCS calls */
+	void (*pcs_ctrl_ane)(void __iomem *ioaddr, bool ane, bool srgmi_ral,
+			     bool loopback);
+	void (*pcs_rane)(void __iomem *ioaddr, bool restart);
+	void (*pcs_get_adv_lp)(void __iomem *ioaddr, struct rgmii_adv *adv);
 };
 
 /* PTP and HW Timer helpers */
 struct stmmac_hwtimestamp {
 	void (*config_hw_tstamping) (void __iomem *ioaddr, u32 data);
-	u32 (*config_sub_second_increment) (void __iomem *ioaddr, u32 clk_rate);
+	u32 (*config_sub_second_increment)(void __iomem *ioaddr, u32 ptp_clock,
+					   int gmac4);
 	int (*init_systime) (void __iomem *ioaddr, u32 sec, u32 nsec);
 	int (*config_addend) (void __iomem *ioaddr, u32 addend);
 	int (*adjust_systime) (void __iomem *ioaddr, u32 sec, u32 nsec,
-			       int add_sub);
+			       int add_sub, int gmac4);
 	 u64(*get_systime) (void __iomem *ioaddr);
 };
 
@@ -524,6 +533,9 @@ struct mac_device_info {
 	int unicast_filter_entries;
 	int mcast_bits_log2;
 	unsigned int rx_csum;
+	unsigned int pcs;
+	unsigned int pmt;
+	unsigned int ps;
 };
 
 struct mac_device_info *dwmac1000_setup(void __iomem *ioaddr, int mcbins,
@@ -546,6 +558,7 @@ void stmmac_dwmac4_get_mac_addr(void __iomem *ioaddr, unsigned char *addr,
 void stmmac_dwmac4_set_mac(void __iomem *ioaddr, bool enable);
 
 void dwmac_dma_flush_tx_fifo(void __iomem *ioaddr);
+
 extern const struct stmmac_mode_ops ring_mode_ops;
 extern const struct stmmac_mode_ops chain_mode_ops;
 extern const struct stmmac_desc_ops dwmac4_desc_ops;

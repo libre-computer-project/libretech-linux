@@ -34,7 +34,6 @@
 #include <linux/io.h>
 #include <linux/uaccess.h>
 #include <linux/of.h>
-#include <linux/gpio/consumer.h>
 
 #include <asm/irq.h>
 
@@ -724,6 +723,7 @@ struct phy_device *phy_connect(struct net_device *dev, const char *bus_id,
 	phydev = to_phy_device(d);
 
 	rc = phy_connect_direct(dev, phydev, handler, interface);
+	put_device(d);
 	if (rc)
 		return ERR_PTR(rc);
 
@@ -954,6 +954,7 @@ struct phy_device *phy_attach(struct net_device *dev, const char *bus_id,
 	phydev = to_phy_device(d);
 
 	rc = phy_attach_direct(dev, phydev, phydev->dev_flags, interface);
+	put_device(d);
 	if (rc)
 		return ERR_PTR(rc);
 
@@ -1571,15 +1572,8 @@ static int phy_probe(struct device *dev)
 	struct device_driver *drv = phydev->mdio.dev.driver;
 	struct phy_driver *phydrv = to_phy_driver(drv);
 	int err = 0;
-	struct gpio_descs *reset_gpios;
 
 	phydev->drv = phydrv;
-
-	/* take phy out of reset */
-	reset_gpios = devm_gpiod_get_array_optional(dev, "reset",
-						    GPIOD_OUT_LOW);
-	if (IS_ERR(reset_gpios))
-		return PTR_ERR(reset_gpios);
 
 	/* Disable the interrupt if the PHY doesn't support it
 	 * but the interrupt is still a valid one

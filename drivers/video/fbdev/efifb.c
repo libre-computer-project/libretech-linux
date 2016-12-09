@@ -50,9 +50,9 @@ static int efifb_setcolreg(unsigned regno, unsigned red, unsigned green,
 		return 1;
 
 	if (regno < 16) {
-		red   >>= 8;
-		green >>= 8;
-		blue  >>= 8;
+		red   >>= 16 - info->var.red.length;
+		green >>= 16 - info->var.green.length;
+		blue  >>= 16 - info->var.blue.length;
 		((u32 *)(info->pseudo_palette))[regno] =
 			(red   << info->var.red.offset)   |
 			(green << info->var.green.offset) |
@@ -237,10 +237,8 @@ static int efifb_probe(struct platform_device *dev)
 		goto err_release_fb;
 	}
 
-	printk(KERN_INFO "efifb: framebuffer at 0x%lx, mapped to 0x%p, "
-	       "using %dk, total %dk\n",
-	       efifb_fix.smem_start, info->screen_base,
-	       size_remap/1024, size_total/1024);
+	printk(KERN_INFO "efifb: framebuffer at 0x%lx, using %dk, total %dk\n",
+	       efifb_fix.smem_start, size_remap/1024, size_total/1024);
 	printk(KERN_INFO "efifb: mode is %dx%dx%d, linelength=%d, pages=%d\n",
 	       efifb_defined.xres, efifb_defined.yres,
 	       efifb_defined.bits_per_pixel, efifb_fix.line_length,

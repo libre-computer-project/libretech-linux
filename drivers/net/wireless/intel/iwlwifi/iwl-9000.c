@@ -55,10 +55,10 @@
 #include "iwl-agn-hw.h"
 
 /* Highest firmware API version supported */
-#define IWL9000_UCODE_API_MAX	21
+#define IWL9000_UCODE_API_MAX	26
 
 /* Lowest firmware API version supported */
-#define IWL9000_UCODE_API_MIN	16
+#define IWL9000_UCODE_API_MIN	17
 
 /* NVM versions */
 #define IWL9000_NVM_VERSION		0x0a1d
@@ -72,16 +72,21 @@
 #define IWL9000_SMEM_OFFSET		0x400000
 #define IWL9000_SMEM_LEN		0x68000
 
-#define  IWL9000_FW_PRE "iwlwifi-9000-"
+#define  IWL9000_FW_PRE "iwlwifi-9000-pu-a0-jf-a0-"
+#define  IWL9260_FW_PRE "iwlwifi-9260-th-a0-jf-a0-"
+#define  IWL9000LC_FW_PRE "iwlwifi-9000-pu-a0-lc-a0-"
 #define IWL9000_MODULE_FIRMWARE(api) \
 	IWL9000_FW_PRE "-" __stringify(api) ".ucode"
+#define IWL9260_MODULE_FIRMWARE(api) \
+	IWL9260_FW_PRE "-" __stringify(api) ".ucode"
+#define IWL9000LC_MODULE_FIRMWARE(api) \
+	IWL9000LC_FW_PRE "-" __stringify(api) ".ucode"
 
 #define NVM_HW_SECTION_NUM_FAMILY_9000		10
 
 static const struct iwl_base_params iwl9000_base_params = {
 	.eeprom_size = OTP_LOW_IMAGE_SIZE_FAMILY_9000,
 	.num_of_queues = 31,
-	.pll_cfg_val = 0,
 	.shadow_ram_support = true,
 	.led_compensation = 57,
 	.wd_timeout = IWL_LONG_WD_TIMEOUT,
@@ -138,26 +143,76 @@ static const struct iwl_tt_params iwl9000_tt_params = {
 	.apmg_not_supported = true,					\
 	.mq_rx_supported = true,					\
 	.vht_mu_mimo_supported = true,					\
-	.mac_addr_from_csr = true
+	.mac_addr_from_csr = true,					\
+	.rf_id = true
 
-const struct iwl_cfg iwl9560_2ac_cfg = {
-		.name = "Intel(R) Dual Band Wireless AC 9560",
-		.fw_name_pre = IWL9000_FW_PRE,
-		IWL_DEVICE_9000,
-		.ht_params = &iwl9000_ht_params,
-		.nvm_ver = IWL9000_NVM_VERSION,
-		.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
-		.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+const struct iwl_cfg iwl9160_2ac_cfg = {
+	.name = "Intel(R) Dual Band Wireless AC 9160",
+	.fw_name_pre = IWL9260_FW_PRE,
+	IWL_DEVICE_9000,
+	.ht_params = &iwl9000_ht_params,
+	.nvm_ver = IWL9000_NVM_VERSION,
+	.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
+	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
 };
 
-const struct iwl_cfg iwl5165_2ac_cfg = {
-		.name = "Intel(R) Dual Band Wireless AC 5165",
-		.fw_name_pre = IWL9000_FW_PRE,
-		IWL_DEVICE_9000,
-		.ht_params = &iwl9000_ht_params,
-		.nvm_ver = IWL9000_NVM_VERSION,
-		.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
-		.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+const struct iwl_cfg iwl9260_2ac_cfg = {
+	.name = "Intel(R) Dual Band Wireless AC 9260",
+	.fw_name_pre = IWL9260_FW_PRE,
+	IWL_DEVICE_9000,
+	.ht_params = &iwl9000_ht_params,
+	.nvm_ver = IWL9000_NVM_VERSION,
+	.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
+	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+};
+
+const struct iwl_cfg iwl9270_2ac_cfg = {
+	.name = "Intel(R) Dual Band Wireless AC 9270",
+	.fw_name_pre = IWL9260_FW_PRE,
+	IWL_DEVICE_9000,
+	.ht_params = &iwl9000_ht_params,
+	.nvm_ver = IWL9000_NVM_VERSION,
+	.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
+	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+};
+
+const struct iwl_cfg iwl9460_2ac_cfg = {
+	.name = "Intel(R) Dual Band Wireless AC 9460",
+	.fw_name_pre = IWL9000_FW_PRE,
+	IWL_DEVICE_9000,
+	.ht_params = &iwl9000_ht_params,
+	.nvm_ver = IWL9000_NVM_VERSION,
+	.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
+	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+	.integrated = true,
+};
+
+const struct iwl_cfg iwl9560_2ac_cfg = {
+	.name = "Intel(R) Dual Band Wireless AC 9560",
+	.fw_name_pre = IWL9000_FW_PRE,
+	IWL_DEVICE_9000,
+	.ht_params = &iwl9000_ht_params,
+	.nvm_ver = IWL9000_NVM_VERSION,
+	.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
+	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+	.integrated = true,
+};
+
+/*
+ * TODO the struct below is for internal testing only this should be
+ * removed by EO 2016~
+ */
+const struct iwl_cfg iwl9000lc_2ac_cfg = {
+	.name = "Intel(R) Dual Band Wireless AC 9000",
+	.fw_name_pre = IWL9000LC_FW_PRE,
+	IWL_DEVICE_9000,
+	.ht_params = &iwl9000_ht_params,
+	.nvm_ver = IWL9000_NVM_VERSION,
+	.nvm_calib_ver = IWL9000_TX_POWER_VERSION,
+	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
+	.integrated = true,
 };
 
 MODULE_FIRMWARE(IWL9000_MODULE_FIRMWARE(IWL9000_UCODE_API_MAX));
+MODULE_FIRMWARE(IWL9260_MODULE_FIRMWARE(IWL9000_UCODE_API_MAX));
+MODULE_FIRMWARE(IWL9000LC_MODULE_FIRMWARE(IWL9000_UCODE_API_MAX));

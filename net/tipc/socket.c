@@ -1,7 +1,7 @@
 /*
  * net/tipc/socket.c: TIPC socket API
  *
- * Copyright (c) 2001-2007, 2012-2015, Ericsson AB
+ * Copyright (c) 2001-2007, 2012-2016, Ericsson AB
  * Copyright (c) 2004-2008, 2010-2013, Wind River Systems
  * All rights reserved.
  *
@@ -129,53 +129,7 @@ static const struct proto_ops packet_ops;
 static const struct proto_ops stream_ops;
 static const struct proto_ops msg_ops;
 static struct proto tipc_proto;
-
 static const struct rhashtable_params tsk_rht_params;
-
-/*
- * Revised TIPC socket locking policy:
- *
- * Most socket operations take the standard socket lock when they start
- * and hold it until they finish (or until they need to sleep).  Acquiring
- * this lock grants the owner exclusive access to the fields of the socket
- * data structures, with the exception of the backlog queue.  A few socket
- * operations can be done without taking the socket lock because they only
- * read socket information that never changes during the life of the socket.
- *
- * Socket operations may acquire the lock for the associated TIPC port if they
- * need to perform an operation on the port.  If any routine needs to acquire
- * both the socket lock and the port lock it must take the socket lock first
- * to avoid the risk of deadlock.
- *
- * The dispatcher handling incoming messages cannot grab the socket lock in
- * the standard fashion, since invoked it runs at the BH level and cannot block.
- * Instead, it checks to see if the socket lock is currently owned by someone,
- * and either handles the message itself or adds it to the socket's backlog
- * queue; in the latter case the queued message is processed once the process
- * owning the socket lock releases it.
- *
- * NOTE: Releasing the socket lock while an operation is sleeping overcomes
- * the problem of a blocked socket operation preventing any other operations
- * from occurring.  However, applications must be careful if they have
- * multiple threads trying to send (or receive) on the same socket, as these
- * operations might interfere with each other.  For example, doing a connect
- * and a receive at the same time might allow the receive to consume the
- * ACK message meant for the connect.  While additional work could be done
- * to try and overcome this, it doesn't seem to be worthwhile at the present.
- *
- * NOTE: Releasing the socket lock while an operation is sleeping also ensures
- * that another operation that must be performed in a non-blocking manner is
- * not delayed for very long because the lock has already been taken.
- *
- * NOTE: This code assumes that certain fields of a port/socket pair are
- * constant over its lifetime; such fields can be examined without taking
- * the socket lock and/or port lock, and do not need to be re-read even
- * after resuming processing after waiting.  These fields include:
- *   - socket type
- *   - pointer to socket sk structure (aka tipc_sock structure)
- *   - pointer to port structure
- *   - port reference
- */
 
 static u32 tsk_own_node(struct tipc_sock *tsk)
 {
@@ -232,7 +186,7 @@ static struct tipc_sock *tipc_sk(const struct sock *sk)
 
 static bool tsk_conn_cong(struct tipc_sock *tsk)
 {
-	return tsk->snt_unacked >= tsk->snd_win;
+	return tsk->snt_unacked > tsk->snd_win;
 }
 
 /* tsk_blocks(): translate a buffer size in bytes to number of
@@ -796,9 +750,11 @@ void tipc_sk_mcast_rcv(struct net *net, struct sk_buff_head *arrvq,
  * @tsk: receiving socket
  * @skb: pointer to message buffer.
  */
-static void tipc_sk_proto_rcv(struct tipc_sock *tsk, struct sk_buff *skb)
+static void tipc_sk_proto_rcv(struct tipc_sock *tsk, struct sk_buff *skb,
+			      struct sk_buff_head *xmitq)
 {
 	struct sock *sk = &tsk->sk;
+	u32 onode = tsk_own_node(tsk);
 	struct tipc_msg *hdr = buf_msg(skb);
 	int mtyp = msg_type(hdr);
 	bool conn_cong;
@@ -811,7 +767,8 @@ static void tipc_sk_proto_rcv(struct tipc_sock *tsk, struct sk_buff *skb)
 
 	if (mtyp == CONN_PROBE) {
 		msg_set_type(hdr, CONN_PROBE_REPLY);
-		tipc_sk_respond(sk, skb, TIPC_OK);
+		if (tipc_msg_reverse(onode, &skb, TIPC_OK))
+			__skb_queue_tail(xmitq, skb);
 		return;
 	} else if (mtyp == CONN_ACK) {
 		conn_cong = tsk_conn_cong(tsk);
@@ -1686,7 +1643,8 @@ static unsigned int rcvbuf_limit(struct sock *sk, struct sk_buff *skb)
  *
  * Returns true if message was added to socket receive queue, otherwise false
  */
-static bool filter_rcv(struct sock *sk, struct sk_buff *skb)
+static bool filter_rcv(struct sock *sk, struct sk_buff *skb,
+		       struct sk_buff_head *xmitq)
 {
 	struct socket *sock = sk->sk_socket;
 	struct tipc_sock *tsk = tipc_sk(sk);
@@ -1696,7 +1654,7 @@ static bool filter_rcv(struct sock *sk, struct sk_buff *skb)
 	int usr = msg_user(hdr);
 
 	if (unlikely(msg_user(hdr) == CONN_MANAGER)) {
-		tipc_sk_proto_rcv(tsk, skb);
+		tipc_sk_proto_rcv(tsk, skb, xmitq);
 		return false;
 	}
 
@@ -1739,7 +1697,8 @@ static bool filter_rcv(struct sock *sk, struct sk_buff *skb)
 	return true;
 
 reject:
-	tipc_sk_respond(sk, skb, err);
+	if (tipc_msg_reverse(tsk_own_node(tsk), &skb, err))
+		__skb_queue_tail(xmitq, skb);
 	return false;
 }
 
@@ -1755,9 +1714,24 @@ reject:
 static int tipc_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	unsigned int truesize = skb->truesize;
+	struct sk_buff_head xmitq;
+	u32 dnode, selector;
 
-	if (likely(filter_rcv(sk, skb)))
+	__skb_queue_head_init(&xmitq);
+
+	if (likely(filter_rcv(sk, skb, &xmitq))) {
 		atomic_add(truesize, &tipc_sk(sk)->dupl_rcvcnt);
+		return 0;
+	}
+
+	if (skb_queue_empty(&xmitq))
+		return 0;
+
+	/* Send response/rejected message */
+	skb = __skb_dequeue(&xmitq);
+	dnode = msg_destnode(buf_msg(skb));
+	selector = msg_origport(buf_msg(skb));
+	tipc_node_xmit_skb(sock_net(sk), skb, dnode, selector);
 	return 0;
 }
 
@@ -1771,12 +1745,13 @@ static int tipc_backlog_rcv(struct sock *sk, struct sk_buff *skb)
  * Caller must hold socket lock
  */
 static void tipc_sk_enqueue(struct sk_buff_head *inputq, struct sock *sk,
-			    u32 dport)
+			    u32 dport, struct sk_buff_head *xmitq)
 {
+	unsigned long time_limit = jiffies + 2;
+	struct sk_buff *skb;
 	unsigned int lim;
 	atomic_t *dcnt;
-	struct sk_buff *skb;
-	unsigned long time_limit = jiffies + 2;
+	u32 onode;
 
 	while (skb_queue_len(inputq)) {
 		if (unlikely(time_after_eq(jiffies, time_limit)))
@@ -1788,7 +1763,7 @@ static void tipc_sk_enqueue(struct sk_buff_head *inputq, struct sock *sk,
 
 		/* Add message directly to receive queue if possible */
 		if (!sock_owned_by_user(sk)) {
-			filter_rcv(sk, skb);
+			filter_rcv(sk, skb, xmitq);
 			continue;
 		}
 
@@ -1801,7 +1776,9 @@ static void tipc_sk_enqueue(struct sk_buff_head *inputq, struct sock *sk,
 			continue;
 
 		/* Overload => reject message back to sender */
-		tipc_sk_respond(sk, skb, TIPC_ERR_OVERLOAD);
+		onode = tipc_own_addr(sock_net(sk));
+		if (tipc_msg_reverse(onode, &skb, TIPC_ERR_OVERLOAD))
+			__skb_queue_tail(xmitq, skb);
 		break;
 	}
 }
@@ -1814,12 +1791,14 @@ static void tipc_sk_enqueue(struct sk_buff_head *inputq, struct sock *sk,
  */
 void tipc_sk_rcv(struct net *net, struct sk_buff_head *inputq)
 {
+	struct sk_buff_head xmitq;
 	u32 dnode, dport = 0;
 	int err;
 	struct tipc_sock *tsk;
 	struct sock *sk;
 	struct sk_buff *skb;
 
+	__skb_queue_head_init(&xmitq);
 	while (skb_queue_len(inputq)) {
 		dport = tipc_skb_peek_port(inputq, dport);
 		tsk = tipc_sk_lookup(net, dport);
@@ -1827,8 +1806,13 @@ void tipc_sk_rcv(struct net *net, struct sk_buff_head *inputq)
 		if (likely(tsk)) {
 			sk = &tsk->sk;
 			if (likely(spin_trylock_bh(&sk->sk_lock.slock))) {
-				tipc_sk_enqueue(inputq, sk, dport);
+				tipc_sk_enqueue(inputq, sk, dport, &xmitq);
 				spin_unlock_bh(&sk->sk_lock.slock);
+			}
+			/* Send pending response/rejected messages, if any */
+			while ((skb = __skb_dequeue(&xmitq))) {
+				dnode = msg_destnode(buf_msg(skb));
+				tipc_node_xmit_skb(net, skb, dnode, dport);
 			}
 			sock_put(sk);
 			continue;
@@ -2150,7 +2134,8 @@ restart:
 					      TIPC_CONN_MSG, SHORT_H_SIZE,
 					      0, dnode, onode, dport, oport,
 					      TIPC_CONN_SHUTDOWN);
-			tipc_node_xmit_skb(net, skb, dnode, tsk->portid);
+			if (skb)
+				tipc_node_xmit_skb(net, skb, dnode, tsk->portid);
 		}
 		tsk->connected = 0;
 		sock->state = SS_DISCONNECTING;

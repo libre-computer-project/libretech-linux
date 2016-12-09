@@ -71,7 +71,7 @@
 #include "iwl-csr.h"
 
 static ssize_t iwl_mvm_read_coredump(char *buffer, loff_t offset, size_t count,
-				     const void *data, size_t datalen)
+				     void *data, size_t datalen)
 {
 	const struct iwl_mvm_dump_ptrs *dump_ptrs = data;
 	ssize_t bytes_read;
@@ -104,7 +104,7 @@ static ssize_t iwl_mvm_read_coredump(char *buffer, loff_t offset, size_t count,
 	return bytes_read + bytes_read_trans;
 }
 
-static void iwl_mvm_free_coredump(const void *data)
+static void iwl_mvm_free_coredump(void *data)
 {
 	const struct iwl_mvm_dump_ptrs *fw_error_dump = data;
 
@@ -271,9 +271,6 @@ static void iwl_mvm_dump_fifos(struct iwl_mvm *mvm,
 		for (i = 0;
 		     i < ARRAY_SIZE(mvm->shared_mem_cfg.internal_txfifo_size);
 		     i++) {
-			/* Mark the number of TXF we're pulling now */
-			iwl_trans_write_prph(mvm->trans, TXF_CPU2_NUM, i);
-
 			fifo_hdr = (void *)(*dump_data)->data;
 			fifo_data = (void *)fifo_hdr->data;
 			fifo_len = mvm->shared_mem_cfg.internal_txfifo_size[i];
@@ -289,6 +286,11 @@ static void iwl_mvm_dump_fifos(struct iwl_mvm *mvm,
 				cpu_to_le32(fifo_len + sizeof(*fifo_hdr));
 
 			fifo_hdr->fifo_num = cpu_to_le32(i);
+
+			/* Mark the number of TXF we're pulling now */
+			iwl_trans_write_prph(mvm->trans, TXF_CPU2_NUM, i +
+				ARRAY_SIZE(mvm->shared_mem_cfg.txfifo_size));
+
 			fifo_hdr->available_bytes =
 				cpu_to_le32(iwl_trans_read_prph(mvm->trans,
 								TXF_CPU2_FIFO_ITEM_CNT));
@@ -339,9 +341,11 @@ void iwl_mvm_free_fw_dump_desc(struct iwl_mvm *mvm)
 #define IWL8260_ICCM_OFFSET		0x44000 /* Only for B-step */
 #define IWL8260_ICCM_LEN		0xC000 /* Only for B-step */
 
-static const struct {
+struct iwl_prph_range {
 	u32 start, end;
-} iwl_prph_dump_addr[] = {
+};
+
+static const struct iwl_prph_range iwl_prph_dump_addr_comm[] = {
 	{ .start = 0x00a00000, .end = 0x00a00000 },
 	{ .start = 0x00a0000c, .end = 0x00a00024 },
 	{ .start = 0x00a0002c, .end = 0x00a0003c },
@@ -436,11 +440,19 @@ static const struct {
 	{ .start = 0x00a04560, .end = 0x00a0457c },
 	{ .start = 0x00a04590, .end = 0x00a04598 },
 	{ .start = 0x00a045c0, .end = 0x00a045f4 },
-	{ .start = 0x00a44000, .end = 0x00a7bf80 },
+};
+
+static const struct iwl_prph_range iwl_prph_dump_addr_9000[] = {
+	{ .start = 0x00a05c00, .end = 0x00a05c18 },
+	{ .start = 0x00a05400, .end = 0x00a056e8 },
+	{ .start = 0x00a08000, .end = 0x00a098bc },
+	{ .start = 0x00a02400, .end = 0x00a02758 },
 };
 
 static u32 iwl_dump_prph(struct iwl_trans *trans,
-			 struct iwl_fw_error_dump_data **data)
+			 struct iwl_fw_error_dump_data **data,
+			 const struct iwl_prph_range *iwl_prph_dump_addr,
+			 u32 range_len)
 {
 	struct iwl_fw_error_dump_prph *prph;
 	unsigned long flags;
@@ -449,7 +461,7 @@ static u32 iwl_dump_prph(struct iwl_trans *trans,
 	if (!iwl_trans_grab_nic_access(trans, &flags))
 		return 0;
 
-	for (i = 0; i < ARRAY_SIZE(iwl_prph_dump_addr); i++) {
+	for (i = 0; i < range_len; i++) {
 		/* The range includes both boundaries */
 		int num_bytes_in_chunk = iwl_prph_dump_addr[i].end -
 			 iwl_prph_dump_addr[i].start + 4;
@@ -545,7 +557,7 @@ void iwl_mvm_fw_error_dump(struct iwl_mvm *mvm)
 					 sizeof(struct iwl_fw_error_dump_fifo);
 		}
 
-		for (i = 0; i < ARRAY_SIZE(mem_cfg->txfifo_size); i++) {
+		for (i = 0; i < mem_cfg->num_txfifo_entries; i++) {
 			if (!mem_cfg->txfifo_size[i])
 				continue;
 
@@ -572,14 +584,29 @@ void iwl_mvm_fw_error_dump(struct iwl_mvm *mvm)
 		}
 
 		/* Make room for PRPH registers */
-		for (i = 0; i < ARRAY_SIZE(iwl_prph_dump_addr); i++) {
+		for (i = 0; i < ARRAY_SIZE(iwl_prph_dump_addr_comm); i++) {
 			/* The range includes both boundaries */
-			int num_bytes_in_chunk = iwl_prph_dump_addr[i].end -
-				iwl_prph_dump_addr[i].start + 4;
+			int num_bytes_in_chunk =
+				iwl_prph_dump_addr_comm[i].end -
+				iwl_prph_dump_addr_comm[i].start + 4;
 
 			prph_len += sizeof(*dump_data) +
 				sizeof(struct iwl_fw_error_dump_prph) +
 				num_bytes_in_chunk;
+		}
+
+		if (mvm->cfg->mq_rx_supported) {
+			for (i = 0; i <
+				ARRAY_SIZE(iwl_prph_dump_addr_9000); i++) {
+				/* The range includes both boundaries */
+				int num_bytes_in_chunk =
+					iwl_prph_dump_addr_9000[i].end -
+					iwl_prph_dump_addr_9000[i].start + 4;
+
+				prph_len += sizeof(*dump_data) +
+					sizeof(struct iwl_fw_error_dump_prph) +
+					num_bytes_in_chunk;
+			}
 		}
 
 		if (mvm->cfg->device_family == IWL_DEVICE_FAMILY_7000)
@@ -769,8 +796,16 @@ void iwl_mvm_fw_error_dump(struct iwl_mvm *mvm)
 		}
 	}
 
-	if (prph_len)
-		iwl_dump_prph(mvm->trans, &dump_data);
+	if (prph_len) {
+		iwl_dump_prph(mvm->trans, &dump_data,
+			      iwl_prph_dump_addr_comm,
+			      ARRAY_SIZE(iwl_prph_dump_addr_comm));
+
+		if (mvm->cfg->mq_rx_supported)
+			iwl_dump_prph(mvm->trans, &dump_data,
+				      iwl_prph_dump_addr_9000,
+				      ARRAY_SIZE(iwl_prph_dump_addr_9000));
+	}
 
 dump_trans_data:
 	fw_error_dump->trans_ptr = iwl_trans_dump_data(mvm->trans,
@@ -923,5 +958,6 @@ int iwl_mvm_start_fw_dbg_conf(struct iwl_mvm *mvm, u8 conf_id)
 	}
 
 	mvm->fw_dbg_conf = conf_id;
-	return ret;
+
+	return 0;
 }

@@ -20,7 +20,6 @@
 #include <linux/skbuff.h>
 #include <linux/of.h>
 #include <linux/irq.h>
-#include <linux/delay.h>
 #include <linux/debugfs.h>
 #include <linux/bitops.h>
 #include <linux/ieee802154.h>
@@ -915,7 +914,6 @@ static void adf7242_debug(u8 irq1)
 		(stat & 0xf) == RC_STATUS_PHY_RDY ? "RC_STATUS_PHY_RDY" : "",
 		(stat & 0xf) == RC_STATUS_RX ? "RC_STATUS_RX" : "",
 		(stat & 0xf) == RC_STATUS_TX ? "RC_STATUS_TX" : "");
-	}
 #endif
 }
 

@@ -66,6 +66,7 @@
 
 #include <linux/types.h>
 #include <linux/if_ether.h>
+#include <net/cfg80211.h>
 #include "iwl-trans.h"
 
 struct iwl_nvm_data {
@@ -98,6 +99,7 @@ struct iwl_nvm_data {
 	s8 max_tx_pwr_half_dbm;
 
 	bool lar_enabled;
+	bool vht160_supported;
 	struct ieee80211_supported_band bands[NUM_NL80211_BANDS];
 	struct ieee80211_channel channels[];
 };

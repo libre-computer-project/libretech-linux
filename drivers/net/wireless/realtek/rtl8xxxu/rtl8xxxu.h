@@ -29,6 +29,7 @@
 #define RTL8XXXU_DEBUG_H2C		0x800
 #define RTL8XXXU_DEBUG_ACTION		0x1000
 #define RTL8XXXU_DEBUG_EFUSE		0x2000
+#define RTL8XXXU_DEBUG_INTERRUPT	0x4000
 
 #define RTW_USB_CONTROL_MSG_TIMEOUT	500
 #define RTL8XXXU_MAX_REG_POLL		500
@@ -43,6 +44,7 @@
 
 #define TX_TOTAL_PAGE_NUM		0xf8
 #define TX_TOTAL_PAGE_NUM_8192E		0xf3
+#define TX_TOTAL_PAGE_NUM_8723B		0xf7
 /* (HPQ + LPQ + NPQ + PUBQ) = TX_TOTAL_PAGE_NUM */
 #define TX_PAGE_NUM_PUBQ		0xe7
 #define TX_PAGE_NUM_HI_PQ		0x0c
@@ -53,6 +55,11 @@
 #define TX_PAGE_NUM_HI_PQ_8192E		0x08
 #define TX_PAGE_NUM_LO_PQ_8192E		0x0c
 #define TX_PAGE_NUM_NORM_PQ_8192E	0x00
+
+#define TX_PAGE_NUM_PUBQ_8723B		0xe7
+#define TX_PAGE_NUM_HI_PQ_8723B		0x0c
+#define TX_PAGE_NUM_LO_PQ_8723B		0x02
+#define TX_PAGE_NUM_NORM_PQ_8723B	0x02
 
 #define RTL_FW_PAGE_SIZE		4096
 #define RTL8XXXU_FIRMWARE_POLL_MAX	1000
@@ -135,7 +142,8 @@ struct rtl8xxxu_rxdesc16 {
 
 	u32 seq:12;
 	u32 frag:4;
-	u32 nextpktlen:14;
+	u32 pkt_cnt:8;
+	u32 reserved:6;
 	u32 nextind:1;
 	u32 reserved0:1;
 
@@ -198,7 +206,8 @@ struct rtl8xxxu_rxdesc16 {
 
 	u32 reserved0:1;
 	u32 nextind:1;
-	u32 nextpktlen:14;
+	u32 reserved:6;
+	u32 pkt_cnt:8;
 	u32 frag:4;
 	u32 seq:12;
 
@@ -229,7 +238,7 @@ struct rtl8xxxu_rxdesc16 {
 	u32 pattern1match:1;
 	u32 pattern0match:1;
 #endif
-	__le32 tsfl;
+	u32 tsfl;
 #if 0
 	u32 bassn:12;
 	u32 bavld:1;
@@ -359,7 +368,7 @@ struct rtl8xxxu_rxdesc24 {
 	u32 ldcp:1;
 	u32 splcp:1;
 #endif
-	__le32 tsfl;
+	u32 tsfl;
 };
 
 struct rtl8xxxu_txdesc32 {
@@ -1245,6 +1254,7 @@ struct rtl8xxxu_priv {
 	u32 ep_tx_normal_queue:1;
 	u32 ep_tx_low_queue:1;
 	u32 has_xtalk:1;
+	u32 rx_buf_aggregation:1;
 	u8 xtalk;
 	unsigned int pipe_interrupt;
 	unsigned int pipe_in;
@@ -1309,14 +1319,13 @@ struct rtl8xxxu_fileops {
 	int (*power_on) (struct rtl8xxxu_priv *priv);
 	void (*power_off) (struct rtl8xxxu_priv *priv);
 	void (*reset_8051) (struct rtl8xxxu_priv *priv);
-	int (*llt_init) (struct rtl8xxxu_priv *priv, u8 last_tx_page);
+	int (*llt_init) (struct rtl8xxxu_priv *priv);
 	void (*init_phy_bb) (struct rtl8xxxu_priv *priv);
 	int (*init_phy_rf) (struct rtl8xxxu_priv *priv);
 	void (*phy_init_antenna_selection) (struct rtl8xxxu_priv *priv);
 	void (*phy_iq_calibrate) (struct rtl8xxxu_priv *priv);
 	void (*config_channel) (struct ieee80211_hw *hw);
-	int (*parse_rx_desc) (struct rtl8xxxu_priv *priv, struct sk_buff *skb,
-			      struct ieee80211_rx_status *rx_status);
+	int (*parse_rx_desc) (struct rtl8xxxu_priv *priv, struct sk_buff *skb);
 	void (*init_aggregation) (struct rtl8xxxu_priv *priv);
 	void (*init_statistics) (struct rtl8xxxu_priv *priv);
 	void (*enable_rf) (struct rtl8xxxu_priv *priv);
@@ -1328,12 +1337,17 @@ struct rtl8xxxu_fileops {
 				  u32 ramask, int sgi);
 	void (*report_connect) (struct rtl8xxxu_priv *priv,
 				u8 macid, bool connect);
+	void (*fill_txdesc) (struct ieee80211_hdr *hdr,
+			     struct rtl8xxxu_txdesc32 *tx_desc, u32 rate,
+			     u16 rate_flag, bool sgi, bool short_preamble,
+			     bool ampdu_enable);
 	int writeN_block_size;
-	u16 mbox_ext_reg;
-	char mbox_ext_width;
+	int rx_agg_buf_size;
 	char tx_desc_size;
 	char rx_desc_size;
-	char has_s0s1;
+	u8 has_s0s1:1;
+	u8 has_tx_report:1;
+	u8 gen2_thermal_meter:1;
 	u32 adda_1t_init;
 	u32 adda_1t_path_on;
 	u32 adda_2t_path_on_a;
@@ -1347,3 +1361,89 @@ struct rtl8xxxu_fileops {
 	u8 page_num_lo;
 	u8 page_num_norm;
 };
+
+extern int rtl8xxxu_debug;
+
+extern struct rtl8xxxu_reg8val rtl8xxxu_gen1_mac_init_table[];
+extern const u32 rtl8xxxu_iqk_phy_iq_bb_reg[];
+u8 rtl8xxxu_read8(struct rtl8xxxu_priv *priv, u16 addr);
+u16 rtl8xxxu_read16(struct rtl8xxxu_priv *priv, u16 addr);
+u32 rtl8xxxu_read32(struct rtl8xxxu_priv *priv, u16 addr);
+int rtl8xxxu_write8(struct rtl8xxxu_priv *priv, u16 addr, u8 val);
+int rtl8xxxu_write16(struct rtl8xxxu_priv *priv, u16 addr, u16 val);
+int rtl8xxxu_write32(struct rtl8xxxu_priv *priv, u16 addr, u32 val);
+u32 rtl8xxxu_read_rfreg(struct rtl8xxxu_priv *priv,
+			enum rtl8xxxu_rfpath path, u8 reg);
+int rtl8xxxu_write_rfreg(struct rtl8xxxu_priv *priv,
+			 enum rtl8xxxu_rfpath path, u8 reg, u32 data);
+void rtl8xxxu_save_regs(struct rtl8xxxu_priv *priv, const u32 *regs,
+			u32 *backup, int count);
+void rtl8xxxu_restore_regs(struct rtl8xxxu_priv *priv, const u32 *regs,
+			   u32 *backup, int count);
+void rtl8xxxu_save_mac_regs(struct rtl8xxxu_priv *priv,
+			    const u32 *reg, u32 *backup);
+void rtl8xxxu_restore_mac_regs(struct rtl8xxxu_priv *priv,
+			       const u32 *reg, u32 *backup);
+void rtl8xxxu_path_adda_on(struct rtl8xxxu_priv *priv, const u32 *regs,
+			   bool path_a_on);
+void rtl8xxxu_mac_calibration(struct rtl8xxxu_priv *priv,
+			      const u32 *regs, u32 *backup);
+void rtl8xxxu_fill_iqk_matrix_a(struct rtl8xxxu_priv *priv, bool iqk_ok,
+				int result[][8], int candidate, bool tx_only);
+void rtl8xxxu_fill_iqk_matrix_b(struct rtl8xxxu_priv *priv, bool iqk_ok,
+				int result[][8], int candidate, bool tx_only);
+int rtl8xxxu_init_phy_rf(struct rtl8xxxu_priv *priv,
+			 struct rtl8xxxu_rfregval *table,
+			 enum rtl8xxxu_rfpath path);
+int rtl8xxxu_init_phy_regs(struct rtl8xxxu_priv *priv,
+			   struct rtl8xxxu_reg32val *array);
+int rtl8xxxu_load_firmware(struct rtl8xxxu_priv *priv, char *fw_name);
+void rtl8xxxu_firmware_self_reset(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_power_off(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_reset_8051(struct rtl8xxxu_priv *priv);
+int rtl8xxxu_auto_llt_table(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen2_prepare_calibrate(struct rtl8xxxu_priv *priv, u8 start);
+int rtl8xxxu_flush_fifo(struct rtl8xxxu_priv *priv);
+int rtl8xxxu_gen2_h2c_cmd(struct rtl8xxxu_priv *priv,
+			  struct h2c_cmd *h2c, int len);
+int rtl8xxxu_active_to_lps(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_disabled_to_emu(struct rtl8xxxu_priv *priv);
+int rtl8xxxu_init_llt_table(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen1_phy_iq_calibrate(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen1_init_phy_bb(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen1_set_tx_power(struct rtl8xxxu_priv *priv,
+				int channel, bool ht40);
+void rtl8xxxu_gen1_config_channel(struct ieee80211_hw *hw);
+void rtl8xxxu_gen2_config_channel(struct ieee80211_hw *hw);
+void rtl8xxxu_gen1_usb_quirks(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen2_usb_quirks(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_update_rate_mask(struct rtl8xxxu_priv *priv,
+			       u32 ramask, int sgi);
+void rtl8xxxu_gen2_update_rate_mask(struct rtl8xxxu_priv *priv,
+				    u32 ramask, int sgi);
+void rtl8xxxu_gen1_report_connect(struct rtl8xxxu_priv *priv,
+				  u8 macid, bool connect);
+void rtl8xxxu_gen2_report_connect(struct rtl8xxxu_priv *priv,
+				  u8 macid, bool connect);
+void rtl8xxxu_gen1_init_aggregation(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen1_enable_rf(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen1_disable_rf(struct rtl8xxxu_priv *priv);
+void rtl8xxxu_gen2_disable_rf(struct rtl8xxxu_priv *priv);
+int rtl8xxxu_parse_rxdesc16(struct rtl8xxxu_priv *priv, struct sk_buff *skb);
+int rtl8xxxu_parse_rxdesc24(struct rtl8xxxu_priv *priv, struct sk_buff *skb);
+int rtl8xxxu_gen2_channel_to_group(int channel);
+bool rtl8xxxu_gen2_simularity_compare(struct rtl8xxxu_priv *priv,
+				      int result[][8], int c1, int c2);
+void rtl8xxxu_fill_txdesc_v1(struct ieee80211_hdr *hdr,
+			     struct rtl8xxxu_txdesc32 *tx_desc, u32 rate,
+			     u16 rate_flag, bool sgi, bool short_preamble,
+			     bool ampdu_enable);
+void rtl8xxxu_fill_txdesc_v2(struct ieee80211_hdr *hdr,
+			     struct rtl8xxxu_txdesc32 *tx_desc32, u32 rate,
+			     u16 rate_flag, bool sgi, bool short_preamble,
+			     bool ampdu_enable);
+
+extern struct rtl8xxxu_fileops rtl8192cu_fops;
+extern struct rtl8xxxu_fileops rtl8192eu_fops;
+extern struct rtl8xxxu_fileops rtl8723au_fops;
+extern struct rtl8xxxu_fileops rtl8723bu_fops;

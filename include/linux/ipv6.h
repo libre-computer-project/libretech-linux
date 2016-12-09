@@ -18,6 +18,7 @@ struct ipv6_devconf {
 	__s32		dad_transmits;
 	__s32		rtr_solicits;
 	__s32		rtr_solicit_interval;
+	__s32		rtr_solicit_max_interval;
 	__s32		rtr_solicit_delay;
 	__s32		force_mld_version;
 	__s32		mldv1_unsolicited_report_interval;
@@ -122,12 +123,12 @@ struct inet6_skb_parm {
 };
 
 #if defined(CONFIG_NET_L3_MASTER_DEV)
-static inline bool skb_l3mdev_slave(__u16 flags)
+static inline bool ipv6_l3mdev_skb(__u16 flags)
 {
 	return flags & IP6SKB_L3SLAVE;
 }
 #else
-static inline bool skb_l3mdev_slave(__u16 flags)
+static inline bool ipv6_l3mdev_skb(__u16 flags)
 {
 	return false;
 }
@@ -138,9 +139,20 @@ static inline bool skb_l3mdev_slave(__u16 flags)
 
 static inline int inet6_iif(const struct sk_buff *skb)
 {
-	bool l3_slave = skb_l3mdev_slave(IP6CB(skb)->flags);
+	bool l3_slave = ipv6_l3mdev_skb(IP6CB(skb)->flags);
 
 	return l3_slave ? skb->skb_iif : IP6CB(skb)->iif;
+}
+
+/* can not be used in TCP layer after tcp_v6_fill_cb */
+static inline bool inet6_exact_dif_match(struct net *net, struct sk_buff *skb)
+{
+#if defined(CONFIG_NET_L3_MASTER_DEV)
+	if (!net->ipv4.sysctl_tcp_l3mdev_accept &&
+	    skb && ipv6_l3mdev_skb(IP6CB(skb)->flags))
+		return true;
+#endif
+	return false;
 }
 
 struct tcp6_request_sock {
@@ -283,6 +295,8 @@ struct tcp6_timewait_sock {
 };
 
 #if IS_ENABLED(CONFIG_IPV6)
+bool ipv6_mod_enabled(void);
+
 static inline struct ipv6_pinfo *inet6_sk(const struct sock *__sk)
 {
 	return sk_fullsock(__sk) ? inet_sk(__sk)->pinet6 : NULL;
@@ -325,6 +339,11 @@ static inline int inet_v6_ipv6only(const struct sock *sk)
 #define __ipv6_only_sock(sk)	0
 #define ipv6_only_sock(sk)	0
 #define ipv6_sk_rxinfo(sk)	0
+
+static inline bool ipv6_mod_enabled(void)
+{
+	return false;
+}
 
 static inline struct ipv6_pinfo * inet6_sk(const struct sock *__sk)
 {

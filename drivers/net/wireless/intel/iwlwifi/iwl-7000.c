@@ -73,13 +73,13 @@
 /* Highest firmware API version supported */
 #define IWL7260_UCODE_API_MAX	17
 #define IWL7265_UCODE_API_MAX	17
-#define IWL7265D_UCODE_API_MAX	21
-#define IWL3168_UCODE_API_MAX	21
+#define IWL7265D_UCODE_API_MAX	26
+#define IWL3168_UCODE_API_MAX	26
 
 /* Lowest firmware API version supported */
-#define IWL7260_UCODE_API_MIN	16
-#define IWL7265_UCODE_API_MIN	16
-#define IWL7265D_UCODE_API_MIN	16
+#define IWL7260_UCODE_API_MIN	17
+#define IWL7265_UCODE_API_MIN	17
+#define IWL7265D_UCODE_API_MIN	17
 #define IWL3168_UCODE_API_MIN	20
 
 /* NVM versions */
@@ -122,7 +122,6 @@
 static const struct iwl_base_params iwl7000_base_params = {
 	.eeprom_size = OTP_LOW_IMAGE_SIZE_FAMILY_7000,
 	.num_of_queues = 31,
-	.pll_cfg_val = 0,
 	.shadow_ram_support = true,
 	.led_compensation = 57,
 	.wd_timeout = IWL_LONG_WD_TIMEOUT,
