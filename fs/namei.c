@@ -1003,6 +1003,9 @@ static int may_linkat(struct path *link)
 	return -EPERM;
 }
 
+typedef const char * (*get_link_t)(struct dentry *, struct inode *,
+				   struct delayed_call *);
+
 static __always_inline
 const char *get_link(struct nameidata *nd)
 {
@@ -1029,9 +1032,8 @@ const char *get_link(struct nameidata *nd)
 	nd->last_type = LAST_BIND;
 	res = inode->i_link;
 	if (!res) {
-		const char * (*get)(struct dentry *, struct inode *,
-				struct delayed_call *);
-		get = inode->i_op->get_link;
+		get_link_t get = inode->i_op->get_link;
+
 		if (nd->flags & LOOKUP_RCU) {
 			res = get(NULL, inode, &last->done);
 			if (res == ERR_PTR(-ECHILD)) {
@@ -4645,29 +4647,6 @@ out:
 	return len;
 }
 
-/*
- * A helper for ->readlink().  This should be used *ONLY* for symlinks that
- * have ->get_link() not calling nd_jump_link().  Using (or not using) it
- * for any given inode is up to filesystem.
- */
-static int generic_readlink(struct dentry *dentry, char __user *buffer,
-			    int buflen)
-{
-	DEFINE_DELAYED_CALL(done);
-	struct inode *inode = d_inode(dentry);
-	const char *link = inode->i_link;
-	int res;
-
-	if (!link) {
-		link = inode->i_op->get_link(dentry, inode, &done);
-		if (IS_ERR(link))
-			return PTR_ERR(link);
-	}
-	res = readlink_copy(buffer, buflen, link);
-	do_delayed_call(&done);
-	return res;
-}
-
 /**
  * vfs_readlink - copy symlink body into userspace buffer
  * @dentry: dentry on which to get symbolic link
@@ -4680,11 +4659,17 @@ static int generic_readlink(struct dentry *dentry, char __user *buffer,
  */
 int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 {
+	DEFINE_DELAYED_CALL(done);
 	struct inode *inode = d_inode(dentry);
+	const char *link = inode->i_link;
+	get_link_t get;
+	int res;
 
 	if (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {
-		if (unlikely(inode->i_op->readlink))
-			return inode->i_op->readlink(dentry, buffer, buflen);
+		if (unlikely(inode->i_op->readlink)) {
+			get = inode->i_op->readlink;
+			goto get;
+		}
 
 		if (!d_is_symlink(dentry))
 			return -EINVAL;
@@ -4693,8 +4678,17 @@ int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 		inode->i_opflags |= IOP_DEFAULT_READLINK;
 		spin_unlock(&inode->i_lock);
 	}
+	if (!link) {
+		get = inode->i_op->get_link;
+get:
+		link = get(dentry, inode, &done);
+		if (IS_ERR(link))
+			return PTR_ERR(link);
+	}
+	res = readlink_copy(buffer, buflen, link);
+	do_delayed_call(&done);
 
-	return generic_readlink(dentry, buffer, buflen);
+	return res;
 }
 EXPORT_SYMBOL(vfs_readlink);
 

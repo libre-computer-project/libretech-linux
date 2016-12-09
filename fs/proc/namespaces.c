@@ -58,23 +58,37 @@ static const char *proc_ns_get_link(struct dentry *dentry,
 	return error;
 }
 
-static int proc_ns_readlink(struct dentry *dentry, char __user *buffer, int buflen)
+#define PROC_NS_LINK_MAX 50
+
+static const char *proc_ns_readlink(struct dentry *dentry, struct inode *inode,
+				    struct delayed_call *done)
 {
-	struct inode *inode = d_inode(dentry);
 	const struct proc_ns_operations *ns_ops = PROC_I(inode)->ns_ops;
 	struct task_struct *task;
-	char name[50];
-	int res = -EACCES;
+	char *res = ERR_PTR(-EACCES);
 
 	task = get_proc_task(inode);
 	if (!task)
 		return res;
 
 	if (ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS)) {
-		res = ns_get_name(name, sizeof(name), task, ns_ops);
-		if (res >= 0)
-			res = readlink_copy(buffer, buflen, name);
+		char *name = kmalloc(PROC_NS_LINK_MAX, GFP_KERNEL);
+		int err;
+
+		res = ERR_PTR(-ENOMEM);
+		if (!name)
+			goto out_put;
+
+		err = ns_get_name(name, PROC_NS_LINK_MAX, task, ns_ops);
+		if (err < 0) {
+			kfree(name);
+			res = ERR_PTR(err);
+			goto out_put;
+		}
+		set_delayed_call(done, kfree_link, name);
+		res = name;
 	}
+out_put:
 	put_task_struct(task);
 	return res;
 }
