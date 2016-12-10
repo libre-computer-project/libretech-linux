@@ -55,16 +55,16 @@ static int pmem_clear_poison(struct pmem_device *pmem, phys_addr_t offset,
 	long cleared;
 
 	sector = (offset - pmem->data_offset) / 512;
-	cleared = nvdimm_clear_poison(dev, pmem->phys_addr + offset, len);
 
-	if (cleared > 0 && cleared / 512) {
-		dev_dbg(dev, "%s: %#llx clear %ld sector%s\n",
-				__func__, (unsigned long long) sector,
-				cleared / 512, cleared / 512 > 1 ? "s" : "");
-		badblocks_clear(&pmem->bb, sector, cleared / 512);
-	} else {
+	cleared = nvdimm_clear_poison(dev, pmem->phys_addr + offset, len);
+	if (cleared < 0 || cleared / 512 == 0)
 		return -EIO;
-	}
+	cleared /= 512;
+
+	dev_dbg(dev, "%s: %#llx clear %ld sector%s\n", __func__,
+			(unsigned long long) sector, cleared,
+			cleared > 1 ? "s" : "");
+	badblocks_clear(&pmem->bb, sector, cleared);
 
 	invalidate_pmem(pmem->virt_addr + offset, len);
 	return 0;
@@ -270,7 +270,7 @@ static int pmem_attach_disk(struct device *dev,
 		dev_warn(dev, "unable to guarantee persistence of writes\n");
 
 	if (!devm_request_mem_region(dev, res->start, resource_size(res),
-				dev_name(dev))) {
+				dev_name(&ndns->dev))) {
 		dev_warn(dev, "could not reserve region %pR\n", res);
 		return -EBUSY;
 	}

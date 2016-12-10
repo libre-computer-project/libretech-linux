@@ -1132,7 +1132,7 @@ static ssize_t size_show(struct device *dev,
 	return sprintf(buf, "%llu\n", (unsigned long long)
 			nvdimm_namespace_capacity(to_ndns(dev)));
 }
-static DEVICE_ATTR(size, S_IRUGO, size_show, size_store);
+static DEVICE_ATTR(size, 0444, size_show, size_store);
 
 static u8 *namespace_to_uuid(struct device *dev)
 {
@@ -1456,7 +1456,7 @@ static umode_t namespace_visible(struct kobject *kobj,
 
 	if (is_namespace_pmem(dev) || is_namespace_blk(dev)) {
 		if (a == &dev_attr_size.attr)
-			return S_IWUSR | S_IRUGO;
+			return 0644;
 
 		if (is_namespace_pmem(dev) && a == &dev_attr_sector_size.attr)
 			return 0;
@@ -1997,7 +1997,7 @@ struct device *create_namespace_blk(struct nd_region *nd_region,
 	struct nd_mapping *nd_mapping = &nd_region->mapping[0];
 	struct nvdimm_drvdata *ndd = to_ndd(nd_mapping);
 	struct nd_namespace_blk *nsblk;
-	char *name[NSLABEL_NAME_LEN];
+	char name[NSLABEL_NAME_LEN];
 	struct device *dev = NULL;
 	struct resource *res;
 
