@@ -328,11 +328,11 @@ static struct dentry *ovl_d_real(struct dentry *dentry,
 	if (!real)
 		goto bug;
 
+	/* Handle recursion */
+	real = d_real(real, inode, open_flags);
+
 	if (!inode || inode == d_inode(real))
 		return real;
-
-	/* Handle recursion */
-	return d_real(real, inode, open_flags);
 bug:
 	WARN(1, "ovl_d_real(%pd4, %s:%lu): real dentry not found\n", dentry,
 	     inode ? inode->i_sb->s_id : "NULL", inode ? inode->i_ino : 0);
@@ -809,12 +809,9 @@ retry:
 			      strlen(OVL_WORKDIR_NAME));
 
 	if (!IS_ERR(work)) {
-		struct kstat stat = {
-			.mode = S_IFDIR | 0,
-		};
 		struct iattr attr = {
 			.ia_valid = ATTR_MODE,
-			.ia_mode = stat.mode,
+			.ia_mode = S_IFDIR | 0,
 		};
 
 		if (work->d_inode) {
@@ -828,7 +825,9 @@ retry:
 			goto retry;
 		}
 
-		err = ovl_create_real(dir, work, &stat, NULL, NULL, true);
+		err = ovl_create_real(dir, work,
+				      &(struct cattr){.mode = S_IFDIR | 0},
+				      NULL, true);
 		if (err)
 			goto out_dput;
 
