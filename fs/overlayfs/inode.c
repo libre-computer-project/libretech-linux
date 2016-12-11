@@ -421,6 +421,25 @@ static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
 	return file->f_op->mmap(file, vma);
 }
 
+static int ovl_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+{
+	int ret;
+
+	if (likely(ovl_file_is_lower(file))) {
+		const struct file_operations *f_op = ovl_orig_fops(file);
+
+		return f_op ? f_op->fsync(file, start, end, datasync) : -EIO;
+	}
+	file = filp_clone_open(file);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	ret = vfs_fsync_range(file, start, end, datasync);
+	fput(file);
+
+	return ret;
+}
+
 static struct ovl_fops *ovl_fops_find(const struct file_operations *orig)
 {
 	struct ovl_fops *ofop;
@@ -467,12 +486,10 @@ static struct ovl_fops *ovl_fops_get(struct file *file)
 		ofop->fops.read_iter = ovl_read_iter;
 	if (orig->mmap)
 		ofop->fops.mmap = ovl_mmap;
+	if (orig->fsync)
+		ofop->fops.fsync = ovl_fsync;
 
 	/*
-	 * These will need to be intercepted:
-	 *
-	 * - fsync
-	 *
 	 * These should be intercepted, but they are very unlikely to be
 	 * a problem in practice.  Leave them alone for now:
 	 *
