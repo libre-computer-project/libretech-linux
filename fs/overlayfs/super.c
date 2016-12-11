@@ -963,6 +963,7 @@ static int __init ovl_init(void)
 static void __exit ovl_exit(void)
 {
 	unregister_filesystem(&ovl_fs_type);
+	ovl_cleanup_fops_htable();
 }
 
 module_init(ovl_init);
