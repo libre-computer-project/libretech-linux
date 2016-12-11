@@ -11,6 +11,7 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 #include <linux/posix_acl.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/file.h>
 #include <linux/hashtable.h>
@@ -398,6 +399,28 @@ static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	return ret;
 }
 
+static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	if (likely(ovl_file_is_lower(file))) {
+		const struct file_operations *f_op = ovl_orig_fops(file);
+
+		return f_op ? f_op->mmap(file, vma) : -EIO;
+	}
+
+	file = filp_clone_open(file);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	fput(vma->vm_file);
+	/* transfer ref: */
+	vma->vm_file = file;
+
+	if (!file->f_op->mmap)
+		return -ENODEV;
+
+	return file->f_op->mmap(file, vma);
+}
+
 static struct ovl_fops *ovl_fops_find(const struct file_operations *orig)
 {
 	struct ovl_fops *ofop;
@@ -442,11 +465,12 @@ static struct ovl_fops *ovl_fops_get(struct file *file)
 	/* Intercept these: */
 	if (orig->read_iter)
 		ofop->fops.read_iter = ovl_read_iter;
+	if (orig->mmap)
+		ofop->fops.mmap = ovl_mmap;
 
 	/*
 	 * These will need to be intercepted:
 	 *
-	 * - mmap
 	 * - fsync
 	 *
 	 * These should be intercepted, but they are very unlikely to be
