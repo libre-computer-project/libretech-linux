@@ -12,6 +12,7 @@
 #include <linux/xattr.h>
 #include <linux/posix_acl.h>
 #include <linux/module.h>
+#include <linux/file.h>
 #include <linux/hashtable.h>
 #include "overlayfs.h"
 
@@ -361,6 +362,42 @@ void ovl_cleanup_fops_htable(void)
 	}
 }
 
+static bool ovl_file_is_lower(struct file *file)
+{
+	return !OVL_TYPE_UPPER(ovl_path_type(file->f_path.dentry));
+}
+
+static const struct file_operations *ovl_orig_fops(struct file *file)
+{
+	struct ovl_fops *ofop = container_of(file->f_op, struct ovl_fops, fops);
+
+	if (WARN_ON(ofop->magic != OVL_FOPS_MAGIC))
+		return NULL;
+
+	return ofop->orig_fops;
+}
+
+static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	struct file *file = iocb->ki_filp;
+	ssize_t ret;
+
+	if (likely(ovl_file_is_lower(file))) {
+		const struct file_operations *f_op = ovl_orig_fops(file);
+
+		return f_op ? f_op->read_iter(iocb, to) : -EIO;
+	}
+
+	file = filp_clone_open(file);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	ret = vfs_iter_read(file, to, &iocb->ki_pos);
+	fput(file);
+
+	return ret;
+}
+
 static struct ovl_fops *ovl_fops_find(const struct file_operations *orig)
 {
 	struct ovl_fops *ofop;
@@ -402,10 +439,13 @@ static struct ovl_fops *ovl_fops_get(struct file *file)
 	/* By default don't intercept: */
 	ofop->fops = *orig;
 
+	/* Intercept these: */
+	if (orig->read_iter)
+		ofop->fops.read_iter = ovl_read_iter;
+
 	/*
 	 * These will need to be intercepted:
 	 *
-	 * - read_iter
 	 * - mmap
 	 * - fsync
 	 *
