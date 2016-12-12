@@ -49,4 +49,13 @@
 / {
 	compatible = "amlogic,p201", "amlogic,meson-gxbb";
 	model = "Amlogic Meson GXBB P201 Development Board";
+
+	memory@0 {
+		device_type = "memory";
+		/*
+		 * The first 16MiB of the DDR memory zone
+		 * is reserved to the Hardware ROM Firmware
+		 */
+		linux,usable-memory = <0x0 0x1000000 0x0 0x3f000000>;
+	};
 };

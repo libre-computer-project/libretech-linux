@@ -49,6 +49,15 @@
 / {
 	compatible = "amlogic,q200", "amlogic,s912", "amlogic,meson-gxm";
 	model = "Amlogic Meson GXM (S912) Q200 Development Board";
+
+	memory@0 {
+		device_type = "memory";
+		/*
+		 * The first 16MiB of the DDR memory zone
+		 * is reserved to the Hardware ROM Firmware
+		 */
+		linux,usable-memory = <0x0 0x1000000 0x0 0x7f000000>;
+	};
 };
 
 /* Q200 has exclusive choice between internal or external PHY */

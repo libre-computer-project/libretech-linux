@@ -53,11 +53,6 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory@0 {
-		device_type = "memory";
-		reg = <0x0 0x0 0x0 0x40000000>;
-	};
-
 	usb_pwr: regulator-usb-pwrs {
 		compatible = "regulator-fixed";
 

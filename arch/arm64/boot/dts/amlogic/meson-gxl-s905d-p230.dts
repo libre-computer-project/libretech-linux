@@ -49,6 +49,15 @@
 / {
 	compatible = "amlogic,p230", "amlogic,s905d", "amlogic,meson-gxl";
 	model = "Amlogic Meson GXL (S905D) P230 Development Board";
+
+	memory@0 {
+		device_type = "memory";
+		/*
+		 * The first 16MiB of the DDR memory zone
+		 * is reserved to the Hardware ROM Firmware
+		 */
+		linux,usable-memory = <0x0 0x1000000 0x0 0x7f000000>;
+	};
 };
 
 /* P230 has exclusive choice between internal or external PHY */

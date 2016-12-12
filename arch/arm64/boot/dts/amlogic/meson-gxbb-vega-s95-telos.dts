@@ -50,6 +50,10 @@
 
 	memory@0 {
 		device_type = "memory";
-		reg = <0x0 0x0 0x0 0x80000000>;
+		/*
+		 * The first 16MiB of the DDR memory zone
+		 * is reserved to the Hardware ROM Firmware
+		 */
+		linux,usable-memory = <0x0 0x1000000 0x0 0x7f000000>;
 	};
 };
