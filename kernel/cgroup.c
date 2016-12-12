@@ -6318,9 +6318,13 @@ void cgroup_sk_alloc(struct sock_cgroup_data *skcd)
 	if (cgroup_sk_alloc_disabled)
 		return;
 
-	/* Socket clone path */
+	/*
+	 * Socket clone path.  We open-code cgroup_get() here to avoid the
+	 * cgroup_is_dead() sanity check as a listening socket left in a
+	 * dead cgroup can still get cloned for new connections.
+	 */
 	if (skcd->val) {
-		cgroup_get(sock_cgroup_ptr(skcd));
+		css_get(&sock_cgroup_ptr(skcd)->self);
 		return;
 	}
 
