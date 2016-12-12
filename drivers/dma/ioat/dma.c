@@ -338,14 +338,11 @@ ioat_alloc_ring_ent(struct dma_chan *chan, int idx, gfp_t flags)
 {
 	struct ioat_dma_descriptor *hw;
 	struct ioat_ring_ent *desc;
-	struct ioatdma_device *ioat_dma;
 	struct ioatdma_chan *ioat_chan = to_ioat_chan(chan);
 	int chunk;
 	dma_addr_t phys;
 	u8 *pos;
 	off_t offs;
-
-	ioat_dma = to_ioatdma_device(chan->device);
 
 	chunk = idx / IOAT_DESCS_PER_2M;
 	idx &= (IOAT_DESCS_PER_2M - 1);
@@ -611,11 +608,8 @@ static void __cleanup(struct ioatdma_chan *ioat_chan, dma_addr_t phys_complete)
 
 		tx = &desc->txd;
 		if (tx->cookie) {
-			struct dmaengine_result res;
-
 			dma_cookie_complete(tx);
 			dma_descriptor_unmap(tx);
-			res.result = DMA_TRANS_NOERROR;
 			dmaengine_desc_get_callback_invoke(tx, NULL);
 			tx->callback = NULL;
 			tx->callback_result = NULL;
