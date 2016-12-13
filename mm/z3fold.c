@@ -615,12 +615,15 @@ static int z3fold_reclaim_page(struct z3fold_pool *pool, unsigned int retries)
 	unsigned long first_handle = 0, middle_handle = 0, last_handle = 0;
 
 	spin_lock(&pool->lock);
-	if (!pool->ops || !pool->ops->evict || list_empty(&pool->lru) ||
-			retries == 0) {
+	if (!pool->ops || !pool->ops->evict || retries == 0) {
 		spin_unlock(&pool->lock);
 		return -EINVAL;
 	}
 	for (i = 0; i < retries; i++) {
+		if (list_empty(&pool->lru)) {
+			spin_unlock(&pool->lock);
+			return -EINVAL;
+		}
 		page = list_last_entry(&pool->lru, struct page, lru);
 		list_del(&page->lru);
 
@@ -679,8 +682,7 @@ next:
 			 * All buddies are now free, free the z3fold page and
 			 * return success.
 			 */
-			clear_bit(PAGE_HEADLESS, &page->private);
-			if (!test_bit(PAGE_HEADLESS, &page->private))
+			if (!test_and_clear_bit(PAGE_HEADLESS, &page->private))
 				z3fold_page_unlock(zhdr);
 			free_z3fold_page(zhdr);
 			atomic64_dec(&pool->pages_nr);
@@ -692,6 +694,7 @@ next:
 				/* Full, add to buddied list */
 				spin_lock(&pool->lock);
 				list_add(&zhdr->buddy, &pool->buddied);
+				spin_unlock(&pool->lock);
 			} else {
 				int compacted = z3fold_compact_page(zhdr);
 				/* add to unbuddied list */
@@ -703,15 +706,18 @@ next:
 				else
 					list_add_tail(&zhdr->buddy,
 						&pool->unbuddied[freechunks]);
+				spin_unlock(&pool->lock);
 			}
 		}
 
+		if (!test_bit(PAGE_HEADLESS, &page->private))
+			z3fold_page_unlock(zhdr);
+
+		spin_lock(&pool->lock);
 		/* add to beginning of LRU */
 		list_add(&page->lru, &pool->lru);
 	}
 	spin_unlock(&pool->lock);
-	if (!test_bit(PAGE_HEADLESS, &page->private))
-		z3fold_page_unlock(zhdr);
 	return -EAGAIN;
 }
 
