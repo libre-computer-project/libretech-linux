@@ -1384,7 +1384,6 @@ static struct btrfs_root *create_reloc_root(struct btrfs_trans_handle *trans,
 	struct extent_buffer *eb;
 	struct btrfs_root_item *root_item;
 	struct btrfs_key root_key;
-	u64 last_snap = 0;
 	int ret;
 
 	root_item = kmalloc(sizeof(*root_item), GFP_NOFS);
@@ -1395,14 +1394,22 @@ static struct btrfs_root *create_reloc_root(struct btrfs_trans_handle *trans,
 	root_key.offset = objectid;
 
 	if (root->root_key.objectid == objectid) {
+		u64 commit_root_gen;
+
 		/* called by btrfs_init_reloc_root */
 		ret = btrfs_copy_root(trans, root, root->commit_root, &eb,
 				      BTRFS_TREE_RELOC_OBJECTID);
 		BUG_ON(ret);
-
-		last_snap = btrfs_root_last_snapshot(&root->root_item);
-		btrfs_set_root_last_snapshot(&root->root_item,
-					     trans->transid - 1);
+		/*
+		 * Set the last_snapshot field to the generation of the commit
+		 * root - like this ctree.c:btrfs_block_can_be_shared() behaves
+		 * correctly (returns true) when the relocation root is created
+		 * either inside the critical section of a transaction commit
+		 * (through transaction.c:qgroup_account_snapshot()) and when
+		 * it's created before the transaction commit is started.
+		 */
+		commit_root_gen = btrfs_header_generation(root->commit_root);
+		btrfs_set_root_last_snapshot(&root->root_item, commit_root_gen);
 	} else {
 		/*
 		 * called by btrfs_reloc_post_snapshot_hook.
@@ -1426,12 +1433,6 @@ static struct btrfs_root *create_reloc_root(struct btrfs_trans_handle *trans,
 		memset(&root_item->drop_progress, 0,
 		       sizeof(struct btrfs_disk_key));
 		root_item->drop_level = 0;
-		/*
-		 * abuse rtransid, it is safe because it is impossible to
-		 * receive data into a relocation tree.
-		 */
-		btrfs_set_root_rtransid(root_item, last_snap);
-		btrfs_set_root_otransid(root_item, trans->transid);
 	}
 
 	btrfs_tree_unlock(eb);
@@ -1899,6 +1900,29 @@ again:
 		ret = btrfs_search_slot(trans, src, &key, path, 0, 1);
 		path->lowest_level = 0;
 		BUG_ON(ret);
+
+		/*
+		 * Info qgroup to trace both subtrees.
+		 *
+		 * We must trace both trees.
+		 * 1) Tree reloc subtree
+		 *    If not traced, we will leak data numbers
+		 * 2) Fs subtree
+		 *    If not traced, we will double count old data
+		 *    and tree block numbers, if current trans doesn't free
+		 *    data reloc tree inode.
+		 */
+		ret = btrfs_qgroup_trace_subtree(trans, src, parent,
+				btrfs_header_generation(parent),
+				btrfs_header_level(parent));
+		if (ret < 0)
+			break;
+		ret = btrfs_qgroup_trace_subtree(trans, dest,
+				path->nodes[level],
+				btrfs_header_generation(path->nodes[level]),
+				btrfs_header_level(path->nodes[level]));
+		if (ret < 0)
+			break;
 
 		/*
 		 * swap blocks in fs tree and reloc tree.
@@ -2371,9 +2395,6 @@ void merge_reloc_roots(struct reloc_control *rc)
 {
 	struct btrfs_root *root;
 	struct btrfs_root *reloc_root;
-	u64 last_snap;
-	u64 otransid;
-	u64 objectid;
 	LIST_HEAD(reloc_roots);
 	int found = 0;
 	int ret = 0;
@@ -2411,14 +2432,6 @@ again:
 		} else {
 			list_del_init(&reloc_root->root_list);
 		}
-
-		/*
-		 * we keep the old last snapshot transid in rtranid when we
-		 * created the relocation tree.
-		 */
-		last_snap = btrfs_root_rtransid(&reloc_root->root_item);
-		otransid = btrfs_root_otransid(&reloc_root->root_item);
-		objectid = reloc_root->root_key.offset;
 
 		ret = btrfs_drop_snapshot(reloc_root, rc->block_rsv, 0, 1);
 		if (ret < 0) {
@@ -3148,12 +3161,16 @@ static int relocate_file_extent_cluster(struct inode *inode,
 	unsigned long last_index;
 	struct page *page;
 	struct file_ra_state *ra;
+	enum btrfs_metadata_reserve_type reserve_type = BTRFS_RESERVE_NORMAL;
 	gfp_t mask = btrfs_alloc_write_mask(inode->i_mapping);
 	int nr = 0;
 	int ret = 0;
 
 	if (!cluster->nr)
 		return 0;
+
+	if (inode_need_compress(inode))
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 
 	ra = kzalloc(sizeof(*ra), GFP_NOFS);
 	if (!ra)
@@ -3173,7 +3190,8 @@ static int relocate_file_extent_cluster(struct inode *inode,
 	index = (cluster->start - offset) >> PAGE_SHIFT;
 	last_index = (cluster->end - offset) >> PAGE_SHIFT;
 	while (index <= last_index) {
-		ret = btrfs_delalloc_reserve_metadata(inode, PAGE_SIZE);
+		ret = btrfs_delalloc_reserve_metadata(inode, PAGE_SIZE,
+						      reserve_type);
 		if (ret)
 			goto out;
 
@@ -3186,7 +3204,7 @@ static int relocate_file_extent_cluster(struct inode *inode,
 						   mask);
 			if (!page) {
 				btrfs_delalloc_release_metadata(inode,
-							PAGE_SIZE);
+						PAGE_SIZE, reserve_type);
 				ret = -ENOMEM;
 				goto out;
 			}
@@ -3205,7 +3223,7 @@ static int relocate_file_extent_cluster(struct inode *inode,
 				unlock_page(page);
 				put_page(page);
 				btrfs_delalloc_release_metadata(inode,
-							PAGE_SIZE);
+						PAGE_SIZE, reserve_type);
 				ret = -EIO;
 				goto out;
 			}
@@ -3226,7 +3244,8 @@ static int relocate_file_extent_cluster(struct inode *inode,
 			nr++;
 		}
 
-		btrfs_set_extent_delalloc(inode, page_start, page_end, NULL, 0);
+		btrfs_set_extent_delalloc(inode, page_start, page_end, NULL,
+					  reserve_type);
 		set_page_dirty(page);
 
 		unlock_extent(&BTRFS_I(inode)->io_tree,
@@ -3949,90 +3968,6 @@ int prepare_to_relocate(struct reloc_control *rc)
 	return 0;
 }
 
-/*
- * Qgroup fixer for data chunk relocation.
- * The data relocation is done in the following steps
- * 1) Copy data extents into data reloc tree
- * 2) Create tree reloc tree(special snapshot) for related subvolumes
- * 3) Modify file extents in tree reloc tree
- * 4) Merge tree reloc tree with original fs tree, by swapping tree blocks
- *
- * The problem is, data and tree reloc tree are not accounted to qgroup,
- * and 4) will only info qgroup to track tree blocks change, not file extents
- * in the tree blocks.
- *
- * The good news is, related data extents are all in data reloc tree, so we
- * only need to info qgroup to track all file extents in data reloc tree
- * before commit trans.
- */
-static int qgroup_fix_relocated_data_extents(struct btrfs_trans_handle *trans,
-					     struct reloc_control *rc)
-{
-	struct btrfs_fs_info *fs_info = rc->extent_root->fs_info;
-	struct inode *inode = rc->data_inode;
-	struct btrfs_root *data_reloc_root = BTRFS_I(inode)->root;
-	struct btrfs_path *path;
-	struct btrfs_key key;
-	int ret = 0;
-
-	if (!test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags))
-		return 0;
-
-	/*
-	 * Only for stage where we update data pointers the qgroup fix is
-	 * valid.
-	 * For MOVING_DATA stage, we will miss the timing of swapping tree
-	 * blocks, and won't fix it.
-	 */
-	if (!(rc->stage == UPDATE_DATA_PTRS && rc->extents_found))
-		return 0;
-
-	path = btrfs_alloc_path();
-	if (!path)
-		return -ENOMEM;
-	key.objectid = btrfs_ino(inode);
-	key.type = BTRFS_EXTENT_DATA_KEY;
-	key.offset = 0;
-
-	ret = btrfs_search_slot(NULL, data_reloc_root, &key, path, 0, 0);
-	if (ret < 0)
-		goto out;
-
-	lock_extent(&BTRFS_I(inode)->io_tree, 0, (u64)-1);
-	while (1) {
-		struct btrfs_file_extent_item *fi;
-
-		btrfs_item_key_to_cpu(path->nodes[0], &key, path->slots[0]);
-		if (key.objectid > btrfs_ino(inode))
-			break;
-		if (key.type != BTRFS_EXTENT_DATA_KEY)
-			goto next;
-		fi = btrfs_item_ptr(path->nodes[0], path->slots[0],
-				    struct btrfs_file_extent_item);
-		if (btrfs_file_extent_type(path->nodes[0], fi) !=
-				BTRFS_FILE_EXTENT_REG)
-			goto next;
-		ret = btrfs_qgroup_insert_dirty_extent(trans, fs_info,
-			btrfs_file_extent_disk_bytenr(path->nodes[0], fi),
-			btrfs_file_extent_disk_num_bytes(path->nodes[0], fi),
-			GFP_NOFS);
-		if (ret < 0)
-			break;
-next:
-		ret = btrfs_next_item(data_reloc_root, path);
-		if (ret < 0)
-			break;
-		if (ret > 0) {
-			ret = 0;
-			break;
-		}
-	}
-	unlock_extent(&BTRFS_I(inode)->io_tree, 0 , (u64)-1);
-out:
-	btrfs_free_path(path);
-	return ret;
-}
-
 static noinline_for_stack int relocate_block_group(struct reloc_control *rc)
 {
 	struct rb_root blocks = RB_ROOT;
@@ -4223,13 +4158,6 @@ restart:
 		err = PTR_ERR(trans);
 		goto out_free;
 	}
-	ret = qgroup_fix_relocated_data_extents(trans, rc);
-	if (ret < 0) {
-		btrfs_abort_transaction(trans, ret);
-		if (!err)
-			err = ret;
-		goto out_free;
-	}
 	btrfs_commit_transaction(trans, rc->extent_root);
 out_free:
 	btrfs_free_block_rsv(rc->extent_root, rc->block_rsv);
@@ -4255,7 +4183,7 @@ static int __insert_orphan_inode(struct btrfs_trans_handle *trans,
 
 	leaf = path->nodes[0];
 	item = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_inode_item);
-	memset_extent_buffer(leaf, 0, (unsigned long)item, sizeof(*item));
+	memzero_extent_buffer(leaf, (unsigned long)item, sizeof(*item));
 	btrfs_set_inode_generation(leaf, item, 1);
 	btrfs_set_inode_size(leaf, item, 0);
 	btrfs_set_inode_mode(leaf, item, S_IFREG | 0600);
@@ -4333,6 +4261,45 @@ static struct reloc_control *alloc_reloc_control(struct btrfs_fs_info *fs_info)
 }
 
 /*
+ * Print the block group being relocated
+ */
+static void describe_relocation(struct btrfs_fs_info *fs_info,
+				struct btrfs_block_group_cache *block_group)
+{
+	char buf[128];		/* prefixed by a '|' that'll be dropped */
+	u64 flags = block_group->flags;
+
+	/* Shouldn't happen */
+	if (!flags) {
+		strcpy(buf, "|NONE");
+	} else {
+		char *bp = buf;
+
+#define DESCRIBE_FLAG(f, d) \
+		if (flags & BTRFS_BLOCK_GROUP_##f) { \
+			bp += snprintf(bp, buf - bp + sizeof(buf), "|%s", d); \
+			flags &= ~BTRFS_BLOCK_GROUP_##f; \
+		}
+		DESCRIBE_FLAG(DATA,     "data");
+		DESCRIBE_FLAG(SYSTEM,   "system");
+		DESCRIBE_FLAG(METADATA, "metadata");
+		DESCRIBE_FLAG(RAID0,    "raid0");
+		DESCRIBE_FLAG(RAID1,    "raid1");
+		DESCRIBE_FLAG(DUP,      "dup");
+		DESCRIBE_FLAG(RAID10,   "raid10");
+		DESCRIBE_FLAG(RAID5,    "raid5");
+		DESCRIBE_FLAG(RAID6,    "raid6");
+		if (flags)
+			snprintf(buf, buf - bp + sizeof(buf), "|0x%llx", flags);
+#undef DESCRIBE_FLAG
+	}
+
+	btrfs_info(fs_info,
+		   "relocating block group %llu flags %s",
+		   block_group->key.objectid, buf + 1);
+}
+
+/*
  * function to relocate all extents in a block group.
  */
 int btrfs_relocate_block_group(struct btrfs_root *extent_root, u64 group_start)
@@ -4388,9 +4355,7 @@ int btrfs_relocate_block_group(struct btrfs_root *extent_root, u64 group_start)
 		goto out;
 	}
 
-	btrfs_info(extent_root->fs_info,
-		   "relocating block group %llu flags %llu",
-		   rc->block_group->key.objectid, rc->block_group->flags);
+	describe_relocation(extent_root->fs_info, rc->block_group);
 
 	btrfs_wait_block_group_reservations(rc->block_group);
 	btrfs_wait_nocow_writers(rc->block_group);
@@ -4596,11 +4561,6 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 	trans = btrfs_join_transaction(rc->extent_root);
 	if (IS_ERR(trans)) {
 		err = PTR_ERR(trans);
-		goto out_free;
-	}
-	err = qgroup_fix_relocated_data_extents(trans, rc);
-	if (err < 0) {
-		btrfs_abort_transaction(trans, err);
 		goto out_free;
 	}
 	err = btrfs_commit_transaction(trans, rc->extent_root);
