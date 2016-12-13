@@ -30,6 +30,7 @@
 #define __force
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
 #define pr_debug printk
+#define pr_cont printk
 
 #define smp_rmb()	barrier()
 #define smp_wmb()	barrier()
@@ -41,6 +42,7 @@
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
 	(type *)( (char *)__mptr - offsetof(type, member) );})
 #define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(a, b) ((a) < (b) ? (b) : (a))
 
 #define cond_resched()	sched_yield()
 
