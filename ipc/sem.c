@@ -1917,10 +1917,11 @@ sleep_again:
 	 * fastpath: the semop has completed, either successfully or not, from
 	 * the syscall pov, is quite irrelevant to us at this point; we're done.
 	 *
-	 * We _do_ care, nonetheless, about being awoken by a signal or spuriously.
-	 * The queue.status is checked again in the slowpath (aka after taking
-	 * sem_lock), such that we can detect scenarios where we were awakened
-	 * externally, during the window between wake_q_add() and wake_up_q().
+	 * We _do_ care, nonetheless, about being awoken by a signal or
+	 * spuriously.  The queue.status is checked again in the slowpath (aka
+	 * after taking sem_lock), such that we can detect scenarios where we
+	 * were awakened externally, during the window between wake_q_add() and
+	 * wake_up_q().
 	 */
 	error = READ_ONCE(queue.status);
 	if (error != -EINTR) {
