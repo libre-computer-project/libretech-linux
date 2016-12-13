@@ -61,6 +61,8 @@
 
 #include "debug_core.h"
 
+#define WAIT_CPUS_STOP_MS	1000
+
 static int kgdb_break_asap;
 
 struct debuggerinfo_struct kgdb_info[NR_CPUS];
@@ -598,11 +600,11 @@ return_normal:
 	/*
 	 * Wait for the other CPUs to be notified and be waiting for us:
 	 */
-	time_left = loops_per_jiffy * HZ;
+	time_left = WAIT_CPUS_STOP_MS;
 	while (kgdb_do_roundup && --time_left &&
 	       (atomic_read(&masters_in_kgdb) + atomic_read(&slaves_in_kgdb)) !=
 		   online_cpus)
-		cpu_relax();
+		udelay(1000);
 	if (!time_left)
 		pr_crit("Timed out waiting for secondary CPUs.\n");
 
