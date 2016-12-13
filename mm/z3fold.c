@@ -34,56 +34,9 @@
 /*****************
  * Structures
 *****************/
-/*
- * NCHUNKS_ORDER determines the internal allocation granularity, effectively
- * adjusting internal fragmentation.  It also determines the number of
- * freelists maintained in each pool. NCHUNKS_ORDER of 6 means that the
- * allocation granularity will be in chunks of size PAGE_SIZE/64. As one chunk
- * in allocated page is occupied by z3fold header, NCHUNKS will be calculated
- * to 63 which shows the max number of free chunks in z3fold page, also there
- * will be 63 freelists per pool.
- */
-#define NCHUNKS_ORDER	6
-
-#define CHUNK_SHIFT	(PAGE_SHIFT - NCHUNKS_ORDER)
-#define CHUNK_SIZE	(1 << CHUNK_SHIFT)
-#define ZHDR_SIZE_ALIGNED CHUNK_SIZE
-#define NCHUNKS		((PAGE_SIZE - ZHDR_SIZE_ALIGNED) >> CHUNK_SHIFT)
-
-#define BUDDY_MASK	(0x3)
-
 struct z3fold_pool;
 struct z3fold_ops {
 	int (*evict)(struct z3fold_pool *pool, unsigned long handle);
-};
-
-/**
- * struct z3fold_pool - stores metadata for each z3fold pool
- * @lock:	protects all pool fields and first|last_chunk fields of any
- *		z3fold page in the pool
- * @unbuddied:	array of lists tracking z3fold pages that contain 2- buddies;
- *		the lists each z3fold page is added to depends on the size of
- *		its free region.
- * @buddied:	list tracking the z3fold pages that contain 3 buddies;
- *		these z3fold pages are full
- * @lru:	list tracking the z3fold pages in LRU order by most recently
- *		added buddy.
- * @pages_nr:	number of z3fold pages in the pool.
- * @ops:	pointer to a structure of user defined operations specified at
- *		pool creation time.
- *
- * This structure is allocated at pool creation time and maintains metadata
- * pertaining to a particular z3fold pool.
- */
-struct z3fold_pool {
-	spinlock_t lock;
-	struct list_head unbuddied[NCHUNKS];
-	struct list_head buddied;
-	struct list_head lru;
-	atomic64_t pages_nr;
-	const struct z3fold_ops *ops;
-	struct zpool *zpool;
-	const struct zpool_ops *zpool_ops;
 };
 
 enum buddy {
@@ -115,6 +68,57 @@ struct z3fold_header {
 };
 
 /*
+ * NCHUNKS_ORDER determines the internal allocation granularity, effectively
+ * adjusting internal fragmentation.  It also determines the number of
+ * freelists maintained in each pool. NCHUNKS_ORDER of 6 means that the
+ * allocation granularity will be in chunks of size PAGE_SIZE/64. Some chunks
+ * in the beginning of an allocated page are occupied by z3fold header, so
+ * NCHUNKS will be calculated to 63 (or 62 in case CONFIG_DEBUG_SPINLOCK=y),
+ * which shows the max number of free chunks in z3fold page, also there will
+ * be 63, or 62, respectively, freelists per pool.
+ */
+#define NCHUNKS_ORDER	6
+
+#define CHUNK_SHIFT	(PAGE_SHIFT - NCHUNKS_ORDER)
+#define CHUNK_SIZE	(1 << CHUNK_SHIFT)
+#define ZHDR_SIZE_ALIGNED round_up(sizeof(struct z3fold_header), CHUNK_SIZE)
+#define ZHDR_CHUNKS	(ZHDR_SIZE_ALIGNED >> CHUNK_SHIFT)
+#define TOTAL_CHUNKS	(PAGE_SIZE >> CHUNK_SHIFT)
+#define NCHUNKS		((PAGE_SIZE - ZHDR_SIZE_ALIGNED) >> CHUNK_SHIFT)
+
+#define BUDDY_MASK	(0x3)
+
+/**
+ * struct z3fold_pool - stores metadata for each z3fold pool
+ * @lock:	protects all pool fields and first|last_chunk fields of any
+ *		z3fold page in the pool
+ * @unbuddied:	array of lists tracking z3fold pages that contain 2- buddies;
+ *		the lists each z3fold page is added to depends on the size of
+ *		its free region.
+ * @buddied:	list tracking the z3fold pages that contain 3 buddies;
+ *		these z3fold pages are full
+ * @lru:	list tracking the z3fold pages in LRU order by most recently
+ *		added buddy.
+ * @pages_nr:	number of z3fold pages in the pool.
+ * @ops:	pointer to a structure of user defined operations specified at
+ *		pool creation time.
+ *
+ * This structure is allocated at pool creation time and maintains metadata
+ * pertaining to a particular z3fold pool.
+ */
+struct z3fold_pool {
+	spinlock_t lock;
+	struct list_head unbuddied[NCHUNKS];
+	struct list_head buddied;
+	struct list_head lru;
+	atomic64_t pages_nr;
+	const struct z3fold_ops *ops;
+	struct zpool *zpool;
+	const struct zpool_ops *zpool_ops;
+};
+
+
+/*
  * Internal z3fold page flags
  */
 enum z3fold_page_flags {
@@ -122,6 +126,7 @@ enum z3fold_page_flags {
 	PAGE_HEADLESS,
 	MIDDLE_CHUNK_MAPPED,
 };
+
 
 /*****************
  * Helpers
@@ -220,9 +225,10 @@ static int num_free_chunks(struct z3fold_header *zhdr)
 	 */
 	if (zhdr->middle_chunks != 0) {
 		int nfree_before = zhdr->first_chunks ?
-			0 : zhdr->start_middle - 1;
+			0 : zhdr->start_middle - ZHDR_CHUNKS;
 		int nfree_after = zhdr->last_chunks ?
-			0 : NCHUNKS - zhdr->start_middle - zhdr->middle_chunks;
+			0 : TOTAL_CHUNKS -
+				(zhdr->start_middle + zhdr->middle_chunks);
 		nfree = max(nfree_before, nfree_after);
 	} else
 		nfree = NCHUNKS - zhdr->first_chunks - zhdr->last_chunks;
@@ -287,40 +293,47 @@ static int z3fold_compact_page(struct z3fold_header *zhdr)
 	int ret = 0;
 
 	if (test_bit(MIDDLE_CHUNK_MAPPED, &page->private))
+		goto out; /* can't move middle chunk, it's used */
+
+	if (zhdr->middle_chunks == 0)
+		goto out; /* nothing to compact */
+
+	if (zhdr->first_chunks == 0 && zhdr->last_chunks == 0) {
+		/* move to the beginning */
+		mchunk_memmove(zhdr, ZHDR_CHUNKS);
+		zhdr->first_chunks = zhdr->middle_chunks;
+		zhdr->middle_chunks = 0;
+		zhdr->start_middle = 0;
+		zhdr->first_num++;
+		ret = 1;
 		goto out;
+	}
 
-	if (zhdr->middle_chunks != 0) {
-		if (zhdr->first_chunks == 0 && zhdr->last_chunks == 0) {
-			mchunk_memmove(zhdr, 1); /* move to the beginning */
-			zhdr->first_chunks = zhdr->middle_chunks;
-			zhdr->middle_chunks = 0;
-			zhdr->start_middle = 0;
-			zhdr->first_num++;
-			ret = 1;
-			goto out;
-		}
-
-		/*
-		 * moving data is expensive, so let's only do that if
-		 * there's substantial gain (at least BIG_CHUNK_GAP chunks)
-		 */
-		if (zhdr->first_chunks != 0 && zhdr->last_chunks == 0 &&
-		    zhdr->start_middle > zhdr->first_chunks + BIG_CHUNK_GAP) {
-			mchunk_memmove(zhdr, zhdr->first_chunks + 1);
-			zhdr->start_middle = zhdr->first_chunks + 1;
-			ret = 1;
-			goto out;
-		}
-		if (zhdr->last_chunks != 0 && zhdr->first_chunks == 0 &&
-		    zhdr->middle_chunks + zhdr->last_chunks <=
-		    NCHUNKS - zhdr->start_middle - BIG_CHUNK_GAP) {
-			unsigned short new_start = NCHUNKS - zhdr->last_chunks -
-				zhdr->middle_chunks;
-			mchunk_memmove(zhdr, new_start);
-			zhdr->start_middle = new_start;
-			ret = 1;
-			goto out;
-		}
+	/*
+	 * moving data is expensive, so let's only do that if
+	 * there's substantial gain (at least BIG_CHUNK_GAP chunks)
+	 */
+	if (zhdr->first_chunks != 0 && zhdr->last_chunks == 0 &&
+	    zhdr->start_middle - (zhdr->first_chunks + ZHDR_CHUNKS) >=
+	    BIG_CHUNK_GAP) {
+		/* new_start: right after 1st chunk */
+		unsigned short new_start = zhdr->first_chunks + ZHDR_CHUNKS;
+		mchunk_memmove(zhdr, new_start);
+		zhdr->start_middle = new_start;
+		ret = 1;
+		goto out;
+	}
+	if (zhdr->last_chunks != 0 && zhdr->first_chunks == 0 &&
+	    TOTAL_CHUNKS -
+	    (zhdr->last_chunks + zhdr->start_middle + zhdr->middle_chunks) >=
+	    BIG_CHUNK_GAP) {
+		/* new_start: right before last chunk */
+		unsigned short new_start = TOTAL_CHUNKS -
+			(zhdr->last_chunks + zhdr->middle_chunks);
+		mchunk_memmove(zhdr, new_start);
+		zhdr->start_middle = new_start;
+		ret = 1;
+		goto out;
 	}
 out:
 	return ret;
@@ -425,7 +438,7 @@ found:
 		zhdr->last_chunks = chunks;
 	else {
 		zhdr->middle_chunks = chunks;
-		zhdr->start_middle = zhdr->first_chunks + 1;
+		zhdr->start_middle = zhdr->first_chunks + ZHDR_CHUNKS;
 	}
 
 	spin_lock(&pool->lock);
@@ -882,8 +895,8 @@ MODULE_ALIAS("zpool-z3fold");
 
 static int __init init_z3fold(void)
 {
-	/* Make sure the z3fold header will fit in one chunk */
-	BUILD_BUG_ON(sizeof(struct z3fold_header) > ZHDR_SIZE_ALIGNED);
+	/* Make sure the z3fold header is not larger than the page size */
+	BUILD_BUG_ON(ZHDR_SIZE_ALIGNED > PAGE_SIZE);
 	zpool_register_driver(&z3fold_zpool_driver);
 
 	return 0;
