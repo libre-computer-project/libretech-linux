@@ -1003,6 +1003,9 @@ static int may_linkat(struct path *link)
 	return -EPERM;
 }
 
+typedef const char * (*get_link_t)(struct dentry *, struct inode *,
+				   struct delayed_call *);
+
 static __always_inline
 const char *get_link(struct nameidata *nd)
 {
@@ -1029,9 +1032,8 @@ const char *get_link(struct nameidata *nd)
 	nd->last_type = LAST_BIND;
 	res = inode->i_link;
 	if (!res) {
-		const char * (*get)(struct dentry *, struct inode *,
-				struct delayed_call *);
-		get = inode->i_op->get_link;
+		get_link_t get = inode->i_op->get_link;
+
 		if (nd->flags & LOOKUP_RCU) {
 			res = get(NULL, inode, &last->done);
 			if (res == ERR_PTR(-ECHILD)) {
@@ -4586,7 +4588,7 @@ int vfs_whiteout(struct inode *dir, struct dentry *dentry)
 }
 EXPORT_SYMBOL(vfs_whiteout);
 
-int readlink_copy(char __user *buffer, int buflen, const char *link)
+static int readlink_copy(char __user *buffer, int buflen, const char *link)
 {
 	int len = PTR_ERR(link);
 	if (IS_ERR(link))
@@ -4601,28 +4603,50 @@ out:
 	return len;
 }
 
-/*
- * A helper for ->readlink().  This should be used *ONLY* for symlinks that
- * have ->get_link() not calling nd_jump_link().  Using (or not using) it
- * for any given inode is up to filesystem.
+/**
+ * vfs_readlink - copy symlink body into userspace buffer
+ * @dentry: dentry on which to get symbolic link
+ * @buffer: user memory pointer
+ * @buflen: size of buffer
+ *
+ * Does not touch atime.  That's up to the caller if necessary
+ *
+ * Does not call security hook.
  */
-int generic_readlink(struct dentry *dentry, char __user *buffer, int buflen)
+int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 {
 	DEFINE_DELAYED_CALL(done);
 	struct inode *inode = d_inode(dentry);
 	const char *link = inode->i_link;
+	get_link_t get;
 	int res;
 
+	if (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {
+		if (unlikely(inode->i_op->readlink)) {
+			get = inode->i_op->readlink;
+			goto get;
+		}
+
+		if (!d_is_symlink(dentry))
+			return -EINVAL;
+
+		spin_lock(&inode->i_lock);
+		inode->i_opflags |= IOP_DEFAULT_READLINK;
+		spin_unlock(&inode->i_lock);
+	}
 	if (!link) {
-		link = inode->i_op->get_link(dentry, inode, &done);
+		get = inode->i_op->get_link;
+get:
+		link = get(dentry, inode, &done);
 		if (IS_ERR(link))
 			return PTR_ERR(link);
 	}
 	res = readlink_copy(buffer, buflen, link);
 	do_delayed_call(&done);
+
 	return res;
 }
-EXPORT_SYMBOL(generic_readlink);
+EXPORT_SYMBOL(vfs_readlink);
 
 /**
  * vfs_get_link - get symlink body
@@ -4685,17 +4709,6 @@ void page_put_link(void *arg)
 }
 EXPORT_SYMBOL(page_put_link);
 
-int page_readlink(struct dentry *dentry, char __user *buffer, int buflen)
-{
-	DEFINE_DELAYED_CALL(done);
-	int res = readlink_copy(buffer, buflen,
-				page_get_link(dentry, d_inode(dentry),
-					      &done));
-	do_delayed_call(&done);
-	return res;
-}
-EXPORT_SYMBOL(page_readlink);
-
 /*
  * The nofs argument instructs pagecache_write_begin to pass AOP_FLAG_NOFS
  */
@@ -4739,7 +4752,6 @@ int page_symlink(struct inode *inode, const char *symname, int len)
 EXPORT_SYMBOL(page_symlink);
 
 const struct inode_operations page_symlink_inode_operations = {
-	.readlink	= generic_readlink,
 	.get_link	= page_get_link,
 };
 EXPORT_SYMBOL(page_symlink_inode_operations);
