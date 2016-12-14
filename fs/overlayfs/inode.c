@@ -11,35 +11,11 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 #include <linux/posix_acl.h>
+#include <linux/mm.h>
+#include <linux/module.h>
+#include <linux/file.h>
+#include <linux/hashtable.h>
 #include "overlayfs.h"
-
-static int ovl_copy_up_truncate(struct dentry *dentry)
-{
-	int err;
-	struct dentry *parent;
-	struct kstat stat;
-	struct path lowerpath;
-	const struct cred *old_cred;
-
-	parent = dget_parent(dentry);
-	err = ovl_copy_up(parent);
-	if (err)
-		goto out_dput_parent;
-
-	ovl_path_lower(dentry, &lowerpath);
-
-	old_cred = ovl_override_creds(dentry->d_sb);
-	err = vfs_getattr(&lowerpath, &stat);
-	if (!err) {
-		stat.size = 0;
-		err = ovl_copy_up_one(parent, dentry, &lowerpath, &stat);
-	}
-	revert_creds(old_cred);
-
-out_dput_parent:
-	dput(parent);
-	return err;
-}
 
 int ovl_setattr(struct dentry *dentry, struct iattr *attr)
 {
@@ -64,26 +40,9 @@ int ovl_setattr(struct dentry *dentry, struct iattr *attr)
 	if (err)
 		goto out;
 
-	if (attr->ia_valid & ATTR_SIZE) {
-		struct inode *realinode = d_inode(ovl_dentry_real(dentry));
-
-		err = -ETXTBSY;
-		if (atomic_read(&realinode->i_writecount) < 0)
-			goto out_drop_write;
-	}
-
 	err = ovl_copy_up(dentry);
 	if (!err) {
-		struct inode *winode = NULL;
-
 		upperdentry = ovl_dentry_upper(dentry);
-
-		if (attr->ia_valid & ATTR_SIZE) {
-			winode = d_inode(upperdentry);
-			err = get_write_access(winode);
-			if (err)
-				goto out_drop_write;
-		}
 
 		if (attr->ia_valid & (ATTR_KILL_SUID|ATTR_KILL_SGID))
 			attr->ia_valid &= ~ATTR_MODE;
@@ -95,11 +54,7 @@ int ovl_setattr(struct dentry *dentry, struct iattr *attr)
 		if (!err)
 			ovl_copyattr(upperdentry->d_inode, dentry->d_inode);
 		inode_unlock(upperdentry->d_inode);
-
-		if (winode)
-			put_write_access(winode);
 	}
-out_drop_write:
 	ovl_drop_write(dentry);
 out:
 	return err;
@@ -302,10 +257,7 @@ int ovl_open_maybe_copy_up(struct dentry *dentry, unsigned int file_flags)
 	if (ovl_open_need_copy_up(file_flags, type, realpath.dentry)) {
 		err = ovl_want_write(dentry);
 		if (!err) {
-			if (file_flags & O_TRUNC)
-				err = ovl_copy_up_truncate(dentry);
-			else
-				err = ovl_copy_up(dentry);
+			err = ovl_copy_up_flags(dentry, file_flags);
 			ovl_drop_write(dentry);
 		}
 	}
@@ -354,7 +306,241 @@ static const struct inode_operations ovl_symlink_inode_operations = {
 	.update_time	= ovl_update_time,
 };
 
-static void ovl_fill_inode(struct inode *inode, umode_t mode)
+static DEFINE_READ_MOSTLY_HASHTABLE(ovl_fops_htable, 5);
+static DEFINE_MUTEX(ovl_fops_mutex);
+
+#define OVL_FOPS_MAGIC 0x73706f462a6c764f
+
+struct ovl_fops {
+	struct module *owner;
+	struct file_operations fops;
+	u64 magic;
+	const struct file_operations *orig_fops;
+	struct hlist_node entry;
+};
+
+void ovl_cleanup_fops_htable(void)
+{
+	int bkt;
+	struct hlist_node *tmp;
+	struct ovl_fops *ofop;
+
+	hash_for_each_safe(ovl_fops_htable, bkt, tmp, ofop, entry) {
+		fops_put(ofop->orig_fops);
+		module_put(ofop->owner);
+		kfree(ofop);
+	}
+}
+
+static bool ovl_file_is_lower(struct file *file)
+{
+	return !OVL_TYPE_UPPER(ovl_path_type(file->f_path.dentry));
+}
+
+static const struct file_operations *ovl_orig_fops(struct file *file)
+{
+	struct ovl_fops *ofop = container_of(file->f_op, struct ovl_fops, fops);
+
+	if (WARN_ON(ofop->magic != OVL_FOPS_MAGIC))
+		return NULL;
+
+	return ofop->orig_fops;
+}
+
+static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	struct file *file = iocb->ki_filp;
+	ssize_t ret;
+
+	if (likely(ovl_file_is_lower(file))) {
+		const struct file_operations *f_op = ovl_orig_fops(file);
+
+		return f_op ? f_op->read_iter(iocb, to) : -EIO;
+	}
+
+	file = filp_clone_open(file);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	ret = vfs_iter_read(file, to, &iocb->ki_pos);
+	fput(file);
+
+	return ret;
+}
+
+static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	if (likely(ovl_file_is_lower(file))) {
+		const struct file_operations *f_op = ovl_orig_fops(file);
+
+		return f_op ? f_op->mmap(file, vma) : -EIO;
+	}
+
+	file = filp_clone_open(file);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	fput(vma->vm_file);
+	/* transfer ref: */
+	vma->vm_file = file;
+
+	if (!file->f_op->mmap)
+		return -ENODEV;
+
+	return file->f_op->mmap(file, vma);
+}
+
+static int ovl_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+{
+	int ret;
+
+	if (likely(ovl_file_is_lower(file))) {
+		const struct file_operations *f_op = ovl_orig_fops(file);
+
+		return f_op ? f_op->fsync(file, start, end, datasync) : -EIO;
+	}
+	file = filp_clone_open(file);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+
+	ret = vfs_fsync_range(file, start, end, datasync);
+	fput(file);
+
+	return ret;
+}
+
+static struct ovl_fops *ovl_fops_find(const struct file_operations *orig)
+{
+	struct ovl_fops *ofop;
+
+	hash_for_each_possible_rcu(ovl_fops_htable, ofop, entry, (long) orig) {
+		if (ofop->orig_fops == orig)
+			return ofop;
+	}
+	return NULL;
+}
+
+static struct ovl_fops *ovl_fops_get(struct file *file)
+{
+	const struct file_operations *orig = file->f_op;
+	struct ovl_fops *ofop = ovl_fops_find(orig);
+
+	if (likely(ofop))
+		return ofop;
+
+	mutex_lock(&ovl_fops_mutex);
+	ofop = ovl_fops_find(orig);
+	if (ofop)
+		goto out_unlock;
+
+	ofop = kzalloc(sizeof(struct ovl_fops), GFP_KERNEL);
+	if (!ofop)
+		goto out_unlock;
+
+	/*
+	 * FS don't usually fill in fops->owner, so grab ref to filesystem's
+	 * module as well.
+	 */
+	ofop->owner = file_inode(file)->i_sb->s_type->owner;
+	__module_get(ofop->owner);
+
+	ofop->magic = OVL_FOPS_MAGIC;
+	ofop->orig_fops = fops_get(orig);
+
+	/* By default don't intercept: */
+	ofop->fops = *orig;
+
+	/* Intercept these: */
+	if (orig->read_iter)
+		ofop->fops.read_iter = ovl_read_iter;
+	if (orig->mmap)
+		ofop->fops.mmap = ovl_mmap;
+	if (orig->fsync)
+		ofop->fops.fsync = ovl_fsync;
+
+	/*
+	 * These should be intercepted, but they are very unlikely to be
+	 * a problem in practice.  Leave them alone for now:
+	 *
+	 * - copy_file_range
+	 * - clone_file_range
+	 * - dedupe_file_range
+	 *
+	 * Don't intercept these:
+	 *
+	 * - llseek
+	 * - unlocked_ioctl
+	 * - compat_ioctl
+	 * - flush
+	 * - release
+	 * - get_unmapped_area
+	 * - check_flags
+	 *
+	 * These will never be called on R/O file descriptors:
+	 *
+	 * - write
+	 * - write_iter
+	 * - splice_write
+	 * - sendpage
+	 * - fallocate
+	 *
+	 * Locking operations are already intercepted by vfs for ovl:
+	 *
+	 * - lock
+	 * - flock
+	 * - setlease
+	 */
+
+	/* splice_read should be generic_file_splice_read */
+	WARN_ON(orig->splice_read != generic_file_splice_read);
+
+	/* These make no sense for "normal" files: */
+	WARN_ON(orig->read);
+	WARN_ON(orig->iterate);
+	WARN_ON(orig->iterate_shared);
+	WARN_ON(orig->poll);
+	WARN_ON(orig->fasync);
+	WARN_ON(orig->show_fdinfo);
+
+	hash_add_rcu(ovl_fops_htable, &ofop->entry, (long) orig);
+
+out_unlock:
+	mutex_unlock(&ovl_fops_mutex);
+
+	return ofop;
+}
+
+static int ovl_open(struct inode *inode, struct file *file)
+{
+	int ret = 0;
+	struct ovl_fops *ofop;
+	bool isupper = OVL_TYPE_UPPER(ovl_path_type(file->f_path.dentry));
+
+	/* Want fops from real inode */
+	replace_fops(file, inode->i_fop);
+	if (file->f_op->open)
+		ret = file->f_op->open(inode, file);
+
+	/* No need to override fops for upper */
+	if (isupper || ret)
+		return ret;
+
+	ofop = ovl_fops_get(file);
+	if (unlikely(!ofop)) {
+		if (file->f_op->release)
+			file->f_op->release(inode, file);
+		return -ENOMEM;
+	}
+	replace_fops(file, &ofop->fops);
+
+	return 0;
+}
+
+static const struct file_operations ovl_file_operations = {
+	.open		= ovl_open,
+};
+
+static void ovl_fill_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
 	inode->i_ino = get_next_ino();
 	inode->i_mode = mode;
@@ -363,8 +549,12 @@ static void ovl_fill_inode(struct inode *inode, umode_t mode)
 	inode->i_acl = inode->i_default_acl = ACL_DONT_CACHE;
 #endif
 
-	mode &= S_IFMT;
-	switch (mode) {
+	switch (mode & S_IFMT) {
+	case S_IFREG:
+		inode->i_op = &ovl_file_inode_operations;
+		inode->i_fop = &ovl_file_operations;
+		break;
+
 	case S_IFDIR:
 		inode->i_op = &ovl_dir_inode_operations;
 		inode->i_fop = &ovl_dir_operations;
@@ -375,26 +565,19 @@ static void ovl_fill_inode(struct inode *inode, umode_t mode)
 		break;
 
 	default:
-		WARN(1, "illegal file type: %i\n", mode);
-		/* Fall through */
-
-	case S_IFREG:
-	case S_IFSOCK:
-	case S_IFBLK:
-	case S_IFCHR:
-	case S_IFIFO:
 		inode->i_op = &ovl_file_inode_operations;
+		init_special_inode(inode, mode, rdev);
 		break;
 	}
 }
 
-struct inode *ovl_new_inode(struct super_block *sb, umode_t mode)
+struct inode *ovl_new_inode(struct super_block *sb, umode_t mode, dev_t rdev)
 {
 	struct inode *inode;
 
 	inode = new_inode(sb);
 	if (inode)
-		ovl_fill_inode(inode, mode);
+		ovl_fill_inode(inode, mode, rdev);
 
 	return inode;
 }
@@ -418,7 +601,7 @@ struct inode *ovl_get_inode(struct super_block *sb, struct inode *realinode)
 	inode = iget5_locked(sb, (unsigned long) realinode,
 			     ovl_inode_test, ovl_inode_set, realinode);
 	if (inode && inode->i_state & I_NEW) {
-		ovl_fill_inode(inode, realinode->i_mode);
+		ovl_fill_inode(inode, realinode->i_mode, realinode->i_rdev);
 		set_nlink(inode, realinode->i_nlink);
 		unlock_new_inode(inode);
 	}
