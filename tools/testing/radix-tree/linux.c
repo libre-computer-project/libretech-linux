@@ -9,6 +9,7 @@
 #include <urcu/uatomic.h>
 
 int nr_allocated;
+int preempt_count;
 
 void *mempool_alloc(mempool_t *pool, int gfp_mask)
 {
@@ -33,7 +34,12 @@ mempool_t *mempool_create(int min_nr, mempool_alloc_t *alloc_fn,
 
 void *kmem_cache_alloc(struct kmem_cache *cachep, int flags)
 {
-	void *ret = malloc(cachep->size);
+	void *ret;
+
+	if (flags & __GFP_NOWARN)
+		return NULL;
+
+	ret = malloc(cachep->size);
 	if (cachep->ctor)
 		cachep->ctor(ret);
 	uatomic_inc(&nr_allocated);
@@ -46,6 +52,21 @@ void kmem_cache_free(struct kmem_cache *cachep, void *objp)
 	uatomic_dec(&nr_allocated);
 	memset(objp, 0, cachep->size);
 	free(objp);
+}
+
+void *kmalloc(size_t size, gfp_t gfp)
+{
+	void *ret = malloc(size);
+	uatomic_inc(&nr_allocated);
+	return ret;
+}
+
+void kfree(void *p)
+{
+	if (!p)
+		return;
+	uatomic_dec(&nr_allocated);
+	free(p);
 }
 
 struct kmem_cache *
