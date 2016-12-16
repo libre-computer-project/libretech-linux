@@ -235,6 +235,7 @@ static inline void play_dead(void)
 
 void arch_cpu_idle_enter(void)
 {
+	tsc_verify_tsc_adjust();
 	local_touch_nmi();
 }
 
