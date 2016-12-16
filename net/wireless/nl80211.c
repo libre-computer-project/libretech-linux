@@ -6775,13 +6775,10 @@ nl80211_parse_sched_scan_plans(struct wiphy *wiphy, int n_plans,
 
 		/*
 		 * If scan plans are not specified,
-		 * %NL80211_ATTR_SCHED_SCAN_INTERVAL must be specified. In this
+		 * %NL80211_ATTR_SCHED_SCAN_INTERVAL will be specified. In this
 		 * case one scan plan will be set with the specified scan
 		 * interval and infinite number of iterations.
 		 */
-		if (!attrs[NL80211_ATTR_SCHED_SCAN_INTERVAL])
-			return -EINVAL;
-
 		interval = nla_get_u32(attrs[NL80211_ATTR_SCHED_SCAN_INTERVAL]);
 		if (!interval)
 			return -EINVAL;
@@ -11806,9 +11803,6 @@ static int nl80211_set_multicast_to_unicast(struct sk_buff *skb,
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	const struct nlattr *nla;
 	bool enabled;
-
-	if (netif_running(dev))
-		return -EBUSY;
 
 	if (!rdev->ops->set_multicast_to_unicast)
 		return -EOPNOTSUPP;
