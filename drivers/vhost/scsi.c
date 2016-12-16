@@ -1748,7 +1748,6 @@ out:
 static int vhost_scsi_make_nexus(struct vhost_scsi_tpg *tpg,
 				const char *name)
 {
-	struct se_portal_group *se_tpg;
 	struct vhost_scsi_nexus *tv_nexus;
 
 	mutex_lock(&tpg->tv_tpg_mutex);
@@ -1757,7 +1756,6 @@ static int vhost_scsi_make_nexus(struct vhost_scsi_tpg *tpg,
 		pr_debug("tpg->tpg_nexus already exists\n");
 		return -EEXIST;
 	}
-	se_tpg = &tpg->se_tpg;
 
 	tv_nexus = kzalloc(sizeof(struct vhost_scsi_nexus), GFP_KERNEL);
 	if (!tv_nexus) {
