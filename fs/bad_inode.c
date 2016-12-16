@@ -78,12 +78,6 @@ static int bad_inode_rename2(struct inode *old_dir, struct dentry *old_dentry,
 	return -EIO;
 }
 
-static int bad_inode_readlink(struct dentry *dentry, char __user *buffer,
-		int buflen)
-{
-	return -EIO;
-}
-
 static int bad_inode_permission(struct inode *inode, int mask)
 {
 	return -EIO;
@@ -106,6 +100,50 @@ static ssize_t bad_inode_listxattr(struct dentry *dentry, char *buffer,
 	return -EIO;
 }
 
+static const char *bad_inode_get_link(struct dentry *dentry,
+				      struct inode *inode,
+				      struct delayed_call *done)
+{
+	return ERR_PTR(-EIO);
+}
+
+static struct posix_acl *bad_inode_get_acl(struct inode *inode, int type)
+{
+	return ERR_PTR(-EIO);
+}
+
+static int bad_inode_fiemap(struct inode *inode,
+			    struct fiemap_extent_info *fieinfo, u64 start,
+			    u64 len)
+{
+	return -EIO;
+}
+
+static int bad_inode_update_time(struct inode *inode, struct timespec *time,
+				 int flags)
+{
+	return -EIO;
+}
+
+static int bad_inode_atomic_open(struct inode *inode, struct dentry *dentry,
+				 struct file *file, unsigned int open_flag,
+				 umode_t create_mode, int *opened)
+{
+	return -EIO;
+}
+
+static int bad_inode_tmpfile(struct inode *inode, struct dentry *dentry,
+			     umode_t mode)
+{
+	return -EIO;
+}
+
+static int bad_inode_set_acl(struct inode *inode, struct posix_acl *acl,
+			     int type)
+{
+	return -EIO;
+}
+
 static const struct inode_operations bad_inode_ops =
 {
 	.create		= bad_inode_create,
@@ -117,15 +155,18 @@ static const struct inode_operations bad_inode_ops =
 	.rmdir		= bad_inode_rmdir,
 	.mknod		= bad_inode_mknod,
 	.rename		= bad_inode_rename2,
-	.readlink	= bad_inode_readlink,
-	/* follow_link must be no-op, otherwise unmounting this inode
-	   won't work */
-	/* put_link returns void */
-	/* truncate returns void */
+	.readlink	= bad_inode_get_link,
 	.permission	= bad_inode_permission,
 	.getattr	= bad_inode_getattr,
 	.setattr	= bad_inode_setattr,
 	.listxattr	= bad_inode_listxattr,
+	.get_link	= bad_inode_get_link,
+	.get_acl	= bad_inode_get_acl,
+	.fiemap		= bad_inode_fiemap,
+	.update_time	= bad_inode_update_time,
+	.atomic_open	= bad_inode_atomic_open,
+	.tmpfile	= bad_inode_tmpfile,
+	.set_acl	= bad_inode_set_acl,
 };
 
 
