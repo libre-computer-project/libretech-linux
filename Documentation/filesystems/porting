@@ -600,3 +600,6 @@ in your dentry operations instead.
 [recommended]
 	->readlink is optional for symlinks.  Don't set, unless filesystem needs
 	to fake something for readlink(2).
+--
+[mandatory]
+	->readlink signature is now the same as ->get_link.
