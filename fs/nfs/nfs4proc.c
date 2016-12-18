@@ -1088,12 +1088,22 @@ static void update_changeattr(struct inode *dir, struct nfs4_change_info *cinfo)
 	struct nfs_inode *nfsi = NFS_I(dir);
 
 	spin_lock(&dir->i_lock);
+	if (dir->i_version == cinfo->after)
+		goto out;
 	nfsi->cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA;
-	if (!cinfo->atomic || cinfo->before != dir->i_version)
+	if (cinfo->atomic && cinfo->before == dir->i_version) {
+		nfsi->cache_validity &= ~NFS_INO_REVAL_PAGECACHE;
+		nfsi->attrtimeo_timestamp = jiffies;
+	} else {
 		nfs_force_lookup_revalidate(dir);
+		if (cinfo->before != dir->i_version)
+			nfsi->cache_validity |= NFS_INO_INVALID_ACCESS |
+				NFS_INO_INVALID_ACL;
+	}
 	dir->i_version = cinfo->after;
 	nfsi->attr_gencount = nfs_inc_attr_generation_counter();
 	nfs_fscache_invalidate(dir);
+out:
 	spin_unlock(&dir->i_lock);
 }
 
@@ -5692,6 +5702,7 @@ static void nfs4_delegreturn_release(void *calldata)
 		if (data->lr.roc)
 			pnfs_roc_release(&data->lr.arg, &data->lr.res,
 					data->res.lr_ret);
+		nfs_post_op_update_inode_force_wcc(inode, &data->fattr);
 		nfs_iput_and_deactive(inode);
 	}
 	kfree(calldata);
@@ -5780,10 +5791,6 @@ static int _nfs4_proc_delegreturn(struct inode *inode, struct rpc_cred *cred, co
 	if (status != 0)
 		goto out;
 	status = data->rpc_status;
-	if (status == 0)
-		nfs_post_op_update_inode_force_wcc(inode, &data->fattr);
-	else
-		nfs_refresh_inode(inode, &data->fattr);
 out:
 	rpc_put_task(task);
 	return status;
