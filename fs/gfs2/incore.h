@@ -818,6 +818,8 @@ struct gfs2_sbd {
 	struct list_head sd_ail1_list;
 	struct list_head sd_ail2_list;
 
+	unsigned int sd_log_rsrv_max;
+
 	/* For quiescing the filesystem */
 	struct gfs2_holder sd_freeze_gh;
 	atomic_t sd_freeze_state;
