@@ -49,7 +49,7 @@ unsigned long *watchdog_cpumask_bits = cpumask_bits(&watchdog_cpumask);
 #define for_each_watchdog_cpu(cpu) \
 	for_each_cpu_and((cpu), cpu_online_mask, &watchdog_cpumask)
 
-atomic_t park_in_progress = ATOMIC_INIT(0);
+atomic_t watchdog_park_in_progress = ATOMIC_INIT(0);
 
 /*
  * The 'watchdog_running' variable is set to 1 when the watchdog threads
@@ -262,7 +262,7 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 	int duration;
 	int softlockup_all_cpu_backtrace = sysctl_softlockup_all_cpu_backtrace;
 
-	if (atomic_read(&park_in_progress) != 0)
+	if (atomic_read(&watchdog_park_in_progress) != 0)
 		return HRTIMER_NORESTART;
 
 	/* kick the hardlockup detector */
@@ -472,7 +472,7 @@ static int watchdog_park_threads(void)
 {
 	int cpu, ret = 0;
 
-	atomic_set(&park_in_progress, 1);
+	atomic_set(&watchdog_park_in_progress, 1);
 
 	for_each_watchdog_cpu(cpu) {
 		ret = kthread_park(per_cpu(softlockup_watchdog, cpu));
@@ -480,7 +480,7 @@ static int watchdog_park_threads(void)
 			break;
 	}
 
-	atomic_set(&park_in_progress, 0);
+	atomic_set(&watchdog_park_in_progress, 0);
 
 	return ret;
 }
