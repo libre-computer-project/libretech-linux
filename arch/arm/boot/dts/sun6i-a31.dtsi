@@ -582,6 +582,11 @@
 				drive-strength = <40>;
 			};
 
+			spdif_pins_a: spdif@0 {
+				pins = "PH28";
+				function = "spdif";
+			};
+
 			uart0_pins_a: uart0@0 {
 				pins = "PH20", "PH21";
 				function = "uart0";
