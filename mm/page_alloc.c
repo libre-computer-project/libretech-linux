@@ -2603,6 +2603,9 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z,
 	if (z->node == local_nid) {
 		__inc_zone_state(z, NUMA_HIT);
 		__inc_zone_state(z, local_stat);
+	} else if (z->node == preferred_zone->node) {
+		__inc_zone_state(z, NUMA_HIT);
+		__inc_zone_state(z, NUMA_OTHER);
 	} else {
 		__inc_zone_state(z, NUMA_MISS);
 		__inc_zone_state(preferred_zone, NUMA_FOREIGN);
