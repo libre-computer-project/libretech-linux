@@ -148,17 +148,16 @@ EXPORT_SYMBOL(idr_get_next);
 void *idr_replace(struct idr *idr, void *ptr, int id)
 {
 	struct radix_tree_node *node;
-	void **slot;
+	void **slot = NULL;
 	void *entry;
 
 	if (id < 0)
 		return ERR_PTR(-EINVAL);
-	if (!ptr || radix_tree_is_internal_node(ptr))
+	if (radix_tree_is_internal_node(ptr))
 		return ERR_PTR(-EINVAL);
 
 	entry = __radix_tree_lookup(&idr->idr_rt, id, &node, &slot);
-
-	if (!entry)
+	if (!slot || radix_tree_tag_get(&idr->idr_rt, id, IDR_FREE))
 		return ERR_PTR(-ENOENT);
 
 	__radix_tree_replace(&idr->idr_rt, node, slot, ptr, NULL, NULL);
