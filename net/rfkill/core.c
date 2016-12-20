@@ -478,10 +478,7 @@ bool rfkill_set_hw_state(struct rfkill *rfkill, bool blocked)
 
 	rfkill_led_trigger_event(rfkill);
 
-	if (!rfkill->registered)
-		return ret;
-
-	if (prev != blocked)
+	if (rfkill->registered && prev != blocked)
 		schedule_work(&rfkill->uevent_work);
 
 	return ret;
@@ -1266,24 +1263,27 @@ static int __init rfkill_init(void)
 
 	error = class_register(&rfkill_class);
 	if (error)
-		goto out;
+		goto error_class;
 
 	error = misc_register(&rfkill_miscdev);
-	if (error) {
-		class_unregister(&rfkill_class);
-		goto out;
-	}
+	if (error)
+		goto error_misc;
 
 #ifdef CONFIG_RFKILL_INPUT
 	error = rfkill_handler_init();
-	if (error) {
-		misc_deregister(&rfkill_miscdev);
-		class_unregister(&rfkill_class);
-		goto out;
-	}
+	if (error)
+		goto error_input;
 #endif
 
- out:
+	return 0;
+
+#ifdef CONFIG_RFKILL_INPUT
+error_input:
+	misc_deregister(&rfkill_miscdev);
+#endif
+error_misc:
+	class_unregister(&rfkill_class);
+error_class:
 	return error;
 }
 subsys_initcall(rfkill_init);
