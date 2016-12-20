@@ -5,6 +5,7 @@
 #include <linux/magic.h>
 #include <linux/ktime.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <linux/user_namespace.h>
 #include <linux/nsfs.h>
 
@@ -177,14 +178,22 @@ static long ns_ioctl(struct file *filp, unsigned int ioctl,
 	}
 }
 
-int ns_get_name(char *buf, size_t size, struct task_struct *task,
-			const struct proc_ns_operations *ns_ops)
+char *ns_get_name(struct task_struct *task,
+		  const struct proc_ns_operations *ns_ops)
 {
 	struct ns_common *ns;
-	int res = -ENOENT;
+	char *res = ERR_PTR(-ENOENT);
+
 	ns = ns_ops->get(task);
 	if (ns) {
-		res = snprintf(buf, size, "%s:[%u]", ns_ops->name, ns->inum);
+		/* 10 for unsigned int in decimal + 3 extra chars + term null */
+		size_t size = strlen(ns_ops->name) + 14;
+
+		res = kmalloc(size, GFP_KERNEL);
+		if (!res)
+			res = ERR_PTR(-ENOMEM);
+		else
+			snprintf(res, size, "%s:[%u]", ns_ops->name, ns->inum);
 		ns_ops->put(ns);
 	}
 	return res;

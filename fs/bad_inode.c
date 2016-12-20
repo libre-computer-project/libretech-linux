@@ -78,12 +78,6 @@ static int bad_inode_rename2(struct inode *old_dir, struct dentry *old_dentry,
 	return -EIO;
 }
 
-static int bad_inode_readlink(struct dentry *dentry, char __user *buffer,
-		int buflen)
-{
-	return -EIO;
-}
-
 static int bad_inode_permission(struct inode *inode, int mask)
 {
 	return -EIO;
@@ -161,7 +155,7 @@ static const struct inode_operations bad_inode_ops =
 	.rmdir		= bad_inode_rmdir,
 	.mknod		= bad_inode_mknod,
 	.rename		= bad_inode_rename2,
-	.readlink	= bad_inode_readlink,
+	.readlink	= bad_inode_get_link,
 	.permission	= bad_inode_permission,
 	.getattr	= bad_inode_getattr,
 	.setattr	= bad_inode_setattr,
