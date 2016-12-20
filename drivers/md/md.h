@@ -702,4 +702,6 @@ static inline int mddev_is_clustered(struct mddev *mddev)
 {
 	return mddev->cluster_info && mddev->bitmap_info.nodes > 1;
 }
+
+extern void md_writesame_setup(struct mddev *mddev, struct bio *bio);
 #endif /* _MD_MD_H */
