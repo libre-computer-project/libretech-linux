@@ -16,8 +16,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef __ASM_SETUP_H
-#define __ASM_SETUP_H
+#ifndef _UAPI__ASM_SETUP_H
+#define _UAPI__ASM_SETUP_H
 
 #include <linux/types.h>
 
