@@ -180,11 +180,11 @@ void dwc3_gadget_giveback(struct dwc3_ep *dep, struct dwc3_request *req,
 	if (req->request.status == -EINPROGRESS)
 		req->request.status = status;
 
-	if (dwc->ep0_bounced && dep->number == 0)
+	if (dwc->ep0_bounced && dep->number <= 1)
 		dwc->ep0_bounced = false;
-	else
-		usb_gadget_unmap_request_by_dev(dwc->sysdev,
-				&req->request, req->direction);
+
+	usb_gadget_unmap_request_by_dev(dwc->sysdev,
+			&req->request, req->direction);
 
 	trace_dwc3_gadget_giveback(req);
 
@@ -2232,9 +2232,14 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 
 	dep = dwc->eps[epnum];
 
-	if (!(dep->flags & DWC3_EP_ENABLED) &&
-	    !(dep->flags & DWC3_EP_END_TRANSFER_PENDING))
-		return;
+	if (!(dep->flags & DWC3_EP_ENABLED)) {
+		if (!(dep->flags & DWC3_EP_END_TRANSFER_PENDING))
+			return;
+
+		/* Handle only EPCMDCMPLT when EP disabled */
+		if (event->endpoint_event != DWC3_DEPEVT_EPCMDCMPLT)
+			return;
+	}
 
 	if (epnum == 0 || epnum == 1) {
 		dwc3_ep0_interrupt(dwc, event);
