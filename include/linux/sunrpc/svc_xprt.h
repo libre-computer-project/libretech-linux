@@ -68,7 +68,6 @@ struct svc_xprt {
 #define XPT_LOCAL	12		/* connection from loopback interface */
 
 	struct svc_serv		*xpt_server;	/* service for transport */
-	atomic_t    	    	xpt_reserved;	/* space on outq that is rsvd */
 	atomic_t		xpt_nr_rqsts;	/* Number of requests */
 	struct mutex		xpt_mutex;	/* to serialize sending data */
 	spinlock_t		xpt_lock;	/* protects sk_deferred
