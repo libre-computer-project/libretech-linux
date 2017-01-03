@@ -52,8 +52,8 @@ prototypes:
 	int (*mknod) (struct inode *,struct dentry *,umode_t,dev_t);
 	int (*rename) (struct inode *, struct dentry *,
 			struct inode *, struct dentry *, unsigned int);
-	int (*readlink) (struct dentry *, char __user *,int);
-	const char *(*get_link) (struct dentry *, struct inode *, void **);
+	const char * (*get_link) (struct dentry *, struct inode *, struct delayed_call *);
+	const char * (*readlink) (struct dentry *, struct inode *, struct delayed_call *);
 	void (*truncate) (struct inode *);
 	int (*permission) (struct inode *, int, unsigned int);
 	int (*get_acl)(struct inode *, int);
@@ -79,8 +79,8 @@ mkdir:		yes
 unlink:		yes (both)
 rmdir:		yes (both)	(see below)
 rename:	yes (all)	(see below)
-readlink:	no
 get_link:	no
+readlink:	no
 setattr:	yes
 permission:	no (may not block if called in rcu-walk mode)
 get_acl:	no
