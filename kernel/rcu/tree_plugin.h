@@ -680,6 +680,17 @@ void synchronize_rcu(void)
 EXPORT_SYMBOL_GPL(synchronize_rcu);
 
 /**
+ * rcu_trivial_gp - Are RCU grace periods trivially zero cost?
+ *
+ * Returns true if RCU grace periods are currently zero cost, which
+ * they are during boot.
+ */
+bool rcu_trivial_gp(void)
+{
+	return !rcu_scheduler_active;
+}
+
+/**
  * rcu_barrier - Wait until all in-flight call_rcu() callbacks complete.
  *
  * Note that this primitive does not necessarily wait for an RCU grace period
@@ -1643,7 +1654,7 @@ static void print_cpu_stall_info(struct rcu_state *rsp, int cpu)
 	       "o."[!!(rdp->grpmask & rdp->mynode->qsmaskinit)],
 	       "N."[!!(rdp->grpmask & rdp->mynode->qsmaskinitnext)],
 	       ticks_value, ticks_title,
-	       atomic_read(&rdtp->dynticks) & 0xfff,
+	       rcu_dynticks_snap(rdtp) & 0xfff,
 	       rdtp->dynticks_nesting, rdtp->dynticks_nmi_nesting,
 	       rdp->softirq_snap, kstat_softirqs_cpu(RCU_SOFTIRQ, cpu),
 	       READ_ONCE(rsp->n_force_qs) - rsp->n_force_qs_gpstart,

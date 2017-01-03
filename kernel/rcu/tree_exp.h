@@ -20,16 +20,26 @@
  * Authors: Paul E. McKenney <paulmck@linux.vnet.ibm.com>
  */
 
-/* Wrapper functions for expedited grace periods.  */
+/*
+ * Record the start of an expedited grace period.
+ */
 static void rcu_exp_gp_seq_start(struct rcu_state *rsp)
 {
 	rcu_seq_start(&rsp->expedited_sequence);
 }
+
+/*
+ * Record the end of an expedited grace period.
+ */
 static void rcu_exp_gp_seq_end(struct rcu_state *rsp)
 {
 	rcu_seq_end(&rsp->expedited_sequence);
 	smp_mb(); /* Ensure that consecutive grace periods serialize. */
 }
+
+/*
+ * Take a snapshot of the expedited-grace-period counter.
+ */
 static unsigned long rcu_exp_gp_seq_snap(struct rcu_state *rsp)
 {
 	unsigned long s;
@@ -39,6 +49,12 @@ static unsigned long rcu_exp_gp_seq_snap(struct rcu_state *rsp)
 	trace_rcu_exp_grace_period(rsp->name, s, TPS("snap"));
 	return s;
 }
+
+/*
+ * Given a counter snapshot from rcu_exp_gp_seq_snap(), return true
+ * if a full expedited grace period has elapsed since that snapshot
+ * was taken.
+ */
 static bool rcu_exp_gp_seq_done(struct rcu_state *rsp, unsigned long s)
 {
 	return rcu_seq_done(&rsp->expedited_sequence, s);
@@ -356,12 +372,11 @@ static void sync_rcu_exp_select_cpus(struct rcu_state *rsp,
 		mask_ofl_test = 0;
 		for_each_leaf_node_possible_cpu(rnp, cpu) {
 			struct rcu_data *rdp = per_cpu_ptr(rsp->rda, cpu);
-			struct rcu_dynticks *rdtp = &per_cpu(rcu_dynticks, cpu);
 
 			rdp->exp_dynticks_snap =
-				atomic_add_return(0, &rdtp->dynticks);
+				rcu_dynticks_snap(rdp->dynticks);
 			if (raw_smp_processor_id() == cpu ||
-			    !(rdp->exp_dynticks_snap & 0x1) ||
+			    rcu_dynticks_in_eqs(rdp->exp_dynticks_snap) ||
 			    !(rnp->qsmaskinitnext & rdp->grpmask))
 				mask_ofl_test |= rdp->grpmask;
 		}
@@ -380,13 +395,12 @@ static void sync_rcu_exp_select_cpus(struct rcu_state *rsp,
 		for_each_leaf_node_possible_cpu(rnp, cpu) {
 			unsigned long mask = leaf_node_cpu_bit(rnp, cpu);
 			struct rcu_data *rdp = per_cpu_ptr(rsp->rda, cpu);
-			struct rcu_dynticks *rdtp = &per_cpu(rcu_dynticks, cpu);
 
 			if (!(mask_ofl_ipi & mask))
 				continue;
 retry_ipi:
-			if (atomic_add_return(0, &rdtp->dynticks) !=
-			    rdp->exp_dynticks_snap) {
+			if (rcu_dynticks_in_eqs_since(rdp->dynticks,
+						      rdp->exp_dynticks_snap)) {
 				mask_ofl_test |= mask;
 				continue;
 			}
