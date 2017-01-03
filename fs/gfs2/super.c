@@ -363,6 +363,8 @@ int gfs2_jdesc_check(struct gfs2_jdesc *jd)
 		return -EIO;
 
 	jd->jd_blocks = size >> sdp->sd_sb.sb_bsize_shift;
+	/* Allow transactions to reserve 3/4 of the journal at most */
+	sdp->sd_log_rsrv_max = (jd->jd_blocks >> 1) + (jd->jd_blocks >> 2);
 
 	if (gfs2_write_alloc_required(ip, 0, size)) {
 		gfs2_consist_inode(ip);
