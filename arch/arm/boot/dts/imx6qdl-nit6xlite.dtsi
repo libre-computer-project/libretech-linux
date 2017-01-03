@@ -209,7 +209,6 @@
 };
 
 &ecspi1 {
-	fsl,spi-num-chipselects = <1>;
 	cs-gpios = <&gpio3 19 GPIO_ACTIVE_LOW>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_ecspi1>;
@@ -515,8 +514,6 @@
 	status = "okay";
 
 	lvds-channel@0 {
-		fsl,data-mapping = "spwg";
-		fsl,data-width = <18>;
 		status = "okay";
 
 		port@4 {
