@@ -1274,7 +1274,9 @@ static int dyntick_save_progress_counter(struct rcu_data *rdp,
 static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 				    bool *isidle, unsigned long *maxj)
 {
+	unsigned long jtsq;
 	int *rcrmp;
+	unsigned long rjtsc;
 	struct rcu_node *rnp;
 
 	/*
@@ -1291,6 +1293,17 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 		return 1;
 	}
 
+	/* Compute and saturate jiffies_till_sched_qs. */
+	jtsq = jiffies_till_sched_qs;
+	rjtsc = rcu_jiffies_till_stall_check();
+	if (jtsq > rjtsc / 2) {
+		WRITE_ONCE(jiffies_till_sched_qs, rjtsc);
+		jtsq = rjtsc / 2;
+	} else if (jtsq < 1) {
+		WRITE_ONCE(jiffies_till_sched_qs, 1);
+		jtsq = 1;
+	}
+
 	/*
 	 * Has this CPU encountered a cond_resched_rcu_qs() since the
 	 * beginning of the grace period?  For this to be the case,
@@ -1298,7 +1311,8 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 	 * might not be the case for nohz_full CPUs looping in the kernel.
 	 */
 	rnp = rdp->mynode;
-	if (READ_ONCE(rdp->rcu_qs_ctr_snap) != per_cpu(rcu_qs_ctr, rdp->cpu) &&
+	if (time_after(jiffies, rdp->rsp->gp_start + jtsq) &&
+	    READ_ONCE(rdp->rcu_qs_ctr_snap) != per_cpu(rcu_qs_ctr, rdp->cpu) &&
 	    READ_ONCE(rdp->gpnum) == rnp->gpnum && !rdp->gpwrap) {
 		trace_rcu_fqs(rdp->rsp->name, rdp->gpnum, rdp->cpu, TPS("rqc"));
 		return 1;
@@ -1333,9 +1347,8 @@ static int rcu_implicit_dynticks_qs(struct rcu_data *rdp,
 	 * warning delay.
 	 */
 	rcrmp = &per_cpu(rcu_sched_qs_mask, rdp->cpu);
-	if (ULONG_CMP_GE(jiffies,
-			 rdp->rsp->gp_start + jiffies_till_sched_qs) ||
-	    ULONG_CMP_GE(jiffies, rdp->rsp->jiffies_resched)) {
+	if (time_after(jiffies, rdp->rsp->gp_start + jtsq) ||
+	    time_after(jiffies, rdp->rsp->jiffies_resched)) {
 		if (!(READ_ONCE(*rcrmp) & rdp->rsp->flavor_mask)) {
 			WRITE_ONCE(rdp->cond_resched_completed,
 				   READ_ONCE(rdp->mynode->completed));
