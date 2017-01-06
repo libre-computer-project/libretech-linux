@@ -3796,7 +3796,7 @@ xfs_bmap_btalloc(
 		 */
 		args.type = atype;
 		args.fsbno = ap->blkno;
-		args.alignment = 0;
+		args.alignment = 1;
 		if ((error = xfs_alloc_vextent(&args)))
 			return error;
 	}
