@@ -487,7 +487,8 @@ static void btrfs_drop_pages(struct page **pages, size_t num_pages)
  */
 int btrfs_dirty_pages(struct inode *inode, struct page **pages,
 		      size_t num_pages, loff_t pos, size_t write_bytes,
-		      struct extent_state **cached)
+		      struct extent_state **cached,
+		      enum btrfs_metadata_reserve_type reserve_type)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	int err = 0;
@@ -504,7 +505,7 @@ int btrfs_dirty_pages(struct inode *inode, struct page **pages,
 
 	end_of_last_block = start_pos + num_bytes - 1;
 	err = btrfs_set_extent_delalloc(inode, start_pos, end_of_last_block,
-					cached, 0);
+					cached, reserve_type);
 	if (err)
 		return err;
 
@@ -1537,6 +1538,7 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 	bool only_release_metadata = false;
 	bool force_page_uptodate = false;
 	bool need_unlock;
+	enum btrfs_metadata_reserve_type reserve_type = BTRFS_RESERVE_NORMAL;
 
 	nrptrs = min(DIV_ROUND_UP(iov_iter_count(i), PAGE_SIZE),
 			PAGE_SIZE / (sizeof(struct page *)));
@@ -1545,6 +1547,9 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 	pages = kmalloc_array(nrptrs, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
+
+	if (inode_need_compress(inode))
+		reserve_type = BTRFS_RESERVE_COMPRESS;
 
 	while (iov_iter_count(i) > 0) {
 		size_t offset = pos & (PAGE_SIZE - 1);
@@ -1599,7 +1604,8 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 			}
 		}
 
-		ret = btrfs_delalloc_reserve_metadata(inode, reserve_bytes);
+		ret = btrfs_delalloc_reserve_metadata(inode, reserve_bytes,
+						      reserve_type);
 		if (ret) {
 			if (!only_release_metadata)
 				btrfs_free_reserved_data_space(inode, pos,
@@ -1678,7 +1684,8 @@ again:
 			}
 			if (only_release_metadata) {
 				btrfs_delalloc_release_metadata(inode,
-								release_bytes);
+								release_bytes,
+								reserve_type);
 			} else {
 				u64 __pos;
 
@@ -1686,7 +1693,8 @@ again:
 						   fs_info->sectorsize) +
 					(dirty_pages << PAGE_SHIFT);
 				btrfs_delalloc_release_space(inode, __pos,
-							     release_bytes);
+							     release_bytes,
+							     reserve_type);
 			}
 		}
 
@@ -1695,7 +1703,8 @@ again:
 
 		if (copied > 0)
 			ret = btrfs_dirty_pages(inode, pages, dirty_pages,
-						pos, copied, NULL);
+						pos, copied, NULL,
+						reserve_type);
 		if (need_unlock)
 			unlock_extent_cached(&BTRFS_I(inode)->io_tree,
 					     lockstart, lockend, &cached_state,
@@ -1738,11 +1747,12 @@ again:
 	if (release_bytes) {
 		if (only_release_metadata) {
 			btrfs_end_write_no_snapshoting(root);
-			btrfs_delalloc_release_metadata(inode, release_bytes);
+			btrfs_delalloc_release_metadata(inode, release_bytes,
+							reserve_type);
 		} else {
 			btrfs_delalloc_release_space(inode,
 						round_down(pos, fs_info->sectorsize),
-						release_bytes);
+						release_bytes, reserve_type);
 		}
 	}
 
