@@ -71,6 +71,7 @@ struct btrfs_dio_data {
 	u64 reserve;
 	u64 unsubmitted_oe_range_start;
 	u64 unsubmitted_oe_range_end;
+	int overwrite;
 };
 
 static const struct inode_operations btrfs_dir_inode_operations;
@@ -4505,8 +4506,19 @@ search_again:
 		if (found_type > min_type) {
 			del_item = 1;
 		} else {
-			if (item_end < new_size)
+			if (item_end < new_size) {
+				/*
+				 * With NO_HOLES mode, for the following mapping
+				 *
+				 * [0-4k][hole][8k-12k]
+				 *
+				 * if truncating isize down to 6k, it ends up
+				 * isize being 8k.
+				 */
+				if (btrfs_fs_incompat(root->fs_info, NO_HOLES))
+					last_size = new_size;
 				break;
+			}
 			if (found_key.offset >= new_size)
 				del_item = 1;
 			else
@@ -4693,6 +4705,13 @@ error:
 		btrfs_ordered_update_i_size(inode, last_size, NULL);
 
 	btrfs_free_path(path);
+
+	if (err == 0) {
+		/* only inline file may have last_size != new_size */
+		if (new_size >= fs_info->sectorsize ||
+		    new_size > root->fs_info->max_inline)
+			ASSERT(last_size == new_size);
+	}
 
 	if (be_nice && bytes_deleted > SZ_32M) {
 		unsigned long updates = trans->delayed_ref_updates;
@@ -5078,6 +5097,13 @@ static int btrfs_setsize(struct inode *inode, struct iattr *attr)
 		ret = btrfs_truncate(inode);
 		if (ret && inode->i_nlink) {
 			int err;
+
+			/* To get a stable disk_i_size */
+			err = btrfs_wait_ordered_range(inode, 0, (u64)-1);
+			if (err) {
+				btrfs_orphan_del(NULL, inode);
+				return err;
+			}
 
 			/*
 			 * failed to truncate, disk_i_size is only adjusted down
@@ -7059,7 +7085,7 @@ insert:
 	write_unlock(&em_tree->lock);
 out:
 
-	trace_btrfs_get_extent(root, em);
+	trace_btrfs_get_extent(root, inode, em);
 
 	btrfs_free_path(path);
 	if (trans) {
@@ -7795,7 +7821,7 @@ unlock:
 		 * Need to update the i_size under the extent lock so buffered
 		 * readers will get the updated i_size when we unlock.
 		 */
-		if (start + len > i_size_read(inode))
+		if (!dio_data->overwrite && start + len > i_size_read(inode))
 			i_size_write(inode, start + len);
 
 		adjust_dio_outstanding_extents(inode, dio_data, len);
@@ -8673,6 +8699,7 @@ static ssize_t btrfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 		 * not unlock the i_mutex at this case.
 		 */
 		if (offset + count <= inode->i_size) {
+			dio_data.overwrite = 1;
 			inode_unlock(inode);
 			relock = true;
 		}
@@ -9050,11 +9077,11 @@ again:
 	}
 
 	/*
-	 * XXX - page_mkwrite gets called every time the page is dirtied, even
-	 * if it was already dirty, so for space accounting reasons we need to
-	 * clear any delalloc bits for the range we are fixing to save.  There
-	 * is probably a better way to do this, but for now keep consistent with
-	 * prepare_pages in the normal write path.
+	 * page_mkwrite gets called when the page is firstly dirtied after it's
+	 * faulted in, but write(2) could also dirty a page and set delalloc
+	 * bits, thus in this case for space account reason, we still need to
+	 * clear any delalloc bits within this page range since we have to
+	 * reserve data&meta space before lock_page() (see above comments).
 	 */
 	clear_extent_bit(&BTRFS_I(inode)->io_tree, page_start, end,
 			  EXTENT_DIRTY | EXTENT_DELALLOC |
