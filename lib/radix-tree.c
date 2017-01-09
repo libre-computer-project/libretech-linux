@@ -1949,7 +1949,7 @@ void radix_tree_iter_delete(struct radix_tree_root *root,
 	if (node) {
 		node->slots[iter_offset(iter)] = NULL;
 		node->count--;
-		__radix_tree_delete_node(root, node);
+		__radix_tree_delete_node(root, node, NULL, NULL);
 	} else {
 		root->rnode = NULL;
 	}
