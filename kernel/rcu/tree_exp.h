@@ -621,6 +621,11 @@ void synchronize_sched_expedited(void)
 {
 	struct rcu_state *rsp = &rcu_sched_state;
 
+	RCU_LOCKDEP_WARN(lock_is_held(&rcu_bh_lock_map) ||
+			 lock_is_held(&rcu_lock_map) ||
+			 lock_is_held(&rcu_sched_lock_map),
+			 "Illegal synchronize_sched_expedited() in RCU read-side critical section");
+
 	/* If only one CPU, this is automatically a grace period. */
 	if (rcu_blocking_is_gp())
 		return;
@@ -690,6 +695,10 @@ void synchronize_rcu_expedited(void)
 {
 	struct rcu_state *rsp = rcu_state_p;
 
+	RCU_LOCKDEP_WARN(lock_is_held(&rcu_bh_lock_map) ||
+			 lock_is_held(&rcu_lock_map) ||
+			 lock_is_held(&rcu_sched_lock_map),
+			 "Illegal synchronize_rcu_expedited() in RCU read-side critical section");
 	if (!rcu_scheduler_active)
 		return;
 	_synchronize_rcu_expedited(rsp, sync_rcu_exp_handler);
