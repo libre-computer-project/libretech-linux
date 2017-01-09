@@ -61,6 +61,13 @@ struct dw_hdmi_plat_data {
 	enum drm_mode_status (*mode_valid)(struct drm_connector *connector,
 					   struct drm_display_mode *mode);
 	struct regmap *regm;
+	int (*hdmi_phy_init)(struct dw_hdmi *hdmi,
+			     const struct dw_hdmi_plat_data *data,
+			     struct drm_display_mode *mode);
+	void (*hdmi_phy_disable)(struct dw_hdmi *hdmi,
+				 const struct dw_hdmi_plat_data *data);
+	bool (*hdmi_read_hpd)(struct dw_hdmi *hdmi,
+			      const struct dw_hdmi_plat_data *data);
 };
 
 int dw_hdmi_probe(struct platform_device *pdev,
@@ -70,6 +77,7 @@ void dw_hdmi_unbind(struct device *dev);
 int dw_hdmi_bind(struct platform_device *pdev, struct drm_encoder *encoder,
 		 const struct dw_hdmi_plat_data *plat_data);
 
+void dw_hdmi_setup_rx_sense(struct device *dev, bool hpd, bool rx_sense);
 void dw_hdmi_set_sample_rate(struct dw_hdmi *hdmi, unsigned int rate);
 void dw_hdmi_audio_enable(struct dw_hdmi *hdmi);
 void dw_hdmi_audio_disable(struct dw_hdmi *hdmi);

@@ -1434,9 +1434,18 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi, struct drm_display_mode *mode)
 	hdmi_av_composer(hdmi, mode);
 
 	/* HDMI Initializateion Step B.2 */
-	ret = dw_hdmi_phy_init(hdmi);
-	if (ret)
-		return ret;
+	if (hdmi->plat_data->hdmi_phy_init) {
+		ret = hdmi->plat_data->hdmi_phy_init(hdmi, hdmi->plat_data,
+						     &hdmi->previous_mode);
+		if (ret)
+			return ret;
+
+		hdmi->phy_enabled = true;
+	} else {
+		ret = dw_hdmi_phy_init(hdmi);
+		if (ret)
+			return ret;
+	}
 
 	/* HDMI Initialization Step B.3 */
 	dw_hdmi_enable_video_path(hdmi);
@@ -1551,7 +1560,11 @@ static void dw_hdmi_poweron(struct dw_hdmi *hdmi)
 
 static void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
 {
-	dw_hdmi_phy_disable(hdmi);
+	if (hdmi->phy_enabled && hdmi->plat_data->hdmi_phy_disable) {
+		hdmi->plat_data->hdmi_phy_disable(hdmi, hdmi->plat_data);
+		hdmi->phy_enabled = false;
+	} else
+		dw_hdmi_phy_disable(hdmi);
 	hdmi->bridge_is_on = false;
 }
 
@@ -1593,6 +1606,9 @@ static void dw_hdmi_update_phy_mask(struct dw_hdmi *hdmi)
 {
 	u8 old_mask = hdmi->phy_mask;
 
+	if (hdmi->plat_data && hdmi->plat_data->hdmi_read_hpd)
+		return;
+
 	if (hdmi->force || hdmi->disabled || !hdmi->rxsense)
 		hdmi->phy_mask |= HDMI_PHY_RX_SENSE;
 	else
@@ -1613,6 +1629,11 @@ dw_hdmi_connector_detect(struct drm_connector *connector, bool force)
 	dw_hdmi_update_power(hdmi);
 	dw_hdmi_update_phy_mask(hdmi);
 	mutex_unlock(&hdmi->mutex);
+
+	if (hdmi->plat_data && hdmi->plat_data->hdmi_read_hpd)
+		return hdmi->plat_data->hdmi_read_hpd(hdmi, hdmi->plat_data) ?
+			connector_status_connected :
+			connector_status_disconnected;
 
 	return hdmi_readb(hdmi, HDMI_PHY_STAT0) & HDMI_PHY_HPD ?
 		connector_status_connected : connector_status_disconnected;
@@ -1901,6 +1922,26 @@ static const struct dw_hdmi_phy_data dw_hdmi_phys[] = {
 	}
 };
 
+void dw_hdmi_setup_rx_sense(struct device *dev, bool hpd, bool rx_sense)
+{
+	struct dw_hdmi *hdmi = dev_get_drvdata(dev);
+
+	mutex_lock(&hdmi->mutex);
+
+	if (!hdmi->disabled && !hdmi->force) {
+		if (!rx_sense)
+			hdmi->rxsense = false;
+
+		if (hpd)
+			hdmi->rxsense = true;
+
+		dw_hdmi_update_power(hdmi);
+		dw_hdmi_update_phy_mask(hdmi);
+	}
+	mutex_unlock(&hdmi->mutex);
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_setup_rx_sense);
+
 static int dw_hdmi_detect_phy(struct dw_hdmi *hdmi)
 {
 	unsigned int i;
@@ -1921,7 +1962,9 @@ static int dw_hdmi_detect_phy(struct dw_hdmi *hdmi)
 		return -ENODEV;
 	}
 
-	if (!hdmi->phy->configure && !hdmi->plat_data->configure_phy) {
+	if (!hdmi->phy->configure &&
+	    !hdmi->plat_data->configure_phy &&
+	    !hdmi->plat_data->hdmi_phy_init) {
 		dev_err(hdmi->dev, "%s requires platform support\n",
 			hdmi->phy->name);
 		return -ENODEV;
@@ -2101,15 +2144,17 @@ __dw_hdmi_probe(struct platform_device *pdev,
 			hdmi->ddc = NULL;
 	}
 
-	/*
-	 * Configure registers related to HDMI interrupt
-	 * generation before registering IRQ.
-	 */
-	hdmi_writeb(hdmi, HDMI_PHY_HPD | HDMI_PHY_RX_SENSE, HDMI_PHY_POL0);
+	if (!hdmi->plat_data || !hdmi->plat_data->hdmi_read_hpd) {
+		/*
+		 * Configure registers related to HDMI interrupt
+		 * generation before registering IRQ.
+		 */
+		hdmi_writeb(hdmi, HDMI_PHY_HPD | HDMI_PHY_RX_SENSE, HDMI_PHY_POL0);
 
-	/* Clear Hotplug interrupts */
-	hdmi_writeb(hdmi, HDMI_IH_PHY_STAT0_HPD | HDMI_IH_PHY_STAT0_RX_SENSE,
-		    HDMI_IH_PHY_STAT0);
+		/* Clear Hotplug interrupts */
+		hdmi_writeb(hdmi, HDMI_IH_PHY_STAT0_HPD | HDMI_IH_PHY_STAT0_RX_SENSE,
+			    HDMI_IH_PHY_STAT0);
+	}
 
 	hdmi->bridge.driver_private = hdmi;
 	hdmi->bridge.funcs = &dw_hdmi_bridge_funcs;
@@ -2119,9 +2164,10 @@ __dw_hdmi_probe(struct platform_device *pdev,
 	if (ret)
 		goto err_iahb;
 
-	/* Unmute interrupts */
-	hdmi_writeb(hdmi, ~(HDMI_IH_PHY_STAT0_HPD | HDMI_IH_PHY_STAT0_RX_SENSE),
-		    HDMI_IH_MUTE_PHY_STAT0);
+	if (!hdmi->plat_data || !hdmi->plat_data->hdmi_read_hpd)
+		/* Unmute interrupts */
+		hdmi_writeb(hdmi, ~(HDMI_IH_PHY_STAT0_HPD | HDMI_IH_PHY_STAT0_RX_SENSE),
+			    HDMI_IH_MUTE_PHY_STAT0);
 
 	memset(&pdevinfo, 0, sizeof(pdevinfo));
 	pdevinfo.parent = dev;
