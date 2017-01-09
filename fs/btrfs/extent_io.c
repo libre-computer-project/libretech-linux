@@ -603,7 +603,7 @@ static int __clear_extent_bit(struct extent_io_tree *tree, u64 start, u64 end,
 	btrfs_debug_check_extent_io_range(tree, start, end);
 
 	if (bits & EXTENT_DELALLOC)
-		bits |= EXTENT_NORESERVE;
+		bits |= EXTENT_NORESERVE | EXTENT_COMPRESS;
 
 	if (delete)
 		bits |= ~EXTENT_CTLBITS;
@@ -740,6 +740,60 @@ out:
 
 	return 0;
 
+}
+
+static void adjust_one_outstanding_extent(struct inode *inode, u64 len,
+				enum btrfs_metadata_reserve_type reserve_type)
+{
+	unsigned old_extents, new_extents;
+	u64 max_extent_size = btrfs_max_extent_size(reserve_type);
+
+	old_extents = div64_u64(len + max_extent_size - 1, max_extent_size);
+	new_extents = div64_u64(len + BTRFS_MAX_EXTENT_SIZE - 1,
+				BTRFS_MAX_EXTENT_SIZE);
+	if (old_extents <= new_extents)
+		return;
+
+	spin_lock(&BTRFS_I(inode)->lock);
+	BTRFS_I(inode)->outstanding_extents -= old_extents - new_extents;
+	spin_unlock(&BTRFS_I(inode)->lock);
+}
+
+/*
+ * For a extent with EXTENT_COMPRESS flag, if later it does not go through
+ * compress path, we need to adjust the number of outstanding_extents.
+ * It's because for extent with EXTENT_COMPRESS flag, its number of outstanding
+ * extents is calculated by 128KB, so here we need to adjust it.
+ */
+void adjust_outstanding_extents(struct inode *inode, u64 start, u64 end,
+				enum btrfs_metadata_reserve_type reserve_type)
+{
+	struct rb_node *node;
+	struct extent_state *state;
+	struct extent_io_tree *tree = &BTRFS_I(inode)->io_tree;
+
+	spin_lock(&tree->lock);
+	node = tree_search(tree, start);
+	if (!node)
+		goto out;
+
+	while (1) {
+		state = rb_entry(node, struct extent_state, rb_node);
+		if (state->start > end)
+			goto out;
+		/*
+		 * The whole range is locked, so we can safely clear
+		 * EXTENT_COMPRESS flag.
+		 */
+		state->state &= ~EXTENT_COMPRESS;
+		adjust_one_outstanding_extent(inode,
+				state->end - state->start + 1, reserve_type);
+		node = rb_next(node);
+		if (!node)
+			break;
+	}
+out:
+	spin_unlock(&tree->lock);
 }
 
 static void wait_on_state(struct extent_io_tree *tree,
@@ -1504,6 +1558,7 @@ static noinline u64 find_delalloc_range(struct extent_io_tree *tree,
 	u64 cur_start = *start;
 	u64 found = 0;
 	u64 total_bytes = 0;
+	unsigned pre_state;
 
 	spin_lock(&tree->lock);
 
@@ -1521,7 +1576,8 @@ static noinline u64 find_delalloc_range(struct extent_io_tree *tree,
 	while (1) {
 		state = rb_entry(node, struct extent_state, rb_node);
 		if (found && (state->start != cur_start ||
-			      (state->state & EXTENT_BOUNDARY))) {
+			      (state->state & EXTENT_BOUNDARY) ||
+			      (state->state ^ pre_state) & EXTENT_COMPRESS)) {
 			goto out;
 		}
 		if (!(state->state & EXTENT_DELALLOC)) {
@@ -1537,6 +1593,7 @@ static noinline u64 find_delalloc_range(struct extent_io_tree *tree,
 		found++;
 		*end = state->end;
 		cur_start = state->end + 1;
+		pre_state = state->state;
 		node = rb_next(node);
 		total_bytes += state->end - state->start + 1;
 		if (total_bytes >= max_bytes)
