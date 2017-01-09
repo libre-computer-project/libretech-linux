@@ -863,6 +863,13 @@ void rcu_early_boot_tests(void)
 		early_boot_test_call_rcu_bh();
 	if (rcu_self_test_sched)
 		early_boot_test_call_rcu_sched();
+
+	synchronize_rcu();
+	synchronize_rcu_bh();
+	synchronize_sched();
+	synchronize_rcu_expedited();
+	synchronize_rcu_bh_expedited();
+	synchronize_sched_expedited();
 }
 
 static int rcu_verify_early_boot_tests(void)
