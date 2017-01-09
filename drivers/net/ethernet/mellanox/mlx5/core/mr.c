@@ -163,6 +163,22 @@ int mlx5_core_dump_fill_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mkey *_
 }
 EXPORT_SYMBOL(mlx5_core_dump_fill_mkey);
 
+int mlx5_core_null_mkey(struct mlx5_core_dev *dev, u32 *null_mkey)
+{
+	u32 out[MLX5_ST_SZ_DW(query_special_contexts_out)] = {0};
+	u32 in[MLX5_ST_SZ_DW(query_special_contexts_in)]   = {0};
+	int err;
+
+	MLX5_SET(query_special_contexts_in, in, opcode,
+		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
+	err = mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	if (!err)
+		*null_mkey = MLX5_GET(query_special_contexts_out, out,
+				      null_mkey);
+	return err;
+}
+EXPORT_SYMBOL(mlx5_core_null_mkey);
+
 static inline u32 mlx5_get_psv(u32 *out, int psv_index)
 {
 	switch (psv_index) {
