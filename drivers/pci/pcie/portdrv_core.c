@@ -11,7 +11,6 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/pm.h>
-#include <linux/pm_runtime.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/pcieport_if.h>
@@ -342,8 +341,6 @@ static int pcie_device_init(struct pci_dev *pdev, int service, int irq)
 		put_device(device);
 		return retval;
 	}
-
-	pm_runtime_no_callbacks(device);
 
 	return 0;
 }
