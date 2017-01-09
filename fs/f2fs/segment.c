@@ -916,8 +916,12 @@ void clear_prefree_segments(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 		dirty_i->nr_dirty[PRE] -= end - start;
 
-		if (force || !test_opt(sbi, DISCARD))
+		if (!test_opt(sbi, DISCARD))
 			continue;
+
+		if (force && start >= cpc->trim_start &&
+					(end - 1) <= cpc->trim_end)
+				continue;
 
 		if (!test_opt(sbi, LFS) || sbi->segs_per_sec == 1) {
 			f2fs_issue_discard(sbi, START_BLOCK(sbi, start),
@@ -1423,9 +1427,6 @@ void allocate_new_segments(struct f2fs_sb_info *sbi)
 	struct curseg_info *curseg;
 	unsigned int old_segno;
 	int i;
-
-	if (test_opt(sbi, LFS))
-		return;
 
 	for (i = CURSEG_HOT_DATA; i <= CURSEG_COLD_DATA; i++) {
 		curseg = CURSEG_I(sbi, i);
@@ -2263,8 +2264,12 @@ void flush_sit_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	f2fs_bug_on(sbi, sit_i->dirty_sentries);
 out:
 	if (cpc->reason == CP_DISCARD) {
+		__u64 trim_start = cpc->trim_start;
+
 		for (; cpc->trim_start <= cpc->trim_end; cpc->trim_start++)
 			add_discard_addrs(sbi, cpc);
+
+		cpc->trim_start = trim_start;
 	}
 	mutex_unlock(&sit_i->sentry_lock);
 
