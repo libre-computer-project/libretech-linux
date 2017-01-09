@@ -13,6 +13,7 @@
 #include <drm/drmP.h>
 
 struct dw_hdmi;
+struct dw_hdmi_plat_data;
 
 enum {
 	DW_HDMI_RES_8,
@@ -51,13 +52,46 @@ struct dw_hdmi_phy_config {
 	u16 vlev_ctr;   /* voltage level control */
 };
 
+struct hdmi_vmode {
+	bool mdataenablepolarity;
+
+	unsigned int mpixelclock;
+	unsigned int mpixelrepetitioninput;
+	unsigned int mpixelrepetitionoutput;
+};
+
+struct hdmi_data_info {
+	unsigned int enc_in_format;
+	unsigned int enc_out_format;
+	unsigned int enc_color_depth;
+	unsigned int colorimetry;
+	unsigned int pix_repet_factor;
+	unsigned int hdcp_enable;
+	struct hdmi_vmode video_mode;
+};
+
+struct dw_hdmi_phy_ops {
+	int (*phy_init)(struct dw_hdmi *hdmi,
+			const struct dw_hdmi_plat_data *pdata,
+			struct drm_display_mode *mode,
+			struct hdmi_data_info *hdmi_data);
+	void (*phy_disable)(struct dw_hdmi *hdmi,
+			    const struct dw_hdmi_plat_data *pdata);
+};
+
+/* Synopsys DW-HDMI PHY Control Ops */
+extern const struct dw_hdmi_phy_ops dw_hdmi_phy_ops;
+
 struct dw_hdmi_plat_data {
 	const struct dw_hdmi_mpll_config *mpll_cfg;
 	const struct dw_hdmi_curr_ctrl *cur_ctr;
 	const struct dw_hdmi_phy_config *phy_config;
+	const struct dw_hdmi_phy_ops *phy_ops;
 	int (*configure_phy)(struct dw_hdmi *hdmi,
 			     const struct dw_hdmi_plat_data *pdata,
 			     unsigned long mpixelclock);
+	bool (*read_hpd)(struct dw_hdmi *hdmi,
+			 const struct dw_hdmi_plat_data *pdata);
 	enum drm_mode_status (*mode_valid)(struct drm_connector *connector,
 					   struct drm_display_mode *mode);
 	struct regmap *regm;
@@ -70,6 +104,7 @@ void dw_hdmi_unbind(struct device *dev);
 int dw_hdmi_bind(struct platform_device *pdev, struct drm_encoder *encoder,
 		 const struct dw_hdmi_plat_data *plat_data);
 
+void dw_hdmi_setup_rx_sense(struct device *dev, bool hpd, bool rx_sense);
 void dw_hdmi_set_sample_rate(struct dw_hdmi *hdmi, unsigned int rate);
 void dw_hdmi_audio_enable(struct dw_hdmi *hdmi);
 void dw_hdmi_audio_disable(struct dw_hdmi *hdmi);
