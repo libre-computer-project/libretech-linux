@@ -289,6 +289,7 @@ struct mlx5_port_caps {
 	int	gid_table_len;
 	int	pkey_table_len;
 	u8	ext_port_cap;
+	bool	has_smi;
 };
 
 struct mlx5_cmd_mailbox {
@@ -946,6 +947,7 @@ int mlx5_core_query_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mkey *mkey,
 			 u32 *out, int outlen);
 int mlx5_core_dump_fill_mkey(struct mlx5_core_dev *dev, struct mlx5_core_mkey *_mkey,
 			     u32 *mkey);
+int mlx5_core_null_mkey(struct mlx5_core_dev *dev, u32 *mkey);
 int mlx5_core_alloc_pd(struct mlx5_core_dev *dev, u32 *pdn);
 int mlx5_core_dealloc_pd(struct mlx5_core_dev *dev, u32 pdn);
 int mlx5_core_mad_ifc(struct mlx5_core_dev *dev, const void *inb, void *outb,
@@ -1051,7 +1053,10 @@ enum {
 };
 
 enum {
-	MAX_MR_CACHE_ENTRIES    = 21,
+	MAX_UMR_CACHE_ENTRY = 20,
+	MLX5_IMR_MTT_CACHE_ENTRY,
+	MLX5_IMR_KSM_CACHE_ENTRY,
+	MAX_MR_CACHE_ENTRIES
 };
 
 enum {

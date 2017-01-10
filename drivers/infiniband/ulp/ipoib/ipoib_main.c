@@ -229,6 +229,10 @@ static int ipoib_change_mtu(struct net_device *dev, int new_mtu)
 
 	priv->admin_mtu = new_mtu;
 
+	if (priv->mcast_mtu < priv->admin_mtu)
+		ipoib_warn(priv, "MTU must be smaller than mcast_mtu (%u)\n",
+			   priv->mcast_mtu);
+
 	dev->mtu = min(priv->mcast_mtu, priv->admin_mtu);
 
 	return 0;
@@ -470,6 +474,14 @@ int ipoib_set_mode(struct net_device *dev, const char *buf)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 
+	if ((test_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags) &&
+	     !strcmp(buf, "connected\n")) ||
+	     (!test_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags) &&
+	     !strcmp(buf, "datagram\n"))) {
+		ipoib_dbg(priv, "already in that mode, goes out.\n");
+		return 0;
+	}
+
 	/* flush paths if we switch modes so that connections are restarted */
 	if (IPOIB_CM_SUPPORTED(dev->dev_addr) && !strcmp(buf, "connected\n")) {
 		set_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags);
@@ -481,8 +493,7 @@ int ipoib_set_mode(struct net_device *dev, const char *buf)
 		priv->tx_wr.wr.send_flags &= ~IB_SEND_IP_CSUM;
 
 		ipoib_flush_paths(dev);
-		rtnl_lock();
-		return 0;
+		return (!rtnl_trylock()) ? -EBUSY : 0;
 	}
 
 	if (!strcmp(buf, "datagram\n")) {
@@ -491,8 +502,7 @@ int ipoib_set_mode(struct net_device *dev, const char *buf)
 		dev_set_mtu(dev, min(priv->mcast_mtu, dev->mtu));
 		rtnl_unlock();
 		ipoib_flush_paths(dev);
-		rtnl_lock();
-		return 0;
+		return (!rtnl_trylock()) ? -EBUSY : 0;
 	}
 
 	return -EINVAL;
@@ -834,10 +844,12 @@ static void path_rec_completion(int status,
 		ipoib_put_ah(old_ah);
 
 	while ((skb = __skb_dequeue(&skqueue))) {
+		int ret;
 		skb->dev = dev;
-		if (dev_queue_xmit(skb))
-			ipoib_warn(priv, "dev_queue_xmit failed "
-				   "to requeue packet\n");
+		ret = dev_queue_xmit(skb);
+		if (ret)
+			ipoib_warn(priv, "%s: dev_queue_xmit failed to re-queue packet, ret:%d\n",
+				   __func__, ret);
 	}
 }
 
@@ -1286,7 +1298,7 @@ static void __ipoib_reap_neigh(struct ipoib_dev_priv *priv)
 						   rcu_dereference_protected(neigh->hnext,
 									     lockdep_is_held(&priv->lock)));
 				/* remove from path/mc list */
-				list_del(&neigh->list);
+				list_del_init(&neigh->list);
 				call_rcu(&neigh->rcu, ipoib_neigh_reclaim);
 			} else {
 				np = &neigh->hnext;
@@ -1450,7 +1462,7 @@ void ipoib_neigh_free(struct ipoib_neigh *neigh)
 					   rcu_dereference_protected(neigh->hnext,
 								     lockdep_is_held(&priv->lock)));
 			/* remove from parent list */
-			list_del(&neigh->list);
+			list_del_init(&neigh->list);
 			call_rcu(&neigh->rcu, ipoib_neigh_reclaim);
 			return;
 		} else {
@@ -1535,7 +1547,7 @@ void ipoib_del_neighs_by_gid(struct net_device *dev, u8 *gid)
 						   rcu_dereference_protected(neigh->hnext,
 									     lockdep_is_held(&priv->lock)));
 				/* remove from parent list */
-				list_del(&neigh->list);
+				list_del_init(&neigh->list);
 				call_rcu(&neigh->rcu, ipoib_neigh_reclaim);
 			} else {
 				np = &neigh->hnext;
@@ -1577,7 +1589,7 @@ static void ipoib_flush_neighs(struct ipoib_dev_priv *priv)
 					   rcu_dereference_protected(neigh->hnext,
 								     lockdep_is_held(&priv->lock)));
 			/* remove from path/mc list */
-			list_del(&neigh->list);
+			list_del_init(&neigh->list);
 			call_rcu(&neigh->rcu, ipoib_neigh_reclaim);
 		}
 	}
