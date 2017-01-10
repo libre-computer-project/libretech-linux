@@ -1,6 +1,5 @@
 /*
- * Copyright 2011 Freescale Semiconductor, Inc.
- * Copyright 2011 Linaro Ltd.
+ * Copyright (C) 2017 Milo Kim <woogyom.kim@gmail.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -8,8 +7,9 @@
  * whole.
  *
  *  a) This file is free software; you can redistribute it and/or
- *     modify it under the terms of the GNU General Public License
- *     version 2 as published by the Free Software Foundation.
+ *     modify it under the terms of the GNU General Public License as
+ *     published by the Free Software Foundation; either version 2 of the
+ *     License, or (at your option) any later version.
  *
  *     This file is distributed in the hope that it will be useful,
  *     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -41,14 +41,11 @@
  */
 
 /dts-v1/;
-#include "imx6q.dtsi"
-#include "imx6qdl-sabrelite.dtsi"
+
+#include "imx6dl.dtsi"
+#include "imx6qdl-savageboard.dtsi"
 
 / {
-	model = "Freescale i.MX6 Quad SABRE Lite Board";
-	compatible = "fsl,imx6q-sabrelite", "fsl,imx6q";
-};
-
-&sata {
-	status = "okay";
+	model = "Poslab SavageBoard Dual";
+	compatible = "poslab,imx6dl-savageboard", "fsl,imx6dl";
 };

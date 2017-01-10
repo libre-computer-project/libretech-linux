@@ -1,6 +1,6 @@
 /*
- * Copyright 2011 Freescale Semiconductor, Inc.
- * Copyright 2011 Linaro Ltd.
+ * Copyright (C) 2016 Amarula Solutions B.V.
+ * Copyright (C) 2016 Engicam S.r.l.
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -41,14 +41,11 @@
  */
 
 /dts-v1/;
+
 #include "imx6q.dtsi"
-#include "imx6qdl-sabrelite.dtsi"
+#include "imx6qdl-icore-rqs.dtsi"
 
 / {
-	model = "Freescale i.MX6 Quad SABRE Lite Board";
-	compatible = "fsl,imx6q-sabrelite", "fsl,imx6q";
-};
-
-&sata {
-	status = "okay";
+	model = "Engicam i.CoreM6 DualLite/Solo RQS Starter Kit";
+	compatible = "engicam,imx6-icore-rqs", "fsl,imx6dl";
 };
