@@ -445,6 +445,10 @@ bool __rcu_is_watching(void);
 #error "Unknown RCU implementation specified to kernel configuration"
 #endif
 
+#define RCU_SCHEDULER_INACTIVE	0
+#define RCU_SCHEDULER_INIT	1
+#define RCU_SCHEDULER_RUNNING	2
+
 #ifndef CONFIG_PREEMPT_RCU
 static inline bool rcu_trivial_gp(void)
 {
