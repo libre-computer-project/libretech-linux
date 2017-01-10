@@ -400,6 +400,7 @@ void __cfg80211_roamed(struct wireless_dev *wdev,
 		       const u8 *resp_ie, size_t resp_ie_len);
 int cfg80211_mgd_wext_connect(struct cfg80211_registered_device *rdev,
 			      struct wireless_dev *wdev);
+void cfg80211_autodisconnect_wk(struct work_struct *work);
 
 /* SME implementation */
 void cfg80211_conn_work(struct work_struct *work);
@@ -429,6 +430,9 @@ int cfg80211_change_iface(struct cfg80211_registered_device *rdev,
 			  u32 *flags, struct vif_params *params);
 void cfg80211_process_rdev_events(struct cfg80211_registered_device *rdev);
 void cfg80211_process_wdev_events(struct wireless_dev *wdev);
+
+bool cfg80211_does_bw_fit_range(const struct ieee80211_freq_range *freq_range,
+				u32 center_freq_khz, u32 bw_khz);
 
 /**
  * cfg80211_chandef_dfs_usable - checks if chandef is DFS usable
