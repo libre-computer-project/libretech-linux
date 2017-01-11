@@ -184,14 +184,16 @@ DEFINE_EVENT(btrfs__inode, btrfs_inode_evict,
 
 TRACE_EVENT_CONDITION(btrfs_get_extent,
 
-	TP_PROTO(struct btrfs_root *root, struct extent_map *map),
+	TP_PROTO(struct btrfs_root *root, struct inode *inode,
+		 struct extent_map *map),
 
-	TP_ARGS(root, map),
+	TP_ARGS(root, inode, map),
 
 	TP_CONDITION(map),
 
 	TP_STRUCT__entry_btrfs(
 		__field(	u64,  root_objectid	)
+		__field(	u64,  ino		)
 		__field(	u64,  start		)
 		__field(	u64,  len		)
 		__field(	u64,  orig_start	)
@@ -204,7 +206,8 @@ TRACE_EVENT_CONDITION(btrfs_get_extent,
 
 	TP_fast_assign_btrfs(root->fs_info,
 		__entry->root_objectid	= root->root_key.objectid;
-		__entry->start 		= map->start;
+		__entry->ino		= btrfs_ino(inode);
+		__entry->start		= map->start;
 		__entry->len		= map->len;
 		__entry->orig_start	= map->orig_start;
 		__entry->block_start	= map->block_start;
@@ -214,11 +217,12 @@ TRACE_EVENT_CONDITION(btrfs_get_extent,
 		__entry->compress_type	= map->compress_type;
 	),
 
-	TP_printk_btrfs("root = %llu(%s), start = %llu, len = %llu, "
+	TP_printk_btrfs("root = %llu(%s), ino = %llu start = %llu, len = %llu, "
 		  "orig_start = %llu, block_start = %llu(%s), "
 		  "block_len = %llu, flags = %s, refs = %u, "
 		  "compress_type = %u",
 		  show_root_type(__entry->root_objectid),
+		  (unsigned long long)__entry->ino,
 		  (unsigned long long)__entry->start,
 		  (unsigned long long)__entry->len,
 		  (unsigned long long)__entry->orig_start,
@@ -259,6 +263,7 @@ DECLARE_EVENT_CLASS(btrfs__ordered_extent,
 		__field(	int,  compress_type	)
 		__field(	int,  refs		)
 		__field(	u64,  root_objectid	)
+		__field(	u64,  truncated_len	)
 	),
 
 	TP_fast_assign_btrfs(btrfs_sb(inode->i_sb),
@@ -273,10 +278,12 @@ DECLARE_EVENT_CLASS(btrfs__ordered_extent,
 		__entry->refs		= atomic_read(&ordered->refs);
 		__entry->root_objectid	=
 				BTRFS_I(inode)->root->root_key.objectid;
+		__entry->truncated_len	= ordered->truncated_len;
 	),
 
 	TP_printk_btrfs("root = %llu(%s), ino = %llu, file_offset = %llu, "
 		  "start = %llu, len = %llu, disk_len = %llu, "
+		  "truncated_len = %llu, "
 		  "bytes_left = %llu, flags = %s, compress_type = %d, "
 		  "refs = %d",
 		  show_root_type(__entry->root_objectid),
@@ -285,6 +292,7 @@ DECLARE_EVENT_CLASS(btrfs__ordered_extent,
 		  (unsigned long long)__entry->start,
 		  (unsigned long long)__entry->len,
 		  (unsigned long long)__entry->disk_len,
+		  (unsigned long long)__entry->truncated_len,
 		  (unsigned long long)__entry->bytes_left,
 		  show_ordered_flags(__entry->flags),
 		  __entry->compress_type, __entry->refs)
