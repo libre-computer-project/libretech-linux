@@ -1099,6 +1099,7 @@ void radix_tree_replace_slot(struct radix_tree_root *root,
 {
 	replace_slot(root, NULL, slot, item, true);
 }
+EXPORT_SYMBOL(radix_tree_replace_slot);
 
 /**
  * radix_tree_iter_replace - replace item in a slot
