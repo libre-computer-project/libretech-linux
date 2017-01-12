@@ -1497,6 +1497,7 @@ liquidio_push_packet(u32 octeon_id __attribute__((unused)),
 	struct net_device *netdev = (struct net_device *)arg;
 	struct sk_buff *skb = (struct sk_buff *)skbuff;
 	u16 vtag = 0;
+	u32 r_dh_off;
 
 	if (netdev) {
 		struct lio *lio = GET_LIO(netdev);
@@ -1540,7 +1541,20 @@ liquidio_push_packet(u32 octeon_id __attribute__((unused)),
 			put_page(pg_info->page);
 		}
 
-		skb_pull(skb, rh->r_dh.len * 8);
+		r_dh_off = (rh->r_dh.len - 1) * BYTES_PER_DHLEN_UNIT;
+
+		if (rh->r_dh.has_hwtstamp)
+			r_dh_off -= BYTES_PER_DHLEN_UNIT;
+
+		if (rh->r_dh.has_hash) {
+			__be32 *hash_be = (__be32 *)(skb->data + r_dh_off);
+			u32 hash = be32_to_cpu(*hash_be);
+
+			skb_set_hash(skb, hash, PKT_HASH_TYPE_L4);
+			r_dh_off -= BYTES_PER_DHLEN_UNIT;
+		}
+
+		skb_pull(skb, rh->r_dh.len * BYTES_PER_DHLEN_UNIT);
 		skb->protocol = eth_type_trans(skb, skb->dev);
 
 		if ((netdev->features & NETIF_F_RXCSUM) &&
@@ -1627,7 +1641,7 @@ static int liquidio_napi_poll(struct napi_struct *napi, int budget)
 	iq = oct->instr_queue[iq_no];
 	if (iq) {
 		/* Process iq buffers with in the budget limits */
-		tx_done = octeon_flush_iq(oct, iq, 1, budget);
+		tx_done = octeon_flush_iq(oct, iq, budget);
 		/* Update iq read-index rather than waiting for next interrupt.
 		 * Return back if tx_done is false.
 		 */

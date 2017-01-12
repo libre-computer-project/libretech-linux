@@ -2219,16 +2219,14 @@ int efx_net_stop(struct net_device *net_dev)
 }
 
 /* Context: process, dev_base_lock or RTNL held, non-blocking. */
-static struct rtnl_link_stats64 *efx_net_stats(struct net_device *net_dev,
-					       struct rtnl_link_stats64 *stats)
+static void efx_net_stats(struct net_device *net_dev,
+			  struct rtnl_link_stats64 *stats)
 {
 	struct efx_nic *efx = netdev_priv(net_dev);
 
 	spin_lock_bh(&efx->stats_lock);
 	efx->type->update_stats(efx, NULL, stats);
 	spin_unlock_bh(&efx->stats_lock);
-
-	return stats;
 }
 
 /* Context: netif_tx_lock held, BHs disabled. */
@@ -2336,6 +2334,27 @@ static int efx_set_features(struct net_device *net_dev, netdev_features_t data)
 	return 0;
 }
 
+static int efx_get_phys_port_id(struct net_device *net_dev,
+				struct netdev_phys_item_id *ppid)
+{
+	struct efx_nic *efx = netdev_priv(net_dev);
+
+	if (efx->type->get_phys_port_id)
+		return efx->type->get_phys_port_id(efx, ppid);
+	else
+		return -EOPNOTSUPP;
+}
+
+static int efx_get_phys_port_name(struct net_device *net_dev,
+				  char *name, size_t len)
+{
+	struct efx_nic *efx = netdev_priv(net_dev);
+
+	if (snprintf(name, len, "p%u", efx->port_num) >= len)
+		return -EINVAL;
+	return 0;
+}
+
 static int efx_vlan_rx_add_vid(struct net_device *net_dev, __be16 proto, u16 vid)
 {
 	struct efx_nic *efx = netdev_priv(net_dev);
@@ -2376,8 +2395,9 @@ static const struct net_device_ops efx_netdev_ops = {
 	.ndo_set_vf_spoofchk	= efx_sriov_set_vf_spoofchk,
 	.ndo_get_vf_config	= efx_sriov_get_vf_config,
 	.ndo_set_vf_link_state  = efx_sriov_set_vf_link_state,
-	.ndo_get_phys_port_id   = efx_sriov_get_phys_port_id,
 #endif
+	.ndo_get_phys_port_id   = efx_get_phys_port_id,
+	.ndo_get_phys_port_name	= efx_get_phys_port_name,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = efx_netpoll,
 #endif
@@ -3585,3 +3605,4 @@ MODULE_AUTHOR("Solarflare Communications and "
 MODULE_DESCRIPTION("Solarflare network driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, efx_pci_table);
+MODULE_VERSION(EFX_DRIVER_VERSION);

@@ -2263,6 +2263,7 @@ liquidio_push_packet(u32 octeon_id __attribute__((unused)),
 	struct skb_shared_hwtstamps *shhwtstamps;
 	u64 ns;
 	u16 vtag = 0;
+	u32 r_dh_off;
 	struct net_device *netdev = (struct net_device *)arg;
 	struct octeon_droq *droq = container_of(param, struct octeon_droq,
 						napi);
@@ -2308,6 +2309,8 @@ liquidio_push_packet(u32 octeon_id __attribute__((unused)),
 			put_page(pg_info->page);
 		}
 
+		r_dh_off = (rh->r_dh.len - 1) * BYTES_PER_DHLEN_UNIT;
+
 		if (((oct->chip_id == OCTEON_CN66XX) ||
 		     (oct->chip_id == OCTEON_CN68XX)) &&
 		    ptp_enable) {
@@ -2320,15 +2323,26 @@ liquidio_push_packet(u32 octeon_id __attribute__((unused)),
 					/* Nanoseconds are in the first 64-bits
 					 * of the packet.
 					 */
-					memcpy(&ns, (skb->data), sizeof(ns));
+					memcpy(&ns, (skb->data + r_dh_off),
+					       sizeof(ns));
+					r_dh_off -= BYTES_PER_DHLEN_UNIT;
 					shhwtstamps = skb_hwtstamps(skb);
 					shhwtstamps->hwtstamp =
 						ns_to_ktime(ns +
 							    lio->ptp_adjust);
 				}
-				skb_pull(skb, sizeof(ns));
 			}
 		}
+
+		if (rh->r_dh.has_hash) {
+			__be32 *hash_be = (__be32 *)(skb->data + r_dh_off);
+			u32 hash = be32_to_cpu(*hash_be);
+
+			skb_set_hash(skb, hash, PKT_HASH_TYPE_L4);
+			r_dh_off -= BYTES_PER_DHLEN_UNIT;
+		}
+
+		skb_pull(skb, rh->r_dh.len * BYTES_PER_DHLEN_UNIT);
 
 		skb->protocol = eth_type_trans(skb, skb->dev);
 		if ((netdev->features & NETIF_F_RXCSUM) &&
@@ -2441,7 +2455,7 @@ static int liquidio_napi_poll(struct napi_struct *napi, int budget)
 	iq = oct->instr_queue[iq_no];
 	if (iq) {
 		/* Process iq buffers with in the budget limits */
-		tx_done = octeon_flush_iq(oct, iq, 1, budget);
+		tx_done = octeon_flush_iq(oct, iq, budget);
 		/* Update iq read-index rather than waiting for next interrupt.
 		 * Return back if tx_done is false.
 		 */
@@ -2629,7 +2643,9 @@ static int liquidio_open(struct net_device *netdev)
 			oct->droq[0]->ops.poll_mode = 1;
 	}
 
-	oct_ptp_open(netdev);
+	if ((oct->chip_id == OCTEON_CN66XX || oct->chip_id == OCTEON_CN68XX) &&
+	    ptp_enable)
+		oct_ptp_open(netdev);
 
 	ifstate_set(lio, LIO_IFSTATE_RUNNING);
 
@@ -2677,13 +2693,7 @@ static int liquidio_stop(struct net_device *netdev)
 	lio->linfo.link.s.link_up = 0;
 	lio->link_changes++;
 
-	/* Pause for a moment and wait for Octeon to flush out (to the wire) any
-	 * egress packets that are in-flight.
-	 */
-	set_current_state(TASK_INTERRUPTIBLE);
-	schedule_timeout(msecs_to_jiffies(100));
-
-	/* Now it should be safe to tell Octeon that nic interface is down. */
+	/* Tell Octeon that nic interface is down. */
 	send_rx_ctrl_cmd(lio, 0);
 
 	if (OCTEON_CN23XX_PF(oct)) {
@@ -2973,9 +2983,13 @@ static int hwtstamp_ioctl(struct net_device *netdev, struct ifreq *ifr)
  */
 static int liquidio_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 {
+	struct lio *lio = GET_LIO(netdev);
+
 	switch (cmd) {
 	case SIOCSHWTSTAMP:
-		return hwtstamp_ioctl(netdev, ifr);
+		if ((lio->oct_dev->chip_id == OCTEON_CN66XX ||
+		     lio->oct_dev->chip_id == OCTEON_CN68XX) && ptp_enable)
+			return hwtstamp_ioctl(netdev, ifr);
 	default:
 		return -EOPNOTSUPP;
 	}
