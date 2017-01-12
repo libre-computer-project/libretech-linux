@@ -46,4 +46,6 @@ extern void qcom_scm_cpu_power_down(u32 flags);
 
 extern u32 qcom_scm_get_version(void);
 
+extern int qcom_scm_video_set_state(u32 state, u32 spare);
+
 #endif

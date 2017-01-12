@@ -15,6 +15,8 @@
 #define QCOM_SCM_SVC_BOOT		0x1
 #define QCOM_SCM_BOOT_ADDR		0x1
 #define QCOM_SCM_BOOT_ADDR_MC		0x11
+#define QCOM_SCM_VIDEO_SET_STATE	0xa
+extern int __qcom_scm_video_set_state(struct device *dev, u32 state, u32 spare);
 
 #define QCOM_SCM_FLAG_HLOS		0x01
 #define QCOM_SCM_FLAG_COLDBOOT_MC	0x02
