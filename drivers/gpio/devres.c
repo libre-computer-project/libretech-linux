@@ -140,7 +140,8 @@ EXPORT_SYMBOL(devm_gpiod_get_index);
 struct gpio_desc *devm_get_gpiod_from_child(struct device *dev,
 					    const char *con_id,
 					    struct fwnode_handle *child,
-					    enum gpiod_flags flags)
+					    enum gpiod_flags flags,
+					    const char *label)
 {
 	char prop_name[32]; /* 32 is max size of property name */
 	struct gpio_desc **dr;
@@ -160,7 +161,7 @@ struct gpio_desc *devm_get_gpiod_from_child(struct device *dev,
 			snprintf(prop_name, sizeof(prop_name), "%s",
 					    gpio_suffixes[i]);
 
-		desc = fwnode_get_named_gpiod(child, prop_name, flags);
+		desc = fwnode_get_named_gpiod(child, prop_name, flags, label);
 		if (!IS_ERR(desc) || (PTR_ERR(desc) != -ENOENT))
 			break;
 	}
