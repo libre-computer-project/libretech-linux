@@ -281,7 +281,7 @@ EXPORT_SYMBOL(nr_node_ids);
 EXPORT_SYMBOL(nr_online_nodes);
 #endif
 
-int page_group_by_mobility_disabled __read_mostly;
+DEFINE_STATIC_KEY_FALSE(page_group_by_mobility_disabled);
 
 #ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
 static inline void reset_deferred_meminit(pg_data_t *pgdat)
@@ -450,9 +450,10 @@ void set_pfnblock_flags_mask(struct page *page, unsigned long flags,
 
 void set_pageblock_migratetype(struct page *page, int migratetype)
 {
-	if (unlikely(page_group_by_mobility_disabled &&
-		     migratetype < MIGRATE_PCPTYPES))
-		migratetype = MIGRATE_UNMOVABLE;
+	if (static_branch_unlikely(&page_group_by_mobility_disabled)) {
+		if (migratetype < MIGRATE_PCPTYPES)
+			migratetype = MIGRATE_UNMOVABLE;
+	}
 
 	set_pageblock_flags_group(page, (unsigned long)migratetype,
 					PB_migrate, PB_migrate_end);
@@ -1942,8 +1943,10 @@ static bool can_steal_fallback(unsigned int order, int start_mt)
 
 	if (order >= pageblock_order / 2 ||
 		start_mt == MIGRATE_RECLAIMABLE ||
-		start_mt == MIGRATE_UNMOVABLE ||
-		page_group_by_mobility_disabled)
+		start_mt == MIGRATE_UNMOVABLE)
+		return true;
+
+	if (static_branch_unlikely(&page_group_by_mobility_disabled))
 		return true;
 
 	return false;
@@ -1972,7 +1975,7 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
 
 	/* Claim the whole block if over half of it is free */
 	if (pages >= (1 << (pageblock_order-1)) ||
-			page_group_by_mobility_disabled)
+	    static_branch_unlikely(&page_group_by_mobility_disabled))
 		set_pageblock_migratetype(page, start_type);
 }
 
@@ -5012,14 +5015,14 @@ void __ref build_all_zonelists(pg_data_t *pgdat, struct zone *zone)
 	 * disabled and enable it later
 	 */
 	if (vm_total_pages < (pageblock_nr_pages * MIGRATE_TYPES))
-		page_group_by_mobility_disabled = 1;
+		static_branch_enable(&page_group_by_mobility_disabled);
 	else
-		page_group_by_mobility_disabled = 0;
+		static_branch_disable(&page_group_by_mobility_disabled);
 
 	pr_info("Built %i zonelists in %s order, mobility grouping %s.  Total pages: %ld\n",
 		nr_online_nodes,
 		zonelist_order_name[current_zonelist_order],
-		page_group_by_mobility_disabled ? "off" : "on",
+		static_key_enabled(&page_group_by_mobility_disabled) ? "off" : "on",
 		vm_total_pages);
 #ifdef CONFIG_NUMA
 	pr_info("Policy zone: %s\n", zone_names[policy_zone]);
