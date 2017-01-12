@@ -69,7 +69,7 @@
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
-#include <linux/virtio_mmio.h>
+#include <uapi/linux/virtio_mmio.h>
 #include <linux/virtio_ring.h>
 
 
