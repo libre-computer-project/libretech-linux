@@ -133,9 +133,9 @@ struct alloc_context {
  * Assumption: *_mem_map is contiguous at least up to MAX_ORDER
  */
 static inline unsigned long
-__find_buddy_index(unsigned long page_idx, unsigned int order)
+__find_buddy_pfn(unsigned long page_pfn, unsigned int order)
 {
-	return page_idx ^ (1 << order);
+	return page_pfn ^ (1 << order);
 }
 
 extern struct page *__pageblock_pfn_to_page(unsigned long start_pfn,
@@ -175,6 +175,8 @@ struct compact_control {
 	struct list_head migratepages;	/* List of pages being migrated */
 	unsigned long nr_freepages;	/* Number of isolated free pages */
 	unsigned long nr_migratepages;	/* Number of pages to migrate */
+	unsigned long total_migrate_scanned;
+	unsigned long total_free_scanned;
 	unsigned long free_pfn;		/* isolate_freepages search base */
 	unsigned long migrate_pfn;	/* isolate_migratepages search base */
 	unsigned long last_migrated_pfn;/* Not yet flushed page being freed */

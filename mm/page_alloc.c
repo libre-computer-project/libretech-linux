@@ -55,6 +55,7 @@
 #include <linux/kmemleak.h>
 #include <linux/compaction.h>
 #include <trace/events/kmem.h>
+#include <trace/events/oom.h>
 #include <linux/prefetch.h>
 #include <linux/mm_inline.h>
 #include <linux/migrate.h>
@@ -281,7 +282,7 @@ EXPORT_SYMBOL(nr_node_ids);
 EXPORT_SYMBOL(nr_online_nodes);
 #endif
 
-int page_group_by_mobility_disabled __read_mostly;
+DEFINE_STATIC_KEY_FALSE(page_group_by_mobility_disabled);
 
 #ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
 static inline void reset_deferred_meminit(pg_data_t *pgdat)
@@ -450,9 +451,10 @@ void set_pfnblock_flags_mask(struct page *page, unsigned long flags,
 
 void set_pageblock_migratetype(struct page *page, int migratetype)
 {
-	if (unlikely(page_group_by_mobility_disabled &&
-		     migratetype < MIGRATE_PCPTYPES))
-		migratetype = MIGRATE_UNMOVABLE;
+	if (static_branch_unlikely(&page_group_by_mobility_disabled)) {
+		if (migratetype < MIGRATE_PCPTYPES)
+			migratetype = MIGRATE_UNMOVABLE;
+	}
 
 	set_pageblock_flags_group(page, (unsigned long)migratetype,
 					PB_migrate, PB_migrate_end);
@@ -714,7 +716,7 @@ static inline void rmv_page_order(struct page *page)
 /*
  * This function checks whether a page is free && is the buddy
  * we can do coalesce a page and its buddy if
- * (a) the buddy is not in a hole &&
+ * (a) the buddy is not in a hole (check before calling!) &&
  * (b) the buddy is in the buddy system &&
  * (c) a page and its buddy have the same order &&
  * (d) a page and its buddy are in the same zone.
@@ -729,9 +731,6 @@ static inline void rmv_page_order(struct page *page)
 static inline int page_is_buddy(struct page *page, struct page *buddy,
 							unsigned int order)
 {
-	if (!pfn_valid_within(page_to_pfn(buddy)))
-		return 0;
-
 	if (page_is_guard(buddy) && page_order(buddy) == order) {
 		if (page_zone_id(page) != page_zone_id(buddy))
 			return 0;
@@ -787,9 +786,8 @@ static inline void __free_one_page(struct page *page,
 		struct zone *zone, unsigned int order,
 		int migratetype)
 {
-	unsigned long page_idx;
-	unsigned long combined_idx;
-	unsigned long uninitialized_var(buddy_idx);
+	unsigned long combined_pfn;
+	unsigned long uninitialized_var(buddy_pfn);
 	struct page *buddy;
 	unsigned int max_order;
 
@@ -802,15 +800,16 @@ static inline void __free_one_page(struct page *page,
 	if (likely(!is_migrate_isolate(migratetype)))
 		__mod_zone_freepage_state(zone, 1 << order, migratetype);
 
-	page_idx = pfn & ((1 << MAX_ORDER) - 1);
-
-	VM_BUG_ON_PAGE(page_idx & ((1 << order) - 1), page);
+	VM_BUG_ON_PAGE(pfn & ((1 << order) - 1), page);
 	VM_BUG_ON_PAGE(bad_range(zone, page), page);
 
 continue_merging:
 	while (order < max_order - 1) {
-		buddy_idx = __find_buddy_index(page_idx, order);
-		buddy = page + (buddy_idx - page_idx);
+		buddy_pfn = __find_buddy_pfn(pfn, order);
+		buddy = page + (buddy_pfn - pfn);
+
+		if (!pfn_valid_within(buddy_pfn))
+			goto done_merging;
 		if (!page_is_buddy(page, buddy, order))
 			goto done_merging;
 		/*
@@ -824,9 +823,9 @@ continue_merging:
 			zone->free_area[order].nr_free--;
 			rmv_page_order(buddy);
 		}
-		combined_idx = buddy_idx & page_idx;
-		page = page + (combined_idx - page_idx);
-		page_idx = combined_idx;
+		combined_pfn = buddy_pfn & pfn;
+		page = page + (combined_pfn - pfn);
+		pfn = combined_pfn;
 		order++;
 	}
 	if (max_order < MAX_ORDER) {
@@ -841,8 +840,8 @@ continue_merging:
 		if (unlikely(has_isolate_pageblock(zone))) {
 			int buddy_mt;
 
-			buddy_idx = __find_buddy_index(page_idx, order);
-			buddy = page + (buddy_idx - page_idx);
+			buddy_pfn = __find_buddy_pfn(pfn, order);
+			buddy = page + (buddy_pfn - pfn);
 			buddy_mt = get_pageblock_migratetype(buddy);
 
 			if (migratetype != buddy_mt
@@ -865,12 +864,12 @@ done_merging:
 	 * so it's less likely to be used soon and more likely to be merged
 	 * as a higher order page
 	 */
-	if ((order < MAX_ORDER-2) && pfn_valid_within(page_to_pfn(buddy))) {
+	if ((order < MAX_ORDER-2) && pfn_valid_within(buddy_pfn)) {
 		struct page *higher_page, *higher_buddy;
-		combined_idx = buddy_idx & page_idx;
-		higher_page = page + (combined_idx - page_idx);
-		buddy_idx = __find_buddy_index(combined_idx, order + 1);
-		higher_buddy = higher_page + (buddy_idx - combined_idx);
+		combined_pfn = buddy_pfn & pfn;
+		higher_page = page + (combined_pfn - pfn);
+		buddy_pfn = __find_buddy_pfn(combined_pfn, order + 1);
+		higher_buddy = higher_page + (buddy_pfn - combined_pfn);
 		if (page_is_buddy(higher_page, higher_buddy, order + 1)) {
 			list_add_tail(&page->lru,
 				&zone->free_area[order].free_list[migratetype]);
@@ -1945,8 +1944,10 @@ static bool can_steal_fallback(unsigned int order, int start_mt)
 
 	if (order >= pageblock_order / 2 ||
 		start_mt == MIGRATE_RECLAIMABLE ||
-		start_mt == MIGRATE_UNMOVABLE ||
-		page_group_by_mobility_disabled)
+		start_mt == MIGRATE_UNMOVABLE)
+		return true;
+
+	if (static_branch_unlikely(&page_group_by_mobility_disabled))
 		return true;
 
 	return false;
@@ -1975,7 +1976,7 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
 
 	/* Claim the whole block if over half of it is free */
 	if (pages >= (1 << (pageblock_order-1)) ||
-			page_group_by_mobility_disabled)
+	    static_branch_unlikely(&page_group_by_mobility_disabled))
 		set_pageblock_migratetype(page, start_type);
 }
 
@@ -3007,18 +3008,12 @@ static inline bool should_suppress_show_mem(void)
 	return ret;
 }
 
-static DEFINE_RATELIMIT_STATE(nopage_rs,
-		DEFAULT_RATELIMIT_INTERVAL,
-		DEFAULT_RATELIMIT_BURST);
-
-void warn_alloc(gfp_t gfp_mask, const char *fmt, ...)
+static void warn_alloc_show_mem(gfp_t gfp_mask)
 {
 	unsigned int filter = SHOW_MEM_FILTER_NODES;
-	struct va_format vaf;
-	va_list args;
+	static DEFINE_RATELIMIT_STATE(show_mem_rs, HZ, 1);
 
-	if ((gfp_mask & __GFP_NOWARN) || !__ratelimit(&nopage_rs) ||
-	    debug_guardpage_minorder() > 0)
+	if (should_suppress_show_mem() || !__ratelimit(&show_mem_rs))
 		return;
 
 	/*
@@ -3033,6 +3028,20 @@ void warn_alloc(gfp_t gfp_mask, const char *fmt, ...)
 	if (in_interrupt() || !(gfp_mask & __GFP_DIRECT_RECLAIM))
 		filter &= ~SHOW_MEM_FILTER_NODES;
 
+	show_mem(filter);
+}
+
+void warn_alloc(gfp_t gfp_mask, const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+	static DEFINE_RATELIMIT_STATE(nopage_rs, DEFAULT_RATELIMIT_INTERVAL,
+				      DEFAULT_RATELIMIT_BURST);
+
+	if ((gfp_mask & __GFP_NOWARN) || !__ratelimit(&nopage_rs) ||
+	    debug_guardpage_minorder() > 0)
+		return;
+
 	pr_warn("%s: ", current->comm);
 
 	va_start(args, fmt);
@@ -3044,8 +3053,7 @@ void warn_alloc(gfp_t gfp_mask, const char *fmt, ...)
 	pr_cont(", mode:%#x(%pGg)\n", gfp_mask, &gfp_mask);
 
 	dump_stack();
-	if (!should_suppress_show_mem())
-		show_mem(filter);
+	warn_alloc_show_mem(gfp_mask);
 }
 
 static inline struct page *
@@ -3192,6 +3200,9 @@ should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
 {
 	int max_retries = MAX_COMPACT_RETRIES;
 	int min_priority;
+	bool ret = false;
+	int retries = *compaction_retries;
+	enum compact_priority priority = *compact_priority;
 
 	if (!order)
 		return false;
@@ -3213,8 +3224,10 @@ should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
 	 * But do not retry if the given zonelist is not suitable for
 	 * compaction.
 	 */
-	if (compaction_withdrawn(compact_result))
-		return compaction_zonelist_suitable(ac, order, alloc_flags);
+	if (compaction_withdrawn(compact_result)) {
+		ret = compaction_zonelist_suitable(ac, order, alloc_flags);
+		goto out;
+	}
 
 	/*
 	 * !costly requests are much more important than __GFP_REPEAT
@@ -3226,8 +3239,10 @@ should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
 	 */
 	if (order > PAGE_ALLOC_COSTLY_ORDER)
 		max_retries /= 4;
-	if (*compaction_retries <= max_retries)
-		return true;
+	if (*compaction_retries <= max_retries) {
+		ret = true;
+		goto out;
+	}
 
 	/*
 	 * Make sure there are attempts at the highest priority if we exhausted
@@ -3236,12 +3251,15 @@ should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
 check_priority:
 	min_priority = (order > PAGE_ALLOC_COSTLY_ORDER) ?
 			MIN_COMPACT_COSTLY_PRIORITY : MIN_COMPACT_PRIORITY;
+
 	if (*compact_priority > min_priority) {
 		(*compact_priority)--;
 		*compaction_retries = 0;
-		return true;
+		ret = true;
 	}
-	return false;
+out:
+	trace_compact_retry(order, priority, compact_result, retries, max_retries, ret);
+	return ret;
 }
 #else
 static inline struct page *
@@ -3464,6 +3482,8 @@ should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 					ac->nodemask) {
 		unsigned long available;
 		unsigned long reclaimable;
+		unsigned long min_wmark = min_wmark_pages(zone);
+		bool wmark;
 
 		available = reclaimable = zone_reclaimable_pages(zone);
 		available -= DIV_ROUND_UP((*no_progress_loops) * available,
@@ -3474,8 +3494,11 @@ should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 		 * Would the allocation succeed if we reclaimed the whole
 		 * available?
 		 */
-		if (__zone_watermark_ok(zone, order, min_wmark_pages(zone),
-				ac_classzone_idx(ac), alloc_flags, available)) {
+		wmark = __zone_watermark_ok(zone, order, min_wmark,
+				ac_classzone_idx(ac), alloc_flags, available);
+		trace_reclaim_retry_zone(z, order, reclaimable,
+				available, min_wmark, *no_progress_loops, wmark);
+		if (wmark) {
 			/*
 			 * If we didn't make any progress and have a lot of
 			 * dirty + writeback pages then we should wait for
@@ -5008,14 +5031,14 @@ void __ref build_all_zonelists(pg_data_t *pgdat, struct zone *zone)
 	 * disabled and enable it later
 	 */
 	if (vm_total_pages < (pageblock_nr_pages * MIGRATE_TYPES))
-		page_group_by_mobility_disabled = 1;
+		static_branch_enable(&page_group_by_mobility_disabled);
 	else
-		page_group_by_mobility_disabled = 0;
+		static_branch_disable(&page_group_by_mobility_disabled);
 
 	pr_info("Built %i zonelists in %s order, mobility grouping %s.  Total pages: %ld\n",
 		nr_online_nodes,
 		zonelist_order_name[current_zonelist_order],
-		page_group_by_mobility_disabled ? "off" : "on",
+		static_key_enabled(&page_group_by_mobility_disabled) ? "off" : "on",
 		vm_total_pages);
 #ifdef CONFIG_NUMA
 	pr_info("Policy zone: %s\n", zone_names[policy_zone]);
@@ -5057,8 +5080,17 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 		if (context != MEMMAP_EARLY)
 			goto not_early;
 
-		if (!early_pfn_valid(pfn))
+		if (!early_pfn_valid(pfn)) {
+#ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+			/*
+			 * Skip to the pfn preceding the next valid one (or
+			 * end_pfn), such that we hit a valid pfn (or end_pfn)
+			 * on our next iteration of the loop.
+			 */
+			pfn = memblock_next_valid_pfn(pfn, end_pfn) - 1;
+#endif
 			continue;
+		}
 		if (!early_pfn_in_nid(pfn, nid))
 			continue;
 		if (!update_defer_init(pgdat, pfn, end_pfn, &nr_initialised))

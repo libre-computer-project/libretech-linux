@@ -179,7 +179,8 @@ static void release_memory_resource(struct resource *res)
 void get_page_bootmem(unsigned long info,  struct page *page,
 		      unsigned long type)
 {
-	page->lru.next = (struct list_head *) type;
+	page->lru.next = (struct list_head *)type;
+	page->freelist = (void *)type;
 	SetPagePrivate(page);
 	set_page_private(page, info);
 	page_ref_inc(page);
@@ -189,11 +190,12 @@ void put_page_bootmem(struct page *page)
 {
 	unsigned long type;
 
-	type = (unsigned long) page->lru.next;
+	type = (unsigned long) page->freelist;
 	BUG_ON(type < MEMORY_HOTPLUG_MIN_BOOTMEM_TYPE ||
 	       type > MEMORY_HOTPLUG_MAX_BOOTMEM_TYPE);
 
 	if (page_ref_dec_return(page) == 1) {
+		page->freelist = NULL;
 		ClearPagePrivate(page);
 		set_page_private(page, 0);
 		INIT_LIST_HEAD(&page->lru);
@@ -1033,36 +1035,39 @@ static void node_states_set_node(int node, struct memory_notify *arg)
 	node_set_state(node, N_MEMORY);
 }
 
-int zone_can_shift(unsigned long pfn, unsigned long nr_pages,
-		   enum zone_type target)
+bool zone_can_shift(unsigned long pfn, unsigned long nr_pages,
+		   enum zone_type target, int *zone_shift)
 {
 	struct zone *zone = page_zone(pfn_to_page(pfn));
 	enum zone_type idx = zone_idx(zone);
 	int i;
 
+	*zone_shift = 0;
+
 	if (idx < target) {
 		/* pages must be at end of current zone */
 		if (pfn + nr_pages != zone_end_pfn(zone))
-			return 0;
+			return false;
 
 		/* no zones in use between current zone and target */
 		for (i = idx + 1; i < target; i++)
 			if (zone_is_initialized(zone - idx + i))
-				return 0;
+				return false;
 	}
 
 	if (target < idx) {
 		/* pages must be at beginning of current zone */
 		if (pfn != zone->zone_start_pfn)
-			return 0;
+			return false;
 
 		/* no zones in use between current zone and target */
 		for (i = target + 1; i < idx; i++)
 			if (zone_is_initialized(zone - idx + i))
-				return 0;
+				return false;
 	}
 
-	return target - idx;
+	*zone_shift = target - idx;
+	return true;
 }
 
 /* Must be protected by mem_hotplug_begin() */
@@ -1089,10 +1094,13 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages, int online_typ
 	    !can_online_high_movable(zone))
 		return -EINVAL;
 
-	if (online_type == MMOP_ONLINE_KERNEL)
-		zone_shift = zone_can_shift(pfn, nr_pages, ZONE_NORMAL);
-	else if (online_type == MMOP_ONLINE_MOVABLE)
-		zone_shift = zone_can_shift(pfn, nr_pages, ZONE_MOVABLE);
+	if (online_type == MMOP_ONLINE_KERNEL) {
+		if (!zone_can_shift(pfn, nr_pages, ZONE_NORMAL, &zone_shift))
+			return -EINVAL;
+	} else if (online_type == MMOP_ONLINE_MOVABLE) {
+		if (!zone_can_shift(pfn, nr_pages, ZONE_MOVABLE, &zone_shift))
+			return -EINVAL;
+	}
 
 	zone = move_pfn_range(zone_shift, pfn, pfn + nr_pages);
 	if (!zone)

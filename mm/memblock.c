@@ -1105,6 +1105,31 @@ void __init_memblock __next_mem_pfn_range(int *idx, int nid,
 		*out_nid = r->nid;
 }
 
+unsigned long __init_memblock memblock_next_valid_pfn(unsigned long pfn,
+						      unsigned long max_pfn)
+{
+	struct memblock_type *type = &memblock.memory;
+	unsigned int right = type->cnt;
+	unsigned int mid, left = 0;
+	phys_addr_t addr = PFN_PHYS(pfn + 1);
+
+	do {
+		mid = (right + left) / 2;
+
+		if (addr < type->regions[mid].base)
+			right = mid;
+		else if (addr >= (type->regions[mid].base +
+				  type->regions[mid].size))
+			left = mid + 1;
+		else {
+			/* addr is within the region, so pfn + 1 is valid */
+			return min(pfn + 1, max_pfn);
+		}
+	} while (left < right);
+
+	return min(PHYS_PFN(type->regions[right].base), max_pfn);
+}
+
 /**
  * memblock_set_node - set node ID on memblock regions
  * @base: base of area to set node ID for
@@ -1274,18 +1299,17 @@ static void * __init memblock_virt_alloc_internal(
 
 	if (max_addr > memblock.current_limit)
 		max_addr = memblock.current_limit;
-
 again:
 	alloc = memblock_find_in_range_node(size, align, min_addr, max_addr,
 					    nid, flags);
-	if (alloc)
+	if (alloc && !memblock_reserve(alloc, size))
 		goto done;
 
 	if (nid != NUMA_NO_NODE) {
 		alloc = memblock_find_in_range_node(size, align, min_addr,
 						    max_addr, NUMA_NO_NODE,
 						    flags);
-		if (alloc)
+		if (alloc && !memblock_reserve(alloc, size))
 			goto done;
 	}
 
@@ -1303,7 +1327,6 @@ again:
 
 	return NULL;
 done:
-	memblock_reserve(alloc, size);
 	ptr = phys_to_virt(alloc);
 	memset(ptr, 0, size);
 
@@ -1615,8 +1638,7 @@ int __init_memblock memblock_is_region_memory(phys_addr_t base, phys_addr_t size
 
 	if (idx == -1)
 		return 0;
-	return memblock.memory.regions[idx].base <= base &&
-		(memblock.memory.regions[idx].base +
+	return (memblock.memory.regions[idx].base +
 		 memblock.memory.regions[idx].size) >= end;
 }
 
