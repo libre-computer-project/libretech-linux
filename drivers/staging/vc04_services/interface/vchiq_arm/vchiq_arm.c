@@ -194,7 +194,7 @@ vchiq_static_assert(ARRAY_SIZE(ioctl_names) ==
 		    (VCHIQ_IOC_MAX + 1));
 
 static void
-dump_phys_mem(void *virt_addr, uint32_t num_bytes);
+dump_phys_mem(void *virt_addr, u32 num_bytes);
 
 /****************************************************************************
 *
@@ -665,7 +665,7 @@ vchiq_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			USER_SERVICE_T *user_service =
 				(USER_SERVICE_T *)service->base.userdata;
 			/* close_pending is false on first entry, and when the
-                           wait in vchiq_close_service has been interrupted. */
+			   wait in vchiq_close_service has been interrupted. */
 			if (!user_service->close_pending) {
 				status = vchiq_close_service(service->handle);
 				if (status != VCHIQ_SUCCESS)
@@ -691,7 +691,7 @@ vchiq_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			USER_SERVICE_T *user_service =
 				(USER_SERVICE_T *)service->base.userdata;
 			/* close_pending is false on first entry, and when the
-                           wait in vchiq_close_service has been interrupted. */
+			   wait in vchiq_close_service has been interrupted. */
 			if (!user_service->close_pending) {
 				status = vchiq_remove_service(service->handle);
 				if (status != VCHIQ_SUCCESS)
@@ -1535,10 +1535,10 @@ vchiq_dump_platform_service_state(void *dump_context, VCHIQ_SERVICE_T *service)
 ***************************************************************************/
 
 static void
-dump_phys_mem(void *virt_addr, uint32_t num_bytes)
+dump_phys_mem(void *virt_addr, u32 num_bytes)
 {
 	int            rc;
-	uint8_t       *end_virt_addr = virt_addr + num_bytes;
+	u8            *end_virt_addr = virt_addr + num_bytes;
 	int            num_pages;
 	int            offset;
 	int            end_offset;
@@ -1546,7 +1546,7 @@ dump_phys_mem(void *virt_addr, uint32_t num_bytes)
 	int            prev_idx;
 	struct page   *page;
 	struct page  **pages;
-	uint8_t       *kmapped_virt_ptr;
+	u8            *kmapped_virt_ptr;
 
 	/* Align virtAddr and endVirtAddr to 16 byte boundaries. */
 
@@ -1602,7 +1602,7 @@ dump_phys_mem(void *virt_addr, uint32_t num_bytes)
 
 		if (vchiq_arm_log_level >= VCHIQ_LOG_TRACE)
 			vchiq_log_dump_mem("ph",
-				(uint32_t)(unsigned long)&kmapped_virt_ptr[
+				(u32)(unsigned long)&kmapped_virt_ptr[
 					page_offset],
 				&kmapped_virt_ptr[page_offset], 16);
 
@@ -1996,7 +1996,7 @@ block_resume(VCHIQ_ARM_STATE_T *arm_state)
 				&arm_state->blocked_blocker, timeout_val)
 					<= 0) {
 			vchiq_log_error(vchiq_susp_log_level, "%s wait for "
-				"previously blocked clients failed" , __func__);
+				"previously blocked clients failed", __func__);
 			status = VCHIQ_ERROR;
 			write_lock_bh(&arm_state->susp_res_lock);
 			goto out;
@@ -2012,7 +2012,7 @@ block_resume(VCHIQ_ARM_STATE_T *arm_state)
 		if (resume_count > 1) {
 			status = VCHIQ_ERROR;
 			vchiq_log_error(vchiq_susp_log_level, "%s waited too "
-				"many times for resume" , __func__);
+				"many times for resume", __func__);
 			goto out;
 		}
 		write_unlock_bh(&arm_state->susp_res_lock);
@@ -2371,52 +2371,6 @@ out:
 	vchiq_log_trace(vchiq_susp_log_level, "%s exit", __func__);
 	return resume;
 }
-
-void
-vchiq_platform_check_resume(VCHIQ_STATE_T *state)
-{
-	VCHIQ_ARM_STATE_T *arm_state = vchiq_platform_get_arm_state(state);
-	int res = 0;
-
-	if (!arm_state)
-		goto out;
-
-	vchiq_log_trace(vchiq_susp_log_level, "%s", __func__);
-
-	write_lock_bh(&arm_state->susp_res_lock);
-	if (arm_state->wake_address == 0) {
-		vchiq_log_info(vchiq_susp_log_level,
-					"%s: already awake", __func__);
-		goto unlock;
-	}
-	if (arm_state->vc_resume_state == VC_RESUME_IN_PROGRESS) {
-		vchiq_log_info(vchiq_susp_log_level,
-					"%s: already resuming", __func__);
-		goto unlock;
-	}
-
-	if (arm_state->vc_resume_state == VC_RESUME_REQUESTED) {
-		set_resume_state(arm_state, VC_RESUME_IN_PROGRESS);
-		res = 1;
-	} else
-		vchiq_log_trace(vchiq_susp_log_level,
-				"%s: not resuming (resume state %s)", __func__,
-				resume_state_names[arm_state->vc_resume_state +
-							VC_RESUME_NUM_OFFSET]);
-
-unlock:
-	write_unlock_bh(&arm_state->susp_res_lock);
-
-	if (res)
-		vchiq_platform_resume(state);
-
-out:
-	vchiq_log_trace(vchiq_susp_log_level, "%s exit", __func__);
-	return;
-
-}
-
-
 
 VCHIQ_STATUS_T
 vchiq_use_internal(VCHIQ_STATE_T *state, VCHIQ_SERVICE_T *service,
@@ -2870,10 +2824,10 @@ void vchiq_platform_conn_state_changed(VCHIQ_STATE_T *state,
 	if (state->conn_state == VCHIQ_CONNSTATE_CONNECTED) {
 		write_lock_bh(&arm_state->susp_res_lock);
 		if (!arm_state->first_connect) {
-			char threadname[10];
+			char threadname[16];
 			arm_state->first_connect = 1;
 			write_unlock_bh(&arm_state->susp_res_lock);
-			snprintf(threadname, sizeof(threadname), "VCHIQka-%d",
+			snprintf(threadname, sizeof(threadname), "vchiq-keep/%d",
 				state->id);
 			arm_state->ka_thread = kthread_create(
 				&vchiq_keepalive_thread_func,
