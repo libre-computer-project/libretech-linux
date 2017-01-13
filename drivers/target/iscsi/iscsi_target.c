@@ -1431,11 +1431,10 @@ static void iscsit_do_crypto_hash_buf(
 }
 
 int
-iscsit_check_dataout_hdr(struct iscsi_conn *conn, unsigned char *buf,
-			  struct iscsi_cmd **out_cmd)
+__iscsit_check_dataout_hdr(struct iscsi_conn *conn, void *buf,
+			   struct iscsi_cmd *cmd, bool *success)
 {
-	struct iscsi_data *hdr = (struct iscsi_data *)buf;
-	struct iscsi_cmd *cmd = NULL;
+	struct iscsi_data *hdr = buf;
 	struct se_cmd *se_cmd;
 	u32 payload_length = ntoh24(hdr->dlength);
 	int rc;
@@ -1455,11 +1454,6 @@ iscsit_check_dataout_hdr(struct iscsi_conn *conn, unsigned char *buf,
 		return iscsit_add_reject(conn, ISCSI_REASON_PROTOCOL_ERROR,
 					 buf);
 	}
-
-	cmd = iscsit_find_cmd_from_itt_or_dump(conn, hdr->itt,
-			payload_length);
-	if (!cmd)
-		return 0;
 
 	pr_debug("Got DataOut ITT: 0x%08x, TTT: 0x%08x,"
 		" DataSN: 0x%08x, Offset: %u, Length: %u, CID: %hu\n",
@@ -1553,9 +1547,31 @@ iscsit_check_dataout_hdr(struct iscsi_conn *conn, unsigned char *buf,
 		return 0;
 	else if (rc == DATAOUT_CANNOT_RECOVER)
 		return -1;
-
-	*out_cmd = cmd;
+	*success = true;
 	return 0;
+}
+EXPORT_SYMBOL(__iscsit_check_dataout_hdr);
+
+int
+iscsit_check_dataout_hdr(struct iscsi_conn *conn, void *buf,
+			 struct iscsi_cmd **out_cmd)
+{
+	struct iscsi_data *hdr = buf;
+	struct iscsi_cmd *cmd;
+	bool success = false;
+	int rc;
+
+	cmd = iscsit_find_cmd_from_itt_or_dump(conn, hdr->itt,
+					       ntoh24(hdr->dlength));
+	if (!cmd)
+		return 0;
+
+	rc = __iscsit_check_dataout_hdr(conn, buf, cmd, &success);
+
+	if (success)
+		*out_cmd = cmd;
+
+	return rc;
 }
 EXPORT_SYMBOL(iscsit_check_dataout_hdr);
 
