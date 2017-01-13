@@ -19,7 +19,7 @@
 
 #define BXT_PAD_OWN	0x020
 #define BXT_HOSTSW_OWN	0x080
-#define BXT_PADCFGLOCK	0x090
+#define BXT_PADCFGLOCK	0x060
 #define BXT_GPI_IE	0x110
 
 #define BXT_COMMUNITY(s, e)				\
@@ -1058,7 +1058,6 @@ static const struct dev_pm_ops bxt_pinctrl_pm_ops = {
 
 static struct platform_driver bxt_pinctrl_driver = {
 	.probe = bxt_pinctrl_probe,
-	.remove = intel_pinctrl_remove,
 	.driver = {
 		.name = "broxton-pinctrl",
 		.acpi_match_table = bxt_pinctrl_acpi_match,

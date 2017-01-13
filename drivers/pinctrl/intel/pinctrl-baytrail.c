@@ -1092,6 +1092,7 @@ static int byt_pin_config_get(struct pinctrl_dev *pctl_dev, unsigned int offset,
 	enum pin_config_param param = pinconf_to_config_param(*config);
 	void __iomem *conf_reg = byt_gpio_reg(vg, offset, BYT_CONF0_REG);
 	void __iomem *val_reg = byt_gpio_reg(vg, offset, BYT_VAL_REG);
+	void __iomem *db_reg = byt_gpio_reg(vg, offset, BYT_DEBOUNCE_REG);
 	unsigned long flags;
 	u32 conf, pull, val, debounce;
 	u16 arg = 0;
@@ -1128,7 +1129,7 @@ static int byt_pin_config_get(struct pinctrl_dev *pctl_dev, unsigned int offset,
 			return -EINVAL;
 
 		raw_spin_lock_irqsave(&vg->lock, flags);
-		debounce = readl(byt_gpio_reg(vg, offset, BYT_DEBOUNCE_REG));
+		debounce = readl(db_reg);
 		raw_spin_unlock_irqrestore(&vg->lock, flags);
 
 		switch (debounce & BYT_DEBOUNCE_PULSE_MASK) {
@@ -1176,6 +1177,7 @@ static int byt_pin_config_set(struct pinctrl_dev *pctl_dev,
 	unsigned int param, arg;
 	void __iomem *conf_reg = byt_gpio_reg(vg, offset, BYT_CONF0_REG);
 	void __iomem *val_reg = byt_gpio_reg(vg, offset, BYT_VAL_REG);
+	void __iomem *db_reg = byt_gpio_reg(vg, offset, BYT_DEBOUNCE_REG);
 	unsigned long flags;
 	u32 conf, val, debounce;
 	int i, ret = 0;
@@ -1238,36 +1240,40 @@ static int byt_pin_config_set(struct pinctrl_dev *pctl_dev,
 
 			break;
 		case PIN_CONFIG_INPUT_DEBOUNCE:
-			debounce = readl(byt_gpio_reg(vg, offset,
-						      BYT_DEBOUNCE_REG));
-			conf &= ~BYT_DEBOUNCE_PULSE_MASK;
+			debounce = readl(db_reg);
+			debounce &= ~BYT_DEBOUNCE_PULSE_MASK;
 
 			switch (arg) {
+			case 0:
+				conf &= BYT_DEBOUNCE_EN;
+				break;
 			case 375:
-				conf |= BYT_DEBOUNCE_PULSE_375US;
+				debounce |= BYT_DEBOUNCE_PULSE_375US;
 				break;
 			case 750:
-				conf |= BYT_DEBOUNCE_PULSE_750US;
+				debounce |= BYT_DEBOUNCE_PULSE_750US;
 				break;
 			case 1500:
-				conf |= BYT_DEBOUNCE_PULSE_1500US;
+				debounce |= BYT_DEBOUNCE_PULSE_1500US;
 				break;
 			case 3000:
-				conf |= BYT_DEBOUNCE_PULSE_3MS;
+				debounce |= BYT_DEBOUNCE_PULSE_3MS;
 				break;
 			case 6000:
-				conf |= BYT_DEBOUNCE_PULSE_6MS;
+				debounce |= BYT_DEBOUNCE_PULSE_6MS;
 				break;
 			case 12000:
-				conf |= BYT_DEBOUNCE_PULSE_12MS;
+				debounce |= BYT_DEBOUNCE_PULSE_12MS;
 				break;
 			case 24000:
-				conf |= BYT_DEBOUNCE_PULSE_24MS;
+				debounce |= BYT_DEBOUNCE_PULSE_24MS;
 				break;
 			default:
 				ret = -EINVAL;
 			}
 
+			if (!ret)
+				writel(debounce, db_reg);
 			break;
 		default:
 			ret = -ENOTSUPP;
@@ -1685,7 +1691,7 @@ static int byt_gpio_probe(struct byt_gpio *vg)
 	vg->saved_context = devm_kcalloc(&vg->pdev->dev, gc->ngpio,
 				       sizeof(*vg->saved_context), GFP_KERNEL);
 #endif
-	ret = gpiochip_add_data(gc, vg);
+	ret = devm_gpiochip_add_data(&vg->pdev->dev, gc, vg);
 	if (ret) {
 		dev_err(&vg->pdev->dev, "failed adding byt-gpio chip\n");
 		return ret;
@@ -1695,7 +1701,7 @@ static int byt_gpio_probe(struct byt_gpio *vg)
 				     0, 0, vg->soc_data->npins);
 	if (ret) {
 		dev_err(&vg->pdev->dev, "failed to add GPIO pin range\n");
-		goto fail;
+		return ret;
 	}
 
 	/* set up interrupts  */
@@ -1706,18 +1712,13 @@ static int byt_gpio_probe(struct byt_gpio *vg)
 					   handle_bad_irq, IRQ_TYPE_NONE);
 		if (ret) {
 			dev_err(&vg->pdev->dev, "failed to add irqchip\n");
-			goto fail;
+			return ret;
 		}
 
 		gpiochip_set_chained_irqchip(gc, &byt_irqchip,
 					     (unsigned)irq_rc->start,
 					     byt_gpio_irq_handler);
 	}
-
-	return ret;
-
-fail:
-	gpiochip_remove(&vg->chip);
 
 	return ret;
 }
@@ -1802,7 +1803,7 @@ static int byt_pinctrl_probe(struct platform_device *pdev)
 	vg->pctl_desc.pins	= vg->soc_data->pins;
 	vg->pctl_desc.npins	= vg->soc_data->npins;
 
-	vg->pctl_dev = pinctrl_register(&vg->pctl_desc, &pdev->dev, vg);
+	vg->pctl_dev = devm_pinctrl_register(&pdev->dev, &vg->pctl_desc, vg);
 	if (IS_ERR(vg->pctl_dev)) {
 		dev_err(&pdev->dev, "failed to register pinctrl driver\n");
 		return PTR_ERR(vg->pctl_dev);
@@ -1811,10 +1812,8 @@ static int byt_pinctrl_probe(struct platform_device *pdev)
 	raw_spin_lock_init(&vg->lock);
 
 	ret = byt_gpio_probe(vg);
-	if (ret) {
-		pinctrl_unregister(vg->pctl_dev);
+	if (ret)
 		return ret;
-	}
 
 	platform_set_drvdata(pdev, vg);
 	pm_runtime_enable(&pdev->dev);
