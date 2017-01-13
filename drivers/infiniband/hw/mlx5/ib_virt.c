@@ -31,7 +31,7 @@
  */
 
 #include <linux/module.h>
-#include <linux/mlx5/vport.h>
+#include "lib/vport.h"
 #include "mlx5_ib.h"
 
 static inline u32 mlx_to_net_policy(enum port_state_policy mlx_policy)
