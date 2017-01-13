@@ -35,6 +35,7 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/regulator/consumer.h>
+#include <linux/interrupt.h>
 
 #define DRIVER_NAME "meson-gx-mmc"
 
@@ -578,12 +579,14 @@ static irqreturn_t meson_mmc_irq(int irq, void *dev_id)
 {
 	struct meson_host *host = dev_id;
 	struct mmc_request *mrq;
-	struct mmc_command *cmd = host->cmd;
+	struct mmc_command *cmd;
 	u32 irq_en, status, raw_status;
 	irqreturn_t ret = IRQ_HANDLED;
 
 	if (WARN_ON(!host))
 		return IRQ_NONE;
+
+	cmd = host->cmd;
 
 	mrq = host->mrq;
 
@@ -670,10 +673,10 @@ static irqreturn_t meson_mmc_irq_thread(int irq, void *dev_id)
 	int ret = IRQ_HANDLED;
 
 	if (WARN_ON(!mrq))
-		ret = IRQ_NONE;
+		return IRQ_NONE;
 
 	if (WARN_ON(!cmd))
-		ret = IRQ_NONE;
+		return IRQ_NONE;
 
 	data = cmd->data;
 	if (data) {
