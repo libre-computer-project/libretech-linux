@@ -265,6 +265,7 @@ static int __test_hash(struct crypto_ahash *tfm, struct hash_testvec *template,
 		       const int align_offset)
 {
 	const char *algo = crypto_tfm_alg_driver_name(crypto_ahash_tfm(tfm));
+	size_t digest_size = crypto_ahash_digestsize(tfm);
 	unsigned int i, j, k, temp;
 	struct scatterlist sg[8];
 	char *result;
@@ -275,7 +276,7 @@ static int __test_hash(struct crypto_ahash *tfm, struct hash_testvec *template,
 	char *xbuf[XBUFSIZE];
 	int ret = -ENOMEM;
 
-	result = kmalloc(MAX_DIGEST_SIZE, GFP_KERNEL);
+	result = kmalloc(digest_size, GFP_KERNEL);
 	if (!result)
 		return ret;
 	key = kmalloc(MAX_KEYLEN, GFP_KERNEL);
@@ -305,7 +306,7 @@ static int __test_hash(struct crypto_ahash *tfm, struct hash_testvec *template,
 			goto out;
 
 		j++;
-		memset(result, 0, MAX_DIGEST_SIZE);
+		memset(result, 0, digest_size);
 
 		hash_buff = xbuf[0];
 		hash_buff += align_offset;
@@ -380,7 +381,7 @@ static int __test_hash(struct crypto_ahash *tfm, struct hash_testvec *template,
 			continue;
 
 		j++;
-		memset(result, 0, MAX_DIGEST_SIZE);
+		memset(result, 0, digest_size);
 
 		temp = 0;
 		sg_init_table(sg, template[i].np);
@@ -458,7 +459,7 @@ static int __test_hash(struct crypto_ahash *tfm, struct hash_testvec *template,
 			continue;
 
 		j++;
-		memset(result, 0, MAX_DIGEST_SIZE);
+		memset(result, 0, digest_size);
 
 		ret = -EINVAL;
 		hash_buff = xbuf[0];
@@ -1463,13 +1464,12 @@ static int test_acomp(struct crypto_acomp *tfm, struct comp_testvec *ctemplate,
 		int ilen = ctemplate[i].inlen;
 		void *input_vec;
 
-		input_vec = kmalloc(ilen, GFP_KERNEL);
+		input_vec = kmemdup(ctemplate[i].input, ilen, GFP_KERNEL);
 		if (!input_vec) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
-		memcpy(input_vec, ctemplate[i].input, ilen);
 		memset(output, 0, dlen);
 		init_completion(&result.completion);
 		sg_init_one(&src, input_vec, ilen);
@@ -1525,13 +1525,12 @@ static int test_acomp(struct crypto_acomp *tfm, struct comp_testvec *ctemplate,
 		int ilen = dtemplate[i].inlen;
 		void *input_vec;
 
-		input_vec = kmalloc(ilen, GFP_KERNEL);
+		input_vec = kmemdup(dtemplate[i].input, ilen, GFP_KERNEL);
 		if (!input_vec) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
-		memcpy(input_vec, dtemplate[i].input, ilen);
 		memset(output, 0, dlen);
 		init_completion(&result.completion);
 		sg_init_one(&src, input_vec, ilen);
