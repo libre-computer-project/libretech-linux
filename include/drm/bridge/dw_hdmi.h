@@ -21,6 +21,14 @@ enum {
 	DW_HDMI_RES_MAX,
 };
 
+enum {
+	DW_HDMI_INPUT_FMT_RGB = 0,
+	DW_HDMI_INPUT_FMT_YCBCR444,
+	DW_HDMI_INPUT_FMT_YCBCR422_16BITS,
+	DW_HDMI_INPUT_FMT_YCBCR422_8BITS,
+	DW_HDMI_INPUT_FMT_XVYCC444,
+};
+
 enum dw_hdmi_phy_type {
 	DW_HDMI_PHY_DWC_HDMI_TX_PHY = 0x00,
 	DW_HDMI_PHY_DWC_MHL_PHY_HEAC = 0xb2,
@@ -68,6 +76,7 @@ struct dw_hdmi_plat_data {
 				 const struct dw_hdmi_plat_data *data);
 	bool (*hdmi_read_hpd)(struct dw_hdmi *hdmi,
 			      const struct dw_hdmi_plat_data *data);
+	int input_fmt;
 };
 
 int dw_hdmi_probe(struct platform_device *pdev,

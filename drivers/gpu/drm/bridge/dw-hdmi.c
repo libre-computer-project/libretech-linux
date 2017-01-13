@@ -1420,8 +1420,11 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi, struct drm_display_mode *mode)
 	hdmi->hdmi_data.video_mode.mpixelrepetitionoutput = 0;
 	hdmi->hdmi_data.video_mode.mpixelrepetitioninput = 0;
 
-	/* TODO: Get input format from IPU (via FB driver interface) */
-	hdmi->hdmi_data.enc_in_format = RGB;
+	/* Get input format from plat data or fallback to RGB */
+	if (hdmi->plat_data->input_fmt >= 0)
+		hdmi->hdmi_data.enc_in_format = hdmi->plat_data->input_fmt;
+	else
+		hdmi->hdmi_data.enc_in_format = RGB;
 
 	hdmi->hdmi_data.enc_out_format = RGB;
 
