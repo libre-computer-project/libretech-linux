@@ -22,6 +22,14 @@ enum {
 	DW_HDMI_RES_MAX,
 };
 
+enum dw_hdmi_color_enc_format {
+	DW_HDMI_ENC_FMT_RGB = 0,
+	DW_HDMI_ENC_FMT_YCBCR444,
+	DW_HDMI_ENC_FMT_YCBCR422_16BITS,
+	DW_HDMI_ENC_FMT_YCBCR422_8BITS,
+	DW_HDMI_ENC_FMT_XVYCC444,
+};
+
 enum dw_hdmi_phy_type {
 	DW_HDMI_PHY_DWC_HDMI_TX_PHY = 0x00,
 	DW_HDMI_PHY_DWC_MHL_PHY_HEAC = 0xb2,
@@ -61,8 +69,8 @@ struct hdmi_vmode {
 };
 
 struct hdmi_data_info {
-	unsigned int enc_in_format;
-	unsigned int enc_out_format;
+	enum dw_hdmi_color_enc_format enc_in_format;
+	enum dw_hdmi_color_enc_format enc_out_format;
 	unsigned int enc_color_depth;
 	unsigned int colorimetry;
 	unsigned int pix_repet_factor;
@@ -95,6 +103,8 @@ struct dw_hdmi_plat_data {
 	enum drm_mode_status (*mode_valid)(struct drm_connector *connector,
 					   struct drm_display_mode *mode);
 	struct regmap *regm;
+
+	int input_fmt;
 };
 
 int dw_hdmi_probe(struct platform_device *pdev,
