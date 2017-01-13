@@ -47,6 +47,8 @@ static inline void rcu_virt_note_context_switch(int cpu)
 void synchronize_rcu_bh(void);
 void synchronize_sched_expedited(void);
 void synchronize_rcu_expedited(void);
+bool rcu_sched_trivial_gp(void);
+bool rcu_bh_trivial_gp(void);
 
 void kfree_call_rcu(struct rcu_head *head, rcu_callback_t func);
 

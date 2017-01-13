@@ -65,7 +65,7 @@ EXPORT_SYMBOL_GPL(rcu_scheduler_active);
 void __init rcu_scheduler_starting(void)
 {
 	WARN_ON(nr_context_switches() > 0);
-	rcu_scheduler_active = 1;
+	rcu_scheduler_active = RCU_SCHEDULER_RUNNING;
 }
 
 #endif /* #ifdef CONFIG_DEBUG_LOCK_ALLOC */
