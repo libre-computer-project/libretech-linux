@@ -309,9 +309,10 @@ void hv_cleanup(bool crash)
 
 		hypercall_msr.as_uint64 = 0;
 		wrmsrl(HV_X64_MSR_REFERENCE_TSC, hypercall_msr.as_uint64);
-		if (!crash)
+		if (!crash) {
 			vfree(hv_context.tsc_page);
-		hv_context.tsc_page = NULL;
+			hv_context.tsc_page = NULL;
+		}
 	}
 #endif
 }
@@ -411,7 +412,7 @@ int hv_synic_alloc(void)
 		goto err;
 	}
 
-	for_each_online_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		hv_context.event_dpc[cpu] = kmalloc(size, GFP_ATOMIC);
 		if (hv_context.event_dpc[cpu] == NULL) {
 			pr_err("Unable to allocate event dpc\n");
@@ -457,6 +458,8 @@ int hv_synic_alloc(void)
 			pr_err("Unable to allocate post msg page\n");
 			goto err;
 		}
+
+		INIT_LIST_HEAD(&hv_context.percpu_list[cpu]);
 	}
 
 	return 0;
@@ -482,7 +485,7 @@ void hv_synic_free(void)
 	int cpu;
 
 	kfree(hv_context.hv_numa_map);
-	for_each_online_cpu(cpu)
+	for_each_present_cpu(cpu)
 		hv_synic_free_cpu(cpu);
 }
 
@@ -493,7 +496,7 @@ void hv_synic_free(void)
  * retrieve the initialized message and event pages.  Otherwise, we create and
  * initialize the message and event pages.
  */
-void hv_synic_init(void *arg)
+int hv_synic_init(unsigned int cpu)
 {
 	u64 version;
 	union hv_synic_simp simp;
@@ -502,10 +505,8 @@ void hv_synic_init(void *arg)
 	union hv_synic_scontrol sctrl;
 	u64 vp_index;
 
-	int cpu = smp_processor_id();
-
 	if (!hv_context.hypercall_page)
-		return;
+		return -EFAULT;
 
 	/* Check the version */
 	rdmsrl(HV_X64_MSR_SVERSION, version);
@@ -552,8 +553,6 @@ void hv_synic_init(void *arg)
 	rdmsrl(HV_X64_MSR_VP_INDEX, vp_index);
 	hv_context.vp_index[cpu] = (u32)vp_index;
 
-	INIT_LIST_HEAD(&hv_context.percpu_list[cpu]);
-
 	/*
 	 * Register the per-cpu clockevent source.
 	 */
@@ -562,7 +561,7 @@ void hv_synic_init(void *arg)
 						HV_TIMER_FREQUENCY,
 						HV_MIN_DELTA_TICKS,
 						HV_MAX_MAX_DELTA_TICKS);
-	return;
+	return 0;
 }
 
 /*
@@ -582,16 +581,46 @@ void hv_synic_clockevents_cleanup(void)
 /*
  * hv_synic_cleanup - Cleanup routine for hv_synic_init().
  */
-void hv_synic_cleanup(void *arg)
+int hv_synic_cleanup(unsigned int cpu)
 {
 	union hv_synic_sint shared_sint;
 	union hv_synic_simp simp;
 	union hv_synic_siefp siefp;
 	union hv_synic_scontrol sctrl;
-	int cpu = smp_processor_id();
+	struct vmbus_channel *channel, *sc;
+	bool channel_found = false;
+	unsigned long flags;
 
 	if (!hv_context.synic_initialized)
-		return;
+		return -EFAULT;
+
+	/*
+	 * Search for channels which are bound to the CPU we're about to
+	 * cleanup. In case we find one and vmbus is still connected we need to
+	 * fail, this will effectively prevent CPU offlining. There is no way
+	 * we can re-bind channels to different CPUs for now.
+	 */
+	mutex_lock(&vmbus_connection.channel_mutex);
+	list_for_each_entry(channel, &vmbus_connection.chn_list, listentry) {
+		if (channel->target_cpu == cpu) {
+			channel_found = true;
+			break;
+		}
+		spin_lock_irqsave(&channel->lock, flags);
+		list_for_each_entry(sc, &channel->sc_list, sc_list) {
+			if (sc->target_cpu == cpu) {
+				channel_found = true;
+				break;
+			}
+		}
+		spin_unlock_irqrestore(&channel->lock, flags);
+		if (channel_found)
+			break;
+	}
+	mutex_unlock(&vmbus_connection.channel_mutex);
+
+	if (channel_found && vmbus_connection.conn_state == CONNECTED)
+		return -EBUSY;
 
 	/* Turn off clockevent device */
 	if (ms_hyperv.features & HV_X64_MSR_SYNTIMER_AVAILABLE) {
@@ -623,4 +652,6 @@ void hv_synic_cleanup(void *arg)
 	rdmsrl(HV_X64_MSR_SCONTROL, sctrl.as_uint64);
 	sctrl.enable = 0;
 	wrmsrl(HV_X64_MSR_SCONTROL, sctrl.as_uint64);
+
+	return 0;
 }

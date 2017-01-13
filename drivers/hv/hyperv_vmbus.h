@@ -505,9 +505,9 @@ extern int hv_synic_alloc(void);
 
 extern void hv_synic_free(void);
 
-extern void hv_synic_init(void *irqarg);
+extern int hv_synic_init(unsigned int cpu);
 
-extern void hv_synic_cleanup(void *arg);
+extern int hv_synic_cleanup(unsigned int cpu);
 
 extern void hv_synic_clockevents_cleanup(void);
 
@@ -683,7 +683,7 @@ void vmbus_free_channels(void);
 int vmbus_connect(void);
 void vmbus_disconnect(void);
 
-int vmbus_post_msg(void *buffer, size_t buflen);
+int vmbus_post_msg(void *buffer, size_t buflen, bool can_sleep);
 
 void vmbus_on_event(unsigned long data);
 void vmbus_on_msg_dpc(unsigned long data);

@@ -54,6 +54,7 @@ static struct acpi_device  *hv_acpi_dev;
 
 static struct completion probe_event;
 
+static int hyperv_cpuhp_online;
 
 static void hyperv_report_panic(struct pt_regs *regs)
 {
@@ -997,13 +998,15 @@ static int vmbus_bus_init(void)
 	 * Initialize the per-cpu interrupt state and
 	 * connect to the host.
 	 */
-	on_each_cpu(hv_synic_init, NULL, 1);
+	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "x86/hyperv:online",
+				hv_synic_init, hv_synic_cleanup);
+	if (ret < 0)
+		goto err_alloc;
+	hyperv_cpuhp_online = ret;
+
 	ret = vmbus_connect();
 	if (ret)
 		goto err_connect;
-
-	if (vmbus_proto_version > VERSION_WIN7)
-		cpu_hotplug_disable();
 
 	/*
 	 * Only register if the crash MSRs are available
@@ -1019,7 +1022,7 @@ static int vmbus_bus_init(void)
 	return 0;
 
 err_connect:
-	on_each_cpu(hv_synic_cleanup, NULL, 1);
+	cpuhp_remove_state(hyperv_cpuhp_online);
 err_alloc:
 	hv_synic_free();
 	hv_remove_vmbus_irq();
@@ -1478,12 +1481,12 @@ static struct acpi_driver vmbus_acpi_driver = {
 
 static void hv_kexec_handler(void)
 {
-	int cpu;
-
 	hv_synic_clockevents_cleanup();
 	vmbus_initiate_unload(false);
-	for_each_online_cpu(cpu)
-		smp_call_function_single(cpu, hv_synic_cleanup, NULL, 1);
+	vmbus_connection.conn_state = DISCONNECTED;
+	/* Make sure conn_state is set as hv_synic_cleanup checks for it */
+	mb();
+	cpuhp_remove_state(hyperv_cpuhp_online);
 	hv_cleanup(false);
 };
 
@@ -1495,7 +1498,8 @@ static void hv_crash_handler(struct pt_regs *regs)
 	 * doing the cleanup for current CPU only. This should be sufficient
 	 * for kdump.
 	 */
-	hv_synic_cleanup(NULL);
+	vmbus_connection.conn_state = DISCONNECTED;
+	hv_synic_cleanup(smp_processor_id());
 	hv_cleanup(true);
 };
 
@@ -1559,12 +1563,10 @@ static void __exit vmbus_exit(void)
 	hv_cleanup(false);
 	for_each_online_cpu(cpu) {
 		tasklet_kill(hv_context.event_dpc[cpu]);
-		smp_call_function_single(cpu, hv_synic_cleanup, NULL, 1);
 	}
+	cpuhp_remove_state(hyperv_cpuhp_online);
 	hv_synic_free();
 	acpi_bus_unregister_driver(&vmbus_acpi_driver);
-	if (vmbus_proto_version > VERSION_WIN7)
-		cpu_hotplug_enable();
 }
 
 
