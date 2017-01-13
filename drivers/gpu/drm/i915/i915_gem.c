@@ -1696,12 +1696,7 @@ i915_gem_mmap_ioctl(struct drm_device *dev, void *data,
 
 static unsigned int tile_row_pages(struct drm_i915_gem_object *obj)
 {
-	u64 size;
-
-	size = i915_gem_object_get_stride(obj);
-	size *= i915_gem_object_get_tiling(obj) == I915_TILING_Y ? 32 : 8;
-
-	return size >> PAGE_SHIFT;
+	return i915_gem_object_get_tile_row_size(obj) >> PAGE_SHIFT;
 }
 
 /**
@@ -1752,6 +1747,30 @@ static unsigned int tile_row_pages(struct drm_i915_gem_object *obj)
 int i915_gem_mmap_gtt_version(void)
 {
 	return 1;
+}
+
+static inline struct i915_ggtt_view
+compute_partial_view(struct drm_i915_gem_object *obj,
+		     pgoff_t page_offset,
+		     unsigned int chunk)
+{
+	struct i915_ggtt_view view;
+
+	if (i915_gem_object_is_tiled(obj))
+		chunk = roundup(chunk, tile_row_pages(obj));
+
+	memset(&view, 0, sizeof(view));
+	view.type = I915_GGTT_VIEW_PARTIAL;
+	view.params.partial.offset = rounddown(page_offset, chunk);
+	view.params.partial.size =
+		min_t(unsigned int, chunk,
+		      (obj->base.size >> PAGE_SHIFT) - view.params.partial.offset);
+
+	/* If the partial covers the entire object, just create a normal VMA. */
+	if (chunk >= obj->base.size >> PAGE_SHIFT)
+		view.type = I915_GGTT_VIEW_NORMAL;
+
+	return view;
 }
 
 /**
@@ -1830,26 +1849,9 @@ int i915_gem_fault(struct vm_area_struct *area, struct vm_fault *vmf)
 	/* Now pin it into the GTT as needed */
 	vma = i915_gem_object_ggtt_pin(obj, NULL, 0, 0, flags);
 	if (IS_ERR(vma)) {
-		struct i915_ggtt_view view;
-		unsigned int chunk_size;
-
 		/* Use a partial view if it is bigger than available space */
-		chunk_size = MIN_CHUNK_PAGES;
-		if (i915_gem_object_is_tiled(obj))
-			chunk_size = roundup(chunk_size, tile_row_pages(obj));
-
-		memset(&view, 0, sizeof(view));
-		view.type = I915_GGTT_VIEW_PARTIAL;
-		view.params.partial.offset = rounddown(page_offset, chunk_size);
-		view.params.partial.size =
-			min_t(unsigned int, chunk_size,
-			      vma_pages(area) - view.params.partial.offset);
-
-		/* If the partial covers the entire object, just create a
-		 * normal VMA.
-		 */
-		if (chunk_size >= obj->base.size >> PAGE_SHIFT)
-			view.type = I915_GGTT_VIEW_NORMAL;
+		struct i915_ggtt_view view =
+			compute_partial_view(obj, page_offset, MIN_CHUNK_PAGES);
 
 		/* Userspace is now writing through an untracked VMA, abandon
 		 * all hope that the hardware is able to track future writes.
@@ -2019,69 +2021,6 @@ void i915_gem_runtime_suspend(struct drm_i915_private *dev_priv)
 		GEM_BUG_ON(!list_empty(&reg->vma->obj->userfault_link));
 		reg->dirty = true;
 	}
-}
-
-/**
- * i915_gem_get_ggtt_size - return required global GTT size for an object
- * @dev_priv: i915 device
- * @size: object size
- * @tiling_mode: tiling mode
- *
- * Return the required global GTT size for an object, taking into account
- * potential fence register mapping.
- */
-u64 i915_gem_get_ggtt_size(struct drm_i915_private *dev_priv,
-			   u64 size, int tiling_mode)
-{
-	u64 ggtt_size;
-
-	GEM_BUG_ON(size == 0);
-
-	if (INTEL_GEN(dev_priv) >= 4 ||
-	    tiling_mode == I915_TILING_NONE)
-		return size;
-
-	/* Previous chips need a power-of-two fence region when tiling */
-	if (IS_GEN3(dev_priv))
-		ggtt_size = 1024*1024;
-	else
-		ggtt_size = 512*1024;
-
-	while (ggtt_size < size)
-		ggtt_size <<= 1;
-
-	return ggtt_size;
-}
-
-/**
- * i915_gem_get_ggtt_alignment - return required global GTT alignment
- * @dev_priv: i915 device
- * @size: object size
- * @tiling_mode: tiling mode
- * @fenced: is fenced alignment required or not
- *
- * Return the required global GTT alignment for an object, taking into account
- * potential fence register mapping.
- */
-u64 i915_gem_get_ggtt_alignment(struct drm_i915_private *dev_priv, u64 size,
-				int tiling_mode, bool fenced)
-{
-	GEM_BUG_ON(size == 0);
-
-	/*
-	 * Minimum alignment is 4k (GTT page size), but might be greater
-	 * if a fence register is needed for the object.
-	 */
-	if (INTEL_GEN(dev_priv) >= 4 ||
-	    (!fenced && (IS_G33(dev_priv) || IS_PINEVIEW(dev_priv))) ||
-	    tiling_mode == I915_TILING_NONE)
-		return 4096;
-
-	/*
-	 * Previous chips need to be aligned to the size of the smallest
-	 * fence register that can contain the object.
-	 */
-	return i915_gem_get_ggtt_size(dev_priv, size, tiling_mode);
 }
 
 static int i915_gem_object_create_mmap_offset(struct drm_i915_gem_object *obj)
@@ -2687,6 +2626,8 @@ static void reset_request(struct drm_i915_gem_request *request)
 		head = 0;
 	}
 	memset(vaddr + head, 0, request->postfix - head);
+
+	dma_fence_set_error(&request->fence, -EIO);
 }
 
 void i915_gem_reset_prepare(struct drm_i915_private *dev_priv)
@@ -2719,13 +2660,14 @@ static void i915_gem_reset_engine(struct intel_engine_cs *engine)
 		ring_hung = false;
 	}
 
-	if (ring_hung)
+	if (ring_hung) {
 		i915_gem_context_mark_guilty(hung_ctx);
-	else
+		reset_request(request);
+	} else {
 		i915_gem_context_mark_innocent(hung_ctx);
-
-	if (!ring_hung)
+		dma_fence_set_error(&request->fence, -EAGAIN);
 		return;
+	}
 
 	DRM_DEBUG_DRIVER("resetting %s to restart from tail of request 0x%x\n",
 			 engine->name, request->global_seqno);
@@ -2788,12 +2730,16 @@ void i915_gem_reset_finish(struct drm_i915_private *dev_priv)
 
 static void nop_submit_request(struct drm_i915_gem_request *request)
 {
+	dma_fence_set_error(&request->fence, -EIO);
 	i915_gem_request_submit(request);
 	intel_engine_init_global_seqno(request->engine, request->global_seqno);
 }
 
-static void i915_gem_cleanup_engine(struct intel_engine_cs *engine)
+static void engine_set_wedged(struct intel_engine_cs *engine)
 {
+	struct drm_i915_gem_request *request;
+	unsigned long flags;
+
 	/* We need to be sure that no thread is running the old callback as
 	 * we install the nop handler (otherwise we would submit a request
 	 * to hardware that will never complete). In order to prevent this
@@ -2801,6 +2747,12 @@ static void i915_gem_cleanup_engine(struct intel_engine_cs *engine)
 	 * (using stop_machine()).
 	 */
 	engine->submit_request = nop_submit_request;
+
+	/* Mark all executing requests as skipped */
+	spin_lock_irqsave(&engine->timeline->lock, flags);
+	list_for_each_entry(request, &engine->timeline->requests, link)
+		dma_fence_set_error(&request->fence, -EIO);
+	spin_unlock_irqrestore(&engine->timeline->lock, flags);
 
 	/* Mark all pending requests as complete so that any concurrent
 	 * (lockless) lookup doesn't try and wait upon the request as we
@@ -2837,7 +2789,7 @@ static int __i915_gem_set_wedged_BKL(void *data)
 	enum intel_engine_id id;
 
 	for_each_engine(engine, i915, id)
-		i915_gem_cleanup_engine(engine);
+		engine_set_wedged(engine);
 
 	return 0;
 }
@@ -3544,7 +3496,7 @@ i915_gem_object_unpin_from_display_plane(struct i915_vma *vma)
 		return;
 
 	if (--vma->obj->pin_display == 0)
-		vma->display_alignment = 0;
+		vma->display_alignment = I915_GTT_MIN_ALIGNMENT;
 
 	/* Bump the LRU to try and avoid premature eviction whilst flipping  */
 	if (!i915_vma_is_active(vma))
@@ -3689,10 +3641,6 @@ i915_gem_object_ggtt_pin(struct drm_i915_gem_object *obj,
 			return ERR_PTR(-ENOSPC);
 
 		if (flags & PIN_MAPPABLE) {
-			u32 fence_size;
-
-			fence_size = i915_gem_get_ggtt_size(dev_priv, vma->size,
-							    i915_gem_object_get_tiling(obj));
 			/* If the required space is larger than the available
 			 * aperture, we will not able to find a slot for the
 			 * object and unbinding the object now will be in
@@ -3700,7 +3648,7 @@ i915_gem_object_ggtt_pin(struct drm_i915_gem_object *obj,
 			 * the object in and out of the Global GTT and
 			 * waste a lot of cycles under the mutex.
 			 */
-			if (fence_size > dev_priv->ggtt.mappable_end)
+			if (vma->fence_size > dev_priv->ggtt.mappable_end)
 				return ERR_PTR(-E2BIG);
 
 			/* If NONBLOCK is set the caller is optimistically
@@ -3719,7 +3667,7 @@ i915_gem_object_ggtt_pin(struct drm_i915_gem_object *obj,
 			 * we could try to minimise harm to others.
 			 */
 			if (flags & PIN_NONBLOCK &&
-			    fence_size > dev_priv->ggtt.mappable_end / 2)
+			    vma->fence_size > dev_priv->ggtt.mappable_end / 2)
 				return ERR_PTR(-ENOSPC);
 		}
 
