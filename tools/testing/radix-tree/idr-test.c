@@ -85,9 +85,8 @@ void idr_null_test(void)
 	int i;
 	DEFINE_IDR(idr);
 
-	for (i = 0; i < 10; i++) {
+	for (i = 0; i < 10; i++)
 		assert(idr_alloc(&idr, NULL, 0, 0, GFP_KERNEL) == i);
-	}
 
 	assert(idr_replace(&idr, DUMMY_PTR, 3) == NULL);
 	assert(idr_replace(&idr, DUMMY_PTR, 4) == NULL);
@@ -109,9 +108,8 @@ void idr_null_test(void)
 	idr_destroy(&idr);
 	assert(idr_is_empty(&idr));
 
-	for (i = 1; i < 10; i++) {
+	for (i = 1; i < 10; i++)
 		assert(idr_alloc(&idr, NULL, 1, 0, GFP_KERNEL) == i);
-	}
 
 	idr_destroy(&idr);
 }
