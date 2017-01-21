@@ -1702,6 +1702,7 @@ int pid_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 			return -ENOENT;
 		}
 		if ((inode->i_mode == (S_IFDIR|S_IRUGO|S_IXUGO)) ||
+		    (inode->i_mode == (S_IFREG|S_IRUGO|S_IWUSR)) ||
 		    task_dumpable(task)) {
 			cred = __task_cred(task);
 			stat->uid = cred->euid;
@@ -1743,6 +1744,7 @@ int pid_revalidate(struct dentry *dentry, unsigned int flags)
 
 	if (task) {
 		if ((inode->i_mode == (S_IFDIR|S_IRUGO|S_IXUGO)) ||
+		    (inode->i_mode == (S_IFREG|S_IRUGO|S_IWUSR)) ||
 		    task_dumpable(task)) {
 			rcu_read_lock();
 			cred = __task_cred(task);
@@ -2362,7 +2364,7 @@ out:
 	return -ENOENT;
 }
 
-static struct dentry *proc_pident_lookup(struct inode *dir, 
+static struct dentry *proc_pident_lookup(struct inode *dir,
 					 struct dentry *dentry,
 					 const struct pid_entry *ents,
 					 unsigned int nents)
@@ -2504,7 +2506,7 @@ static const struct pid_entry attr_dir_stuff[] = {
 
 static int proc_attr_dir_readdir(struct file *file, struct dir_context *ctx)
 {
-	return proc_pident_readdir(file, ctx, 
+	return proc_pident_readdir(file, ctx,
 				   attr_dir_stuff, ARRAY_SIZE(attr_dir_stuff));
 }
 
