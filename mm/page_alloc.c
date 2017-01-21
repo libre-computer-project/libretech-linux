@@ -3746,7 +3746,7 @@ retry:
 
 nopage:
 	/*
-	 * When updating a task's mems_allowed or mempolicy nodeask, it is
+	 * When updating a task's mems_allowed or mempolicy nodemask, it is
 	 * possible to race with parallel threads in such a way that our
 	 * allocation can fail while the mask is being updated. If we are about
 	 * to fail, check if the cpuset changed during allocation and if so,
