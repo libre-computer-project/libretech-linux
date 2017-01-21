@@ -1081,11 +1081,23 @@ dax_iomap_rw(struct kiocb *iocb, struct iov_iter *iter,
 {
 	struct address_space *mapping = iocb->ki_filp->f_mapping;
 	struct inode *inode = mapping->host;
+	struct gendisk *disk = inode->i_sb->s_bdev->bd_disk;
 	loff_t pos = iocb->ki_pos, ret = 0, done = 0;
 	unsigned flags = 0;
+	unsigned long start = 0;
+	int do_acct = blk_queue_io_stat(disk->queue);
 
 	if (iov_iter_rw(iter) == WRITE)
 		flags |= IOMAP_WRITE;
+
+	if (do_acct) {
+		size_t sec = iov_iter_count(iter) >> 9;
+
+		start = jiffies;
+		generic_start_io_acct(iov_iter_rw(iter),
+				      max_t(unsigned long, 1, sec),
+				      &disk->part0);
+	}
 
 	while (iov_iter_count(iter)) {
 		ret = iomap_apply(inode, pos, iov_iter_count(iter), flags, ops,
@@ -1095,6 +1107,9 @@ dax_iomap_rw(struct kiocb *iocb, struct iov_iter *iter,
 		pos += ret;
 		done += ret;
 	}
+
+	if (do_acct)
+		generic_end_io_acct(iov_iter_rw(iter), &disk->part0, start);
 
 	iocb->ki_pos += done;
 	return done ? done : ret;
