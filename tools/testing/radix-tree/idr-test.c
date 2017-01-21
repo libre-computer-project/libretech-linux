@@ -74,6 +74,48 @@ void idr_replace_test(void)
 	idr_destroy(&idr);
 }
 
+/*
+ * Unlike the radix tree, you can put a NULL pointer -- with care -- into
+ * the IDR.  Some interfaces, like idr_find() do not distinguish between
+ * "present, value is NULL" and "not present", but that's exactly what some
+ * users want.
+ */
+void idr_null_test(void)
+{
+	int i;
+	DEFINE_IDR(idr);
+
+	for (i = 0; i < 10; i++) {
+		assert(idr_alloc(&idr, NULL, 0, 0, GFP_KERNEL) == i);
+	}
+
+	assert(idr_replace(&idr, DUMMY_PTR, 3) == NULL);
+	assert(idr_replace(&idr, DUMMY_PTR, 4) == NULL);
+	assert(idr_replace(&idr, NULL, 4) == DUMMY_PTR);
+	assert(idr_replace(&idr, DUMMY_PTR, 11) == ERR_PTR(-ENOENT));
+	idr_remove(&idr, 5);
+	assert(idr_alloc(&idr, NULL, 0, 0, GFP_KERNEL) == 5);
+	idr_remove(&idr, 5);
+
+	for (i = 0; i < 10; i++)
+		idr_remove(&idr, i);
+	assert(idr_is_empty(&idr));
+
+	assert(idr_alloc(&idr, NULL, 0, 0, GFP_KERNEL) == 0);
+	assert(idr_replace(&idr, DUMMY_PTR, 3) == ERR_PTR(-ENOENT));
+	assert(idr_replace(&idr, DUMMY_PTR, 0) == NULL);
+	assert(idr_replace(&idr, NULL, 0) == DUMMY_PTR);
+
+	idr_destroy(&idr);
+	assert(idr_is_empty(&idr));
+
+	for (i = 1; i < 10; i++) {
+		assert(idr_alloc(&idr, NULL, 1, 0, GFP_KERNEL) == i);
+	}
+
+	idr_destroy(&idr);
+}
+
 void idr_checks(void)
 {
 	unsigned long i;
@@ -112,8 +154,8 @@ void idr_checks(void)
 	idr_destroy(&idr);
 
 	idr_replace_test();
-
 	idr_alloc_test();
+	idr_null_test();
 }
 
 /*
@@ -176,10 +218,12 @@ void ida_checks(void)
 	ida_remove(&ida, id);
 	assert(ida_is_empty(&ida));
 	ida_destroy(&ida);
+	assert(ida_is_empty(&ida));
 
 	ida_pre_get(&ida, GFP_KERNEL);
 	ida_get_new_above(&ida, 1, &id);
 	ida_destroy(&ida);
+	assert(ida_is_empty(&ida));
 
 	for (j = 1; j < 65537; j *= 2) {
 		for (i = 0; i < j; i++) {
