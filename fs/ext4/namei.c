@@ -3739,6 +3739,12 @@ static int ext4_cross_rename(struct inode *old_dir, struct dentry *old_dentry,
 	     !fscrypt_has_encryption_key(new_dir)))
 		return -ENOKEY;
 
+	if ((ext4_encrypted_inode(old_dir) &&
+	     !fscrypt_has_encryption_key(old_dir)) ||
+	    (ext4_encrypted_inode(new_dir) &&
+	     !fscrypt_has_encryption_key(new_dir)))
+		return -ENOKEY;
+
 	if ((ext4_encrypted_inode(old_dir) ||
 	     ext4_encrypted_inode(new_dir)) &&
 	    (old_dir != new_dir) &&
@@ -3753,6 +3759,12 @@ static int ext4_cross_rename(struct inode *old_dir, struct dentry *old_dentry,
 	     !projid_eq(EXT4_I(old_dir)->i_projid,
 			EXT4_I(new_dentry->d_inode)->i_projid)))
 		return -EXDEV;
+
+	if ((ext4_encrypted_inode(old_dir) &&
+	     !fscrypt_has_encryption_key(old_dir)) ||
+	    (ext4_encrypted_inode(new_dir) &&
+	     !fscrypt_has_encryption_key(new_dir)))
+		return -ENOKEY;
 
 	retval = dquot_initialize(old.dir);
 	if (retval)
