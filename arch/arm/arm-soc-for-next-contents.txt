@@ -1,0 +1,105 @@
+fixes
+	<no branch> (c415f9e8304a1d235ef118d912f374ee2e46c45d)
+		https://github.com/Xilinx/linux-xlnx tags/zynmp-dt-fixes-for-4.10
+	patch
+		ARM, ARM64: dts: drop "arm,amba-bus" in favor of "simple-bus" part 3
+	<no branch> (37530e74609a28ae3a3b51e7685fe54a00b1e2f2)
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.10-2
+	<no branch> (3116d37651d77125bf50f81f859b1278e02ccce6)
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-fixes-for-4.10
+	<no branch> (3ef01c968fbfb21c2f16281445d30a865ee4412c)
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-fixes-4.10
+	<no branch> (91546c56624a79f4a8fd80bede6b5a38c0f0ad78)
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/defconfig-fixes
+	<no branch> (6771e01f7965ea13988d0a5a7972f97be4e46452)
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.10/devicetree-fixes
+	<no branch> (f0e8faa7a5e894b0fc99d24be1b18685a92ea466)
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-stericsson tags/ux500-fix-for-armsoc
+	patch
+		ARM64: dts: meson-gxbb-odroidc2: Disable SCPI DVFS
+	<no branch> (1ea6af3216b092ec97129ac81bd95cf254c4b140)
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.10/fixes-rc4
+	patch
+		ARM: dts: da850-evm: fix read access to SPI flash
+
+next/fixes-non-critical
+
+next/cleanup
+
+next/soc
+	renesas/soc
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-soc-for-v4.11
+	ux500/dev
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-stericsson tags/ux500-dev-for-armsoc
+	samsung/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-4.11
+	at91/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.11-soc
+	aspeed/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/joel/aspeed tags/aspeed-4.11-soc
+
+next/arm64
+	mvebu/defconfig64
+		git://git.infradead.org/linux-mvebu tags/mvebu-defconfig64-4.11-1
+
+next/dt
+	renesas/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-dt-for-v4.11
+	oxnas/dt
+		https://github.com/OXNAS/linux tags/oxnas-arm-soc-dt-for-4.11
+	sunxi/generic-pinconf
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-generic-pinconf-for-4.10
+	socfpga/dts
+		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_dts_for_v4.11_part_1
+	sti/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.11
+	samsung/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-4.11
+	mvebu/dt
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.11-1
+	stm32/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/atorgue/stm32 tags/stm32-dt-for-v4.11-1
+	at91/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.11-dt
+	aspeed/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/joel/aspeed tags/aspeed-4.11-devicetree
+	patch
+		ARM: dts: tango4: Add alias for eth0
+		ARM: dts: tango4: Import MMC nodes
+		ARM: dts: tango4: Import USB nodes
+	brcm/dt
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.11/devicetree
+
+next/dt64
+	renesas/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-dt-for-v4.11
+	samsung/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.11
+	mvebu/dt64
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.11-1
+	juno/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/juno-updates-4.11
+	brcm/dt64
+		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.11/devicetree-arm64
+
+next/defconfig
+	patch
+		ARM: multi_v7_defconfig: enable Qualcomm RPMCC
+		ARM: defconfig: replace MPU3050 driver on multi_v7
+		ARM: defconfig: tegra: switch to MPU3050 IIO driver
+		ARM: defconfig: pxa: cut MPU3050 input driver
+	<no branch> (e37278d83e348eb53029452e65892780359b6bea)
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-defconfig-for-v4.11
+	socfpga/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_defconfig_updates_for_v4.11
+	samsung/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-defconfig-4.11
+	at91/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.11-defconfig
+	aspeed/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/joel/aspeed tags/aspeed-4.11-defconfig
+
+next/drivers
+	at91/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.11-drivers
+
