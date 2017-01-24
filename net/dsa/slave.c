@@ -673,7 +673,6 @@ static void dsa_slave_get_drvinfo(struct net_device *dev,
 				  struct ethtool_drvinfo *drvinfo)
 {
 	strlcpy(drvinfo->driver, "dsa", sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, dsa_driver_version, sizeof(drvinfo->version));
 	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
 	strlcpy(drvinfo->bus_info, "platform", sizeof(drvinfo->bus_info));
 }
@@ -782,7 +781,7 @@ static void dsa_cpu_port_get_ethtool_stats(struct net_device *dev,
 					   uint64_t *data)
 {
 	struct dsa_switch_tree *dst = dev->dsa_ptr;
-	struct dsa_switch *ds = dst->ds[0];
+	struct dsa_switch *ds = dst->cpu_switch;
 	s8 cpu_port = dst->cpu_port;
 	int count = 0;
 
@@ -799,7 +798,7 @@ static void dsa_cpu_port_get_ethtool_stats(struct net_device *dev,
 static int dsa_cpu_port_get_sset_count(struct net_device *dev, int sset)
 {
 	struct dsa_switch_tree *dst = dev->dsa_ptr;
-	struct dsa_switch *ds = dst->ds[0];
+	struct dsa_switch *ds = dst->cpu_switch;
 	int count = 0;
 
 	if (dst->master_ethtool_ops.get_sset_count)
@@ -815,7 +814,7 @@ static void dsa_cpu_port_get_strings(struct net_device *dev,
 				     uint32_t stringset, uint8_t *data)
 {
 	struct dsa_switch_tree *dst = dev->dsa_ptr;
-	struct dsa_switch *ds = dst->ds[0];
+	struct dsa_switch *ds = dst->cpu_switch;
 	s8 cpu_port = dst->cpu_port;
 	int len = ETH_GSTRING_LEN;
 	int mcount = 0, count;
@@ -984,6 +983,17 @@ static void dsa_slave_poll_controller(struct net_device *dev)
 }
 #endif
 
+static int dsa_slave_get_phys_port_name(struct net_device *dev,
+					char *name, size_t len)
+{
+	struct dsa_slave_priv *p = netdev_priv(dev);
+
+	if (snprintf(name, len, "p%d", p->port) >= len)
+		return -EINVAL;
+
+	return 0;
+}
+
 void dsa_cpu_port_ethtool_init(struct ethtool_ops *ops)
 {
 	ops->get_sset_count = dsa_cpu_port_get_sset_count;
@@ -1031,6 +1041,7 @@ static const struct net_device_ops dsa_slave_netdev_ops = {
 	.ndo_bridge_getlink	= switchdev_port_bridge_getlink,
 	.ndo_bridge_setlink	= switchdev_port_bridge_setlink,
 	.ndo_bridge_dellink	= switchdev_port_bridge_dellink,
+	.ndo_get_phys_port_name	= dsa_slave_get_phys_port_name,
 };
 
 static const struct switchdev_ops dsa_slave_switchdev_ops = {

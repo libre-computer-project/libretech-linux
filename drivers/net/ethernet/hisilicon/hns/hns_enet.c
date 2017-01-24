@@ -797,7 +797,6 @@ static void hns_nic_rx_up_pro(struct hns_nic_ring_data *ring_data,
 
 	skb->protocol = eth_type_trans(skb, ndev);
 	(void)napi_gro_receive(&ring_data->napi, skb);
-	ndev->last_rx = jiffies;
 }
 
 static int hns_desc_unused(struct hnae_ring *ring)
@@ -1625,8 +1624,8 @@ void hns_nic_set_rx_mode(struct net_device *ndev)
 		netdev_err(ndev, "sync uc address fail\n");
 }
 
-struct rtnl_link_stats64 *hns_nic_get_stats64(struct net_device *ndev,
-					      struct rtnl_link_stats64 *stats)
+static void hns_nic_get_stats64(struct net_device *ndev,
+				struct rtnl_link_stats64 *stats)
 {
 	int idx = 0;
 	u64 tx_bytes = 0;
@@ -1668,8 +1667,6 @@ struct rtnl_link_stats64 *hns_nic_get_stats64(struct net_device *ndev,
 	stats->tx_window_errors = ndev->stats.tx_window_errors;
 	stats->rx_compressed = ndev->stats.rx_compressed;
 	stats->tx_compressed = ndev->stats.tx_compressed;
-
-	return stats;
 }
 
 static u16
