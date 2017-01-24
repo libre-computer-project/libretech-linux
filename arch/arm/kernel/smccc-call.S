@@ -46,11 +46,12 @@ UNWIND(	.fnend)
 /*
  * void smccc_smc(unsigned long a0, unsigned long a1, unsigned long a2,
  *		  unsigned long a3, unsigned long a4, unsigned long a5,
- *		  unsigned long a6, unsigned long a7, struct arm_smccc_res *res)
+ *		  unsigned long a6, unsigned long a7, struct arm_smccc_res *res,
+ *		  struct arm_smccc_quirk *quirk)
  */
-ENTRY(arm_smccc_smc)
+ENTRY(__arm_smccc_smc)
 	SMCCC SMCCC_SMC
-ENDPROC(arm_smccc_smc)
+ENDPROC(__arm_smccc_smc)
 
 /*
  * void smccc_hvc(unsigned long a0, unsigned long a1, unsigned long a2,
