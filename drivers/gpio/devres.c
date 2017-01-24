@@ -11,7 +11,7 @@
  *
  * This file is based on kernel/irq/devres.c
  *
- * Copyright (c) 2011 John Crispin <blogic@openwrt.org>
+ * Copyright (c) 2011 John Crispin <john@phrozen.org>
  */
 
 #include <linux/module.h>
@@ -20,6 +20,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/device.h>
 #include <linux/gfp.h>
+
+#include "gpiolib.h"
 
 static void devm_gpiod_release(struct device *dev, void *res)
 {
@@ -127,15 +129,20 @@ EXPORT_SYMBOL(devm_gpiod_get_index);
  * @dev:	GPIO consumer
  * @con_id:	function within the GPIO consumer
  * @child:	firmware node (child of @dev)
+ * @flags:	GPIO initialization flags
  *
  * GPIO descriptors returned from this function are automatically disposed on
  * driver detach.
+ *
+ * On successfull request the GPIO pin is configured in accordance with
+ * provided @flags.
  */
 struct gpio_desc *devm_get_gpiod_from_child(struct device *dev,
 					    const char *con_id,
-					    struct fwnode_handle *child)
+					    struct fwnode_handle *child,
+					    enum gpiod_flags flags,
+					    const char *label)
 {
-	static const char * const suffixes[] = { "gpios", "gpio" };
 	char prop_name[32]; /* 32 is max size of property name */
 	struct gpio_desc **dr;
 	struct gpio_desc *desc;
@@ -146,15 +153,15 @@ struct gpio_desc *devm_get_gpiod_from_child(struct device *dev,
 	if (!dr)
 		return ERR_PTR(-ENOMEM);
 
-	for (i = 0; i < ARRAY_SIZE(suffixes); i++) {
+	for (i = 0; i < ARRAY_SIZE(gpio_suffixes); i++) {
 		if (con_id)
 			snprintf(prop_name, sizeof(prop_name), "%s-%s",
-					    con_id, suffixes[i]);
+					    con_id, gpio_suffixes[i]);
 		else
 			snprintf(prop_name, sizeof(prop_name), "%s",
-							       suffixes[i]);
+					    gpio_suffixes[i]);
 
-		desc = fwnode_get_named_gpiod(child, prop_name);
+		desc = fwnode_get_named_gpiod(child, prop_name, flags, label);
 		if (!IS_ERR(desc) || (PTR_ERR(desc) != -ENOENT))
 			break;
 	}
