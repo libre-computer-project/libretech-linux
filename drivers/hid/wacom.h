@@ -102,7 +102,6 @@
 #define DRIVER_VERSION "v2.00"
 #define DRIVER_AUTHOR "Vojtech Pavlik <vojtech@ucw.cz>"
 #define DRIVER_DESC "USB Wacom tablet driver"
-#define DRIVER_LICENSE "GPL"
 
 #define USB_VENDOR_ID_WACOM	0x056a
 #define USB_VENDOR_ID_LENOVO	0x17ef
@@ -166,6 +165,7 @@ struct wacom {
 	struct work_struct wireless_work;
 	struct work_struct battery_work;
 	struct work_struct remote_work;
+	struct delayed_work init_work;
 	struct wacom_remote *remote;
 	struct wacom_leds {
 		struct wacom_group_leds *groups;
