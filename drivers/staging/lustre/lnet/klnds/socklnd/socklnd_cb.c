@@ -1073,14 +1073,14 @@ ksocknal_new_packet(struct ksock_conn *conn, int nob_to_skip)
 			break;
 
 		case KSOCK_PROTO_V1:
-			/* Receiving bare lnet_hdr_t */
+			/* Receiving bare struct lnet_hdr */
 			conn->ksnc_rx_state = SOCKNAL_RX_LNET_HEADER;
-			conn->ksnc_rx_nob_wanted = sizeof(lnet_hdr_t);
-			conn->ksnc_rx_nob_left = sizeof(lnet_hdr_t);
+			conn->ksnc_rx_nob_wanted = sizeof(struct lnet_hdr);
+			conn->ksnc_rx_nob_left = sizeof(struct lnet_hdr);
 
 			conn->ksnc_rx_iov = (struct kvec *)&conn->ksnc_rx_iov_space;
 			conn->ksnc_rx_iov[0].iov_base = &conn->ksnc_msg.ksm_u.lnetmsg;
-			conn->ksnc_rx_iov[0].iov_len = sizeof(lnet_hdr_t);
+			conn->ksnc_rx_iov[0].iov_len = sizeof(struct lnet_hdr);
 			break;
 
 		default:
@@ -1126,7 +1126,7 @@ ksocknal_new_packet(struct ksock_conn *conn, int nob_to_skip)
 static int
 ksocknal_process_receive(struct ksock_conn *conn)
 {
-	lnet_hdr_t *lhdr;
+	struct lnet_hdr *lhdr;
 	lnet_process_id_t *id;
 	int rc;
 
@@ -1656,9 +1656,9 @@ ksocknal_parse_proto_version(ksock_hello_msg_t *hello)
 	}
 
 	if (hello->kshm_magic == le32_to_cpu(LNET_PROTO_TCP_MAGIC)) {
-		lnet_magicversion_t *hmv = (lnet_magicversion_t *)hello;
+		struct lnet_magicversion *hmv = (struct lnet_magicversion *)hello;
 
-		CLASSERT(sizeof(lnet_magicversion_t) ==
+		CLASSERT(sizeof(struct lnet_magicversion) ==
 			 offsetof(ksock_hello_msg_t, kshm_src_nid));
 
 		if (hmv->version_major == cpu_to_le16(KSOCK_PROTO_V1_MAJOR) &&
