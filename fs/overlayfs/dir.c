@@ -381,8 +381,7 @@ out_free:
 }
 
 static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
-				    struct cattr *cattr,
-				    struct dentry *hardlink)
+				    struct cattr *cattr, struct dentry *hardlink)
 {
 	struct dentry *workdir = ovl_workdir(dentry);
 	struct inode *wdir = workdir->d_inode;
