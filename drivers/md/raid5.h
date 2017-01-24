@@ -322,6 +322,11 @@ enum r5dev_flags {
 			 * data and parity being written are in the journal
 			 * device
 			 */
+	R5_OrigPageUPTDODATE,	/* with write back cache, we read old data into
+				 * dev->orig_page for prexor. When this flag is
+				 * set, orig_page contains latest data in the
+				 * raid disk.
+				 */
 };
 
 /*
@@ -679,6 +684,10 @@ struct r5conf {
 	int			group_cnt;
 	int			worker_cnt_per_group;
 	struct r5l_log		*log;
+
+	struct bio_list		pending_bios;
+	spinlock_t		pending_bios_lock;
+	bool			batch_bio_dispatch;
 };
 
 
@@ -781,4 +790,5 @@ extern void r5c_flush_cache(struct r5conf *conf, int num);
 extern void r5c_check_stripe_cache_usage(struct r5conf *conf);
 extern void r5c_check_cached_full_stripe(struct r5conf *conf);
 extern struct md_sysfs_entry r5c_journal_mode;
+extern bool r5c_big_stripe_cached(struct r5conf *conf, sector_t sect);
 #endif
