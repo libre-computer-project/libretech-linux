@@ -1085,7 +1085,7 @@ dax_iomap_rw(struct kiocb *iocb, struct iov_iter *iter,
 	loff_t pos = iocb->ki_pos, ret = 0, done = 0;
 	unsigned flags = 0;
 	unsigned long start = 0;
-	int do_acct = blk_queue_io_stat(disk->queue);
+	bool do_acct = blk_queue_io_stat(disk->queue);
 
 	if (iov_iter_rw(iter) == WRITE)
 		flags |= IOMAP_WRITE;
