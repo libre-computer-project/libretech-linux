@@ -404,7 +404,7 @@ static void __mei_io_list_flush(struct mei_cl_cb *list,
  * @list:  An instance of our list structure
  * @cl: host client
  */
-void mei_io_list_flush(struct mei_cl_cb *list, struct mei_cl *cl)
+static inline void mei_io_list_flush(struct mei_cl_cb *list, struct mei_cl *cl)
 {
 	__mei_io_list_flush(list, cl, false);
 }
@@ -756,7 +756,7 @@ static void mei_cl_wake_all(struct mei_cl *cl)
  *
  * @cl: host client
  */
-void mei_cl_set_disconnected(struct mei_cl *cl)
+static void mei_cl_set_disconnected(struct mei_cl *cl)
 {
 	struct mei_device *dev = cl->dev;
 
