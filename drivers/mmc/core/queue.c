@@ -20,6 +20,8 @@
 
 #include "queue.h"
 #include "block.h"
+#include "core.h"
+#include "card.h"
 
 #define MMC_QUEUE_BOUNCESZ	65536
 
@@ -152,7 +154,7 @@ static struct scatterlist *mmc_alloc_sg(int sg_len, int *err)
 {
 	struct scatterlist *sg;
 
-	sg = kmalloc(sizeof(struct scatterlist)*sg_len, GFP_KERNEL);
+	sg = kmalloc_array(sg_len, sizeof(*sg), GFP_KERNEL);
 	if (!sg)
 		*err = -ENOMEM;
 	else {
