@@ -63,11 +63,11 @@ struct hwmon_thermal_data {
 };
 
 static ssize_t
-show_name(struct device *dev, struct device_attribute *attr, char *buf)
+name_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%s\n", to_hwmon_device(dev)->name);
 }
-static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
+static DEVICE_ATTR_RO(name);
 
 static struct attribute *hwmon_dev_attrs[] = {
 	&dev_attr_name.attr,
@@ -651,6 +651,9 @@ hwmon_device_register_with_groups(struct device *dev, const char *name,
 				  void *drvdata,
 				  const struct attribute_group **groups)
 {
+	if (!name)
+		return ERR_PTR(-EINVAL);
+
 	return __hwmon_device_register(dev, name, drvdata, NULL, groups);
 }
 EXPORT_SYMBOL_GPL(hwmon_device_register_with_groups);
@@ -674,6 +677,9 @@ hwmon_device_register_with_info(struct device *dev, const char *name,
 				const struct hwmon_chip_info *chip,
 				const struct attribute_group **extra_groups)
 {
+	if (!name)
+		return ERR_PTR(-EINVAL);
+
 	if (chip && (!chip->ops || !chip->ops->is_visible || !chip->info))
 		return ERR_PTR(-EINVAL);
 
