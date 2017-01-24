@@ -67,6 +67,7 @@ static int dwc2_pci_quirks(struct pci_dev *pdev, struct platform_device *dwc2)
 	if (pdev->vendor == PCI_VENDOR_ID_SYNOPSYS &&
 	    pdev->device == PCI_PRODUCT_ID_HAPS_HSOTG) {
 		struct property_entry properties[] = {
+			PROPERTY_ENTRY_STRING("snps,ahb-burst", "INCR"),
 			{ },
 		};
 
@@ -87,7 +88,7 @@ static void dwc2_pci_remove(struct pci_dev *pci)
 }
 
 static int dwc2_pci_probe(struct pci_dev *pci,
-		const struct pci_device_id *id)
+			  const struct pci_device_id *id)
 {
 	struct resource		res[2];
 	struct platform_device	*dwc2;
