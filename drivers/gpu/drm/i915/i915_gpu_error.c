@@ -121,6 +121,7 @@ static void __i915_error_advance(struct drm_i915_error_state_buf *e,
 	e->pos += len;
 }
 
+__printf(2, 0)
 static void i915_error_vprintf(struct drm_i915_error_state_buf *e,
 			       const char *f, va_list args)
 {
@@ -1079,7 +1080,7 @@ static void error_record_engine_waiters(struct intel_engine_cs *engine,
 
 	ee->waiters = waiter;
 	for (rb = rb_first(&b->waiters); rb; rb = rb_next(rb)) {
-		struct intel_wait *w = container_of(rb, typeof(*w), node);
+		struct intel_wait *w = rb_entry(rb, typeof(*w), node);
 
 		strcpy(waiter->comm, w->tsk->comm);
 		waiter->pid = w->tsk->pid;
