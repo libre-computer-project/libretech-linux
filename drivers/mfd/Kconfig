@@ -46,6 +46,7 @@ config MFD_SUN4I_GPADC
 	select REGMAP_MMIO
 	select REGMAP_IRQ
 	depends on ARCH_SUNXI || COMPILE_TEST
+	depends on !TOUCHSCREEN_SUN4I
 	help
 	  Select this to get support for Allwinner SoCs (A10, A13 and A31) ADC.
 	  This driver will only map the hardware interrupt and registers, you
@@ -1620,6 +1621,17 @@ config MFD_STW481X
 	  Select this option to enable the STw481x chip driver used
 	  in various ST Microelectronics and ST-Ericsson embedded
 	  Nomadik series.
+
+config MFD_STM32_TIMERS
+	tristate "Support for STM32 Timers"
+	depends on (ARCH_STM32 && OF) || COMPILE_TEST
+	select MFD_CORE
+	select REGMAP
+	select REGMAP_MMIO
+	help
+	  Select this option to enable STM32 timers driver used
+	  for PWM and IIO Timer. This driver allow to share the
+	  registers between the others drivers.
 
 menu "Multimedia Capabilities Port drivers"
 	depends on ARCH_SA1100
