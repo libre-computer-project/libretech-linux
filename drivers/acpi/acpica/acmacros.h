@@ -46,7 +46,7 @@
 
 /*
  * Extract data using a pointer. Any more than a byte and we
- * get into potential aligment issues -- see the STORE macros below.
+ * get into potential alignment issues -- see the STORE macros below.
  * Use with care.
  */
 #define ACPI_CAST8(ptr)                 ACPI_CAST_PTR (u8, (ptr))
