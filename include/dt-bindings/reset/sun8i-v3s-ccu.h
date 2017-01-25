@@ -1,5 +1,8 @@
 /*
- * Copyright 2015 Hans de Goede <hdegoede@redhat.com>
+ * Copyright (C) 2016 Icenowy Zheng <icenowy@aosc.xyz>
+ *
+ * Based on sun8i-v3s-ccu.h, which is
+ * Copyright (C) 2016 Maxime Ripard <maxime.ripard@free-electrons.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -40,34 +43,36 @@
  *     OTHER DEALINGS IN THE SOFTWARE.
  */
 
-/dts-v1/;
-#include "sun8i-a23.dtsi"
-#include "sun8i-q8-common.dtsi"
+#ifndef _DT_BINDINGS_RST_SUN8I_V3S_H_
+#define _DT_BINDINGS_RST_SUN8I_V3S_H_
 
-/ {
-	model = "Q8 A23 Tablet";
-	compatible = "allwinner,q8-a23", "allwinner,sun8i-a23";
-};
+#define RST_USB_PHY0		0
 
-&codec {
-	pinctrl-0 = <&codec_pa_pin>;
-	allwinner,pa-gpios = <&pio 7 9 GPIO_ACTIVE_HIGH>; /* PH9 */
-	allwinner,audio-routing =
-		"Headphone", "HP",
-		"Headphone", "HPCOM",
-		"Speaker", "HP",
-		"MIC1", "Mic",
-		"MIC2", "Headset Mic",
-		"Mic",  "MBIAS",
-		"Headset Mic", "HBIAS";
-	status = "okay";
-};
+#define RST_MBUS		1
 
-&pio {
-	codec_pa_pin: codec_pa_pin@0 {
-		allwinner,pins = "PH9";
-		allwinner,function = "gpio_out";
-		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
-		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
-	};
-};
+#define RST_BUS_CE		5
+#define RST_BUS_DMA		6
+#define RST_BUS_MMC0		7
+#define RST_BUS_MMC1		8
+#define RST_BUS_MMC2		9
+#define RST_BUS_DRAM		11
+#define RST_BUS_EMAC		12
+#define RST_BUS_HSTIMER		14
+#define RST_BUS_SPI0		15
+#define RST_BUS_OTG		17
+#define RST_BUS_EHCI0		18
+#define RST_BUS_OHCI0		22
+#define RST_BUS_VE		26
+#define RST_BUS_TCON0		27
+#define RST_BUS_CSI		30
+#define RST_BUS_DE		34
+#define RST_BUS_DBG		38
+#define RST_BUS_EPHY		39
+#define RST_BUS_CODEC		40
+#define RST_BUS_I2C0		46
+#define RST_BUS_I2C1		47
+#define RST_BUS_UART0		49
+#define RST_BUS_UART1		50
+#define RST_BUS_UART2		51
+
+#endif /* _DT_BINDINGS_RST_SUN8I_H3_H_ */
