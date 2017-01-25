@@ -1650,12 +1650,63 @@ const struct inode_operations proc_pid_link_inode_operations = {
 
 /* building an inode */
 
+void task_dump_owner(struct task_struct *task, mode_t mode,
+		     kuid_t *ruid, kgid_t *rgid)
+{
+	/* Depending on the state of dumpable compute who should own a
+	 * proc file for a task.
+	 */
+	const struct cred *cred;
+	kuid_t uid;
+	kgid_t gid;
+
+	/* Default to the tasks effective ownership */
+	rcu_read_lock();
+	cred = __task_cred(task);
+	uid = cred->euid;
+	gid = cred->egid;
+	rcu_read_unlock();
+
+	/*
+	 * Before the /proc/pid/status file was created the only way to read
+	 * the effective uid of a /process was to stat /proc/pid.  Reading
+	 * /proc/pid/status is slow enough that procps and other packages
+	 * kept stating /proc/pid.  To keep the rules in /proc simple I have
+	 * made this apply to all per process world readable and executable
+	 * directories.
+	 */
+	if (mode != (S_IFDIR|S_IRUGO|S_IXUGO)) {
+		struct mm_struct *mm;
+		task_lock(task);
+		mm = task->mm;
+		/* Make non-dumpable tasks owned by some root */
+		if (mm) {
+			if (get_dumpable(mm) != SUID_DUMP_USER) {
+				struct user_namespace *user_ns = mm->user_ns;
+
+				uid = make_kuid(user_ns, 0);
+				if (!uid_valid(uid))
+					uid = GLOBAL_ROOT_UID;
+
+				gid = make_kgid(user_ns, 0);
+				if (!gid_valid(gid))
+					gid = GLOBAL_ROOT_GID;
+			}
+		} else {
+			uid = GLOBAL_ROOT_UID;
+			gid = GLOBAL_ROOT_GID;
+		}
+		task_unlock(task);
+	}
+	*ruid = uid;
+	*rgid = gid;
+}
+
 struct inode *proc_pid_make_inode(struct super_block * sb,
 				  struct task_struct *task, umode_t mode)
 {
 	struct inode * inode;
 	struct proc_inode *ei;
-	const struct cred *cred;
 
 	/* We need a new inode */
 
@@ -1677,13 +1728,7 @@ struct inode *proc_pid_make_inode(struct super_block * sb,
 	if (!ei->pid)
 		goto out_unlock;
 
-	if (task_dumpable(task)) {
-		rcu_read_lock();
-		cred = __task_cred(task);
-		inode->i_uid = cred->euid;
-		inode->i_gid = cred->egid;
-		rcu_read_unlock();
-	}
+	task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
 	security_task_to_inode(task, inode);
 
 out:
@@ -1698,7 +1743,6 @@ int pid_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 {
 	struct inode *inode = d_inode(dentry);
 	struct task_struct *task;
-	const struct cred *cred;
 	struct pid_namespace *pid = dentry->d_sb->s_fs_info;
 
 	generic_fillattr(inode, stat);
@@ -1716,12 +1760,7 @@ int pid_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 			 */
 			return -ENOENT;
 		}
-		if ((inode->i_mode == (S_IFDIR|S_IRUGO|S_IXUGO)) ||
-		    task_dumpable(task)) {
-			cred = __task_cred(task);
-			stat->uid = cred->euid;
-			stat->gid = cred->egid;
-		}
+		task_dump_owner(task, inode->i_mode, &stat->uid, &stat->gid);
 	}
 	rcu_read_unlock();
 	return 0;
@@ -1737,18 +1776,11 @@ int pid_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
  * Rewrite the inode's ownerships here because the owning task may have
  * performed a setuid(), etc.
  *
- * Before the /proc/pid/status file was created the only way to read
- * the effective uid of a /process was to stat /proc/pid.  Reading
- * /proc/pid/status is slow enough that procps and other packages
- * kept stating /proc/pid.  To keep the rules in /proc simple I have
- * made this apply to all per process world readable and executable
- * directories.
  */
 int pid_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	struct inode *inode;
 	struct task_struct *task;
-	const struct cred *cred;
 
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
@@ -1757,17 +1789,8 @@ int pid_revalidate(struct dentry *dentry, unsigned int flags)
 	task = get_proc_task(inode);
 
 	if (task) {
-		if ((inode->i_mode == (S_IFDIR|S_IRUGO|S_IXUGO)) ||
-		    task_dumpable(task)) {
-			rcu_read_lock();
-			cred = __task_cred(task);
-			inode->i_uid = cred->euid;
-			inode->i_gid = cred->egid;
-			rcu_read_unlock();
-		} else {
-			inode->i_uid = GLOBAL_ROOT_UID;
-			inode->i_gid = GLOBAL_ROOT_GID;
-		}
+		task_dump_owner(task, inode->i_mode, &inode->i_uid, &inode->i_gid);
+
 		inode->i_mode &= ~(S_ISUID | S_ISGID);
 		security_task_to_inode(task, inode);
 		put_task_struct(task);
@@ -1864,7 +1887,6 @@ static int map_files_d_revalidate(struct dentry *dentry, unsigned int flags)
 	bool exact_vma_exists = false;
 	struct mm_struct *mm = NULL;
 	struct task_struct *task;
-	const struct cred *cred;
 	struct inode *inode;
 	int status = 0;
 
@@ -1889,16 +1911,8 @@ static int map_files_d_revalidate(struct dentry *dentry, unsigned int flags)
 	mmput(mm);
 
 	if (exact_vma_exists) {
-		if (task_dumpable(task)) {
-			rcu_read_lock();
-			cred = __task_cred(task);
-			inode->i_uid = cred->euid;
-			inode->i_gid = cred->egid;
-			rcu_read_unlock();
-		} else {
-			inode->i_uid = GLOBAL_ROOT_UID;
-			inode->i_gid = GLOBAL_ROOT_GID;
-		}
+		task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
+
 		security_task_to_inode(task, inode);
 		status = 1;
 	}
