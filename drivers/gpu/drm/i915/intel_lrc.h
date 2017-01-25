@@ -26,7 +26,7 @@
 
 #include "intel_ringbuffer.h"
 
-#define GEN8_LR_CONTEXT_ALIGN 4096
+#define GEN8_LR_CONTEXT_ALIGN I915_GTT_MIN_ALIGNMENT
 
 /* Execlists regs */
 #define RING_ELSP(engine)			_MMIO((engine)->mmio_base + 0x230)
@@ -67,8 +67,6 @@ void intel_logical_ring_stop(struct intel_engine_cs *engine);
 void intel_logical_ring_cleanup(struct intel_engine_cs *engine);
 int logical_render_ring_init(struct intel_engine_cs *engine);
 int logical_xcs_ring_init(struct intel_engine_cs *engine);
-
-int intel_engines_init(struct drm_i915_private *dev_priv);
 
 /* Logical Ring Contexts */
 

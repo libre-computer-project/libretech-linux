@@ -211,6 +211,10 @@ struct intel_engine_cs {
 
 	struct intel_render_state *render_state;
 
+	unsigned long irq_posted;
+#define ENGINE_IRQ_BREADCRUMB 0
+#define ENGINE_IRQ_EXECLIST 1
+
 	/* Rather than have every client wait upon all user interrupts,
 	 * with the herd waking after every interrupt and each doing the
 	 * heavyweight seqno dance, we delegate the task (of being the
@@ -229,7 +233,6 @@ struct intel_engine_cs {
 	 */
 	struct intel_breadcrumbs {
 		struct task_struct __rcu *irq_seqno_bh; /* bh for interrupts */
-		bool irq_posted;
 
 		spinlock_t lock; /* protects the lists of requests; irqsafe */
 		struct rb_root waiters; /* sorted by retirement, priority */
@@ -380,8 +383,6 @@ struct intel_engine_cs {
 	struct rb_root execlist_queue;
 	struct rb_node *execlist_first;
 	unsigned int fw_domains;
-	bool disable_lite_restore_wa;
-	bool preempt_wa;
 	u32 ctx_desc_template;
 
 	/* Contexts are pinned whilst they are active on the GPU. The last
