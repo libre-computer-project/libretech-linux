@@ -127,6 +127,8 @@ static const char * const dwc2_hsotg_supply_names[] = {
 	"vusb_a",               /* analog USB supply, 1.1V */
 };
 
+#define DWC2_NUM_SUPPLIES ARRAY_SIZE(dwc2_hsotg_supply_names)
+
 /*
  * EP0_MPS_LIMIT
  *
@@ -246,7 +248,8 @@ struct dwc2_hsotg_req {
 	void *saved_req_buf;
 };
 
-#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
+#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || \
+	IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
 #define call_gadget(_hs, _entry) \
 do { \
 	if ((_hs)->gadget.speed != USB_SPEED_UNKNOWN && \
@@ -430,6 +433,12 @@ enum dwc2_ep0_state {
  *			needed.
  *			0 - No (default)
  *			1 - Yes
+ * @ahb_burst:          Specifies the AHB burst.
+ *                       0 - Single
+ *                       1 - INCR
+ *                       3 - INCR4 (default)
+ *                       5 - INCR8
+ *                       7 - INCR16
  * @g_dma:              Enables gadget dma usage (default: autodetect).
  * @g_dma_desc:         Enables gadget descriptor DMA (default: autodetect).
  * @g_rx_fifo_size:	The periodic rx fifo size for the device, in
@@ -506,6 +515,9 @@ struct dwc2_core_params {
 	 * The following parameters are *only* set via device
 	 * properties and cannot be set directly in this structure.
 	 */
+
+	/* Global parameters */
+	u8 ahb_burst;
 
 	/* Host parameters */
 	bool host_dma;
@@ -603,8 +615,8 @@ struct dwc2_hw_params {
 #define DWC2_CTRL_BUFF_SIZE 8
 
 /**
- * struct dwc2_gregs_backup - Holds global registers state before entering partial
- * power down
+ * struct dwc2_gregs_backup - Holds global registers state before
+ * entering partial power down
  * @gotgctl:		Backup of GOTGCTL register
  * @gintmsk:		Backup of GINTMSK register
  * @gahbcfg:		Backup of GAHBCFG register
@@ -634,8 +646,8 @@ struct dwc2_gregs_backup {
 };
 
 /**
- * struct  dwc2_dregs_backup - Holds device registers state before entering partial
- * power down
+ * struct dwc2_dregs_backup - Holds device registers state before
+ * entering partial power down
  * @dcfg:		Backup of DCFG register
  * @dctl:		Backup of DCTL register
  * @daintmsk:		Backup of DAINTMSK register
@@ -664,8 +676,8 @@ struct dwc2_dregs_backup {
 };
 
 /**
- * struct  dwc2_hregs_backup - Holds host registers state before entering partial
- * power down
+ * struct dwc2_hregs_backup - Holds host registers state before
+ * entering partial power down
  * @hcfg:		Backup of HCFG register
  * @haintmsk:		Backup of HAINTMSK register
  * @hcintmsk:		Backup of HCINTMSK register
@@ -782,9 +794,10 @@ struct dwc2_hregs_backup {
  * @gadget_enabled	Peripheral mode sub-driver initialization indicator.
  * @ll_hw_enabled	Status of low-level hardware resources.
  * @phy:                The otg phy transceiver structure for phy control.
- * @uphy:               The otg phy transceiver structure for old USB phy control.
- * @plat:               The platform specific configuration data. This can be removed once
- *                      all SoCs support usb transceiver.
+ * @uphy:               The otg phy transceiver structure for old USB phy
+ *                      control.
+ * @plat:               The platform specific configuration data. This can be
+ *                      removed once all SoCs support usb transceiver.
  * @supplies:           Definition of USB power supplies
  * @phyif:              PHY interface width
  * @lock:		Spinlock that protects all the driver data structures
@@ -921,7 +934,7 @@ struct dwc2_hsotg {
 	struct phy *phy;
 	struct usb_phy *uphy;
 	struct dwc2_hsotg_plat *plat;
-	struct regulator_bulk_data supplies[ARRAY_SIZE(dwc2_hsotg_supply_names)];
+	struct regulator_bulk_data supplies[DWC2_NUM_SUPPLIES];
 	u32 phyif;
 
 	spinlock_t lock;
@@ -1033,7 +1046,8 @@ struct dwc2_hsotg {
 #endif
 #endif /* CONFIG_USB_DWC2_HOST || CONFIG_USB_DWC2_DUAL_ROLE */
 
-#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
+#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || \
+	IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
 	/* Gadget structures */
 	struct usb_gadget_driver *driver;
 	int fifo_mem;
@@ -1101,37 +1115,37 @@ static inline bool dwc2_is_hs_iot(struct dwc2_hsotg *hsotg)
  * The following functions support initialization of the core driver component
  * and the DWC_otg controller
  */
-extern int dwc2_core_reset(struct dwc2_hsotg *hsotg);
-extern int dwc2_core_reset_and_force_dr_mode(struct dwc2_hsotg *hsotg);
-extern int dwc2_enter_hibernation(struct dwc2_hsotg *hsotg);
-extern int dwc2_exit_hibernation(struct dwc2_hsotg *hsotg, bool restore);
+int dwc2_core_reset(struct dwc2_hsotg *hsotg);
+int dwc2_core_reset_and_force_dr_mode(struct dwc2_hsotg *hsotg);
+int dwc2_enter_hibernation(struct dwc2_hsotg *hsotg);
+int dwc2_exit_hibernation(struct dwc2_hsotg *hsotg, bool restore);
 
 bool dwc2_force_mode_if_needed(struct dwc2_hsotg *hsotg, bool host);
 void dwc2_clear_force_mode(struct dwc2_hsotg *hsotg);
 void dwc2_force_dr_mode(struct dwc2_hsotg *hsotg);
 
-extern bool dwc2_is_controller_alive(struct dwc2_hsotg *hsotg);
+bool dwc2_is_controller_alive(struct dwc2_hsotg *hsotg);
 
 /*
  * Common core Functions.
  * The following functions support managing the DWC_otg controller in either
  * device or host mode.
  */
-extern void dwc2_read_packet(struct dwc2_hsotg *hsotg, u8 *dest, u16 bytes);
-extern void dwc2_flush_tx_fifo(struct dwc2_hsotg *hsotg, const int num);
-extern void dwc2_flush_rx_fifo(struct dwc2_hsotg *hsotg);
+void dwc2_read_packet(struct dwc2_hsotg *hsotg, u8 *dest, u16 bytes);
+void dwc2_flush_tx_fifo(struct dwc2_hsotg *hsotg, const int num);
+void dwc2_flush_rx_fifo(struct dwc2_hsotg *hsotg);
 
-extern void dwc2_enable_global_interrupts(struct dwc2_hsotg *hcd);
-extern void dwc2_disable_global_interrupts(struct dwc2_hsotg *hcd);
+void dwc2_enable_global_interrupts(struct dwc2_hsotg *hcd);
+void dwc2_disable_global_interrupts(struct dwc2_hsotg *hcd);
 
 /* This function should be called on every hardware interrupt. */
-extern irqreturn_t dwc2_handle_common_intr(int irq, void *dev);
+irqreturn_t dwc2_handle_common_intr(int irq, void *dev);
 
 /* The device ID match table */
 extern const struct of_device_id dwc2_of_match_table[];
 
-extern int dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg);
-extern int dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg);
+int dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg);
+int dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg);
 
 /* Parameters */
 int dwc2_get_hwparams(struct dwc2_hsotg *hsotg);
@@ -1145,7 +1159,7 @@ int dwc2_init_params(struct dwc2_hsotg *hsotg);
  * are read in and cached so they always read directly from the
  * GHWCFG2 register.
  */
-unsigned dwc2_op_mode(struct dwc2_hsotg *hsotg);
+unsigned int dwc2_op_mode(struct dwc2_hsotg *hsotg);
 bool dwc2_hw_is_otg(struct dwc2_hsotg *hsotg);
 bool dwc2_hw_is_host(struct dwc2_hsotg *hsotg);
 bool dwc2_hw_is_device(struct dwc2_hsotg *hsotg);
@@ -1157,6 +1171,7 @@ static inline int dwc2_is_host_mode(struct dwc2_hsotg *hsotg)
 {
 	return (dwc2_readl(hsotg->regs + GINTSTS) & GINTSTS_CURMODE_HOST) != 0;
 }
+
 static inline int dwc2_is_device_mode(struct dwc2_hsotg *hsotg)
 {
 	return (dwc2_readl(hsotg->regs + GINTSTS) & GINTSTS_CURMODE_HOST) == 0;
@@ -1165,26 +1180,27 @@ static inline int dwc2_is_device_mode(struct dwc2_hsotg *hsotg)
 /*
  * Dump core registers and SPRAM
  */
-extern void dwc2_dump_dev_registers(struct dwc2_hsotg *hsotg);
-extern void dwc2_dump_host_registers(struct dwc2_hsotg *hsotg);
-extern void dwc2_dump_global_registers(struct dwc2_hsotg *hsotg);
+void dwc2_dump_dev_registers(struct dwc2_hsotg *hsotg);
+void dwc2_dump_host_registers(struct dwc2_hsotg *hsotg);
+void dwc2_dump_global_registers(struct dwc2_hsotg *hsotg);
 
 /*
  * Return OTG version - either 1.3 or 2.0
  */
-extern u16 dwc2_get_otg_version(struct dwc2_hsotg *hsotg);
+u16 dwc2_get_otg_version(struct dwc2_hsotg *hsotg);
 
 /* Gadget defines */
-#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
-extern int dwc2_hsotg_remove(struct dwc2_hsotg *hsotg);
-extern int dwc2_hsotg_suspend(struct dwc2_hsotg *dwc2);
-extern int dwc2_hsotg_resume(struct dwc2_hsotg *dwc2);
-extern int dwc2_gadget_init(struct dwc2_hsotg *hsotg, int irq);
-extern void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *dwc2,
-		bool reset);
-extern void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg);
-extern void dwc2_hsotg_disconnect(struct dwc2_hsotg *dwc2);
-extern int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg, int testmode);
+#if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || \
+	IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
+int dwc2_hsotg_remove(struct dwc2_hsotg *hsotg);
+int dwc2_hsotg_suspend(struct dwc2_hsotg *dwc2);
+int dwc2_hsotg_resume(struct dwc2_hsotg *dwc2);
+int dwc2_gadget_init(struct dwc2_hsotg *hsotg, int irq);
+void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *dwc2,
+				       bool reset);
+void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg);
+void dwc2_hsotg_disconnect(struct dwc2_hsotg *dwc2);
+int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg, int testmode);
 #define dwc2_is_device_connected(hsotg) (hsotg->connected)
 int dwc2_backup_device_registers(struct dwc2_hsotg *hsotg);
 int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg);
@@ -1198,11 +1214,11 @@ static inline int dwc2_hsotg_resume(struct dwc2_hsotg *dwc2)
 static inline int dwc2_gadget_init(struct dwc2_hsotg *hsotg, int irq)
 { return 0; }
 static inline void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *dwc2,
-		bool reset) {}
+						     bool reset) {}
 static inline void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg) {}
 static inline void dwc2_hsotg_disconnect(struct dwc2_hsotg *dwc2) {}
 static inline int dwc2_hsotg_set_test_mode(struct dwc2_hsotg *hsotg,
-							int testmode)
+					   int testmode)
 { return 0; }
 #define dwc2_is_device_connected(hsotg) (0)
 static inline int dwc2_backup_device_registers(struct dwc2_hsotg *hsotg)
@@ -1212,11 +1228,11 @@ static inline int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg)
 #endif
 
 #if IS_ENABLED(CONFIG_USB_DWC2_HOST) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
-extern int dwc2_hcd_get_frame_number(struct dwc2_hsotg *hsotg);
-extern int dwc2_hcd_get_future_frame_number(struct dwc2_hsotg *hsotg, int us);
-extern void dwc2_hcd_connect(struct dwc2_hsotg *hsotg);
-extern void dwc2_hcd_disconnect(struct dwc2_hsotg *hsotg, bool force);
-extern void dwc2_hcd_start(struct dwc2_hsotg *hsotg);
+int dwc2_hcd_get_frame_number(struct dwc2_hsotg *hsotg);
+int dwc2_hcd_get_future_frame_number(struct dwc2_hsotg *hsotg, int us);
+void dwc2_hcd_connect(struct dwc2_hsotg *hsotg);
+void dwc2_hcd_disconnect(struct dwc2_hsotg *hsotg, bool force);
+void dwc2_hcd_start(struct dwc2_hsotg *hsotg);
 int dwc2_backup_host_registers(struct dwc2_hsotg *hsotg);
 int dwc2_restore_host_registers(struct dwc2_hsotg *hsotg);
 #else
