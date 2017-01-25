@@ -339,7 +339,7 @@ config CRYPTO_DEV_OMAP_DES
 
 config CRYPTO_DEV_PICOXCELL
 	tristate "Support for picoXcell IPSEC and Layer2 crypto engines"
-	depends on ARCH_PICOXCELL && HAVE_CLK
+	depends on (ARCH_PICOXCELL || COMPILE_TEST) && HAVE_CLK
 	select CRYPTO_AEAD
 	select CRYPTO_AES
 	select CRYPTO_AUTHENC
@@ -552,6 +552,22 @@ config CRYPTO_DEV_ROCKCHIP
 	help
 	  This driver interfaces with the hardware crypto accelerator.
 	  Supporting cbc/ecb chainmode, and aes/des/des3_ede cipher mode.
+
+config CRYPTO_DEV_MEDIATEK
+	tristate "MediaTek's EIP97 Cryptographic Engine driver"
+	depends on (ARM && ARCH_MEDIATEK) || COMPILE_TEST
+	select CRYPTO_AES
+	select CRYPTO_AEAD
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_CTR
+	select CRYPTO_SHA1
+	select CRYPTO_SHA256
+	select CRYPTO_SHA512
+	select CRYPTO_HMAC
+	help
+	  This driver allows you to utilize the hardware crypto accelerator
+	  EIP97 which can be found on the MT7623 MT2701, MT8521p, etc ....
+	  Select this if you want to use it for AES/SHA1/SHA2 algorithms.
 
 source "drivers/crypto/chelsio/Kconfig"
 
