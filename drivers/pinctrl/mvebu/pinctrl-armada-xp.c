@@ -30,18 +30,7 @@
 
 #include "pinctrl-mvebu.h"
 
-static void __iomem *mpp_base;
 static u32 *mpp_saved_regs;
-
-static int armada_xp_mpp_ctrl_get(unsigned pid, unsigned long *config)
-{
-	return default_mpp_ctrl_get(mpp_base, pid, config);
-}
-
-static int armada_xp_mpp_ctrl_set(unsigned pid, unsigned long config)
-{
-	return default_mpp_ctrl_set(mpp_base, pid, config);
-}
 
 enum armada_xp_variant {
 	V_MV78230	= BIT(0),
@@ -378,8 +367,8 @@ static const struct of_device_id armada_xp_pinctrl_of_match[] = {
 	{ },
 };
 
-static struct mvebu_mpp_ctrl mv78230_mpp_controls[] = {
-	MPP_FUNC_CTRL(0, 48, NULL, armada_xp_mpp_ctrl),
+static const struct mvebu_mpp_ctrl mv78230_mpp_controls[] = {
+	MPP_FUNC_CTRL(0, 48, NULL, mvebu_mmio_mpp_ctrl),
 };
 
 static struct pinctrl_gpio_range mv78230_mpp_gpio_ranges[] = {
@@ -387,8 +376,8 @@ static struct pinctrl_gpio_range mv78230_mpp_gpio_ranges[] = {
 	MPP_GPIO_RANGE(1,  32, 32, 17),
 };
 
-static struct mvebu_mpp_ctrl mv78260_mpp_controls[] = {
-	MPP_FUNC_CTRL(0, 66, NULL, armada_xp_mpp_ctrl),
+static const struct mvebu_mpp_ctrl mv78260_mpp_controls[] = {
+	MPP_FUNC_CTRL(0, 66, NULL, mvebu_mmio_mpp_ctrl),
 };
 
 static struct pinctrl_gpio_range mv78260_mpp_gpio_ranges[] = {
@@ -397,8 +386,8 @@ static struct pinctrl_gpio_range mv78260_mpp_gpio_ranges[] = {
 	MPP_GPIO_RANGE(2,  64, 64,  3),
 };
 
-static struct mvebu_mpp_ctrl mv78460_mpp_controls[] = {
-	MPP_FUNC_CTRL(0, 66, NULL, armada_xp_mpp_ctrl),
+static const struct mvebu_mpp_ctrl mv78460_mpp_controls[] = {
+	MPP_FUNC_CTRL(0, 66, NULL, mvebu_mmio_mpp_ctrl),
 };
 
 static struct pinctrl_gpio_range mv78460_mpp_gpio_ranges[] = {
@@ -417,7 +406,7 @@ static int armada_xp_pinctrl_suspend(struct platform_device *pdev,
 	nregs = DIV_ROUND_UP(soc->nmodes, MVEBU_MPPS_PER_REG);
 
 	for (i = 0; i < nregs; i++)
-		mpp_saved_regs[i] = readl(mpp_base + i * 4);
+		mpp_saved_regs[i] = readl(soc->control_data[0].base + i * 4);
 
 	return 0;
 }
@@ -431,7 +420,7 @@ static int armada_xp_pinctrl_resume(struct platform_device *pdev)
 	nregs = DIV_ROUND_UP(soc->nmodes, MVEBU_MPPS_PER_REG);
 
 	for (i = 0; i < nregs; i++)
-		writel(mpp_saved_regs[i], mpp_base + i * 4);
+		writel(mpp_saved_regs[i], soc->control_data[0].base + i * 4);
 
 	return 0;
 }
@@ -441,16 +430,10 @@ static int armada_xp_pinctrl_probe(struct platform_device *pdev)
 	struct mvebu_pinctrl_soc_info *soc = &armada_xp_pinctrl_info;
 	const struct of_device_id *match =
 		of_match_device(armada_xp_pinctrl_of_match, &pdev->dev);
-	struct resource *res;
 	int nregs;
 
 	if (!match)
 		return -ENODEV;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mpp_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(mpp_base))
-		return PTR_ERR(mpp_base);
 
 	soc->variant = (unsigned) match->data & 0xff;
 
@@ -499,7 +482,7 @@ static int armada_xp_pinctrl_probe(struct platform_device *pdev)
 
 	pdev->dev.platform_data = soc;
 
-	return mvebu_pinctrl_probe(pdev);
+	return mvebu_pinctrl_simple_mmio_probe(pdev);
 }
 
 static struct platform_driver armada_xp_pinctrl_driver = {
