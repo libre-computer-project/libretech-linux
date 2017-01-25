@@ -382,10 +382,12 @@
 #define GLOBAL2_EEPROM_CMD_WRITE_EN	BIT(10)
 #define GLOBAL2_EEPROM_CMD_ADDR_MASK	0xff
 #define GLOBAL2_EEPROM_DATA	0x15
+#define GLOBAL2_EEPROM_ADDR	0x15 /* 6390 */
 #define GLOBAL2_PTP_AVB_OP	0x16
 #define GLOBAL2_PTP_AVB_DATA	0x17
 #define GLOBAL2_SMI_PHY_CMD			0x18
 #define GLOBAL2_SMI_PHY_CMD_BUSY		BIT(15)
+#define GLOBAL2_SMI_PHY_CMD_EXTERNAL		BIT(13)
 #define GLOBAL2_SMI_PHY_CMD_MODE_22		BIT(12)
 #define GLOBAL2_SMI_PHY_CMD_OP_22_WRITE_DATA	((0x1 << 10) | \
 						 GLOBAL2_SMI_PHY_CMD_MODE_22 | \
@@ -496,12 +498,6 @@ enum mv88e6xxx_cap {
 	 */
 	MV88E6XXX_CAP_STU,
 
-	/* Internal temperature sensor.
-	 * Available from any enabled port's PHY register 26, page 6.
-	 */
-	MV88E6XXX_CAP_TEMP,
-	MV88E6XXX_CAP_TEMP_LIMIT,
-
 	/* VLAN Table Unit.
 	 * The VTU is used to program 802.1Q VLANs. See GLOBAL_VTU_OP.
 	 */
@@ -532,8 +528,6 @@ enum mv88e6xxx_cap {
 #define MV88E6XXX_FLAG_G2_POT		BIT_ULL(MV88E6XXX_CAP_G2_POT)
 
 #define MV88E6XXX_FLAG_STU		BIT_ULL(MV88E6XXX_CAP_STU)
-#define MV88E6XXX_FLAG_TEMP		BIT_ULL(MV88E6XXX_CAP_TEMP)
-#define MV88E6XXX_FLAG_TEMP_LIMIT	BIT_ULL(MV88E6XXX_CAP_TEMP_LIMIT)
 #define MV88E6XXX_FLAG_VTU		BIT_ULL(MV88E6XXX_CAP_VTU)
 
 /* Ingress Rate Limit unit */
@@ -566,6 +560,7 @@ enum mv88e6xxx_cap {
 	(MV88E6XXX_FLAG_G1_ATU_FID |	\
 	 MV88E6XXX_FLAG_G1_VTU_FID |	\
 	 MV88E6XXX_FLAG_GLOBAL2 |	\
+	 MV88E6XXX_FLAG_G2_INT |        \
 	 MV88E6XXX_FLAG_G2_MGMT_EN_2X |	\
 	 MV88E6XXX_FLAG_G2_MGMT_EN_0X |	\
 	 MV88E6XXX_FLAG_G2_POT |	\
@@ -584,7 +579,6 @@ enum mv88e6xxx_cap {
 	 MV88E6XXX_FLAG_G2_MGMT_EN_0X |	\
 	 MV88E6XXX_FLAG_G2_POT |	\
 	 MV88E6XXX_FLAG_STU |		\
-	 MV88E6XXX_FLAG_TEMP |		\
 	 MV88E6XXX_FLAG_VTU |		\
 	 MV88E6XXX_FLAGS_IRL |		\
 	 MV88E6XXX_FLAGS_MULTI_CHIP |	\
@@ -603,8 +597,6 @@ enum mv88e6xxx_cap {
 	 MV88E6XXX_FLAG_G2_MGMT_EN_2X |	\
 	 MV88E6XXX_FLAG_G2_MGMT_EN_0X |	\
 	 MV88E6XXX_FLAG_G2_POT |	\
-	 MV88E6XXX_FLAG_TEMP |		\
-	 MV88E6XXX_FLAG_TEMP_LIMIT |	\
 	 MV88E6XXX_FLAG_VTU |		\
 	 MV88E6XXX_FLAGS_IRL |		\
 	 MV88E6XXX_FLAGS_MULTI_CHIP |	\
@@ -619,7 +611,6 @@ enum mv88e6xxx_cap {
 	 MV88E6XXX_FLAG_G2_MGMT_EN_0X |	\
 	 MV88E6XXX_FLAG_G2_POT |	\
 	 MV88E6XXX_FLAG_STU |		\
-	 MV88E6XXX_FLAG_TEMP |		\
 	 MV88E6XXX_FLAG_VTU |		\
 	 MV88E6XXX_FLAGS_IRL |		\
 	 MV88E6XXX_FLAGS_MULTI_CHIP |	\
@@ -635,8 +626,6 @@ enum mv88e6xxx_cap {
 	 MV88E6XXX_FLAG_G2_MGMT_EN_0X |	\
 	 MV88E6XXX_FLAG_G2_POT |	\
 	 MV88E6XXX_FLAG_STU |		\
-	 MV88E6XXX_FLAG_TEMP |		\
-	 MV88E6XXX_FLAG_TEMP_LIMIT |	\
 	 MV88E6XXX_FLAG_VTU |		\
 	 MV88E6XXX_FLAGS_IRL |		\
 	 MV88E6XXX_FLAGS_MULTI_CHIP |	\
@@ -649,8 +638,6 @@ struct mv88e6xxx_ops;
 	(MV88E6XXX_FLAG_EEE |		\
 	 MV88E6XXX_FLAG_GLOBAL2 |	\
 	 MV88E6XXX_FLAG_STU |		\
-	 MV88E6XXX_FLAG_TEMP |		\
-	 MV88E6XXX_FLAG_TEMP_LIMIT |	\
 	 MV88E6XXX_FLAG_VTU |		\
 	 MV88E6XXX_FLAGS_IRL |		\
 	 MV88E6XXX_FLAGS_MULTI_CHIP |	\
@@ -744,11 +731,8 @@ struct mv88e6xxx_chip {
 	/* set to size of eeprom if supported by the switch */
 	int		eeprom_len;
 
-	/* Device node for the MDIO bus */
-	struct device_node *mdio_np;
-
-	/* And the MDIO bus itself */
-	struct mii_bus *mdio_bus;
+	/* List of mdio busses */
+	struct list_head mdios;
 
 	/* There can be two interrupt controllers, which are chained
 	 * off a GPIO as interrupt source
@@ -764,6 +748,13 @@ struct mv88e6xxx_bus_ops {
 	int (*write)(struct mv88e6xxx_chip *chip, int addr, int reg, u16 val);
 };
 
+struct mv88e6xxx_mdio_bus {
+	struct mii_bus *bus;
+	struct mv88e6xxx_chip *chip;
+	struct list_head list;
+	bool external;
+};
+
 struct mv88e6xxx_ops {
 	int (*get_eeprom)(struct mv88e6xxx_chip *chip,
 			  struct ethtool_eeprom *eeprom, u8 *data);
@@ -772,10 +763,12 @@ struct mv88e6xxx_ops {
 
 	int (*set_switch_mac)(struct mv88e6xxx_chip *chip, u8 *addr);
 
-	int (*phy_read)(struct mv88e6xxx_chip *chip, int addr, int reg,
-			u16 *val);
-	int (*phy_write)(struct mv88e6xxx_chip *chip, int addr, int reg,
-			 u16 val);
+	int (*phy_read)(struct mv88e6xxx_chip *chip,
+			struct mii_bus *bus,
+			int addr, int reg, u16 *val);
+	int (*phy_write)(struct mv88e6xxx_chip *chip,
+			 struct mii_bus *bus,
+			 int addr, int reg, u16 val);
 
 	/* PHY Polling Unit (PPU) operations */
 	int (*ppu_enable)(struct mv88e6xxx_chip *chip);

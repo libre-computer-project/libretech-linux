@@ -314,8 +314,6 @@ struct emac_skb_cb {
 	RX_PKT_INT2     |\
 	RX_PKT_INT3)
 
-#define EMAC_MAC_IRQ_RES                                    	"core0"
-
 void emac_mac_multicast_addr_set(struct emac_adapter *adpt, u8 *addr)
 {
 	u32 crc32, bit, reg, mta;
@@ -977,38 +975,22 @@ static void emac_adjust_link(struct net_device *netdev)
 int emac_mac_up(struct emac_adapter *adpt)
 {
 	struct net_device *netdev = adpt->netdev;
-	struct emac_irq	*irq = &adpt->irq;
 	int ret;
 
 	emac_mac_rx_tx_ring_reset_all(adpt);
 	emac_mac_config(adpt);
-
-	ret = request_irq(irq->irq, emac_isr, 0, EMAC_MAC_IRQ_RES, irq);
-	if (ret) {
-		netdev_err(adpt->netdev, "could not request %s irq\n",
-			   EMAC_MAC_IRQ_RES);
-		return ret;
-	}
-
 	emac_mac_rx_descs_refill(adpt, &adpt->rx_q);
 
 	ret = phy_connect_direct(netdev, adpt->phydev, emac_adjust_link,
 				 PHY_INTERFACE_MODE_SGMII);
 	if (ret) {
 		netdev_err(adpt->netdev, "could not connect phy\n");
-		free_irq(irq->irq, irq);
 		return ret;
 	}
 
 	/* enable mac irq */
 	writel((u32)~DIS_INT, adpt->base + EMAC_INT_STATUS);
 	writel(adpt->irq.mask, adpt->base + EMAC_INT_MASK);
-
-	/* Enable pause frames.  Without this feature, the EMAC has been shown
-	 * to receive (and drop) frames with FCS errors at gigabit connections.
-	 */
-	adpt->phydev->supported |= SUPPORTED_Pause | SUPPORTED_Asym_Pause;
-	adpt->phydev->advertising |= SUPPORTED_Pause | SUPPORTED_Asym_Pause;
 
 	adpt->phydev->irq = PHY_IGNORE_INTERRUPT;
 	phy_start(adpt->phydev);
@@ -1036,7 +1018,6 @@ void emac_mac_down(struct emac_adapter *adpt)
 	writel(DIS_INT, adpt->base + EMAC_INT_STATUS);
 	writel(0, adpt->base + EMAC_INT_MASK);
 	synchronize_irq(adpt->irq.irq);
-	free_irq(adpt->irq.irq, &adpt->irq);
 
 	phy_disconnect(adpt->phydev);
 
@@ -1213,7 +1194,6 @@ void emac_mac_rx_process(struct emac_adapter *adpt, struct emac_rx_queue *rx_q,
 		emac_receive_skb(rx_q, skb, (u16)RRD_CVALN_TAG(&rrd),
 				 (bool)RRD_CVTAG(&rrd));
 
-		netdev->last_rx = jiffies;
 		(*num_pkts)++;
 	} while (*num_pkts < max_pkts);
 
