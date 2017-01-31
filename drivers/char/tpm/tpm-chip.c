@@ -130,6 +130,7 @@ static void tpm_dev_release(struct device *dev)
 
 	kfree(chip->log.bios_event_log);
 	kfree(chip->work_space.context_buf);
+	kfree(chip->work_space.session_buf);
 	kfree(chip);
 }
 
@@ -221,6 +222,11 @@ struct tpm_chip *tpm_chip_alloc(struct device *pdev,
 
 	chip->work_space.context_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!chip->work_space.context_buf) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	chip->work_space.session_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!chip->work_space.session_buf) {
 		rc = -ENOMEM;
 		goto out;
 	}
