@@ -10,6 +10,7 @@
 #define CLKID_FCLK_DIV2		4
 #define CLKID_FCLK_DIV3		5
 #define CLKID_FCLK_DIV4		6
+#define CLKID_GP0_PLL		9
 #define CLKID_CLK81		12
 #define CLKID_MPLL2		15
 #define CLKID_SPI		34
@@ -24,5 +25,8 @@
 #define CLKID_SD_EMMC_A		94
 #define CLKID_SD_EMMC_B		95
 #define CLKID_SD_EMMC_C		96
+#define CLKID_MALI_0		97
+#define CLKID_MALI_1		98
+#define CLKID_MALI		99
 
 #endif /* __GXBB_CLKC_H */

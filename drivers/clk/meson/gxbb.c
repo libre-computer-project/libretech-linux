@@ -352,6 +352,20 @@ static struct meson_clk_pll gxbb_sys_pll = {
 	},
 };
 
+static void __iomem *gxbb_gp0_init_regs[] = {
+	(void *)HHI_GP0_PLL_CNTL,
+	(void *)HHI_GP0_PLL_CNTL2,
+	(void *)HHI_GP0_PLL_CNTL3,
+	(void *)HHI_GP0_PLL_CNTL4,
+};
+
+static u32 gxbb_gp0_init_data[] = {
+	0x6a000228,
+	0x69c80000,
+	0x0a5590c4,
+	0x0000500d,
+};
+
 static struct meson_clk_pll gxbb_gp0_pll = {
 	.m = {
 		.reg_off = HHI_GP0_PLL_CNTL,
@@ -368,6 +382,9 @@ static struct meson_clk_pll gxbb_gp0_pll = {
 		.shift   = 16,
 		.width   = 2,
 	},
+	.init_regs = gxbb_gp0_init_regs,
+	.init_data = gxbb_gp0_init_data,
+	.init_count = 4,
 	.rate_table = gp0_pll_rate_table,
 	.rate_count = ARRAY_SIZE(gp0_pll_rate_table),
 	.lock = &clk_lock,
@@ -547,6 +564,75 @@ static struct clk_divider gxbb_mpeg_clk_div = {
 		.parent_names = (const char *[]){ "mpeg_clk_sel" },
 		.num_parents = 1,
 		.flags = (CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED),
+	},
+};
+
+/* Mali Clock components */
+static u32 mux_table_mali_0_1[] = {0, 1, 2, 3, 4, 5, 6, 7};
+const char *gxbb_mali_0_1_parent_names[] = {
+	"xtal", "gp0_pll", "mpll2", "mpll1", "fclk_div7",
+	"fclk_div4", "fclk_div3", "fclk_div5"
+};
+
+static struct clk_mux gxbb_mali_0_sel = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.mask = 0x3,
+	.shift = 9,
+	.table = mux_table_mali_0_1,
+	.lock = &clk_lock,
+};
+
+static struct clk_divider gxbb_mali_0_div = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.shift = 0,
+	.width = 7,
+	.lock = &clk_lock,
+};
+
+static struct clk_gate gxbb_mali_0_en = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.bit_idx = 8,
+	.lock = &clk_lock,
+};
+
+static struct clk_mux gxbb_mali_1_sel = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.mask = 0x3,
+	.shift = 25,
+	.table = mux_table_mali_0_1,
+	.lock = &clk_lock,
+};
+
+static struct clk_divider gxbb_mali_1_div = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.shift = 16,
+	.width = 7,
+	.lock = &clk_lock,
+};
+
+static struct clk_gate gxbb_mali_1_en = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.bit_idx = 24,
+	.lock = &clk_lock,
+};
+
+static u32 mux_table_mali[] = {0, 1};
+const char *gxbb_mali_parent_names[] = {
+	"mali_0", "mali_1"
+};
+
+static struct clk_mux gxbb_mali = {
+	.reg = (void *)HHI_MALI_CLK_CNTL,
+	.mask = 1,
+	.shift = 31,
+	.table = mux_table_mali,
+	.lock = &clk_lock,
+	.hw.init = &(struct clk_init_data){
+		.name = "mali",
+		.ops = &clk_mux_ops,
+		.parent_names = gxbb_mali_parent_names,
+		.num_parents = 2,
+		.flags = (CLK_SET_RATE_NO_REPARENT | CLK_IGNORE_UNUSED),
 	},
 };
 
@@ -754,6 +840,9 @@ static struct clk_hw_onecell_data gxbb_hw_onecell_data = {
 		[CLKID_SD_EMMC_A]	    = &gxbb_emmc_a.hw,
 		[CLKID_SD_EMMC_B]	    = &gxbb_emmc_b.hw,
 		[CLKID_SD_EMMC_C]	    = &gxbb_emmc_c.hw,
+		[CLKID_MALI]		    = &gxbb_mali.hw,
+		/* This sentinel entry makes sure the table is large enough */
+		[NR_CLKS]		    = NULL, /* Sentinel */
 	},
 	.num = NR_CLKS,
 };
@@ -856,6 +945,66 @@ static struct clk_gate *gxbb_clk_gates[] = {
 	&gxbb_emmc_a,
 	&gxbb_emmc_b,
 	&gxbb_emmc_c,
+	&gxbb_mali_0_en,
+	&gxbb_mali_1_en,
+};
+
+static struct clk_mux *gxbb_clk_muxes[] = {
+	&gxbb_mpeg_clk_sel,
+	&gxbb_mali_0_sel,
+	&gxbb_mali_1_sel,
+	&gxbb_mali,
+};
+
+static struct clk_divider *gxbb_clk_dividers[] = {
+	&gxbb_mpeg_clk_div,
+	&gxbb_mali_0_div,
+	&gxbb_mali_1_div,
+};
+
+struct gxbb_composite_clk {
+	unsigned int id;
+	const char *name;
+	const char * const *parent_names;
+	int num_parents;
+	struct clk_hw *mux_hw;
+	const struct clk_ops *mux_ops;
+	struct clk_hw *rate_hw;
+	const struct clk_ops *rate_ops;
+	struct clk_hw *gate_hw;
+	const struct clk_ops *gate_ops;
+	unsigned long flags;
+};
+
+/* Convenient table to register the composite clocks */
+
+static struct gxbb_composite_clk gxbb_composite_clks[] = {
+	{
+		.id = CLKID_MALI_0,
+		.name = "mali_0",
+		.parent_names = gxbb_mali_0_1_parent_names,
+		.num_parents = ARRAY_SIZE(gxbb_mali_0_1_parent_names),
+		.mux_hw = &gxbb_mali_0_sel.hw,
+		.mux_ops = &clk_mux_ops,
+		.rate_hw = &gxbb_mali_0_div.hw,
+		.rate_ops = &clk_divider_ops,
+		.gate_hw = &gxbb_mali_0_en.hw,
+		.gate_ops = &clk_gate_ops,
+		.flags = (CLK_SET_RATE_NO_REPARENT | CLK_IGNORE_UNUSED),
+	},
+	{
+		.id = CLKID_MALI_1,
+		.name = "mali_1",
+		.parent_names = gxbb_mali_0_1_parent_names,
+		.num_parents = ARRAY_SIZE(gxbb_mali_0_1_parent_names),
+		.mux_hw = &gxbb_mali_1_sel.hw,
+		.mux_ops = &clk_mux_ops,
+		.rate_hw = &gxbb_mali_1_div.hw,
+		.rate_ops = &clk_divider_ops,
+		.gate_hw = &gxbb_mali_1_en.hw,
+		.gate_ops = &clk_gate_ops,
+		.flags = (CLK_SET_RATE_NO_REPARENT | CLK_IGNORE_UNUSED),
+	},
 };
 
 static int gxbb_clkc_probe(struct platform_device *pdev)
@@ -884,22 +1033,59 @@ static int gxbb_clkc_probe(struct platform_device *pdev)
 	/* Populate the base address for CPU clk */
 	gxbb_cpu_clk.base = clk_base;
 
-	/* Populate the base address for the MPEG clks */
-	gxbb_mpeg_clk_sel.reg = clk_base + (u64)gxbb_mpeg_clk_sel.reg;
-	gxbb_mpeg_clk_div.reg = clk_base + (u64)gxbb_mpeg_clk_div.reg;
+	/* Populate base address for muxes */
+	for (i = 0; i < ARRAY_SIZE(gxbb_clk_muxes); i++)
+		gxbb_clk_muxes[i]->reg = clk_base +
+			(u64)gxbb_clk_muxes[i]->reg;
+
+	/* Populate base address for dividers */
+	for (i = 0; i < ARRAY_SIZE(gxbb_clk_dividers); i++)
+		gxbb_clk_dividers[i]->reg = clk_base +
+			(u64)gxbb_clk_dividers[i]->reg;
 
 	/* Populate base address for gates */
 	for (i = 0; i < ARRAY_SIZE(gxbb_clk_gates); i++)
 		gxbb_clk_gates[i]->reg = clk_base +
 			(u64)gxbb_clk_gates[i]->reg;
 
+	/* Populate base for GP0 init table */
+	for (i = 0; i < ARRAY_SIZE(gxbb_gp0_init_regs); ++i)
+		gxbb_gp0_init_regs[i] = clk_base +
+			(u64)gxbb_gp0_init_regs[i];
+
 	/*
 	 * register all clks
 	 */
 	for (clkid = 0; clkid < NR_CLKS; clkid++) {
+		if (!gxbb_hw_onecell_data.hws[clkid])
+			continue;
+
 		ret = devm_clk_hw_register(dev, gxbb_hw_onecell_data.hws[clkid]);
 		if (ret)
 			goto iounmap;
+	}
+
+	/* Register Composite Clocks */
+	for (i = 0 ; i < ARRAY_SIZE(gxbb_composite_clks); ++i) {
+		struct gxbb_composite_clk *comp = &gxbb_composite_clks[i];
+		struct clk_hw *hw;
+
+		hw = clk_hw_register_composite(dev, comp->name,
+				comp->parent_names,
+				comp->num_parents,
+				comp->mux_hw, comp->mux_ops,
+				comp->rate_hw, comp->rate_ops,
+				comp->gate_hw, comp->gate_ops,
+				comp->flags);
+		if (IS_ERR(hw)) {
+			ret = PTR_ERR(hw);
+
+			pr_err("%s: Failed to register composite clock %s\n",
+				__func__, comp->name);
+
+			goto unregister_composites;
+		}
+		gxbb_hw_onecell_data.hws[comp->id] = hw;
 	}
 
 	/*
@@ -922,11 +1108,26 @@ static int gxbb_clkc_probe(struct platform_device *pdev)
 	if (ret) {
 		pr_err("%s: failed to register clock notifier for cpu_clk\n",
 				__func__);
-		goto iounmap;
+		goto unregister_composites;
 	}
 
-	return of_clk_add_hw_provider(dev->of_node, of_clk_hw_onecell_get,
+	ret = of_clk_add_hw_provider(dev->of_node, of_clk_hw_onecell_get,
 			&gxbb_hw_onecell_data);
+	if (!ret)
+		return ret;
+
+unregister_composites:
+	for (i = 0 ; i < ARRAY_SIZE(gxbb_composite_clks); ++i) {
+		struct gxbb_composite_clk *comp = &gxbb_composite_clks[i];
+		struct clk *clk;
+
+		if (gxbb_hw_onecell_data.hws[comp->id]) {
+			clk = gxbb_hw_onecell_data.hws[comp->id]->clk;
+			clk_unregister_composite(clk);
+		}
+
+		gxbb_hw_onecell_data.hws[comp->id] = NULL;
+	}
 
 iounmap:
 	iounmap(clk_base);

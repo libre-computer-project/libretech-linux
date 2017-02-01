@@ -70,6 +70,9 @@ struct meson_clk_pll {
 	struct parm frac;
 	struct parm od;
 	struct parm od2;
+	void __iomem **init_regs;
+	u32 *init_data;
+	unsigned int init_count;
 	const struct pll_rate_table *rate_table;
 	unsigned int rate_count;
 	spinlock_t *lock;

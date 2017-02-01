@@ -132,6 +132,24 @@ static int meson_clk_pll_wait_lock(struct meson_clk_pll *pll,
 	return -ETIMEDOUT;
 }
 
+static void meson_clk_pll_init(struct meson_clk_pll *pll)
+{
+	if (pll->init_count && pll->init_regs && pll->init_data) {
+		unsigned int i;
+
+		for (i = 0; i < pll->init_count; ++i)
+			writel(pll->init_data[i], pll->init_regs[i]);
+	} else {
+		struct parm *p;
+		u32 reg;
+
+		/* PLL reset */
+		p = &pll->n;
+		reg = readl(pll->base + p->reg_off);
+		writel(reg | MESON_PLL_RESET, pll->base + p->reg_off);
+	}
+}
+
 static int meson_clk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 				  unsigned long parent_rate)
 {
@@ -151,17 +169,16 @@ static int meson_clk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (!rate_set)
 		return -EINVAL;
 
-	/* PLL reset */
-	p = &pll->n;
-	reg = readl(pll->base + p->reg_off);
-	writel(reg | MESON_PLL_RESET, pll->base + p->reg_off);
-
-	reg = PARM_SET(p->width, p->shift, reg, rate_set->n);
-	writel(reg, pll->base + p->reg_off);
+	meson_clk_pll_init(pll);
 
 	p = &pll->m;
 	reg = readl(pll->base + p->reg_off);
 	reg = PARM_SET(p->width, p->shift, reg, rate_set->m);
+	writel(reg, pll->base + p->reg_off);
+
+	p = &pll->n;
+	reg = readl(pll->base + p->reg_off);
+	reg = PARM_SET(p->width, p->shift, reg, rate_set->n);
 	writel(reg, pll->base + p->reg_off);
 
 	p = &pll->od;
@@ -184,6 +201,9 @@ static int meson_clk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 	}
 
 	p = &pll->n;
+	reg = readl(pll->base + p->reg_off);
+	writel(reg & ~MESON_PLL_RESET, pll->base + p->reg_off);
+
 	ret = meson_clk_pll_wait_lock(pll, p);
 	if (ret) {
 		pr_warn("%s: pll did not lock, trying to restore old rate %lu\n",
