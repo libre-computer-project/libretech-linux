@@ -239,7 +239,6 @@ static int meson_mmc_clk_init(struct meson_host *host)
 	const char *mux_parent_names[MUX_CLK_NUM_PARENTS];
 	unsigned int mux_parent_count = 0;
 	const char *clk_div_parents[1];
-	unsigned int f_min = UINT_MAX;
 	u32 clk_reg, cfg;
 
 	/* get the mux parents */
@@ -256,19 +255,9 @@ static int meson_mmc_clk_init(struct meson_host *host)
 			return ret;
 		}
 
-		host->mux_parent_rate[i] = clk_get_rate(host->mux_parent[i]);
 		mux_parent_names[i] = __clk_get_name(host->mux_parent[i]);
 		mux_parent_count++;
-		if (host->mux_parent_rate[i] < f_min)
-			f_min = host->mux_parent_rate[i];
 	}
-
-	/* cacluate f_min based on input clocks, and max divider value */
-	if (f_min != UINT_MAX)
-		f_min = DIV_ROUND_UP(CLK_SRC_XTAL_RATE, CLK_DIV_MAX);
-	else
-		f_min = 4000000;  /* default min: 400 MHz */
-	host->mmc->f_min = f_min;
 
 	/* create the mux */
 	snprintf(clk_name, sizeof(clk_name), "%s#mux", dev_name(host->dev));
@@ -324,9 +313,13 @@ static int meson_mmc_clk_init(struct meson_host *host)
 	writel(cfg, host->regs + SD_EMMC_CFG);
 
 	ret = clk_prepare_enable(host->cfg_div_clk);
-	if (!ret)
-		ret = meson_mmc_clk_set(host, f_min);
+	if (ret)
+		return ret;
 
+	/* Get the nearest minimum clock to 100KHz */
+	host->mmc->f_min = clk_round_rate(host->cfg_div_clk, 100000);
+
+	ret = meson_mmc_clk_set(host, host->mmc->f_min);
 	if (!ret)
 		clk_disable_unprepare(host->cfg_div_clk);
 
