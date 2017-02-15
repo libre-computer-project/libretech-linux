@@ -1696,23 +1696,17 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 		kfree(action);
 	}
 
-#ifdef CONFIG_DEBUG_SHIRQ_FIXME
+#ifdef CONFIG_DEBUG_SHIRQ
 	if (!retval && (irqflags & IRQF_SHARED)) {
 		/*
 		 * It's a shared IRQ -- the driver ought to be prepared for it
 		 * to happen immediately, so let's make sure....
-		 * We disable the irq to make sure that a 'real' IRQ doesn't
-		 * run in parallel with our fake.
 		 */
 		unsigned long flags;
 
-		disable_irq(irq);
 		local_irq_save(flags);
-
-		handler(irq, dev_id);
-
+		generic_handle_irq_desc(desc);
 		local_irq_restore(flags);
-		enable_irq(irq);
 	}
 #endif
 	return retval;
