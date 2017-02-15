@@ -322,8 +322,8 @@ struct ieee80211_fast_rx {
 	struct rcu_head rcu_head;
 };
 
-/* we use only values in the range 0-100, so pick a large factor */
-DECLARE_EWMA(mesh_fail_avg, 1048576, 8)
+/* we use only values in the range 0-100, so pick a large precision */
+DECLARE_EWMA(mesh_fail_avg, 20, 8)
 
 /**
  * struct mesh_sta - mesh STA information
@@ -373,7 +373,7 @@ struct mesh_sta {
 	struct ewma_mesh_fail_avg fail_avg;
 };
 
-DECLARE_EWMA(signal, 1024, 8)
+DECLARE_EWMA(signal, 10, 8)
 
 struct ieee80211_sta_rx_stats {
 	unsigned long packets;
