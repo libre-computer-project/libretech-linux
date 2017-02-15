@@ -27,7 +27,7 @@
 
 #include "pcie-designware.h"
 
-#define to_exynos_pcie(x)	container_of(x, struct exynos_pcie, pp)
+#define to_exynos_pcie(x)	dev_get_drvdata((x)->dev)
 
 /* PCIe ELBI registers */
 #define PCIE_IRQ_PULSE			0x000
@@ -105,7 +105,7 @@ struct exynos_pcie_clk_res {
 };
 
 struct exynos_pcie {
-	struct pcie_port		pp;
+	struct dw_pcie			*pci;
 	struct exynos_pcie_mem_res	*mem_res;
 	struct exynos_pcie_clk_res	*clk_res;
 	const struct exynos_pcie_ops	*ops;
@@ -376,8 +376,8 @@ static void exynos_pcie_init_phy(struct exynos_pcie *ep)
 
 static void exynos_pcie_assert_reset(struct exynos_pcie *ep)
 {
-	struct pcie_port *pp = &ep->pp;
-	struct device *dev = pp->dev;
+	struct dw_pcie *pci = ep->pci;
+	struct device *dev = pci->dev;
 
 	if (ep->reset_gpio >= 0)
 		devm_gpio_request_one(dev, ep->reset_gpio,
@@ -386,11 +386,12 @@ static void exynos_pcie_assert_reset(struct exynos_pcie *ep)
 
 static int exynos_pcie_establish_link(struct exynos_pcie *ep)
 {
-	struct pcie_port *pp = &ep->pp;
-	struct device *dev = pp->dev;
+	struct dw_pcie *pci = ep->pci;
+	struct pcie_port *pp = &pci->pp;
+	struct device *dev = pci->dev;
 	u32 val;
 
-	if (dw_pcie_link_up(pp)) {
+	if (dw_pcie_link_up(pci)) {
 		dev_err(dev, "Link already up\n");
 		return 0;
 	}
@@ -415,7 +416,7 @@ static int exynos_pcie_establish_link(struct exynos_pcie *ep)
 			  PCIE_APP_LTSSM_ENABLE);
 
 	/* check if the link is up or not */
-	if (!dw_pcie_wait_for_link(pp))
+	if (!dw_pcie_wait_for_link(pci))
 		return 0;
 
 	while (exynos_pcie_readl(ep->mem_res->phy_base,
@@ -457,14 +458,16 @@ static irqreturn_t exynos_pcie_irq_handler(int irq, void *arg)
 static irqreturn_t exynos_pcie_msi_irq_handler(int irq, void *arg)
 {
 	struct exynos_pcie *ep = arg;
-	struct pcie_port *pp = &ep->pp;
+	struct dw_pcie *pci = ep->pci;
+	struct pcie_port *pp = &pci->pp;
 
 	return dw_handle_msi_irq(pp);
 }
 
 static void exynos_pcie_msi_init(struct exynos_pcie *ep)
 {
-	struct pcie_port *pp = &ep->pp;
+	struct dw_pcie *pci = ep->pci;
+	struct pcie_port *pp = &pci->pp;
 	u32 val;
 
 	dw_pcie_msi_init(pp);
@@ -483,34 +486,35 @@ static void exynos_pcie_enable_interrupts(struct exynos_pcie *ep)
 		exynos_pcie_msi_init(ep);
 }
 
-static u32 exynos_pcie_readl_rc(struct pcie_port *pp, u32 reg)
+static u32 exynos_pcie_readl_dbi(struct dw_pcie *pci, u32 reg)
 {
-	struct exynos_pcie *ep = to_exynos_pcie(pp);
+	struct exynos_pcie *ep = to_exynos_pcie(pci);
 	u32 val;
 
 	exynos_pcie_sideband_dbi_r_mode(ep, true);
-	val = readl(pp->dbi_base + reg);
+	val = readl(pci->dbi_base + reg);
 	exynos_pcie_sideband_dbi_r_mode(ep, false);
 	return val;
 }
 
-static void exynos_pcie_writel_rc(struct pcie_port *pp, u32 reg, u32 val)
+static void exynos_pcie_writel_dbi(struct dw_pcie *pci, u32 reg, u32 val)
 {
-	struct exynos_pcie *ep = to_exynos_pcie(pp);
+	struct exynos_pcie *ep = to_exynos_pcie(pci);
 
 	exynos_pcie_sideband_dbi_w_mode(ep, true);
-	writel(val, pp->dbi_base + reg);
+	writel(val, pci->dbi_base + reg);
 	exynos_pcie_sideband_dbi_w_mode(ep, false);
 }
 
 static int exynos_pcie_rd_own_conf(struct pcie_port *pp, int where, int size,
 				u32 *val)
 {
-	struct exynos_pcie *ep = to_exynos_pcie(pp);
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct exynos_pcie *ep = to_exynos_pcie(pci);
 	int ret;
 
 	exynos_pcie_sideband_dbi_r_mode(ep, true);
-	ret = dw_pcie_cfg_read(pp->dbi_base + where, size, val);
+	ret = dw_pcie_read(pci->dbi_base + where, size, val);
 	exynos_pcie_sideband_dbi_r_mode(ep, false);
 	return ret;
 }
@@ -518,18 +522,19 @@ static int exynos_pcie_rd_own_conf(struct pcie_port *pp, int where, int size,
 static int exynos_pcie_wr_own_conf(struct pcie_port *pp, int where, int size,
 				u32 val)
 {
-	struct exynos_pcie *ep = to_exynos_pcie(pp);
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct exynos_pcie *ep = to_exynos_pcie(pci);
 	int ret;
 
 	exynos_pcie_sideband_dbi_w_mode(ep, true);
-	ret = dw_pcie_cfg_write(pp->dbi_base + where, size, val);
+	ret = dw_pcie_write(pci->dbi_base + where, size, val);
 	exynos_pcie_sideband_dbi_w_mode(ep, false);
 	return ret;
 }
 
-static int exynos_pcie_link_up(struct pcie_port *pp)
+static int exynos_pcie_link_up(struct dw_pcie *pci)
 {
-	struct exynos_pcie *ep = to_exynos_pcie(pp);
+	struct exynos_pcie *ep = to_exynos_pcie(pci);
 	u32 val;
 
 	val = exynos_pcie_readl(ep->mem_res->elbi_base, PCIE_ELBI_RDLH_LINKUP);
@@ -541,26 +546,25 @@ static int exynos_pcie_link_up(struct pcie_port *pp)
 
 static void exynos_pcie_host_init(struct pcie_port *pp)
 {
-	struct exynos_pcie *ep = to_exynos_pcie(pp);
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct exynos_pcie *ep = to_exynos_pcie(pci);
 
 	exynos_pcie_establish_link(ep);
 	exynos_pcie_enable_interrupts(ep);
 }
 
-static struct pcie_host_ops exynos_pcie_host_ops = {
-	.readl_rc = exynos_pcie_readl_rc,
-	.writel_rc = exynos_pcie_writel_rc,
+static struct dw_pcie_host_ops exynos_pcie_host_ops = {
 	.rd_own_conf = exynos_pcie_rd_own_conf,
 	.wr_own_conf = exynos_pcie_wr_own_conf,
-	.link_up = exynos_pcie_link_up,
 	.host_init = exynos_pcie_host_init,
 };
 
 static int __init exynos_add_pcie_port(struct exynos_pcie *ep,
 				       struct platform_device *pdev)
 {
-	struct pcie_port *pp = &ep->pp;
-	struct device *dev = pp->dev;
+	struct dw_pcie *pci = ep->pci;
+	struct pcie_port *pp = &pci->pp;
+	struct device *dev = &pdev->dev;
 	int ret;
 
 	pp->irq = platform_get_irq(pdev, 1);
@@ -604,11 +608,17 @@ static int __init exynos_add_pcie_port(struct exynos_pcie *ep,
 	return 0;
 }
 
+static const struct dw_pcie_ops dw_pcie_ops = {
+	.readl_dbi = exynos_pcie_readl_dbi,
+	.writel_dbi = exynos_pcie_writel_dbi,
+	.link_up = exynos_pcie_link_up,
+};
+
 static int __init exynos_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct dw_pcie *pci;
 	struct exynos_pcie *ep;
-	struct pcie_port *pp;
 	struct device_node *np = dev->of_node;
 	int ret;
 
@@ -616,8 +626,12 @@ static int __init exynos_pcie_probe(struct platform_device *pdev)
 	if (!ep)
 		return -ENOMEM;
 
-	pp = &ep->pp;
-	pp->dev = dev;
+	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
+	if (!pci)
+		return -ENOMEM;
+
+	pci->dev = dev;
+	pci->ops = &dw_pcie_ops;
 
 	ep->ops = (const struct exynos_pcie_ops *)
 		of_device_get_match_data(dev);
@@ -639,11 +653,12 @@ static int __init exynos_pcie_probe(struct platform_device *pdev)
 			return ret;
 	}
 
+	platform_set_drvdata(pdev, ep);
+
 	ret = exynos_add_pcie_port(ep, pdev);
 	if (ret < 0)
 		goto fail_probe;
 
-	platform_set_drvdata(pdev, ep);
 	return 0;
 
 fail_probe:
