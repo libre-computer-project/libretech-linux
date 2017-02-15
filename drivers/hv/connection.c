@@ -111,7 +111,8 @@ static int vmbus_negotiate_version(struct vmbus_channel_msginfo *msginfo,
 	spin_unlock_irqrestore(&vmbus_connection.channelmsg_lock, flags);
 
 	ret = vmbus_post_msg(msg,
-			       sizeof(struct vmbus_channel_initiate_contact));
+			     sizeof(struct vmbus_channel_initiate_contact),
+			     true);
 	if (ret != 0) {
 		spin_lock_irqsave(&vmbus_connection.channelmsg_lock, flags);
 		list_del(&msginfo->msglistentry);
@@ -220,11 +221,8 @@ int vmbus_connect(void)
 		goto cleanup;
 
 	vmbus_proto_version = version;
-	pr_info("Hyper-V Host Build:%d-%d.%d-%d-%d.%d; Vmbus version:%d.%d\n",
-		    host_info_eax, host_info_ebx >> 16,
-		    host_info_ebx & 0xFFFF, host_info_ecx,
-		    host_info_edx >> 24, host_info_edx & 0xFFFFFF,
-		    version >> 16, version & 0xFFFF);
+	pr_info("Vmbus version:%d.%d\n",
+		version >> 16, version & 0xFFFF);
 
 	kfree(msginfo);
 	return 0;
@@ -381,17 +379,11 @@ static void process_chn_event(u32 relid)
  */
 void vmbus_on_event(unsigned long data)
 {
-	u32 dword;
-	u32 maxdword;
-	int bit;
-	u32 relid;
-	u32 *recv_int_page = NULL;
-	void *page_addr;
-	int cpu = smp_processor_id();
-	union hv_synic_event_flags *event;
+	unsigned long *recv_int_page;
+	u32 maxbits, relid;
 
 	if (vmbus_proto_version < VERSION_WIN8) {
-		maxdword = MAX_NUM_CHANNELS_SUPPORTED >> 5;
+		maxbits = MAX_NUM_CHANNELS_SUPPORTED;
 		recv_int_page = vmbus_connection.recv_int_page;
 	} else {
 		/*
@@ -399,35 +391,24 @@ void vmbus_on_event(unsigned long data)
 		 * can be directly checked to get the id of the channel
 		 * that has the interrupt pending.
 		 */
-		maxdword = HV_EVENT_FLAGS_DWORD_COUNT;
-		page_addr = hv_context.synic_event_page[cpu];
-		event = (union hv_synic_event_flags *)page_addr +
+		int cpu = smp_processor_id();
+		void *page_addr = hv_context.synic_event_page[cpu];
+		union hv_synic_event_flags *event
+			= (union hv_synic_event_flags *)page_addr +
 						 VMBUS_MESSAGE_SINT;
-		recv_int_page = event->flags32;
+
+		maxbits = HV_EVENT_FLAGS_COUNT;
+		recv_int_page = event->flags;
 	}
 
-
-
-	/* Check events */
-	if (!recv_int_page)
+	if (unlikely(!recv_int_page))
 		return;
-	for (dword = 0; dword < maxdword; dword++) {
-		if (!recv_int_page[dword])
-			continue;
-		for (bit = 0; bit < 32; bit++) {
-			if (sync_test_and_clear_bit(bit,
-				(unsigned long *)&recv_int_page[dword])) {
-				relid = (dword << 5) + bit;
 
-				if (relid == 0)
-					/*
-					 * Special case - vmbus
-					 * channel protocol msg
-					 */
-					continue;
-
+	for_each_set_bit(relid, recv_int_page, maxbits) {
+		if (sync_test_and_clear_bit(relid, recv_int_page)) {
+			/* Special case - vmbus channel protocol msg */
+			if (relid != 0)
 				process_chn_event(relid);
-			}
 		}
 	}
 }
@@ -435,7 +416,7 @@ void vmbus_on_event(unsigned long data)
 /*
  * vmbus_post_msg - Send a msg on the vmbus's message connection
  */
-int vmbus_post_msg(void *buffer, size_t buflen)
+int vmbus_post_msg(void *buffer, size_t buflen, bool can_sleep)
 {
 	union hv_connection_id conn_id;
 	int ret = 0;
@@ -450,7 +431,7 @@ int vmbus_post_msg(void *buffer, size_t buflen)
 	 * insufficient resources. Retry the operation a couple of
 	 * times before giving up.
 	 */
-	while (retries < 20) {
+	while (retries < 100) {
 		ret = hv_post_message(conn_id, 1, buffer, buflen);
 
 		switch (ret) {
@@ -473,8 +454,14 @@ int vmbus_post_msg(void *buffer, size_t buflen)
 		}
 
 		retries++;
-		udelay(usec);
-		if (usec < 2048)
+		if (can_sleep && usec > 1000)
+			msleep(usec / 1000);
+		else if (usec < MAX_UDELAY_MS * 1000)
+			udelay(usec);
+		else
+			mdelay(usec / 1000);
+
+		if (usec < 256000)
 			usec *= 2;
 	}
 	return ret;
@@ -487,12 +474,8 @@ void vmbus_set_event(struct vmbus_channel *channel)
 {
 	u32 child_relid = channel->offermsg.child_relid;
 
-	if (!channel->is_dedicated_interrupt) {
-		/* Each u32 represents 32 channels */
-		sync_set_bit(child_relid & 31,
-			(unsigned long *)vmbus_connection.send_int_page +
-			(child_relid >> 5));
-	}
+	if (!channel->is_dedicated_interrupt)
+		vmbus_send_interrupt(child_relid);
 
 	hv_do_hypercall(HVCALL_SIGNAL_EVENT, channel->sig_event, NULL);
 }

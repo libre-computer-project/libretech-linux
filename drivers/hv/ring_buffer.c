@@ -77,8 +77,7 @@ u32 hv_end_read(struct hv_ring_buffer_info *rbi)
  * host logic is fixed.
  */
 
-static void hv_signal_on_write(u32 old_write, struct vmbus_channel *channel,
-			       bool kick_q)
+static void hv_signal_on_write(u32 old_write, struct vmbus_channel *channel)
 {
 	struct hv_ring_buffer_info *rbi = &channel->outbound;
 
@@ -285,8 +284,7 @@ void hv_ringbuffer_cleanup(struct hv_ring_buffer_info *ring_info)
 
 /* Write to the ring buffer. */
 int hv_ringbuffer_write(struct vmbus_channel *channel,
-		    struct kvec *kv_list, u32 kv_count, bool lock,
-		    bool kick_q)
+			struct kvec *kv_list, u32 kv_count, bool lock)
 {
 	int i = 0;
 	u32 bytes_avail_towrite;
@@ -297,6 +295,9 @@ int hv_ringbuffer_write(struct vmbus_channel *channel,
 	u64 prev_indices = 0;
 	unsigned long flags = 0;
 	struct hv_ring_buffer_info *outring_info = &channel->outbound;
+
+	if (channel->rescind)
+		return -ENODEV;
 
 	for (i = 0; i < kv_count; i++)
 		totalbytes_towrite += kv_list[i].iov_len;
@@ -349,7 +350,11 @@ int hv_ringbuffer_write(struct vmbus_channel *channel,
 	if (lock)
 		spin_unlock_irqrestore(&outring_info->ring_lock, flags);
 
-	hv_signal_on_write(old_write, channel, kick_q);
+	hv_signal_on_write(old_write, channel);
+
+	if (channel->rescind)
+		return -ENODEV;
+
 	return 0;
 }
 

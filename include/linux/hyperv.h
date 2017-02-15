@@ -641,6 +641,7 @@ struct vmbus_channel_msginfo {
 
 	/* Synchronize the request/response if needed */
 	struct completion  waitevent;
+	struct vmbus_channel *waiting_channel;
 	union {
 		struct vmbus_channel_version_supported version_supported;
 		struct vmbus_channel_open_result open_result;
@@ -681,11 +682,6 @@ struct hv_input_signal_event {
 struct hv_input_signal_event_buffer {
 	u64 align8;
 	struct hv_input_signal_event event;
-};
-
-enum hv_signal_policy {
-	HV_SIGNAL_POLICY_DEFAULT = 0,
-	HV_SIGNAL_POLICY_EXPLICIT,
 };
 
 enum hv_numa_policy {
@@ -850,13 +846,6 @@ struct vmbus_channel {
 	 */
 	struct list_head percpu_list;
 	/*
-	 * Host signaling policy: The default policy will be
-	 * based on the ring buffer state. We will also support
-	 * a policy where the client driver can have explicit
-	 * signaling control.
-	 */
-	enum hv_signal_policy  signal_policy;
-	/*
 	 * On the channel send side, many of the VMBUS
 	 * device drivers explicity serialize access to the
 	 * outgoing ring buffer. Give more control to the
@@ -915,12 +904,6 @@ static inline bool is_hvsock_channel(const struct vmbus_channel *c)
 {
 	return !!(c->offermsg.offer.chn_flags &
 		  VMBUS_CHANNEL_TLNPI_PROVIDER_OFFER);
-}
-
-static inline void set_channel_signal_state(struct vmbus_channel *c,
-					    enum hv_signal_policy policy)
-{
-	c->signal_policy = policy;
 }
 
 static inline void set_channel_affinity_state(struct vmbus_channel *c,
@@ -1054,8 +1037,7 @@ extern int vmbus_sendpacket_ctl(struct vmbus_channel *channel,
 				  u32 bufferLen,
 				  u64 requestid,
 				  enum vmbus_packet_type type,
-				  u32 flags,
-				  bool kick_q);
+				  u32 flags);
 
 extern int vmbus_sendpacket_pagebuffer(struct vmbus_channel *channel,
 					    struct hv_page_buffer pagebuffers[],
@@ -1070,8 +1052,7 @@ extern int vmbus_sendpacket_pagebuffer_ctl(struct vmbus_channel *channel,
 					   void *buffer,
 					   u32 bufferlen,
 					   u64 requestid,
-					   u32 flags,
-					   bool kick_q);
+					   u32 flags);
 
 extern int vmbus_sendpacket_multipagebuffer(struct vmbus_channel *channel,
 					struct hv_multipage_buffer *mpb,
@@ -1458,9 +1439,10 @@ struct hyperv_service_callback {
 };
 
 #define MAX_SRV_VER	0x7ffffff
-extern bool vmbus_prep_negotiate_resp(struct icmsg_hdr *,
-					struct icmsg_negotiate *, u8 *, int,
-					int);
+extern bool vmbus_prep_negotiate_resp(struct icmsg_hdr *icmsghdrp, u8 *buf,
+				const int *fw_version, int fw_vercnt,
+				const int *srv_version, int srv_vercnt,
+				int *nego_fw_version, int *nego_srv_version);
 
 void hv_event_tasklet_disable(struct vmbus_channel *channel);
 void hv_event_tasklet_enable(struct vmbus_channel *channel);
