@@ -63,6 +63,9 @@ next/soc
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.11/maintainers
 	patch
 		ARM: ux500: remove deleted file from Makefile
+	davinci/soc-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.11/soc-2
+		contains davinci/fixes-nc
 
 next/arm64
 	mvebu/defconfig64
@@ -70,6 +73,9 @@ next/arm64
 	patch
 		arm64: defconfig: enable CONFIG_MMC_SDHCI_CADENCE
 		MAINTAINERS: Extend ARM/Mediatek SoC support section
+		arm64: add THUNDER2 processor family
+		arm64: add ARCH_THUNDER2 to defconfig
+		MAINTAINERS: Add Cavium ThunderX2 entry
 
 next/dt
 	renesas/dt
@@ -148,6 +154,10 @@ next/dt
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt-for-4.11
 	allwinner/dt-2
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt-for-4.11-2
+	davinci/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.11/dt-2
+	omap/dt-late
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.11/dt-late
 
 next/dt64
 	renesas/dt64
@@ -182,6 +192,12 @@ next/dt64
 		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/zte-dt64-4.11
 	samsung/dt64-2
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.11-2
+	sunxi/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt64-for-4.11
+	<no branch> (7c10da3736983ac296b381ca9db2e33932efacce)
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-arm64-for-4.11-2
+	mvebu/dt64-3
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.11-3
 
 next/defconfig
 	patch
@@ -220,6 +236,11 @@ next/defconfig
 		arm64: defconfig: enable CONFIG_MTD_NAND and CONFIG_MTD_NAND_DENALI_DT
 	sunxi/defconfig
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-defconfig-for-4.11
+	davinci/defconfig-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.11/defconfig-2
+	patch
+		ARM: multi_v7_defconfig: enable some newly added crypto modules
+		ARM: multi_v7_defconfig: enable pstore configs
 
 next/drivers
 	at91/drivers
@@ -250,4 +271,6 @@ next/drivers
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-drivers-soc-pm-domains-4.11
 	samsung/drivers-soc-pmu-3
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-drivers-soc-pmu-4.11-3
+	davinci/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.11/drivers
 
