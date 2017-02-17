@@ -1,19 +1,8 @@
 fixes
+	<no branch> (e5a1dadec3648019a838b85357b67f241fbb02e8)
+		https://git.pengutronix.de/git/pza/linux tags/reset-for-4.10-fixes
 	patch
-		ARM64: dts: meson-gxbb-odroidc2: fix GbE tx link breakage
-		ARM64: dts: meson-gx: Add firmware reserved memory zones
-	<no branch> (a971c5545c3d45a1e33fda6e57913bb75aaa20c9)
-		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.10-3
-	<no branch> (8413299cb3933dade6186bbee8363f190032107e)
-		git://git.kernel.org/pub/scm/linux/kernel/git/pchotard/sti tags/sti-dt-for-v4.10-rc
-	<no branch> (420a3879d694e5c3e734fb92151d19b2ec503e46)
-		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.10-soc
-	patch
-		MAINTAINERS: socfpga: update email for Dinh Nguyen
-	<no branch> (1a902f6b70c55171ca2419d946b85274e35c9757)
-		git://git.infradead.org/linux-mvebu tags/mvebu-fixes-4.10-1
-	patch
-		ARM: defconfigs: make NF_CT_PROTO_SCTP and NF_CT_PROTO_UDPLITE built-in
+		ARM: multi_v7_defconfig: enable Qualcomm RPMCC
 
 next/fixes-non-critical
 	davinci/fixes-nc
@@ -158,6 +147,8 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.11/dt-2
 	omap/dt-late
 		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.11/dt-late
+	mvebu/dt-4
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.11-4
 
 next/dt64
 	renesas/dt64
@@ -194,7 +185,7 @@ next/dt64
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.11-2
 	sunxi/dt64
 		https://git.kernel.org/pub/scm/linux/kernel/git/mripard/linux tags/sunxi-dt64-for-4.11
-	<no branch> (7c10da3736983ac296b381ca9db2e33932efacce)
+	qcom/dt64-2
 		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-arm64-for-4.11-2
 	mvebu/dt64-3
 		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.11-3
@@ -205,7 +196,7 @@ next/defconfig
 		ARM: defconfig: replace MPU3050 driver on multi_v7
 		ARM: defconfig: tegra: switch to MPU3050 IIO driver
 		ARM: defconfig: pxa: cut MPU3050 input driver
-	<no branch> (e37278d83e348eb53029452e65892780359b6bea)
+	renesas/defconfig
 		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-defconfig-for-v4.11
 	socfpga/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux tags/socfpga_defconfig_updates_for_v4.11
@@ -273,4 +264,12 @@ next/drivers
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-drivers-soc-pmu-4.11-3
 	davinci/drivers
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.11/drivers
+
+next/late
+	samsung/dt64-3
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.11-3
+		contains samsung/dt64
+		contains samsung/dt64-2
+	amlogic/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-dt64-2
 
