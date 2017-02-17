@@ -175,6 +175,8 @@ void blk_mq_sched_put_request(struct request *rq)
 void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 {
 	struct elevator_queue *e = hctx->queue->elevator;
+	const bool has_sched_dispatch = e && e->type->ops.mq.dispatch_request;
+	bool did_work = false;
 	LIST_HEAD(rq_list);
 
 	if (unlikely(blk_mq_hctx_stopped(hctx)))
@@ -204,11 +206,18 @@ void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 	 */
 	if (!list_empty(&rq_list)) {
 		blk_mq_sched_mark_restart(hctx);
-		blk_mq_dispatch_rq_list(hctx, &rq_list);
-	} else if (!e || !e->type->ops.mq.dispatch_request) {
+		did_work = blk_mq_dispatch_rq_list(hctx, &rq_list);
+	} else if (!has_sched_dispatch) {
 		blk_mq_flush_busy_ctxs(hctx, &rq_list);
 		blk_mq_dispatch_rq_list(hctx, &rq_list);
-	} else {
+	}
+
+	/*
+	 * We want to dispatch from the scheduler if we had no work left
+	 * on the dispatch list, OR if we did have work but weren't able
+	 * to make progress.
+	 */
+	if (!did_work && has_sched_dispatch) {
 		do {
 			struct request *rq;
 
@@ -351,7 +360,7 @@ static void blk_mq_sched_insert_flush(struct blk_mq_hw_ctx *hctx,
 		blk_insert_flush(rq);
 		blk_mq_run_hw_queue(hctx, true);
 	} else
-		blk_mq_add_to_requeue_list(rq, true, true);
+		blk_mq_add_to_requeue_list(rq, false, true);
 }
 
 void blk_mq_sched_insert_request(struct request *rq, bool at_head,
