@@ -121,7 +121,7 @@ struct sun4i_crtc *sun4i_crtc_init(struct drm_device *drm)
 
 	scrtc = devm_kzalloc(drm->dev, sizeof(*scrtc), GFP_KERNEL);
 	if (!scrtc)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 	scrtc->drv = drv;
 
 	ret = drm_crtc_init_with_planes(drm, &scrtc->crtc,
@@ -131,7 +131,7 @@ struct sun4i_crtc *sun4i_crtc_init(struct drm_device *drm)
 					NULL);
 	if (ret) {
 		dev_err(drm->dev, "Couldn't init DRM CRTC\n");
-		return NULL;
+		return ERR_PTR(ret);
 	}
 
 	drm_crtc_helper_add(&scrtc->crtc, &sun4i_crtc_helper_funcs);
