@@ -126,7 +126,7 @@ struct nvme_ctrl {
 	struct list_head node;
 	struct ida ns_ida;
 
-	struct opal_dev opal_dev;
+	struct opal_dev *opal_dev;
 
 	char name[12];
 	char serial[20];
@@ -140,6 +140,7 @@ struct nvme_ctrl {
 	u32 max_hw_sectors;
 	u16 oncs;
 	u16 vid;
+	u16 oacs;
 	atomic_t abort_limit;
 	u8 event_limit;
 	u8 vwc;
@@ -270,16 +271,8 @@ int nvme_init_identify(struct nvme_ctrl *ctrl);
 void nvme_queue_scan(struct nvme_ctrl *ctrl);
 void nvme_remove_namespaces(struct nvme_ctrl *ctrl);
 
-#ifdef CONFIG_BLK_SED_OPAL
-int nvme_sec_submit(struct opal_dev *dev, u16 spsp, u8 secp,
-		    void *buffer, size_t len, bool send);
-#else
-static inline int nvme_sec_submit(struct opal_dev *dev, u16 spsp, u8 secp,
-				  void *buffer, size_t len, bool send)
-{
-	return 0;
-}
-#endif /* CONFIG_BLK_DEV_SED_OPAL */
+int nvme_sec_submit(void *data, u16 spsp, u8 secp, void *buffer, size_t len,
+		bool send);
 
 #define NVME_NR_AERS	1
 void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
