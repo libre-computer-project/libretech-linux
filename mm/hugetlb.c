@@ -3992,6 +3992,7 @@ int hugetlb_mcopy_atomic_pte(struct mm_struct *dst_mm,
 			    unsigned long src_addr,
 			    struct page **pagep)
 {
+	int vm_shared = dst_vma->vm_flags & VM_SHARED;
 	struct hstate *h = hstate_vma(dst_vma);
 	pte_t _dst_pte;
 	spinlock_t *ptl;
@@ -4031,7 +4032,7 @@ int hugetlb_mcopy_atomic_pte(struct mm_struct *dst_mm,
 	/*
 	 * If shared, add to page cache
 	 */
-	if (dst_vma->vm_flags & VM_SHARED) {
+	if (vm_shared) {
 		struct address_space *mapping = dst_vma->vm_file->f_mapping;
 		pgoff_t idx = vma_hugecache_offset(h, dst_vma, dst_addr);
 
@@ -4047,7 +4048,7 @@ int hugetlb_mcopy_atomic_pte(struct mm_struct *dst_mm,
 	if (!huge_pte_none(huge_ptep_get(dst_pte)))
 		goto out_release_unlock;
 
-	if (dst_vma->vm_flags & VM_SHARED) {
+	if (vm_shared) {
 		page_dup_rmap(page, true);
 	} else {
 		ClearPagePrivate(page);
@@ -4069,7 +4070,7 @@ int hugetlb_mcopy_atomic_pte(struct mm_struct *dst_mm,
 	update_mmu_cache(dst_vma, dst_addr, dst_pte);
 
 	spin_unlock(ptl);
-	if (dst_vma->vm_flags & VM_SHARED)
+	if (vm_shared)
 		unlock_page(page);
 	ret = 0;
 out:
@@ -4077,7 +4078,7 @@ out:
 out_release_unlock:
 	spin_unlock(ptl);
 out_release_nounlock:
-	if (dst_vma->vm_flags & VM_SHARED)
+	if (vm_shared)
 		unlock_page(page);
 	put_page(page);
 	goto out;

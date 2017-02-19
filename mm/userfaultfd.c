@@ -154,6 +154,8 @@ static __always_inline ssize_t __mcopy_atomic_hugetlb(struct mm_struct *dst_mm,
 					      unsigned long len,
 					      bool zeropage)
 {
+	int vm_alloc_shared = dst_vma->vm_flags & VM_SHARED;
+	int vm_shared = dst_vma->vm_flags & VM_SHARED;
 	ssize_t err;
 	pte_t *dst_pte;
 	unsigned long src_addr, dst_addr;
@@ -210,6 +212,8 @@ retry:
 		if (dst_start < dst_vma->vm_start ||
 		    dst_start + len > dst_vma->vm_end)
 			goto out_unlock;
+
+		vm_shared = dst_vma->vm_flags & VM_SHARED;
 	}
 
 	if (WARN_ON(dst_addr & (vma_hpagesize - 1) ||
@@ -226,7 +230,7 @@ retry:
 	 * If not shared, ensure the dst_vma has a anon_vma.
 	 */
 	err = -ENOMEM;
-	if (!(dst_vma->vm_flags & VM_SHARED)) {
+	if (!vm_shared) {
 		if (unlikely(anon_vma_prepare(dst_vma)))
 			goto out_unlock;
 	}
@@ -266,6 +270,7 @@ retry:
 						dst_addr, src_addr, &page);
 
 		mutex_unlock(&hugetlb_fault_mutex_table[hash]);
+		vm_alloc_shared = vm_shared;
 
 		cond_resched();
 
@@ -339,8 +344,12 @@ out:
 		 * reserved page.  In this case, set PagePrivate so that the
 		 * global reserve count will be incremented to match the
 		 * reservation map entry which was created.
+		 *
+		 * Note that vm_alloc_shared is based on the flags of the vma
+		 * for which the page was originally allocated.  dst_vma could
+		 * be different or NULL on error.
 		 */
-		if (dst_vma->vm_flags & VM_SHARED)
+		if (vm_alloc_shared)
 			SetPagePrivate(page);
 		else
 			ClearPagePrivate(page);
@@ -399,9 +408,14 @@ retry:
 	dst_vma = find_vma(dst_mm, dst_start);
 	if (!dst_vma)
 		goto out_unlock;
-	if (!vma_is_shmem(dst_vma) && !is_vm_hugetlb_page(dst_vma) &&
-	    dst_vma->vm_flags & VM_SHARED)
+	/*
+	 * shmem_zero_setup is invoked in mmap for MAP_ANONYMOUS|MAP_SHARED but
+	 * it will overwrite vm_ops, so vma_is_anonymous must return false.
+	 */
+	if (WARN_ON_ONCE(vma_is_anonymous(dst_vma) &&
+	    dst_vma->vm_flags & VM_SHARED))
 		goto out_unlock;
+
 	if (dst_start < dst_vma->vm_start ||
 	    dst_start + len > dst_vma->vm_end)
 		goto out_unlock;
