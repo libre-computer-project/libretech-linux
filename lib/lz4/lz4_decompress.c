@@ -40,11 +40,6 @@
 #include <linux/kernel.h>
 #include <asm/unaligned.h>
 
-#ifdef STATIC
-#undef EXPORT_SYMBOL
-#define EXPORT_SYMBOL(x)
-#endif
-
 /*-*****************************
  *	Decompression functions
  *******************************/
@@ -328,7 +323,6 @@ int LZ4_decompress_safe(const char *source, char *dest,
 		maxDecompressedSize, endOnInputSize, full, 0,
 		noDict, (BYTE *)dest, NULL, 0);
 }
-EXPORT_SYMBOL(LZ4_decompress_safe);
 
 int LZ4_decompress_safe_partial(const char *source, char *dest,
 	int compressedSize, int targetOutputSize, int maxDecompressedSize)
@@ -337,7 +331,6 @@ int LZ4_decompress_safe_partial(const char *source, char *dest,
 		maxDecompressedSize, endOnInputSize, partial,
 		targetOutputSize, noDict, (BYTE *)dest, NULL, 0);
 }
-EXPORT_SYMBOL(LZ4_decompress_safe_partial);
 
 int LZ4_decompress_fast(const char *source, char *dest, int originalSize)
 {
@@ -345,7 +338,6 @@ int LZ4_decompress_fast(const char *source, char *dest, int originalSize)
 		endOnOutputSize, full, 0, withPrefix64k,
 		(BYTE *)(dest - 64 * KB), NULL, 64 * KB);
 }
-EXPORT_SYMBOL(LZ4_decompress_fast);
 
 int LZ4_setStreamDecode(LZ4_streamDecode_t *LZ4_streamDecode,
 	const char *dictionary, int dictSize)
@@ -358,7 +350,6 @@ int LZ4_setStreamDecode(LZ4_streamDecode_t *LZ4_streamDecode,
 	lz4sd->extDictSize	= 0;
 	return 1;
 }
-EXPORT_SYMBOL(LZ4_setStreamDecode);
 
 /*
  * *_continue() :
@@ -406,7 +397,6 @@ int LZ4_decompress_safe_continue(LZ4_streamDecode_t *LZ4_streamDecode,
 
 	return result;
 }
-EXPORT_SYMBOL(LZ4_decompress_safe_continue);
 
 int LZ4_decompress_fast_continue(LZ4_streamDecode_t *LZ4_streamDecode,
 	const char *source, char *dest, int originalSize)
@@ -441,7 +431,6 @@ int LZ4_decompress_fast_continue(LZ4_streamDecode_t *LZ4_streamDecode,
 
 	return result;
 }
-EXPORT_SYMBOL(LZ4_decompress_fast_continue);
 
 /*
  * Advanced decoding functions :
@@ -478,7 +467,6 @@ int LZ4_decompress_safe_usingDict(const char *source, char *dest,
 	return LZ4_decompress_usingDict_generic(source, dest,
 		compressedSize, maxOutputSize, 1, dictStart, dictSize);
 }
-EXPORT_SYMBOL(LZ4_decompress_safe_usingDict);
 
 int LZ4_decompress_fast_usingDict(const char *source, char *dest,
 	int originalSize, const char *dictStart, int dictSize)
@@ -486,7 +474,17 @@ int LZ4_decompress_fast_usingDict(const char *source, char *dest,
 	return LZ4_decompress_usingDict_generic(source, dest, 0,
 		originalSize, 0, dictStart, dictSize);
 }
+
+#ifndef STATIC
+EXPORT_SYMBOL(LZ4_decompress_safe);
+EXPORT_SYMBOL(LZ4_decompress_safe_partial);
+EXPORT_SYMBOL(LZ4_decompress_fast);
+EXPORT_SYMBOL(LZ4_setStreamDecode);
+EXPORT_SYMBOL(LZ4_decompress_safe_continue);
+EXPORT_SYMBOL(LZ4_decompress_fast_continue);
+EXPORT_SYMBOL(LZ4_decompress_safe_usingDict);
 EXPORT_SYMBOL(LZ4_decompress_fast_usingDict);
+#endif
 
 /*-******************************
  *	For backwards compatibility
