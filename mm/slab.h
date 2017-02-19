@@ -71,6 +71,12 @@ extern struct list_head slab_caches;
 /* The slab cache that manages slab cache information */
 extern struct kmem_cache *kmem_cache;
 
+/* A table of kmalloc cache names and sizes */
+extern const struct kmalloc_info_struct {
+	const char *name;
+	unsigned long size;
+} kmalloc_info[];
+
 unsigned long calculate_alignment(unsigned long flags,
 		unsigned long align, unsigned long size);
 
@@ -78,7 +84,6 @@ unsigned long calculate_alignment(unsigned long flags,
 /* Kmalloc array related functions */
 void setup_kmalloc_cache_index_table(void);
 void create_kmalloc_caches(unsigned long);
-const char *get_kmalloc_cache_name(int index);
 
 /* Find the kmalloc slab corresponding for a certain size */
 struct kmem_cache *kmalloc_slab(size_t, gfp_t);
