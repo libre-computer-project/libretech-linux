@@ -204,11 +204,9 @@ retry:
 			goto out_unlock;
 
 		/*
-		 * Make sure the vma is not shared, that the remaining dst
-		 * range is both valid and fully within a single existing vma.
+		 * Make sure the remaining dst range is both valid and
+		 * fully within a single existing vma.
 		 */
-		if (dst_vma->vm_flags & VM_SHARED)
-			goto out_unlock;
 		if (dst_start < dst_vma->vm_start ||
 		    dst_start + len > dst_vma->vm_end)
 			goto out_unlock;
@@ -225,11 +223,13 @@ retry:
 		goto out_unlock;
 
 	/*
-	 * Ensure the dst_vma has a anon_vma.
+	 * If not shared, ensure the dst_vma has a anon_vma.
 	 */
 	err = -ENOMEM;
-	if (unlikely(anon_vma_prepare(dst_vma)))
-		goto out_unlock;
+	if (!(dst_vma->vm_flags & VM_SHARED)) {
+		if (unlikely(anon_vma_prepare(dst_vma)))
+			goto out_unlock;
+	}
 
 	h = hstate_vma(dst_vma);
 
@@ -305,18 +305,45 @@ out:
 	if (page) {
 		/*
 		 * We encountered an error and are about to free a newly
-		 * allocated huge page.  It is possible that there was a
-		 * reservation associated with the page that has been
-		 * consumed.  See the routine restore_reserve_on_error
-		 * for details.  Unfortunately, we can not call
-		 * restore_reserve_on_error now as it would require holding
-		 * mmap_sem.  Clear the PagePrivate flag so that the global
+		 * allocated huge page.
+		 *
+		 * Reservation handling is very subtle, and is different for
+		 * private and shared mappings.  See the routine
+		 * restore_reserve_on_error for details.  Unfortunately, we
+		 * can not call restore_reserve_on_error now as it would
+		 * require holding mmap_sem.
+		 *
+		 * If a reservation for the page existed in the reservation
+		 * map of a private mapping, the map was modified to indicate
+		 * the reservation was consumed when the page was allocated.
+		 * We clear the PagePrivate flag now so that the global
 		 * reserve count will not be incremented in free_huge_page.
 		 * The reservation map will still indicate the reservation
 		 * was consumed and possibly prevent later page allocation.
-		 * This is better than leaking a global reservation.
+		 * This is better than leaking a global reservation.  If no
+		 * reservation existed, it is still safe to clear PagePrivate
+		 * as no adjustments to reservation counts were made during
+		 * allocation.
+		 *
+		 * The reservation map for shared mappings indicates which
+		 * pages have reservations.  When a huge page is allocated
+		 * for an address with a reservation, no change is made to
+		 * the reserve map.  In this case PagePrivate will be set
+		 * to indicate that the global reservation count should be
+		 * incremented when the page is freed.  This is the desired
+		 * behavior.  However, when a huge page is allocated for an
+		 * address without a reservation a reservation entry is added
+		 * to the reservation map, and PagePrivate will not be set.
+		 * When the page is freed, the global reserve count will NOT
+		 * be incremented and it will appear as though we have leaked
+		 * reserved page.  In this case, set PagePrivate so that the
+		 * global reserve count will be incremented to match the
+		 * reservation map entry which was created.
 		 */
-		ClearPagePrivate(page);
+		if (dst_vma->vm_flags & VM_SHARED)
+			SetPagePrivate(page);
+		else
+			ClearPagePrivate(page);
 		put_page(page);
 	}
 	BUG_ON(copied < 0);
@@ -372,7 +399,8 @@ retry:
 	dst_vma = find_vma(dst_mm, dst_start);
 	if (!dst_vma)
 		goto out_unlock;
-	if (!vma_is_shmem(dst_vma) && dst_vma->vm_flags & VM_SHARED)
+	if (!vma_is_shmem(dst_vma) && !is_vm_hugetlb_page(dst_vma) &&
+	    dst_vma->vm_flags & VM_SHARED)
 		goto out_unlock;
 	if (dst_start < dst_vma->vm_start ||
 	    dst_start + len > dst_vma->vm_end)
