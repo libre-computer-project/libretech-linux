@@ -16,6 +16,9 @@
 #include <asm/page.h>
 #include <asm/bug.h>
 
+#ifndef __ASSEMBLY__
+#include <linux/mmdebug.h>
+#endif
 /*
  * This is necessary to get the definition of PGTABLE_RANGE which we
  * need for various slices related matters. Note that this isn't the
