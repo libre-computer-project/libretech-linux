@@ -219,6 +219,7 @@ retry:
 			goto out_unlock;
 	}
 
+	err = -EINVAL;
 	if (WARN_ON(dst_addr & (vma_hpagesize - 1) ||
 		    (len - copied) & (vma_hpagesize - 1)))
 		goto out_unlock;
