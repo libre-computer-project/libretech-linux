@@ -475,17 +475,6 @@ int LZ4_decompress_fast_usingDict(const char *source, char *dest,
 		originalSize, 0, dictStart, dictSize);
 }
 
-#ifndef STATIC
-EXPORT_SYMBOL(LZ4_decompress_safe);
-EXPORT_SYMBOL(LZ4_decompress_safe_partial);
-EXPORT_SYMBOL(LZ4_decompress_fast);
-EXPORT_SYMBOL(LZ4_setStreamDecode);
-EXPORT_SYMBOL(LZ4_decompress_safe_continue);
-EXPORT_SYMBOL(LZ4_decompress_fast_continue);
-EXPORT_SYMBOL(LZ4_decompress_safe_usingDict);
-EXPORT_SYMBOL(LZ4_decompress_fast_usingDict);
-#endif
-
 /*-******************************
  *	For backwards compatibility
  ********************************/
@@ -507,7 +496,6 @@ int lz4_decompress_unknownoutputsize(const unsigned char *src,
 	else
 		return -1;
 }
-EXPORT_SYMBOL(lz4_decompress_unknownoutputsize);
 
 int lz4_decompress(const unsigned char *src, size_t *src_len,
 	unsigned char *dest, size_t actual_dest_len) {
@@ -526,7 +514,19 @@ int lz4_decompress(const unsigned char *src, size_t *src_len,
 	else
 		return -1;
 }
+
+#ifndef STATIC
+EXPORT_SYMBOL(LZ4_decompress_safe);
+EXPORT_SYMBOL(LZ4_decompress_safe_partial);
+EXPORT_SYMBOL(LZ4_decompress_fast);
+EXPORT_SYMBOL(LZ4_setStreamDecode);
+EXPORT_SYMBOL(LZ4_decompress_safe_continue);
+EXPORT_SYMBOL(LZ4_decompress_fast_continue);
+EXPORT_SYMBOL(LZ4_decompress_safe_usingDict);
+EXPORT_SYMBOL(LZ4_decompress_fast_usingDict);
+EXPORT_SYMBOL(lz4_decompress_unknownoutputsize);
 EXPORT_SYMBOL(lz4_decompress);
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("LZ4 decompressor");
+#endif
