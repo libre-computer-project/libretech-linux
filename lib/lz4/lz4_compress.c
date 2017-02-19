@@ -39,27 +39,33 @@
 #include <linux/kernel.h>
 #include <asm/unaligned.h>
 
+static const int LZ4_minLength = (MFLIMIT + 1);
+static const int LZ4_64Klimit = ((64 * KB) + (MFLIMIT - 1));
+
 /*-******************************
  *	Compression functions
  ********************************/
-static U32 LZ4_hash4(U32 sequence, tableType_t const tableType)
+static FORCE_INLINE U32 LZ4_hash4(
+	U32 sequence,
+	tableType_t const tableType)
 {
 	if (tableType == byU16)
 		return ((sequence * 2654435761U)
-			>> ((MINMATCH*8) - (LZ4_HASHLOG + 1)));
+			>> ((MINMATCH * 8) - (LZ4_HASHLOG + 1)));
 	else
 		return ((sequence * 2654435761U)
-			>> ((MINMATCH*8) - LZ4_HASHLOG));
+			>> ((MINMATCH * 8) - LZ4_HASHLOG));
 }
 
-#if LZ4_ARCH64
-static U32 LZ4_hash5(U64 sequence, tableType_t const tableType)
+static FORCE_INLINE __maybe_unused U32 LZ4_hash5(
+	U64 sequence,
+	tableType_t const tableType)
 {
 	const U32 hashLog = (tableType == byU16)
 		? LZ4_HASHLOG + 1
 		: LZ4_HASHLOG;
 
-#ifdef __LITTLE_ENDIAN__
+#if LZ4_LITTLE_ENDIAN
 	static const U64 prime5bytes = 889523592379ULL;
 
 	return (U32)(((sequence << 24) * prime5bytes) >> (64 - hashLog));
@@ -69,9 +75,10 @@ static U32 LZ4_hash5(U64 sequence, tableType_t const tableType)
 	return (U32)(((sequence >> 24) * prime8bytes) >> (64 - hashLog));
 #endif
 }
-#endif
 
-static U32 LZ4_hashPosition(const void *p, tableType_t tableType)
+static FORCE_INLINE U32 LZ4_hashPosition(
+	const void *p,
+	tableType_t const tableType)
 {
 #if LZ4_ARCH64
 	if (tableType == byU32)
@@ -81,8 +88,12 @@ static U32 LZ4_hashPosition(const void *p, tableType_t tableType)
 	return LZ4_hash4(LZ4_read32(p), tableType);
 }
 
-static void LZ4_putPositionOnHash(const BYTE *p, U32 h, void *tableBase,
-	tableType_t const tableType, const BYTE *srcBase)
+static void LZ4_putPositionOnHash(
+	const BYTE *p,
+	U32 h,
+	void *tableBase,
+	tableType_t const tableType,
+	const BYTE *srcBase)
 {
 	switch (tableType) {
 	case byPtr:
@@ -109,16 +120,22 @@ static void LZ4_putPositionOnHash(const BYTE *p, U32 h, void *tableBase,
 	}
 }
 
-static inline void LZ4_putPosition(const BYTE *p, void *tableBase,
-	tableType_t tableType, const BYTE *srcBase)
+static FORCE_INLINE void LZ4_putPosition(
+	const BYTE *p,
+	void *tableBase,
+	tableType_t tableType,
+	const BYTE *srcBase)
 {
 	U32 const h = LZ4_hashPosition(p, tableType);
 
 	LZ4_putPositionOnHash(p, h, tableBase, tableType, srcBase);
 }
 
-static const BYTE *LZ4_getPositionOnHash(U32 h, void *tableBase,
-	tableType_t tableType, const BYTE *srcBase)
+static const BYTE *LZ4_getPositionOnHash(
+	U32 h,
+	void *tableBase,
+	tableType_t tableType,
+	const BYTE *srcBase)
 {
 	if (tableType == byPtr) {
 		const BYTE **hashTable = (const BYTE **) tableBase;
@@ -135,12 +152,16 @@ static const BYTE *LZ4_getPositionOnHash(U32 h, void *tableBase,
 	{
 		/* default, to ensure a return */
 		const U16 * const hashTable = (U16 *) tableBase;
+
 		return hashTable[h] + srcBase;
 	}
 }
 
-static inline const BYTE *LZ4_getPosition(const BYTE *p, void *tableBase,
-	tableType_t tableType, const BYTE *srcBase)
+static FORCE_INLINE const BYTE *LZ4_getPosition(
+	const BYTE *p,
+	void *tableBase,
+	tableType_t tableType,
+	const BYTE *srcBase)
 {
 	U32 const h = LZ4_hashPosition(p, tableType);
 
@@ -152,7 +173,7 @@ static inline const BYTE *LZ4_getPosition(const BYTE *p, void *tableBase,
  * LZ4_compress_generic() :
  * inlined, to ensure branches are decided at compilation time
  */
-static inline int LZ4_compress_generic(
+static FORCE_INLINE int LZ4_compress_generic(
 	LZ4_stream_t_internal * const dictPtr,
 	const char * const source,
 	char * const dest,
@@ -187,6 +208,7 @@ static inline int LZ4_compress_generic(
 		/* Unsupported inputSize, too large (or negative) */
 		return 0;
 	}
+
 	switch (dict) {
 	case noDict:
 	default:
@@ -216,7 +238,8 @@ static inline int LZ4_compress_generic(
 
 	/* First Byte */
 	LZ4_putPosition(ip, dictPtr->hashTable, tableType, base);
-	ip++; forwardH = LZ4_hashPosition(ip, tableType);
+	ip++;
+	forwardH = LZ4_hashPosition(ip, tableType);
 
 	/* Main Loop */
 	for ( ; ; ) {
@@ -227,15 +250,14 @@ static inline int LZ4_compress_generic(
 		{
 			const BYTE *forwardIp = ip;
 			unsigned int step = 1;
-			unsigned int searchMatchNb = acceleration
-				<< LZ4_skipTrigger;
+			unsigned int searchMatchNb = acceleration << LZ4_SKIPTRIGGER;
 
 			do {
 				U32 const h = forwardH;
 
 				ip = forwardIp;
 				forwardIp += step;
-				step = (searchMatchNb++ >> LZ4_skipTrigger);
+				step = (searchMatchNb++ >> LZ4_SKIPTRIGGER);
 
 				if (unlikely(forwardIp > mflimit))
 					goto _last_literals;
@@ -243,6 +265,7 @@ static inline int LZ4_compress_generic(
 				match = LZ4_getPositionOnHash(h,
 					dictPtr->hashTable,
 					tableType, base);
+
 				if (dict == usingExtDict) {
 					if (match < (const BYTE *)source) {
 						refDelta = dictDelta;
@@ -251,11 +274,12 @@ static inline int LZ4_compress_generic(
 						refDelta = 0;
 						lowLimit = (const BYTE *)source;
 				}	 }
+
 				forwardH = LZ4_hashPosition(forwardIp,
 					tableType);
+
 				LZ4_putPositionOnHash(ip, h, dictPtr->hashTable,
 					tableType, base);
-
 			} while (((dictIssue == dictSmall)
 					? (match < lowRefLimit)
 					: 0)
@@ -268,31 +292,34 @@ static inline int LZ4_compress_generic(
 
 		/* Catch up */
 		while (((ip > anchor) & (match + refDelta > lowLimit))
-			&& (unlikely(ip[-1] == match[refDelta - 1]))) {
+				&& (unlikely(ip[-1] == match[refDelta - 1]))) {
 			ip--;
 			match--;
-			}
+		}
 
 		/* Encode Literals */
 		{
 			unsigned const int litLength = (unsigned int)(ip - anchor);
 
 			token = op++;
+
 			if ((outputLimited) &&
 				/* Check output buffer overflow */
 				(unlikely(op + litLength +
 					(2 + 1 + LASTLITERALS) +
-					(litLength/255) > olimit)))
+					(litLength / 255) > olimit)))
 				return 0;
+
 			if (litLength >= RUN_MASK) {
 				int len = (int)litLength - RUN_MASK;
 
-				*token = (RUN_MASK<<ML_BITS);
-				for (; len >= 255 ; len -= 255)
+				*token = (RUN_MASK << ML_BITS);
+
+				for (; len >= 255; len -= 255)
 					*op++ = 255;
 				*op++ = (BYTE)len;
 			} else
-				*token = (BYTE)(litLength<<ML_BITS);
+				*token = (BYTE)(litLength << ML_BITS);
 
 			/* Copy Literals */
 			LZ4_wildCopy(op, anchor, op + litLength);
@@ -301,7 +328,8 @@ static inline int LZ4_compress_generic(
 
 _next_match:
 		/* Encode Offset */
-		LZ4_writeLE16(op, (U16)(ip - match)); op += 2;
+		LZ4_writeLE16(op, (U16)(ip - match));
+		op += 2;
 
 		/* Encode MatchLength */
 		{
@@ -313,11 +341,15 @@ _next_match:
 
 				match += refDelta;
 				limit = ip + (dictEnd - match);
+
 				if (limit > matchlimit)
 					limit = matchlimit;
+
 				matchCode = LZ4_count(ip + MINMATCH,
 					match + MINMATCH, limit);
+
 				ip += MINMATCH + matchCode;
+
 				if (ip == limit) {
 					unsigned const int more = LZ4_count(ip,
 						(const BYTE *)source,
@@ -336,17 +368,20 @@ _next_match:
 				/* Check output buffer overflow */
 				(unlikely(op +
 					(1 + LASTLITERALS) +
-					(matchCode>>8) > olimit)))
+					(matchCode >> 8) > olimit)))
 				return 0;
+
 			if (matchCode >= ML_MASK) {
 				*token += ML_MASK;
 				matchCode -= ML_MASK;
 				LZ4_write32(op, 0xFFFFFFFF);
-				while (matchCode >= 4*255) {
+
+				while (matchCode >= 4 * 255) {
 					op += 4;
 					LZ4_write32(op, 0xFFFFFFFF);
-					matchCode -= 4*255;
+					matchCode -= 4 * 255;
 				}
+
 				op += matchCode / 255;
 				*op++ = (BYTE)(matchCode % 255);
 			} else
@@ -365,6 +400,7 @@ _next_match:
 		/* Test next position */
 		match = LZ4_getPosition(ip, dictPtr->hashTable,
 			tableType, base);
+
 		if (dict == usingExtDict) {
 			if (match < (const BYTE *)source) {
 				refDelta = dictDelta;
@@ -374,7 +410,9 @@ _next_match:
 				lowLimit = (const BYTE *)source;
 			}
 		}
+
 		LZ4_putPosition(ip, dictPtr->hashTable, tableType, base);
+
 		if (((dictIssue == dictSmall) ? (match >= lowRefLimit) : 1)
 			&& (match + MAX_DISTANCE >= ip)
 			&& (LZ4_read32(match + refDelta) == LZ4_read32(ip))) {
@@ -395,18 +433,21 @@ _last_literals:
 		if ((outputLimited) &&
 			/* Check output buffer overflow */
 			((op - (BYTE *)dest) + lastRun + 1 +
-			((lastRun + 255 - RUN_MASK)/255) > (U32)maxOutputSize))
+			((lastRun + 255 - RUN_MASK) / 255) > (U32)maxOutputSize))
 			return 0;
+
 		if (lastRun >= RUN_MASK) {
 			size_t accumulator = lastRun - RUN_MASK;
 			*op++ = RUN_MASK << ML_BITS;
-			for (; accumulator >= 255 ; accumulator -= 255)
+			for (; accumulator >= 255; accumulator -= 255)
 				*op++ = 255;
 			*op++ = (BYTE) accumulator;
 		} else {
-			*op++ = (BYTE)(lastRun<<ML_BITS);
+			*op++ = (BYTE)(lastRun << ML_BITS);
 		}
+
 		memcpy(op, anchor, lastRun);
+
 		op += lastRun;
 	}
 
@@ -414,23 +455,27 @@ _last_literals:
 	return (int) (((char *)op) - dest);
 }
 
-static int LZ4_compress_fast_extState(void *state, const char *source, char *dest,
-	int inputSize, int maxOutputSize, int acceleration)
+static int LZ4_compress_fast_extState(
+	void *state,
+	const char *source,
+	char *dest,
+	int inputSize,
+	int maxOutputSize,
+	int acceleration)
 {
-	#if LZ4_ARCH64
-	tableType_t tableType = byU32;
-	#else
-	tableType_t tableType = byPtr;
-	#endif
-
 	LZ4_stream_t_internal *ctx = &((LZ4_stream_t *)state)->internal_donotuse;
+#if LZ4_ARCH64
+	const tableType_t tableType = byU32;
+#else
+	const tableType_t tableType = byPtr;
+#endif
 
 	LZ4_resetStream((LZ4_stream_t *)state);
 
 	if (acceleration < 1)
 		acceleration = LZ4_ACCELERATION_DEFAULT;
 
-	if (maxOutputSize >= LZ4_compressBound(inputSize)) {
+	if (maxOutputSize >= LZ4_COMPRESSBOUND(inputSize)) {
 		if (inputSize < LZ4_64Klimit)
 			return LZ4_compress_generic(ctx, source,
 				dest, inputSize, 0,
@@ -474,7 +519,6 @@ EXPORT_SYMBOL(LZ4_compress_default);
 /*-******************************
  *	*_destSize() variant
  ********************************/
-
 static int LZ4_compress_destSize_generic(
 	LZ4_stream_t_internal * const ctx,
 	const char * const src,
@@ -529,14 +573,14 @@ static int LZ4_compress_destSize_generic(
 		{
 			const BYTE *forwardIp = ip;
 			unsigned int step = 1;
-			unsigned int searchMatchNb = 1 << LZ4_skipTrigger;
+			unsigned int searchMatchNb = 1 << LZ4_SKIPTRIGGER;
 
 			do {
 				U32 h = forwardH;
 
 				ip = forwardIp;
 				forwardIp += step;
-				step = (searchMatchNb++ >> LZ4_skipTrigger);
+				step = (searchMatchNb++ >> LZ4_SKIPTRIGGER);
 
 				if (unlikely(forwardIp > mflimit))
 					goto _last_literals;
@@ -559,8 +603,9 @@ static int LZ4_compress_destSize_generic(
 		while ((ip > anchor)
 			&& (match > lowLimit)
 			&& (unlikely(ip[-1] == match[-1]))) {
-			ip--; match--;
-			}
+			ip--;
+			match--;
+		}
 
 		/* Encode Literal length */
 		{
@@ -644,11 +689,11 @@ _last_literals:
 		size_t lastRunSize = (size_t)(iend - anchor);
 
 		if (op + 1 /* token */
-			+ ((lastRunSize + 240)/255) /* litLength */
+			+ ((lastRunSize + 240) / 255) /* litLength */
 			+ lastRunSize /* literals */ > oend) {
 			/* adapt lastRunSize to fill 'dst' */
 			lastRunSize	= (oend - op) - 1;
-			lastRunSize -= (lastRunSize + 240)/255;
+			lastRunSize -= (lastRunSize + 240) / 255;
 		}
 		ip = anchor + lastRunSize;
 
@@ -656,7 +701,7 @@ _last_literals:
 			size_t accumulator = lastRunSize - RUN_MASK;
 
 			*op++ = RUN_MASK << ML_BITS;
-			for (; accumulator >= 255 ; accumulator -= 255)
+			for (; accumulator >= 255; accumulator -= 255)
 				*op++ = 255;
 			*op++ = (BYTE) accumulator;
 		} else {
@@ -675,14 +720,14 @@ static int LZ4_compress_destSize_extState(LZ4_stream_t *state, const char *src,
 	char *dst, int *srcSizePtr, int targetDstSize)
 {
 	#if LZ4_ARCH64
-	tableType_t tableType = byU32;
+		const tableType_t tableType = byU32;
 	#else
-	tableType_t tableType = byPtr;
+		const tableType_t tableType = byPtr;
 	#endif
 
 	LZ4_resetStream(state);
 
-	if (targetDstSize >= LZ4_compressBound(*srcSizePtr)) {
+	if (targetDstSize >= LZ4_COMPRESSBOUND(*srcSizePtr)) {
 		/* compression success is guaranteed */
 		return LZ4_compress_fast_extState(
 			state, src, dst, *srcSizePtr,
@@ -847,7 +892,7 @@ int LZ4_compress_fast_continue(LZ4_stream_t *LZ4_stream, const char *source,
 			result = LZ4_compress_generic(
 				streamPtr, source, dest, inputSize,
 				maxOutputSize, limitedOutput, byU32,
-				withPrefix64k, dictSmall,	acceleration);
+				withPrefix64k, dictSmall, acceleration);
 		} else {
 			result = LZ4_compress_generic(
 				streamPtr, source, dest, inputSize,

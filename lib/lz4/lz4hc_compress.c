@@ -71,7 +71,7 @@ static void LZ4HC_init(LZ4HC_CCtx_internal *hc4, const BYTE *start)
 }
 
 /* Update chains up to ip (excluded) */
-static inline void LZ4HC_Insert(LZ4HC_CCtx_internal *hc4,
+static FORCE_INLINE void LZ4HC_Insert(LZ4HC_CCtx_internal *hc4,
 	const BYTE *ip)
 {
 	U16 * const chainTable = hc4->chainTable;
@@ -96,7 +96,7 @@ static inline void LZ4HC_Insert(LZ4HC_CCtx_internal *hc4,
 	hc4->nextToUpdate = target;
 }
 
-static inline int LZ4HC_InsertAndFindBestMatch(
+static FORCE_INLINE int LZ4HC_InsertAndFindBestMatch(
 	LZ4HC_CCtx_internal *hc4, /* Index table will be updated */
 	const BYTE *ip,
 	const BYTE * const iLimit,
@@ -165,7 +165,7 @@ static inline int LZ4HC_InsertAndFindBestMatch(
 	return (int)ml;
 }
 
-static inline int LZ4HC_InsertAndGetWiderMatch(
+static FORCE_INLINE int LZ4HC_InsertAndGetWiderMatch(
 	LZ4HC_CCtx_internal *hc4,
 	const BYTE * const ip,
 	const BYTE * const iLowLimit,
@@ -259,7 +259,7 @@ static inline int LZ4HC_InsertAndGetWiderMatch(
 	return longest;
 }
 
-static inline int LZ4HC_encodeSequence(
+static FORCE_INLINE int LZ4HC_encodeSequence(
 	const BYTE **ip,
 	BYTE **op,
 	const BYTE **anchor,

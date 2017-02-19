@@ -49,8 +49,8 @@
  * Note that it is important this generic function is really inlined,
  * in order to remove useless branches during compilation optimization.
  */
-static inline int LZ4_decompress_generic(
-	 const char *const source,
+static FORCE_INLINE int LZ4_decompress_generic(
+	 const char * const source,
 	 char * const dest,
 	 int inputSize,
 		/*
@@ -180,22 +180,28 @@ static inline int LZ4_decompress_generic(
 					goto _output_error;
 				}
 			}
+
 			memcpy(op, ip, length);
 			ip += length;
 			op += length;
 			/* Necessarily EOF, due to parsing restrictions */
 			break;
 		}
+
 		LZ4_wildCopy(op, ip, cpy);
-		ip += length; op = cpy;
+		ip += length;
+		op = cpy;
 
 		/* get offset */
-		offset = LZ4_readLE16(ip); ip += 2;
+		offset = LZ4_readLE16(ip);
+		ip += 2;
 		match = op - offset;
+
 		if ((checkOffset) && (unlikely(match < lowLimit))) {
 			/* Error : offset outside buffers */
 			goto _output_error;
 		}
+
 		/* costs ~1%; silence an msan warning when offset == 0 */
 		LZ4_write32(op, (U32)offset);
 
@@ -205,11 +211,14 @@ static inline int LZ4_decompress_generic(
 			unsigned int s;
 
 			do {
-			s = *ip++;
-			if ((endOnInput) && (ip > iend - LASTLITERALS))
-				goto _output_error;
-			length += s;
+				s = *ip++;
+
+				if ((endOnInput) && (ip > iend - LASTLITERALS))
+					goto _output_error;
+
+				length += s;
 			} while (s == 255);
+
 			if ((safeDecode)
 				&& unlikely(
 					(size_t)(op + length) < (size_t)op)) {
@@ -217,6 +226,7 @@ static inline int LZ4_decompress_generic(
 				goto _output_error;
 			}
 		}
+
 		length += MINMATCH;
 
 		/* check external dictionary */
@@ -227,12 +237,13 @@ static inline int LZ4_decompress_generic(
 			}
 
 			if (length <= (size_t)(lowPrefix - match)) {
-			/*
-			 * match can be copied as a single segment
-			 * from external dictionary
-			 */
-			memmove(op, dictEnd - (lowPrefix - match), length);
-			op += length;
+				/*
+				 * match can be copied as a single segment
+				 * from external dictionary
+				 */
+				memmove(op, dictEnd - (lowPrefix - match),
+					length);
+				op += length;
 			} else {
 				/*
 				 * match encompass external
@@ -256,11 +267,13 @@ static inline int LZ4_decompress_generic(
 					op += restSize;
 				}
 			}
+
 			continue;
 		}
 
 		/* copy match within block */
 		cpy = op + length;
+
 		if (unlikely(offset < 8)) {
 			const int dec64 = dec64table[offset];
 
@@ -272,7 +285,8 @@ static inline int LZ4_decompress_generic(
 			memcpy(op + 4, match, 4);
 			match -= dec64;
 		} else {
-			LZ4_copy8(op, match); match += 8;
+			LZ4_copy8(op, match);
+			match += 8;
 		}
 
 		op += 8;
@@ -287,18 +301,22 @@ static inline int LZ4_decompress_generic(
 				 */
 				goto _output_error;
 			}
+
 			if (op < oCopyLimit) {
 				LZ4_wildCopy(op, match, oCopyLimit);
 				match += oCopyLimit - op;
 				op = oCopyLimit;
 			}
+
 			while (op < cpy)
 				*op++ = *match++;
 		} else {
 			LZ4_copy8(op, match);
+
 			if (length > 16)
 				LZ4_wildCopy(op + 8, match + 8, cpy);
 		}
+
 		op = cpy; /* correction */
 	}
 
@@ -438,7 +456,7 @@ int LZ4_decompress_fast_continue(LZ4_streamDecode_t *LZ4_streamDecode,
  * These decoding functions work the same as "_continue" ones,
  * the dictionary must be explicitly provided within parameters
  */
-static inline int LZ4_decompress_usingDict_generic(const char *source,
+static FORCE_INLINE int LZ4_decompress_usingDict_generic(const char *source,
 	char *dest, int compressedSize, int maxOutputSize, int safe,
 	const char *dictStart, int dictSize)
 {
