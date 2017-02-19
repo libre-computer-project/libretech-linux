@@ -257,11 +257,6 @@ static inline void cluster_set_null(struct swap_cluster_info *info)
 	info->data = 0;
 }
 
-static inline void __lock_cluster(struct swap_cluster_info *ci)
-{
-	spin_lock(&ci->lock);
-}
-
 static inline struct swap_cluster_info *lock_cluster(struct swap_info_struct *si,
 						     unsigned long offset)
 {
@@ -270,7 +265,7 @@ static inline struct swap_cluster_info *lock_cluster(struct swap_info_struct *si
 	ci = si->cluster_info;
 	if (ci) {
 		ci += offset / SWAPFILE_CLUSTER;
-		__lock_cluster(ci);
+		spin_lock(&ci->lock);
 	}
 	return ci;
 }
@@ -335,7 +330,7 @@ static void cluster_list_add_tail(struct swap_cluster_list *list,
 		 * only acquired when we held swap_info_struct->lock
 		 */
 		ci_tail = ci + tail;
-		__lock_cluster(ci_tail);
+		spin_lock_nested(&ci_tail->lock, SINGLE_DEPTH_NESTING);
 		cluster_set_next(ci_tail, idx);
 		unlock_cluster(ci_tail);
 		cluster_set_next_flag(&list->tail, idx, 0);
