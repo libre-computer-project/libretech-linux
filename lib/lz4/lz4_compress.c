@@ -57,7 +57,7 @@ static FORCE_INLINE U32 LZ4_hash4(
 			>> ((MINMATCH * 8) - LZ4_HASHLOG));
 }
 
-static FORCE_INLINE __maybe_unused U32 LZ4_hash5(
+static FORCE_INLINE U32 LZ4_hash5(
 	U64 sequence,
 	tableType_t const tableType)
 {
@@ -612,7 +612,7 @@ static int LZ4_compress_destSize_generic(
 			unsigned int litLength = (unsigned int)(ip - anchor);
 
 			token = op++;
-			if (op + ((litLength + 240)/255)
+			if (op + ((litLength + 240) / 255)
 				+ litLength > oMaxLit) {
 				/* Not enough space for a last match */
 				op--;
@@ -621,11 +621,11 @@ static int LZ4_compress_destSize_generic(
 			if (litLength >= RUN_MASK) {
 				unsigned int len = litLength - RUN_MASK;
 				*token = (RUN_MASK<<ML_BITS);
-				for (; len >= 255 ; len -= 255)
+				for (; len >= 255; len -= 255)
 					*op++ = 255;
 				*op++ = (BYTE)len;
 			} else
-				*token = (BYTE)(litLength<<ML_BITS);
+				*token = (BYTE)(litLength << ML_BITS);
 
 			/* Copy Literals */
 			LZ4_wildCopy(op, anchor, op + litLength);
@@ -651,7 +651,8 @@ _next_match:
 				*token += ML_MASK;
 				matchLength -= ML_MASK;
 				while (matchLength >= 255) {
-					matchLength -= 255; *op++ = 255;
+					matchLength -= 255;
+					*op++ = 255;
 				}
 				*op++ = (BYTE)matchLength;
 			} else
@@ -716,14 +717,18 @@ _last_literals:
 	return (int) (((char *)op) - dst);
 }
 
-static int LZ4_compress_destSize_extState(LZ4_stream_t *state, const char *src,
-	char *dst, int *srcSizePtr, int targetDstSize)
+static int LZ4_compress_destSize_extState(
+	LZ4_stream_t *state,
+	const char *src,
+	char *dst,
+	int *srcSizePtr,
+	int targetDstSize)
 {
-	#if LZ4_ARCH64
-		const tableType_t tableType = byU32;
-	#else
-		const tableType_t tableType = byPtr;
-	#endif
+#if LZ4_ARCH64
+	const tableType_t tableType = byU32;
+#else
+	const tableType_t tableType = byPtr;
+#endif
 
 	LZ4_resetStream(state);
 
@@ -747,8 +752,12 @@ static int LZ4_compress_destSize_extState(LZ4_stream_t *state, const char *src,
 }
 
 
-int LZ4_compress_destSize(const char *src, char *dst, int *srcSizePtr,
-	int targetDstSize, void *wrkmem)
+int LZ4_compress_destSize(
+	const char *src,
+	char *dst,
+	int *srcSizePtr,
+	int targetDstSize,
+	void *wrkmem)
 {
 	return LZ4_compress_destSize_extState(wrkmem, src, dst, srcSizePtr,
 		targetDstSize);
@@ -763,7 +772,6 @@ void LZ4_resetStream(LZ4_stream_t *LZ4_stream)
 	memset(LZ4_stream, 0, sizeof(LZ4_stream_t));
 }
 
-#define HASH_UNIT sizeof(size_t)
 int LZ4_loadDict(LZ4_stream_t *LZ4_dict,
 	const char *dictionary, int dictSize)
 {

@@ -67,13 +67,6 @@ typedef uintptr_t uptrval;
 #define LZ4_LITTLE_ENDIAN 0
 #endif
 
-/*
- * LZ4_FORCE_SW_BITCOUNT
- * Define this parameter if your target system
- * does not support hardware bit count
- */
-/* #define LZ4_FORCE_SW_BITCOUNT */
-
 /*-************************************
  *	Constants
  **************************************/
@@ -86,78 +79,72 @@ typedef uintptr_t uptrval;
 /* Increase this value ==> compression run slower on incompressible data */
 #define LZ4_SKIPTRIGGER 6
 
-#define KB (1<<10)
-#define MB (1<<20)
-#define GB (1U<<30)
+#define HASH_UNIT sizeof(size_t)
+
+#define KB (1 << 10)
+#define MB (1 << 20)
+#define GB (1U << 30)
 
 #define MAXD_LOG 16
-#define MAX_DISTANCE ((1<<MAXD_LOG) - 1)
+#define MAX_DISTANCE ((1 << MAXD_LOG) - 1)
 #define STEPSIZE sizeof(size_t)
 
 #define ML_BITS	4
-#define ML_MASK	((1U<<ML_BITS)-1)
-#define RUN_BITS (8-ML_BITS)
-#define RUN_MASK ((1U<<RUN_BITS)-1)
+#define ML_MASK	((1U << ML_BITS) - 1)
+#define RUN_BITS (8 - ML_BITS)
+#define RUN_MASK ((1U << RUN_BITS) - 1)
 
 /*-************************************
  *	Reading and writing into memory
  **************************************/
-typedef union {
-	U16 u16;
-	U32 u32;
-	size_t uArch;
-} __packed unalign;
-
-static FORCE_INLINE __maybe_unused U16 LZ4_read16(const void *ptr)
+static FORCE_INLINE U16 LZ4_read16(const void *ptr)
 {
-	return ((const unalign *)ptr)->u16;
+	return get_unaligned((const U16 *)ptr);
 }
 
-static FORCE_INLINE __maybe_unused U32 LZ4_read32(const void *ptr)
+static FORCE_INLINE U32 LZ4_read32(const void *ptr)
 {
-	return ((const unalign *)ptr)->u32;
+	return get_unaligned((const U32 *)ptr);
 }
 
-static FORCE_INLINE __maybe_unused size_t LZ4_read_ARCH(const void *ptr)
+static FORCE_INLINE size_t LZ4_read_ARCH(const void *ptr)
 {
-	return ((const unalign *)ptr)->uArch;
+	return get_unaligned((const size_t *)ptr);
 }
 
-static FORCE_INLINE __maybe_unused void LZ4_write16(void *memPtr, U16 value)
+static FORCE_INLINE void LZ4_write16(void *memPtr, U16 value)
 {
-	((unalign *)memPtr)->u16 = value;
+	put_unaligned(value, (U16 *)memPtr);
 }
 
-static FORCE_INLINE __maybe_unused void LZ4_write32(void *memPtr, U32 value) {
-	((unalign *)memPtr)->u32 = value;
+static FORCE_INLINE void LZ4_write32(void *memPtr, U32 value)
+{
+	put_unaligned(value, (U32 *)memPtr);
 }
 
-static FORCE_INLINE __maybe_unused U16 LZ4_readLE16(const void *memPtr)
+static FORCE_INLINE U16 LZ4_readLE16(const void *memPtr)
 {
-#if LZ4_LITTLE_ENDIAN
-	return LZ4_read16(memPtr);
-#else
-	const BYTE *p = (const BYTE *)memPtr;
-
-	return (U16)((U16)p[0] + (p[1] << 8));
-#endif
+	return get_unaligned_le16(memPtr);
 }
 
-static FORCE_INLINE __maybe_unused void LZ4_writeLE16(void *memPtr, U16 value)
+static FORCE_INLINE void LZ4_writeLE16(void *memPtr, U16 value)
 {
-#if LZ4_LITTLE_ENDIAN
-	LZ4_write16(memPtr, value);
-#else
-	BYTE *p = (BYTE *)memPtr;
-
-	p[0] = (BYTE) value;
-	p[1] = (BYTE)(value >> 8);
-#endif
+	return put_unaligned_le16(value, memPtr);
 }
 
 static FORCE_INLINE void LZ4_copy8(void *dst, const void *src)
 {
-	memcpy(dst, src, 8);
+#if LZ4_ARCH64
+	U64 a = get_unaligned((const U64 *)src);
+
+	put_unaligned(a, (U64 *)dst);
+#else
+	U32 a = get_unaligned((const U32 *)src);
+	U32 b = get_unaligned((const U32 *)src + 1);
+
+	put_unaligned(a, (U32 *)dst);
+	put_unaligned(b, (U32 *)dst + 1);
+#endif
 }
 
 /*
@@ -181,81 +168,13 @@ static FORCE_INLINE void LZ4_wildCopy(void *dstPtr,
 static FORCE_INLINE unsigned int LZ4_NbCommonBytes(register size_t val)
 {
 #if LZ4_LITTLE_ENDIAN
-#if LZ4_ARCH64 /* 64 Bits Little Endian */
-#if defined(LZ4_FORCE_SW_BITCOUNT)
-	static const int DeBruijnBytePos[64] = {
-		0, 0, 0, 0, 0, 1, 1, 2, 0, 3, 1, 3, 1, 4, 2, 7,
-		0, 2, 3, 6, 1, 5, 3, 5, 1, 3, 4, 4, 2, 5, 6, 7,
-		7, 0, 1, 2, 3, 3, 4, 6, 2, 6, 5, 5, 3, 4, 5, 6,
-		7, 1, 2, 4, 6, 4, 4, 5, 7, 2, 6, 5, 7, 6, 7, 7
-	};
-
-	return DeBruijnBytePos[((U64)((val & -(long long)val)
-		* 0x0218A392CDABBD3FULL)) >> 58];
+	return __ffs(val) >> 3;
 #else
-	return (__builtin_ctzll((U64)val) >> 3);
-#endif /* defined(LZ4_FORCE_SW_BITCOUNT) */
-#else /* 32 Bits Little Endian */
-#if defined(LZ4_FORCE_SW_BITCOUNT)
-	static const int DeBruijnBytePos[32] = {
-		0, 0, 3, 0, 3, 1, 3, 0, 3, 2, 2, 1, 3, 2, 0, 1,
-		3, 3, 1, 2, 2, 2, 2, 0, 3, 1, 2, 0, 1, 0, 1, 1
-	};
-
-	return DeBruijnBytePos[((U32)((val & -(S32)val)
-		* 0x077CB531U)) >> 27];
-#else
-	return (__builtin_ctz((U32)val) >> 3);
-#endif /* defined(LZ4_FORCE_SW_BITCOUNT) */
-#endif /* LZ4_ARCH64 */
-#else /* Big Endian */
-#if LZ4_ARCH64 /* 64 Bits Big Endian */
-#if defined(LZ4_FORCE_SW_BITCOUNT)
-	unsigned int r;
-
-	if (!(val >> 32)) {
-		r = 4;
-	} else {
-		r = 0;
-		val >>= 32;
-	}
-
-	if (!(val >> 16)) {
-		r += 2;
-		val >>= 8;
-	} else {
-		val >>= 24;
-	}
-
-	r += (!val);
-
-	return r;
-#else
-	return (__builtin_clzll((U64)val) >> 3);
-#endif /* defined(LZ4_FORCE_SW_BITCOUNT) */
-#else /* 32 Bits Big Endian */
-#if defined(LZ4_FORCE_SW_BITCOUNT)
-	unsigned int r;
-
-	if (!(val >> 16)) {
-		r = 2;
-		val >>= 8;
-	} else {
-		r = 0;
-		val >>= 24;
-	}
-
-	r += (!val);
-
-	return r;
-#else
-	return (__builtin_clz((U32)val) >> 3);
-#endif /* defined(LZ4_FORCE_SW_BITCOUNT) */
-#endif /* LZ4_ARCH64 */
-#endif /* LZ4_LITTLE_ENDIAN */
+	return (BITS_PER_LONG - 1 - __fls(val)) >> 3;
+#endif
 }
 
-static FORCE_INLINE __maybe_unused unsigned int LZ4_count(
+static FORCE_INLINE unsigned int LZ4_count(
 	const BYTE *pIn,
 	const BYTE *pMatch,
 	const BYTE *pInLimit)

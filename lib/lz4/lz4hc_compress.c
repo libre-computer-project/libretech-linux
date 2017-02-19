@@ -184,7 +184,7 @@ static FORCE_INLINE int LZ4HC_InsertAndGetWiderMatch(
 		? hc4->lowLimit
 		: (U32)(ip - base) - (64 * KB - 1);
 	const BYTE * const dictBase = hc4->dictBase;
-	U32	 matchIndex;
+	U32 matchIndex;
 	int nbAttempts = maxNbAttempts;
 	int delta = (int)(ip - iLowLimit);
 
