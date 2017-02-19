@@ -40,6 +40,11 @@
 #include <linux/kernel.h>
 #include <asm/unaligned.h>
 
+#ifdef STATIC
+#undef EXPORT_SYMBOL
+#define EXPORT_SYMBOL(x)
+#endif
+
 /*-*****************************
  *	Decompression functions
  *******************************/
