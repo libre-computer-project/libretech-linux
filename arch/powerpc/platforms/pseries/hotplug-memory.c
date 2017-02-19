@@ -446,9 +446,7 @@ static int dlpar_remove_lmb(struct of_drconf_cell *lmb)
 	/* Update memory regions for memory remove */
 	memblock_remove(lmb->base_addr, block_sz);
 
-	dlpar_release_drc(lmb->drc_index);
 	dlpar_remove_device_tree_lmb(lmb);
-
 	return 0;
 }
 
@@ -516,6 +514,7 @@ static int dlpar_memory_remove_by_count(u32 lmbs_to_remove,
 			if (!lmbs[i].reserved)
 				continue;
 
+			dlpar_release_drc(lmbs[i].drc_index);
 			pr_info("Memory at %llx was hot-removed\n",
 				lmbs[i].base_addr);
 
@@ -545,6 +544,9 @@ static int dlpar_memory_remove_by_index(u32 drc_index, struct property *prop)
 		if (lmbs[i].drc_index == drc_index) {
 			lmb_found = 1;
 			rc = dlpar_remove_lmb(&lmbs[i]);
+			if (!rc)
+				dlpar_release_drc(lmbs[i].drc_index);
+
 			break;
 		}
 	}
@@ -557,6 +559,132 @@ static int dlpar_memory_remove_by_index(u32 drc_index, struct property *prop)
 			lmbs[i].base_addr);
 	else
 		pr_info("Memory at %llx was hot-removed\n", lmbs[i].base_addr);
+
+	return rc;
+}
+
+static int dlpar_memory_readd_by_index(u32 drc_index, struct property *prop)
+{
+	struct of_drconf_cell *lmbs;
+	u32 num_lmbs, *p;
+	int lmb_found;
+	int i, rc;
+
+	pr_info("Attempting to update LMB, drc index %x\n", drc_index);
+
+	p = prop->value;
+	num_lmbs = *p++;
+	lmbs = (struct of_drconf_cell *)p;
+
+	lmb_found = 0;
+	for (i = 0; i < num_lmbs; i++) {
+		if (lmbs[i].drc_index == drc_index) {
+			lmb_found = 1;
+			rc = dlpar_remove_lmb(&lmbs[i]);
+			if (!rc) {
+				rc = dlpar_add_lmb(&lmbs[i]);
+				if (rc)
+					dlpar_release_drc(lmbs[i].drc_index);
+			}
+			break;
+		}
+	}
+
+	if (!lmb_found)
+		rc = -EINVAL;
+
+	if (rc)
+		pr_info("Failed to update memory at %llx\n",
+			lmbs[i].base_addr);
+	else
+		pr_info("Memory at %llx was updated\n", lmbs[i].base_addr);
+
+	return rc;
+}
+
+static int dlpar_memory_remove_by_ic(u32 lmbs_to_remove, u32 drc_index,
+				     struct property *prop)
+{
+	struct of_drconf_cell *lmbs;
+	u32 num_lmbs, *p;
+	int i, rc, start_lmb_found;
+	int lmbs_available = 0, start_index = 0, end_index;
+
+	pr_info("Attempting to hot-remove %u LMB(s) at %x\n",
+		lmbs_to_remove, drc_index);
+
+	if (lmbs_to_remove == 0)
+		return -EINVAL;
+
+	p = prop->value;
+	num_lmbs = *p++;
+	lmbs = (struct of_drconf_cell *)p;
+	start_lmb_found = 0;
+
+	/* Navigate to drc_index */
+	while (start_index < num_lmbs) {
+		if (lmbs[start_index].drc_index == drc_index) {
+			start_lmb_found = 1;
+			break;
+		}
+
+		start_index++;
+	}
+
+	if (!start_lmb_found)
+		return -EINVAL;
+
+	end_index = start_index + lmbs_to_remove;
+
+	/* Validate that there are enough LMBs to satisfy the request */
+	for (i = start_index; i < end_index; i++) {
+		if (lmbs[i].flags & DRCONF_MEM_RESERVED)
+			break;
+
+		lmbs_available++;
+	}
+
+	if (lmbs_available < lmbs_to_remove)
+		return -EINVAL;
+
+	for (i = start_index; i < end_index; i++) {
+		if (!(lmbs[i].flags & DRCONF_MEM_ASSIGNED))
+			continue;
+
+		rc = dlpar_remove_lmb(&lmbs[i]);
+		if (rc)
+			break;
+
+		lmbs[i].reserved = 1;
+	}
+
+	if (rc) {
+		pr_err("Memory indexed-count-remove failed, adding any removed LMBs\n");
+
+		for (i = start_index; i < end_index; i++) {
+			if (!lmbs[i].reserved)
+				continue;
+
+			rc = dlpar_add_lmb(&lmbs[i]);
+			if (rc)
+				pr_err("Failed to add LMB, drc index %x\n",
+				       be32_to_cpu(lmbs[i].drc_index));
+
+			lmbs[i].reserved = 0;
+		}
+		rc = -EINVAL;
+	} else {
+		for (i = start_index; i < end_index; i++) {
+			if (!lmbs[i].reserved)
+				continue;
+
+			dlpar_release_drc(lmbs[i].drc_index);
+			pr_info("Memory at %llx (drc index %x) was hot-removed\n",
+				lmbs[i].base_addr, lmbs[i].drc_index);
+
+			lmbs[i].reserved = 0;
+		}
+	}
 
 	return rc;
 }
@@ -588,7 +716,16 @@ static int dlpar_memory_remove_by_index(u32 drc_index, struct property *prop)
 {
 	return -EOPNOTSUPP;
 }
+static int dlpar_memory_readd_by_index(u32 drc_index, struct property *prop)
+{
+	return -EOPNOTSUPP;
+}
 
+static int dlpar_memory_remove_by_ic(u32 lmbs_to_remove, u32 drc_index,
+				     struct property *prop)
+{
+	return -EOPNOTSUPP;
+}
 #endif /* CONFIG_MEMORY_HOTREMOVE */
 
 static int dlpar_add_lmb(struct of_drconf_cell *lmb)
@@ -598,10 +735,6 @@ static int dlpar_add_lmb(struct of_drconf_cell *lmb)
 
 	if (lmb->flags & DRCONF_MEM_ASSIGNED)
 		return -EINVAL;
-
-	rc = dlpar_acquire_drc(lmb->drc_index);
-	if (rc)
-		return rc;
 
 	rc = dlpar_add_device_tree_lmb(lmb);
 	if (rc) {
@@ -618,12 +751,10 @@ static int dlpar_add_lmb(struct of_drconf_cell *lmb)
 
 	/* Add the memory */
 	rc = add_memory(nid, lmb->base_addr, block_sz);
-	if (rc) {
+	if (rc)
 		dlpar_remove_device_tree_lmb(lmb);
-		dlpar_release_drc(lmb->drc_index);
-	} else {
+	else
 		lmb->flags |= DRCONF_MEM_ASSIGNED;
-	}
 
 	return rc;
 }
@@ -655,9 +786,15 @@ static int dlpar_memory_add_by_count(u32 lmbs_to_add, struct property *prop)
 		return -EINVAL;
 
 	for (i = 0; i < num_lmbs && lmbs_to_add != lmbs_added; i++) {
-		rc = dlpar_add_lmb(&lmbs[i]);
+		rc = dlpar_acquire_drc(lmbs[i].drc_index);
 		if (rc)
 			continue;
+
+		rc = dlpar_add_lmb(&lmbs[i]);
+		if (rc) {
+			dlpar_release_drc(lmbs[i].drc_index);
+			continue;
+		}
 
 		lmbs_added++;
 
@@ -678,6 +815,8 @@ static int dlpar_memory_add_by_count(u32 lmbs_to_add, struct property *prop)
 			if (rc)
 				pr_err("Failed to remove LMB, drc index %x\n",
 				       be32_to_cpu(lmbs[i].drc_index));
+			else
+				dlpar_release_drc(lmbs[i].drc_index);
 		}
 		rc = -EINVAL;
 	} else {
@@ -711,7 +850,13 @@ static int dlpar_memory_add_by_index(u32 drc_index, struct property *prop)
 	for (i = 0; i < num_lmbs; i++) {
 		if (lmbs[i].drc_index == drc_index) {
 			lmb_found = 1;
-			rc = dlpar_add_lmb(&lmbs[i]);
+			rc = dlpar_acquire_drc(lmbs[i].drc_index);
+			if (!rc) {
+				rc = dlpar_add_lmb(&lmbs[i]);
+				if (rc)
+					dlpar_release_drc(lmbs[i].drc_index);
+			}
+
 			break;
 		}
 	}
@@ -728,15 +873,103 @@ static int dlpar_memory_add_by_index(u32 drc_index, struct property *prop)
 	return rc;
 }
 
+static int dlpar_memory_add_by_ic(u32 lmbs_to_add, u32 drc_index,
+				  struct property *prop)
+{
+	struct of_drconf_cell *lmbs;
+	u32 num_lmbs, *p;
+	int i, rc, start_lmb_found;
+	int lmbs_available = 0, start_index = 0, end_index;
+
+	pr_info("Attempting to hot-add %u LMB(s) at index %x\n",
+		lmbs_to_add, drc_index);
+
+	if (lmbs_to_add == 0)
+		return -EINVAL;
+
+	p = prop->value;
+	num_lmbs = *p++;
+	lmbs = (struct of_drconf_cell *)p;
+	start_lmb_found = 0;
+
+	/* Navigate to drc_index */
+	while (start_index < num_lmbs) {
+		if (lmbs[start_index].drc_index == drc_index) {
+			start_lmb_found = 1;
+			break;
+		}
+
+		start_index++;
+	}
+
+	if (!start_lmb_found)
+		return -EINVAL;
+
+	end_index = start_index + lmbs_to_add;
+
+	/* Validate that the LMBs in this range are not reserved */
+	for (i = start_index; i < end_index; i++) {
+		if (lmbs[i].flags & DRCONF_MEM_RESERVED)
+			break;
+
+		lmbs_available++;
+	}
+
+	if (lmbs_available < lmbs_to_add)
+		return -EINVAL;
+
+	for (i = start_index; i < end_index; i++) {
+		if (lmbs[i].flags & DRCONF_MEM_ASSIGNED)
+			continue;
+
+		rc = dlpar_acquire_drc(lmbs[i].drc_index);
+		if (rc)
+			break;
+
+		rc = dlpar_add_lmb(&lmbs[i]);
+		if (rc) {
+			dlpar_release_drc(lmbs[i].drc_index);
+			break;
+		}
+
+		lmbs[i].reserved = 1;
+	}
+
+	if (rc) {
+		pr_err("Memory indexed-count-add failed, removing any added LMBs\n");
+
+		for (i = start_index; i < end_index; i++) {
+			if (!lmbs[i].reserved)
+				continue;
+
+			rc = dlpar_remove_lmb(&lmbs[i]);
+			if (rc)
+				pr_err("Failed to remove LMB, drc index %x\n",
+				       be32_to_cpu(lmbs[i].drc_index));
+			else
+				dlpar_release_drc(lmbs[i].drc_index);
+		}
+		rc = -EINVAL;
+	} else {
+		for (i = start_index; i < end_index; i++) {
+			if (!lmbs[i].reserved)
+				continue;
+
+			pr_info("Memory at %llx (drc index %x) was hot-added\n",
+				lmbs[i].base_addr, lmbs[i].drc_index);
+			lmbs[i].reserved = 0;
+		}
+	}
+
+	return rc;
+}
+
 int dlpar_memory(struct pseries_hp_errorlog *hp_elog)
 {
 	struct device_node *dn;
 	struct property *prop;
 	u32 count, drc_index;
 	int rc;
-
-	count = hp_elog->_drc_u.drc_count;
-	drc_index = hp_elog->_drc_u.drc_index;
 
 	lock_device_hotplug();
 
@@ -754,20 +987,40 @@ int dlpar_memory(struct pseries_hp_errorlog *hp_elog)
 
 	switch (hp_elog->action) {
 	case PSERIES_HP_ELOG_ACTION_ADD:
-		if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_COUNT)
+		if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_COUNT) {
+			count = hp_elog->_drc_u.drc_count;
 			rc = dlpar_memory_add_by_count(count, prop);
-		else if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_INDEX)
+		} else if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_INDEX) {
+			drc_index = hp_elog->_drc_u.drc_index;
 			rc = dlpar_memory_add_by_index(drc_index, prop);
-		else
+		} else if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_IC) {
+			count = hp_elog->_drc_u.ic.count;
+			drc_index = hp_elog->_drc_u.ic.index;
+			rc = dlpar_memory_add_by_ic(count, drc_index, prop);
+		} else {
 			rc = -EINVAL;
+		}
+
 		break;
 	case PSERIES_HP_ELOG_ACTION_REMOVE:
-		if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_COUNT)
+		if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_COUNT) {
+			count = hp_elog->_drc_u.drc_count;
 			rc = dlpar_memory_remove_by_count(count, prop);
-		else if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_INDEX)
+		} else if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_INDEX) {
+			drc_index = hp_elog->_drc_u.drc_index;
 			rc = dlpar_memory_remove_by_index(drc_index, prop);
-		else
+		} else if (hp_elog->id_type == PSERIES_HP_ELOG_ID_DRC_IC) {
+			count = hp_elog->_drc_u.ic.count;
+			drc_index = hp_elog->_drc_u.ic.index;
+			rc = dlpar_memory_remove_by_ic(count, drc_index, prop);
+		} else {
 			rc = -EINVAL;
+		}
+
+		break;
+	case PSERIES_HP_ELOG_ACTION_READD:
+		drc_index = hp_elog->_drc_u.drc_index;
+		rc = dlpar_memory_readd_by_index(drc_index, prop);
 		break;
 	default:
 		pr_err("Invalid action (%d) specified\n", hp_elog->action);
