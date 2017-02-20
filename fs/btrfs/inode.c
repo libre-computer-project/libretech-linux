@@ -430,11 +430,8 @@ static noinline void compress_file_range(struct inode *inode,
 	int ret = 0;
 	struct page **pages = NULL;
 	unsigned long nr_pages;
-	unsigned long nr_pages_ret = 0;
 	unsigned long total_compressed = 0;
 	unsigned long total_in = 0;
-	unsigned long max_compressed = SZ_128K;
-	unsigned long max_uncompressed = SZ_128K;
 	int i;
 	int will_compress;
 	int compress_type = fs_info->compress_type;
@@ -447,7 +444,9 @@ static noinline void compress_file_range(struct inode *inode,
 again:
 	will_compress = 0;
 	nr_pages = (end >> PAGE_SHIFT) - (start >> PAGE_SHIFT) + 1;
-	nr_pages = min_t(unsigned long, nr_pages, SZ_128K / PAGE_SIZE);
+	BUILD_BUG_ON((BTRFS_MAX_COMPRESSED % PAGE_SIZE) != 0);
+	nr_pages = min_t(unsigned long, nr_pages,
+			BTRFS_MAX_COMPRESSED / PAGE_SIZE);
 
 	/*
 	 * we don't want to send crud past the end of i_size through
@@ -472,17 +471,8 @@ again:
 	   (start > 0 || end + 1 < BTRFS_I(inode)->disk_i_size))
 		goto cleanup_and_bail_uncompressed;
 
-	/* we want to make sure that amount of ram required to uncompress
-	 * an extent is reasonable, so we limit the total size in ram
-	 * of a compressed extent to 128k.  This is a crucial number
-	 * because it also controls how easily we can spread reads across
-	 * cpus for decompression.
-	 *
-	 * We also want to make sure the amount of IO required to do
-	 * a random read is reasonably small, so we limit the size of
-	 * a compressed extent to 128k.
-	 */
-	total_compressed = min(total_compressed, max_uncompressed);
+	total_compressed = min_t(unsigned long, total_compressed,
+			BTRFS_MAX_UNCOMPRESSED);
 	num_bytes = ALIGN(end - start + 1, blocksize);
 	num_bytes = max(blocksize,  num_bytes);
 	total_in = 0;
@@ -517,16 +507,15 @@ again:
 		redirty = 1;
 		ret = btrfs_compress_pages(compress_type,
 					   inode->i_mapping, start,
-					   total_compressed, pages,
-					   nr_pages, &nr_pages_ret,
+					   pages,
+					   &nr_pages,
 					   &total_in,
-					   &total_compressed,
-					   max_compressed);
+					   &total_compressed);
 
 		if (!ret) {
 			unsigned long offset = total_compressed &
 				(PAGE_SIZE - 1);
-			struct page *page = pages[nr_pages_ret - 1];
+			struct page *page = pages[nr_pages - 1];
 			char *kaddr;
 
 			/* zero the tail end of the last page, we might be
@@ -607,7 +596,7 @@ cont:
 			 * will submit them to the elevator.
 			 */
 			add_async_extent(async_cow, start, num_bytes,
-					total_compressed, pages, nr_pages_ret,
+					total_compressed, pages, nr_pages,
 					compress_type);
 
 			if (start + num_bytes < end) {
@@ -624,14 +613,14 @@ cont:
 		 * the compression code ran but failed to make things smaller,
 		 * free any pages it allocated and our page pointer array
 		 */
-		for (i = 0; i < nr_pages_ret; i++) {
+		for (i = 0; i < nr_pages; i++) {
 			WARN_ON(pages[i]->mapping);
 			put_page(pages[i]);
 		}
 		kfree(pages);
 		pages = NULL;
 		total_compressed = 0;
-		nr_pages_ret = 0;
+		nr_pages = 0;
 
 		/* flag the file so we don't compress in the future */
 		if (!btrfs_test_opt(fs_info, FORCE_COMPRESS) &&
@@ -660,7 +649,7 @@ cleanup_and_bail_uncompressed:
 	return;
 
 free_pages_out:
-	for (i = 0; i < nr_pages_ret; i++) {
+	for (i = 0; i < nr_pages; i++) {
 		WARN_ON(pages[i]->mapping);
 		put_page(pages[i]);
 	}
