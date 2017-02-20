@@ -303,7 +303,7 @@ ssize_t generic_file_splice_read(struct file *in, loff_t *ppos,
 	if (flags & SPLICE_F_NONBLOCK)
 		kiocb.ki_flags |= IOCB_NDELAY;
 	kiocb.ki_pos = *ppos;
-	ret = in->f_op->read_iter(&kiocb, &to);
+	ret = call_read_iter(in, &kiocb, &to);
 	if (ret > 0) {
 		*ppos = kiocb.ki_pos;
 		file_accessed(in);
