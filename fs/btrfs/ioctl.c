@@ -580,21 +580,21 @@ static noinline int create_subvol(struct inode *dir,
 	/*
 	 * insert the directory item
 	 */
-	ret = btrfs_set_inode_index(dir, &index);
+	ret = btrfs_set_inode_index(BTRFS_I(dir), &index);
 	if (ret) {
 		btrfs_abort_transaction(trans, ret);
 		goto fail;
 	}
 
 	ret = btrfs_insert_dir_item(trans, root,
-				    name, namelen, dir, &key,
+				    name, namelen, BTRFS_I(dir), &key,
 				    BTRFS_FT_DIR, index);
 	if (ret) {
 		btrfs_abort_transaction(trans, ret);
 		goto fail;
 	}
 
-	btrfs_i_size_write(dir, dir->i_size + namelen * 2);
+	btrfs_i_size_write(BTRFS_I(dir), dir->i_size + namelen * 2);
 	ret = btrfs_update_inode(trans, root, dir);
 	BUG_ON(ret);
 
@@ -1009,7 +1009,7 @@ static struct extent_map *defrag_lookup_extent(struct inode *inode, u64 start)
 
 		/* get the big lock and read metadata off disk */
 		lock_extent_bits(io_tree, start, end, &cached);
-		em = btrfs_get_extent(inode, NULL, 0, start, len, 0);
+		em = btrfs_get_extent(BTRFS_I(inode), NULL, 0, start, len, 0);
 		unlock_extent_cached(io_tree, start, end, &cached, GFP_NOFS);
 
 		if (IS_ERR(em))
@@ -3288,7 +3288,7 @@ static int clone_finish_inode_update(struct btrfs_trans_handle *trans,
 	if (endoff > destoff + olen)
 		endoff = destoff + olen;
 	if (endoff > inode->i_size)
-		btrfs_i_size_write(inode, endoff);
+		btrfs_i_size_write(BTRFS_I(inode), endoff);
 
 	ret = btrfs_update_inode(trans, root, inode);
 	if (ret) {
@@ -3301,20 +3301,19 @@ out:
 	return ret;
 }
 
-static void clone_update_extent_map(struct inode *inode,
+static void clone_update_extent_map(struct btrfs_inode *inode,
 				    const struct btrfs_trans_handle *trans,
 				    const struct btrfs_path *path,
 				    const u64 hole_offset,
 				    const u64 hole_len)
 {
-	struct extent_map_tree *em_tree = &BTRFS_I(inode)->extent_tree;
+	struct extent_map_tree *em_tree = &inode->extent_tree;
 	struct extent_map *em;
 	int ret;
 
 	em = alloc_extent_map();
 	if (!em) {
-		set_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
-			&BTRFS_I(inode)->runtime_flags);
+		set_bit(BTRFS_INODE_NEEDS_FULL_SYNC, &inode->runtime_flags);
 		return;
 	}
 
@@ -3328,7 +3327,7 @@ static void clone_update_extent_map(struct inode *inode,
 		if (btrfs_file_extent_type(path->nodes[0], fi) ==
 		    BTRFS_FILE_EXTENT_INLINE)
 			set_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
-				&BTRFS_I(inode)->runtime_flags);
+					&inode->runtime_flags);
 	} else {
 		em->start = hole_offset;
 		em->len = hole_len;
@@ -3354,8 +3353,7 @@ static void clone_update_extent_map(struct inode *inode,
 	}
 
 	if (ret)
-		set_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
-			&BTRFS_I(inode)->runtime_flags);
+		set_bit(BTRFS_INODE_NEEDS_FULL_SYNC, &inode->runtime_flags);
 }
 
 /*
@@ -3781,11 +3779,12 @@ process_slot:
 
 			/* If we have an implicit hole (NO_HOLES feature). */
 			if (drop_start < new_key.offset)
-				clone_update_extent_map(inode, trans,
+				clone_update_extent_map(BTRFS_I(inode), trans,
 						NULL, drop_start,
 						new_key.offset - drop_start);
 
-			clone_update_extent_map(inode, trans, path, 0, 0);
+			clone_update_extent_map(BTRFS_I(inode), trans,
+					path, 0, 0);
 
 			btrfs_mark_buffer_dirty(leaf);
 			btrfs_release_path(path);
@@ -3835,8 +3834,9 @@ process_slot:
 			btrfs_end_transaction(trans);
 			goto out;
 		}
-		clone_update_extent_map(inode, trans, NULL, last_dest_end,
-					destoff + len - last_dest_end);
+		clone_update_extent_map(BTRFS_I(inode), trans, NULL,
+				last_dest_end,
+				destoff + len - last_dest_end);
 		ret = clone_finish_inode_update(trans, inode, destoff + len,
 						destoff, olen, no_time_update);
 	}
