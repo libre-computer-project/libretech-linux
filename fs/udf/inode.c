@@ -857,14 +857,12 @@ static sector_t inode_getblk(struct inode *inode, sector_t block,
 	 * block */
 	udf_split_extents(inode, &c, offset, newblocknum, laarr, &endnum);
 
-#ifdef UDF_PREALLOCATE
 	/* We preallocate blocks only for regular files. It also makes sense
 	 * for directories but there's a problem when to drop the
 	 * preallocation. We might use some delayed work for that but I feel
 	 * it's overengineering for a filesystem like UDF. */
 	if (S_ISREG(inode->i_mode))
 		udf_prealloc_extents(inode, c, lastblock, laarr, &endnum);
-#endif
 
 	/* merge any continuous blocks in laarr */
 	udf_merge_extents(inode, laarr, &endnum);
@@ -1549,7 +1547,7 @@ reread:
 		break;
 	case ICBTAG_FILE_TYPE_SYMLINK:
 		inode->i_data.a_ops = &udf_symlink_aops;
-		inode->i_op = &page_symlink_inode_operations;
+		inode->i_op = &udf_symlink_inode_operations;
 		inode_nohighmem(inode);
 		inode->i_mode = S_IFLNK | S_IRWXUGO;
 		break;
