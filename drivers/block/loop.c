@@ -501,9 +501,9 @@ static int lo_rw_aio(struct loop_device *lo, struct loop_cmd *cmd,
 	cmd->iocb.ki_flags = IOCB_DIRECT;
 
 	if (rw == WRITE)
-		ret = file->f_op->write_iter(&cmd->iocb, &iter);
+		ret = call_write_iter(file, &cmd->iocb, &iter);
 	else
-		ret = file->f_op->read_iter(&cmd->iocb, &iter);
+		ret = call_read_iter(file, &cmd->iocb, &iter);
 
 	if (ret != -EIOCBQUEUED)
 		cmd->iocb.ki_complete(&cmd->iocb, ret, 0);
@@ -1175,7 +1175,8 @@ loop_get_status(struct loop_device *lo, struct loop_info64 *info)
 
 	if (lo->lo_state != Lo_bound)
 		return -ENXIO;
-	error = vfs_getattr(&file->f_path, &stat);
+	error = vfs_getattr(&file->f_path, &stat,
+			    STATX_INO, AT_STATX_SYNC_AS_STAT);
 	if (error)
 		return error;
 	memset(info, 0, sizeof(*info));
