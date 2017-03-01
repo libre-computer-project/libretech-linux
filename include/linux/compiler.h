@@ -444,6 +444,14 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 # define __latent_entropy
 #endif
 
+#ifndef __nocapture
+# define __nocapture(...)
+#endif
+
+#ifndef __unverified_nocapture
+# define __unverified_nocapture(...)
+#endif
+
 /*
  * Tell gcc if a function is cold. The compiler will assume any path
  * directly leading to the call is unlikely.
