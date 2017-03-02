@@ -372,6 +372,8 @@ disassocation||disassociation
 disapear||disappear
 disapeared||disappeared
 disappared||disappeared
+disble||disable
+disbled||disabled
 disconnet||disconnect
 discontinous||discontinuous
 dispertion||dispersion
@@ -588,6 +590,9 @@ interruptted||interrupted
 interupted||interrupted
 interupt||interrupt
 intial||initial
+intialisation||initialisation
+intialised||initialised
+intialise||initialise
 intialization||initialization
 intialized||initialized
 intialize||initialize
@@ -732,6 +737,7 @@ oustanding||outstanding
 overaall||overall
 overhread||overhead
 overlaping||overlapping
+overide||override
 overrided||overridden
 overriden||overridden
 overun||overrun
