@@ -205,6 +205,7 @@ void rcu_test_sync_prims(void)
 	synchronize_rcu_expedited();
 	synchronize_rcu_bh_expedited();
 	synchronize_sched_expedited();
+	srcu_test_sync_prims();
 }
 
 #if !defined(CONFIG_TINY_RCU) || defined(CONFIG_SRCU)

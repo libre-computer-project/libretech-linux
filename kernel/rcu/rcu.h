@@ -184,4 +184,10 @@ void rcu_test_sync_prims(void);
  */
 extern void resched_cpu(int cpu);
 
+#if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU)
+void srcu_test_sync_prims(void);
+#else /* #if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU) */
+static inline void srcu_test_sync_prims(void) { }
+#endif /* #else #if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU) */
+
 #endif /* __LINUX_RCU_H */

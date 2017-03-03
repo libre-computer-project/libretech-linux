@@ -697,3 +697,18 @@ void process_srcu(struct work_struct *work)
 	srcu_reschedule(sp);
 }
 EXPORT_SYMBOL_GPL(process_srcu);
+
+/*
+ * Early- and mid-boot test function for synchronize_srcu().
+ */
+#if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU)
+
+DEFINE_STATIC_SRCU(early_boot_srcu);
+
+void srcu_test_sync_prims(void)
+{
+	synchronize_srcu(&early_boot_srcu);
+	synchronize_srcu_expedited(&early_boot_srcu);
+}
+
+#endif /* #if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU) */
