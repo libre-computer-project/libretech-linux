@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2016 Endless Computers, Inc.
- * Author: Carlo Caione <carlo@endlessm.com>
+ * Copyright (c) 2016 BayLibre, Inc.
+ * Author: Neil Armstrong <narmstrong@baylibre.com>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -43,35 +43,78 @@
 
 /dts-v1/;
 
-#include "meson-gxm.dtsi"
-#include "meson-gx-p23x-q20x.dtsi"
+#include "meson-gxbb-p20x.dtsi"
+#include <dt-bindings/input/input.h>
 
 / {
-	compatible = "amlogic,q200", "amlogic,s912", "amlogic,meson-gxm";
-	model = "Amlogic Meson GXM (S912) Q200 Development Board";
+	compatible = "wetek,play2", "amlogic,meson-gxbb";
+	model = "WeTek Play 2";
+
+	leds {
+		compatible = "gpio-leds";
+
+		system {
+			label = "wetek-play:system-status";
+			gpios = <&gpio_ao GPIOAO_13 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+			panic-indicator;
+		};
+
+		wifi {
+			label = "wetek-play:wifi-status";
+			gpios = <&gpio GPIODV_26 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+
+		ethernet {
+			label = "wetek-play:ethernet-status";
+			gpios = <&gpio GPIODV_27 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+	};
+
+	gpio-keys-polled {
+		compatible = "gpio-keys-polled";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		poll-interval = <100>;
+
+		button@0 {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&gpio_ao GPIOAO_3 GPIO_ACTIVE_LOW>;
+		};
+	};
 };
 
-/* Q200 has exclusive choice between internal or external PHY */
 &ethmac {
-	pinctrl-0 = <&eth_pins>;
+	status = "okay";
+	pinctrl-0 = <&eth_rgmii_pins>;
 	pinctrl-names = "default";
 
-	/* Select external PHY by default */
-	phy-handle = <&external_phy>;
+	phy-handle = <&eth_phy0>;
+	phy-mode = "rgmii";
 
-	/* External PHY reset is shared with internal PHY Led signals */
+	amlogic,tx-delay-ns = <2>;
+
 	snps,reset-gpio = <&gpio GPIOZ_14 0>;
 	snps,reset-delays-us = <0 10000 1000000>;
 	snps,reset-active-low;
 
-	/* External PHY is in RGMII */
-	phy-mode = "rgmii";
+	mdio {
+		compatible = "snps,dwmac-mdio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		eth_phy0: ethernet-phy@0 {
+			/* Realtek RTL8211F (0x001cc916) */
+			reg = <0>;
+		};
+	};
 };
 
-&external_mdio {
-	external_phy: ethernet-phy@0 {
-		compatible = "ethernet-phy-id001c.c916", "ethernet-phy-ieee802.3-c22";
-		reg = <0>;
-		max-speed = <1000>;
-	};
+&i2c_A {
+	status = "okay";
+	pinctrl-0 = <&i2c_a_pins>;
+	pinctrl-names = "default";
 };
