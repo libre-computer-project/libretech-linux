@@ -2797,8 +2797,9 @@ static void ieee80211_rx_mgmt_disassoc(struct ieee80211_sub_if_data *sdata,
 
 	reason_code = le16_to_cpu(mgmt->u.disassoc.reason_code);
 
-	sdata_info(sdata, "disassociated from %pM (Reason: %u)\n",
-		   mgmt->sa, reason_code);
+	sdata_info(sdata, "disassociated from %pM (Reason: %u=%s)\n",
+		   mgmt->sa, reason_code,
+		   ieee80211_get_reason_code_string(reason_code));
 
 	ieee80211_set_disassoc(sdata, 0, 0, false, NULL);
 
@@ -3422,6 +3423,30 @@ static void ieee80211_rx_mgmt_beacon(struct ieee80211_sub_if_data *sdata,
 				sig, GFP_KERNEL);
 		} else if (sig > thold &&
 			   (last_event == 0 || sig > last_event + hyst)) {
+			ifmgd->last_cqm_event_signal = sig;
+			ieee80211_cqm_rssi_notify(
+				&sdata->vif,
+				NL80211_CQM_RSSI_THRESHOLD_EVENT_HIGH,
+				sig, GFP_KERNEL);
+		}
+	}
+
+	if (bss_conf->cqm_rssi_low &&
+	    ifmgd->count_beacon_signal >= IEEE80211_SIGNAL_AVE_MIN_COUNT) {
+		int sig = -ewma_beacon_signal_read(&ifmgd->ave_beacon_signal);
+		int last_event = ifmgd->last_cqm_event_signal;
+		int low = bss_conf->cqm_rssi_low;
+		int high = bss_conf->cqm_rssi_high;
+
+		if (sig < low &&
+		    (last_event == 0 || last_event >= low)) {
+			ifmgd->last_cqm_event_signal = sig;
+			ieee80211_cqm_rssi_notify(
+				&sdata->vif,
+				NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW,
+				sig, GFP_KERNEL);
+		} else if (sig > high &&
+			   (last_event == 0 || last_event <= high)) {
 			ifmgd->last_cqm_event_signal = sig;
 			ieee80211_cqm_rssi_notify(
 				&sdata->vif,
