@@ -22,6 +22,7 @@
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
+#include <linux/refcount.h>
 #include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
@@ -360,7 +361,7 @@ struct mddev {
 	 */
 	struct mutex			open_mutex;
 	struct mutex			reconfig_mutex;
-	atomic_t			active;		/* general refcount */
+	refcount_t			active;		/* general refcount */
 	atomic_t			openers;	/* number of active opens */
 
 	int				changed;	/* True if we might need to
