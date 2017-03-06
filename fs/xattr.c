@@ -537,16 +537,18 @@ getxattr(struct dentry *d, const char __user *name, void __user *value,
 	}
 
 	error = vfs_getxattr(d, kname, kvalue, size);
+	if (error > XATTR_SIZE_MAX ||
+	    (error == -ERANGE && size >= XATTR_SIZE_MAX)) {
+		/* The file system tried to returned a value bigger
+		   than XATTR_SIZE_MAX bytes. Not possible. */
+		error = -E2BIG;
+	}
 	if (error > 0) {
 		if ((strcmp(kname, XATTR_NAME_POSIX_ACL_ACCESS) == 0) ||
 		    (strcmp(kname, XATTR_NAME_POSIX_ACL_DEFAULT) == 0))
 			posix_acl_fix_xattr_to_user(kvalue, size);
 		if (size && copy_to_user(value, kvalue, error))
 			error = -EFAULT;
-	} else if (error == -ERANGE && size >= XATTR_SIZE_MAX) {
-		/* The file system tried to returned a value bigger
-		   than XATTR_SIZE_MAX bytes. Not possible. */
-		error = -E2BIG;
 	}
 
 	kvfree(kvalue);
@@ -620,13 +622,15 @@ listxattr(struct dentry *d, char __user *list, size_t size)
 	}
 
 	error = vfs_listxattr(d, klist, size);
-	if (error > 0) {
-		if (size && copy_to_user(list, klist, error))
-			error = -EFAULT;
-	} else if (error == -ERANGE && size >= XATTR_LIST_MAX) {
+	if (error > XATTR_LIST_MAX ||
+	    (error == -ERANGE && size >= XATTR_LIST_MAX)) {
 		/* The file system tried to returned a list bigger
 		   than XATTR_LIST_MAX bytes. Not possible. */
 		error = -E2BIG;
+	}
+	if (error > 0) {
+		if (size && copy_to_user(list, klist, error))
+			error = -EFAULT;
 	}
 
 	kvfree(klist);
