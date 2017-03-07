@@ -1421,7 +1421,7 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			 */
 			VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 
-			if (!PageDirty(page) && (flags & TTU_LZFREE)) {
+			if (!PageDirty(page)) {
 				/* It's a freeable page by MADV_FREE */
 				dec_mm_counter(mm, MM_ANONPAGES);
 				rp->lazyfreed++;
