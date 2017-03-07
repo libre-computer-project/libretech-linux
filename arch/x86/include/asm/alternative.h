@@ -227,6 +227,23 @@ static inline int alternatives_text_reserved(void *start, void *end)
 }
 
 /*
+ * Like alternative_call(), but there are two features and respective functions.
+ * If CPU has feature2, function2 is used.
+ * Otherwise, if CPU has feature1, function1 is used.
+ * Otherwise, old function is used.
+ */
+#define alternative_void_call_2(oldfunc, newfunc1, feature1, newfunc2,		\
+				feature2, input...)				\
+{										\
+	register void *__sp asm(_ASM_SP);					\
+	asm volatile (ALTERNATIVE_2("call %P[old]", "call %P[new1]", feature1,	\
+		"call %P[new2]", feature2)					\
+		: "+r" (__sp)							\
+		: [old] "i" (oldfunc), [new1] "i" (newfunc1),			\
+		  [new2] "i" (newfunc2), ## input);				\
+}
+
+/*
  * use this macro(s) if you need more than one output parameter
  * in alternative_io
  */
