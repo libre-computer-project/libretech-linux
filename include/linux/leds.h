@@ -280,7 +280,7 @@ extern void led_trigger_blink_oneshot(struct led_trigger *trigger,
 				      unsigned long *delay_on,
 				      unsigned long *delay_off,
 				      int invert);
-extern void led_trigger_set_default(struct led_classdev *led_cdev);
+extern int led_trigger_set_default(struct led_classdev *led_cdev);
 extern void led_trigger_set(struct led_classdev *led_cdev,
 			struct led_trigger *trigger);
 extern void led_trigger_remove(struct led_classdev *led_cdev);
@@ -326,7 +326,8 @@ static inline void led_trigger_blink_oneshot(struct led_trigger *trigger,
 				      unsigned long *delay_on,
 				      unsigned long *delay_off,
 				      int invert) {}
-static inline void led_trigger_set_default(struct led_classdev *led_cdev) {}
+static inline int led_trigger_set_default(struct led_classdev *led_cdev)
+							{ return 0; }
 static inline void led_trigger_set(struct led_classdev *led_cdev,
 				struct led_trigger *trigger) {}
 static inline void led_trigger_remove(struct led_classdev *led_cdev) {}

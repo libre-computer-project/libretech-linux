@@ -157,21 +157,27 @@ void led_trigger_remove(struct led_classdev *led_cdev)
 }
 EXPORT_SYMBOL_GPL(led_trigger_remove);
 
-void led_trigger_set_default(struct led_classdev *led_cdev)
+int led_trigger_set_default(struct led_classdev *led_cdev)
 {
 	struct led_trigger *trig;
+	int ret = -EPROBE_DEFER;
 
 	if (!led_cdev->default_trigger)
-		return;
+		return 0;
 
 	down_read(&triggers_list_lock);
 	down_write(&led_cdev->trigger_lock);
 	list_for_each_entry(trig, &trigger_list, next_trig) {
-		if (!strcmp(led_cdev->default_trigger, trig->name))
+		if (!strcmp(led_cdev->default_trigger, trig->name)) {
 			led_trigger_set(led_cdev, trig);
+			ret = 0;
+			break;
+		}
 	}
 	up_write(&led_cdev->trigger_lock);
 	up_read(&triggers_list_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(led_trigger_set_default);
 
