@@ -440,14 +440,6 @@ void md_flush_request(struct mddev *mddev, struct bio *bio)
 }
 EXPORT_SYMBOL(md_flush_request);
 
-void md_unplug(struct blk_plug_cb *cb, bool from_schedule)
-{
-	struct mddev *mddev = cb->data;
-	md_wakeup_thread(mddev->thread);
-	kfree(cb);
-}
-EXPORT_SYMBOL(md_unplug);
-
 static inline struct mddev *mddev_get(struct mddev *mddev)
 {
 	atomic_inc(&mddev->active);
@@ -6458,11 +6450,10 @@ static int set_array_info(struct mddev *mddev, mdu_array_info_t *info)
 	mddev->layout        = info->layout;
 	mddev->chunk_sectors = info->chunk_size >> 9;
 
-	mddev->max_disks     = MD_SB_DISKS;
-
 	if (mddev->persistent) {
-		mddev->flags         = 0;
-		mddev->sb_flags         = 0;
+		mddev->max_disks = MD_SB_DISKS;
+		mddev->flags = 0;
+		mddev->sb_flags = 0;
 	}
 	set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
 
@@ -6502,10 +6493,7 @@ static int update_size(struct mddev *mddev, sector_t num_sectors)
 	struct md_rdev *rdev;
 	int rv;
 	int fit = (num_sectors == 0);
-
-	/* cluster raid doesn't support update size */
-	if (mddev_is_clustered(mddev))
-		return -EINVAL;
+	sector_t old_dev_sectors = mddev->dev_sectors;
 
 	if (mddev->pers->resize == NULL)
 		return -EINVAL;
@@ -6533,8 +6521,14 @@ static int update_size(struct mddev *mddev, sector_t num_sectors)
 			return -ENOSPC;
 	}
 	rv = mddev->pers->resize(mddev, num_sectors);
-	if (!rv)
-		revalidate_disk(mddev->gendisk);
+	if (!rv) {
+		if (mddev_is_clustered(mddev))
+			md_cluster_ops->update_size(mddev, old_dev_sectors);
+		else if (mddev->queue) {
+			set_capacity(mddev->gendisk, mddev->array_sectors);
+			revalidate_disk(mddev->gendisk);
+		}
+	}
 	return rv;
 }
 
@@ -8390,7 +8384,6 @@ void md_check_recovery(struct mddev *mddev)
 		(mddev->sb_flags & ~ (1<<MD_SB_CHANGE_PENDING)) ||
 		test_bit(MD_RECOVERY_NEEDED, &mddev->recovery) ||
 		test_bit(MD_RECOVERY_DONE, &mddev->recovery) ||
-		test_bit(MD_RELOAD_SB, &mddev->flags) ||
 		(mddev->external == 0 && mddev->safemode == 1) ||
 		(mddev->safemode == 2 && ! atomic_read(&mddev->writes_pending)
 		 && !mddev->in_sync && mddev->recovery_cp == MaxSector)
@@ -8439,9 +8432,6 @@ void md_check_recovery(struct mddev *mddev)
 						rdev->raid_disk < 0)
 					md_kick_rdev_from_array(rdev);
 			}
-
-			if (test_and_clear_bit(MD_RELOAD_SB, &mddev->flags))
-				md_reload_sb(mddev, mddev->good_device_nr);
 		}
 
 		if (!mddev->external) {
@@ -8751,6 +8741,18 @@ static void check_sb_changes(struct mddev *mddev, struct md_rdev *rdev)
 	struct md_rdev *rdev2;
 	int role, ret;
 	char b[BDEVNAME_SIZE];
+
+	/*
+	 * If size is changed in another node then we need to
+	 * do resize as well.
+	 */
+	if (mddev->dev_sectors != le64_to_cpu(sb->size)) {
+		ret = mddev->pers->resize(mddev, le64_to_cpu(sb->size));
+		if (ret)
+			pr_info("md-cluster: resize failed\n");
+		else
+			bitmap_update_sb(mddev->bitmap);
+	}
 
 	/* Check for change of roles in the active devices */
 	rdev_for_each(rdev2, mddev) {
