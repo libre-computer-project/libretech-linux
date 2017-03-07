@@ -1760,7 +1760,7 @@ out:
 }
 
 void extent_clear_unlock_delalloc(struct inode *inode, u64 start, u64 end,
-				 u64 delalloc_end, struct page *locked_page,
+				 struct page *locked_page,
 				 unsigned clear_bits,
 				 unsigned long page_ops)
 {
