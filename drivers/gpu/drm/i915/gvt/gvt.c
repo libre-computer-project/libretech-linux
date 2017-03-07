@@ -235,6 +235,7 @@ int intel_gvt_init_device(struct drm_i915_private *dev_priv)
 	idr_init(&gvt->vgpu_idr);
 
 	mutex_init(&gvt->lock);
+	idr_init(&gvt->vgpu_idr);
 	gvt->dev_priv = dev_priv;
 
 	init_device_info(gvt);
