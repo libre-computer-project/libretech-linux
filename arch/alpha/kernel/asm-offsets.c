@@ -9,6 +9,8 @@
 #include <linux/sched.h>
 #include <linux/ptrace.h>
 #include <linux/kbuild.h>
+#include <linux/cred.h>
+
 #include <asm/io.h>
 
 void foo(void)
