@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 Marcus Cooper <codekipper@gmail.com>
+ * Copyright (C) 2016 ARM Ltd.
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -41,21 +41,25 @@
  */
 
 /dts-v1/;
-#include "sun8i-h3.dtsi"
-#include "sunxi-common-regulators.dtsi"
+#include "sun50i-h5.dtsi"
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/pinctrl/sun4i-a10.h>
 
 / {
-	model = "Beelink X2";
-	compatible = "roofull,beelink-x2", "allwinner,sun8i-h3";
+	model = "Xunlong Orange Pi PC 2";
+	compatible = "xunlong,orangepi-pc2", "allwinner,sun50i-h5";
+
+	reg_vcc3v3: vcc3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
 
 	aliases {
 		serial0 = &uart0;
-		/* ethernet0 is the H3 emac, defined in sun8i-h3.dtsi */
-		ethernet1 = &sdiowifi;
 	};
 
 	chosen {
@@ -65,43 +69,46 @@
 	leds {
 		compatible = "gpio-leds";
 
-		blue {
-			label = "beelink-x2:blue:pwr";
-			gpios = <&r_pio 0 10 GPIO_ACTIVE_HIGH>; /* PL10 */
+		pwr {
+			label = "orangepi:green:pwr";
+			gpios = <&r_pio 0 10 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 
-		red {
-			label = "beelink-x2:red:standby";
-			gpios = <&pio 0 15 GPIO_ACTIVE_HIGH>; /* PA15 */
+		status {
+			label = "orangepi:red:status";
+			gpios = <&pio 0 20 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
-	wifi_pwrseq: wifi_pwrseq {
-		compatible = "mmc-pwrseq-simple";
-		reset-gpios = <&r_pio 0 7 GPIO_ACTIVE_LOW>; /* PL7 */
-	};
+	r-gpio-keys {
+		compatible = "gpio-keys";
 
-	sound_spdif {
-		compatible = "simple-audio-card";
-		simple-audio-card,name = "On-board SPDIF";
-
-		simple-audio-card,cpu {
-			sound-dai = <&spdif>;
+		sw4 {
+			label = "sw4";
+			linux,code = <BTN_0>;
+			gpios = <&r_pio 0 3 GPIO_ACTIVE_LOW>;
 		};
-
-		simple-audio-card,codec {
-			sound-dai = <&spdif_out>;
-		};
-	};
-
-	spdif_out: spdif-out {
-		#sound-dai-cells = <0>;
-		compatible = "linux,spdif-dit";
 	};
 };
 
+&codec {
+	allwinner,audio-routing =
+		"Line Out", "LINEOUT",
+		"MIC1", "Mic",
+		"Mic",  "MBIAS";
+	status = "okay";
+};
+
 &ehci1 {
+	status = "okay";
+};
+
+&ehci2 {
+	status = "okay";
+};
+
+&ehci3 {
 	status = "okay";
 };
 
@@ -116,35 +123,7 @@
 	pinctrl-0 = <&mmc0_pins_a>, <&mmc0_cd_pin>;
 	vmmc-supply = <&reg_vcc3v3>;
 	bus-width = <4>;
-	cd-gpios = <&pio 5 6 GPIO_ACTIVE_HIGH>; /* PF6 */
-	cd-inverted;
-	status = "okay";
-};
-
-&mmc1 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&mmc1_pins_a>;
-	vmmc-supply = <&reg_vcc3v3>;
-	bus-width = <4>;
-	non-removable;
-	status = "okay";
-
-	/*
-	 * Explicitly define the sdio device, so that we can add an ethernet
-	 * alias for it (which e.g. makes u-boot set a mac-address).
-	 */
-	sdiowifi: sdio_wifi@1 {
-		reg = <1>;
-	};
-};
-
-&mmc2 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&mmc2_8bit_pins>;
-	vmmc-supply = <&reg_vcc3v3>;
-	bus-width = <8>;
-	non-removable;
-	cap-mmc-hw-reset;
+	cd-gpios = <&pio 5 6 GPIO_ACTIVE_LOW>; /* PF6 */
 	status = "okay";
 };
 
@@ -152,9 +131,11 @@
 	status = "okay";
 };
 
-&spdif {
-	pinctrl-names = "default";
-	pinctrl-0 = <&spdif_tx_pins_a>;
+&ohci2 {
+	status = "okay";
+};
+
+&ohci3 {
 	status = "okay";
 };
 
@@ -164,7 +145,19 @@
 	status = "okay";
 };
 
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pins>;
+	status = "disabled";
+};
+
+&uart2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart2_pins>;
+	status = "disabled";
+};
+
 &usbphy {
-	/* USB VBUS is on as long as VCC-IO is on */
+	/* USB VBUS is always on */
 	status = "okay";
 };
