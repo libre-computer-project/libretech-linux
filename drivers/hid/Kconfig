@@ -136,13 +136,15 @@ config HID_APPLEIR
 
 config HID_ASUS
 	tristate "Asus"
-	depends on I2C_HID
 	---help---
-	Support for Asus notebook built-in keyboard and touchpad via i2c.
+	Support for Asus notebook built-in keyboard and touchpad via i2c, and
+	the Asus Republic of Gamers laptop keyboard special keys.
 
 	Supported devices:
 	- EeeBook X205TA
 	- VivoBook E200HA
+	- GL553V series
+	- GL753V series
 
 config HID_AUREAL
 	tristate "Aureal"
@@ -175,11 +177,11 @@ config HID_CHERRY
 	Support for Cherry Cymotion keyboard.
 
 config HID_CHICONY
-	tristate "Chicony Tactical pad"
+	tristate "Chicony devices"
 	depends on HID
 	default !EXPERT
 	---help---
-	Support for Chicony Tactical pad.
+	Support for Chicony Tactical pad and special keys on Chicony keyboards.
 
 config HID_CORSAIR
 	tristate "Corsair devices"
@@ -579,6 +581,12 @@ config HID_MULTITOUCH
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called hid-multitouch.
+
+config HID_NTI
+	tristate "NTI keyboard adapters"
+	---help---
+	Support for the "extra" Sun keyboard keys on keyboards attached
+	through Network Technologies USB-SUN keyboard adapters.
 
 config HID_NTRIG
 	tristate "N-Trig touch screen"
