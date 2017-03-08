@@ -143,7 +143,7 @@ static void __set_sched_clock_stable(void)
 
 static void __clear_sched_clock_stable(struct work_struct *work)
 {
-	struct sched_clock_data *scd = this_scd();
+	struct sched_clock_data *scd;
 
 	/*
 	 * Attempt to make the stable->unstable transition continuous.
@@ -154,7 +154,10 @@ static void __clear_sched_clock_stable(struct work_struct *work)
 	 *
 	 * Still do what we can.
 	 */
+	preempt_disable();
+	scd = this_scd();
 	gtod_offset = (scd->tick_raw + raw_offset) - (scd->tick_gtod);
+	preempt_enable();
 
 	printk(KERN_INFO "sched_clock: Marking unstable (%lld, %lld)<-(%lld, %lld)\n",
 			scd->tick_gtod, gtod_offset,
