@@ -21,7 +21,7 @@
 
 struct mux_ext_info_cache {
 	char *data;
-	size_t size;
+	ssize_t size;
 };
 
 struct mux_child {
@@ -205,6 +205,9 @@ static ssize_t mux_write_ext_info(struct iio_dev *indio_dev, uintptr_t private,
 	int idx = chan - mux->chan;
 	char *new;
 	ssize_t ret;
+
+	if (len >= PAGE_SIZE)
+		return -EINVAL;
 
 	ret = iio_mux_select(mux, idx);
 	if (ret < 0)
