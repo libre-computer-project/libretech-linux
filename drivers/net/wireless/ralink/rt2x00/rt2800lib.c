@@ -852,14 +852,49 @@ void rt2800_process_rxwi(struct queue_entry *entry,
 }
 EXPORT_SYMBOL_GPL(rt2800_process_rxwi);
 
-void rt2800_txdone_entry(struct queue_entry *entry, u32 status, __le32 *txwi)
+static void rt2800_rate_from_status(struct skb_frame_desc *skbdesc,
+				    u32 status, enum nl80211_band band)
+{
+	u8 flags = 0;
+	u8 idx = rt2x00_get_field32(status, TX_STA_FIFO_MCS);
+
+	switch (rt2x00_get_field32(status, TX_STA_FIFO_PHYMODE)) {
+	case RATE_MODE_HT_GREENFIELD:
+		flags |= IEEE80211_TX_RC_GREEN_FIELD;
+		/* fall through */
+	case RATE_MODE_HT_MIX:
+		flags |= IEEE80211_TX_RC_MCS;
+		break;
+	case RATE_MODE_OFDM:
+		if (band == NL80211_BAND_2GHZ)
+			idx += 4;
+		break;
+	case RATE_MODE_CCK:
+		if (idx >= 8)
+			idx -= 8;
+		break;
+	}
+
+	if (rt2x00_get_field32(status, TX_STA_FIFO_BW))
+		flags |= IEEE80211_TX_RC_40_MHZ_WIDTH;
+
+	if (rt2x00_get_field32(status, TX_STA_FIFO_SGI))
+		flags |= IEEE80211_TX_RC_SHORT_GI;
+
+	skbdesc->tx_rate_idx = idx;
+	skbdesc->tx_rate_flags = flags;
+}
+
+void rt2800_txdone_entry(struct queue_entry *entry, u32 status, __le32 *txwi,
+			 bool match)
 {
 	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
+	struct rt2800_drv_data *drv_data = rt2x00dev->drv_data;
 	struct skb_frame_desc *skbdesc = get_skb_frame_desc(entry->skb);
 	struct txdone_entry_desc txdesc;
 	u32 word;
 	u16 mcs, real_mcs;
-	int aggr, ampdu;
+	int aggr, ampdu, wcid, ack_req;
 
 	/*
 	 * Obtain the status about this packet.
@@ -872,6 +907,8 @@ void rt2800_txdone_entry(struct queue_entry *entry, u32 status, __le32 *txwi)
 
 	real_mcs = rt2x00_get_field32(status, TX_STA_FIFO_MCS);
 	aggr = rt2x00_get_field32(status, TX_STA_FIFO_TX_AGGRE);
+	wcid = rt2x00_get_field32(status, TX_STA_FIFO_WCID);
+	ack_req	= rt2x00_get_field32(status, TX_STA_FIFO_TX_ACK_REQUIRED);
 
 	/*
 	 * If a frame was meant to be sent as a single non-aggregated MPDU
@@ -888,14 +925,21 @@ void rt2800_txdone_entry(struct queue_entry *entry, u32 status, __le32 *txwi)
 	 * Hence, replace the requested rate with the real tx rate to not
 	 * confuse the rate control algortihm by providing clearly wrong
 	 * data.
-	 */
-	if (unlikely(aggr == 1 && ampdu == 0 && real_mcs != mcs)) {
-		skbdesc->tx_rate_idx = real_mcs;
+	 *
+	 * FIXME: if we do not find matching entry, we tell that frame was
+	 * posted without any retries. We need to find a way to fix that
+	 * and provide retry count.
+ 	 */
+	if (unlikely((aggr == 1 && ampdu == 0 && real_mcs != mcs)) || !match) {
+		rt2800_rate_from_status(skbdesc, status, rt2x00dev->curr_band);
 		mcs = real_mcs;
 	}
 
 	if (aggr == 1 || ampdu == 1)
 		__set_bit(TXDONE_AMPDU, &txdesc.flags);
+
+	if (!ack_req)
+		__set_bit(TXDONE_NO_ACK_REQ, &txdesc.flags);
 
 	/*
 	 * Ralink has a retry mechanism using a global fallback
@@ -928,7 +972,18 @@ void rt2800_txdone_entry(struct queue_entry *entry, u32 status, __le32 *txwi)
 	if (txdesc.retry)
 		__set_bit(TXDONE_FALLBACK, &txdesc.flags);
 
-	rt2x00lib_txdone(entry, &txdesc);
+	if (!match) {
+		/* RCU assures non-null sta will not be freed by mac80211. */
+		rcu_read_lock();
+		if (likely(wcid >= WCID_START && wcid <= WCID_END))
+			skbdesc->sta = drv_data->wcid_to_sta[wcid - WCID_START];
+		else
+			skbdesc->sta = NULL;
+		rt2x00lib_txdone_nomatch(entry, &txdesc);
+		rcu_read_unlock();
+	} else {
+		rt2x00lib_txdone(entry, &txdesc);
+	}
 }
 EXPORT_SYMBOL_GPL(rt2800_txdone_entry);
 
@@ -1468,6 +1523,7 @@ int rt2800_sta_add(struct rt2x00_dev *rt2x00dev, struct ieee80211_vif *vif,
 		return 0;
 
 	__set_bit(wcid - WCID_START, drv_data->sta_ids);
+	drv_data->wcid_to_sta[wcid - WCID_START] = sta;
 
 	/*
 	 * Clean up WCID attributes and write STA address to the device.
@@ -1498,6 +1554,7 @@ int rt2800_sta_remove(struct rt2x00_dev *rt2x00dev, struct ieee80211_sta *sta)
 	 * get renewed when the WCID is reused.
 	 */
 	rt2800_config_wcid(rt2x00dev, NULL, wcid);
+	drv_data->wcid_to_sta[wcid - WCID_START] = NULL;
 	__clear_bit(wcid - WCID_START, drv_data->sta_ids);
 
 	return 0;
