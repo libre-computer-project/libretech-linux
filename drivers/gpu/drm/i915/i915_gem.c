@@ -462,11 +462,16 @@ i915_gem_object_wait_reservation(struct reservation_object *resv,
 
 	dma_fence_put(excl);
 
+	/* Oportunistically prune the fences iff we know they have *all* been
+	 * signaled and that the reservation object has not been changed (i.e.
+	 * no new fences have been added).
+	 */
 	if (prune_fences && !__read_seqcount_retry(&resv->seq, seq)) {
-		reservation_object_lock(resv, NULL);
-		if (!__read_seqcount_retry(&resv->seq, seq))
-			reservation_object_add_excl_fence(resv, NULL);
-		reservation_object_unlock(resv);
+		if (reservation_object_trylock(resv)) {
+			if (!__read_seqcount_retry(&resv->seq, seq))
+				reservation_object_add_excl_fence(resv, NULL);
+			reservation_object_unlock(resv);
+		}
 	}
 
 	return timeout;
@@ -1452,6 +1457,12 @@ i915_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 
 	trace_i915_gem_object_pwrite(obj, args->offset, args->size);
 
+	ret = -ENODEV;
+	if (obj->ops->pwrite)
+		ret = obj->ops->pwrite(obj, args);
+	if (ret != -ENODEV)
+		goto err;
+
 	ret = i915_gem_object_wait(obj,
 				   I915_WAIT_INTERRUPTIBLE |
 				   I915_WAIT_ALL,
@@ -2130,6 +2141,7 @@ i915_gem_object_truncate(struct drm_i915_gem_object *obj)
 	 */
 	shmem_truncate_range(file_inode(obj->base.filp), 0, (loff_t)-1);
 	obj->mm.madv = __I915_MADV_PURGED;
+	obj->mm.pages = ERR_PTR(-EFAULT);
 }
 
 /* Try to discard unwanted pages */
@@ -2229,7 +2241,9 @@ void __i915_gem_object_put_pages(struct drm_i915_gem_object *obj,
 
 	__i915_gem_object_reset_page_iter(obj);
 
-	obj->ops->put_pages(obj, pages);
+	if (!IS_ERR(pages))
+		obj->ops->put_pages(obj, pages);
+
 unlock:
 	mutex_unlock(&obj->mm.lock);
 }
@@ -2449,7 +2463,7 @@ int __i915_gem_object_get_pages(struct drm_i915_gem_object *obj)
 	if (err)
 		return err;
 
-	if (unlikely(!obj->mm.pages)) {
+	if (unlikely(IS_ERR_OR_NULL(obj->mm.pages))) {
 		err = ____i915_gem_object_get_pages(obj);
 		if (err)
 			goto unlock;
@@ -2527,7 +2541,7 @@ void *i915_gem_object_pin_map(struct drm_i915_gem_object *obj,
 
 	pinned = true;
 	if (!atomic_inc_not_zero(&obj->mm.pages_pin_count)) {
-		if (unlikely(!obj->mm.pages)) {
+		if (unlikely(IS_ERR_OR_NULL(obj->mm.pages))) {
 			ret = ____i915_gem_object_get_pages(obj);
 			if (ret)
 				goto err_unlock;
@@ -2573,6 +2587,75 @@ err_unpin:
 err_unlock:
 	ptr = ERR_PTR(ret);
 	goto out_unlock;
+}
+
+static int
+i915_gem_object_pwrite_gtt(struct drm_i915_gem_object *obj,
+			   const struct drm_i915_gem_pwrite *arg)
+{
+	struct address_space *mapping = obj->base.filp->f_mapping;
+	char __user *user_data = u64_to_user_ptr(arg->data_ptr);
+	u64 remain, offset;
+	unsigned int pg;
+
+	/* Before we instantiate/pin the backing store for our use, we
+	 * can prepopulate the shmemfs filp efficiently using a write into
+	 * the pagecache. We avoid the penalty of instantiating all the
+	 * pages, important if the user is just writing to a few and never
+	 * uses the object on the GPU, and using a direct write into shmemfs
+	 * allows it to avoid the cost of retrieving a page (either swapin
+	 * or clearing-before-use) before it is overwritten.
+	 */
+	if (READ_ONCE(obj->mm.pages))
+		return -ENODEV;
+
+	/* Before the pages are instantiated the object is treated as being
+	 * in the CPU domain. The pages will be clflushed as required before
+	 * use, and we can freely write into the pages directly. If userspace
+	 * races pwrite with any other operation; corruption will ensue -
+	 * that is userspace's prerogative!
+	 */
+
+	remain = arg->size;
+	offset = arg->offset;
+	pg = offset_in_page(offset);
+
+	do {
+		unsigned int len, unwritten;
+		struct page *page;
+		void *data, *vaddr;
+		int err;
+
+		len = PAGE_SIZE - pg;
+		if (len > remain)
+			len = remain;
+
+		err = pagecache_write_begin(obj->base.filp, mapping,
+					    offset, len, 0,
+					    &page, &data);
+		if (err < 0)
+			return err;
+
+		vaddr = kmap(page);
+		unwritten = copy_from_user(vaddr + pg, user_data, len);
+		kunmap(page);
+
+		err = pagecache_write_end(obj->base.filp, mapping,
+					  offset, len, len - unwritten,
+					  page, data);
+		if (err < 0)
+			return err;
+
+		if (unwritten)
+			return -EFAULT;
+
+		remain -= len;
+		user_data += len;
+		offset += len;
+		pg = 0;
+	} while (remain);
+
+	return 0;
 }
 
 static bool ban_context(const struct i915_gem_context *ctx)
@@ -3991,8 +4074,11 @@ void i915_gem_object_init(struct drm_i915_gem_object *obj,
 static const struct drm_i915_gem_object_ops i915_gem_object_ops = {
 	.flags = I915_GEM_OBJECT_HAS_STRUCT_PAGE |
 		 I915_GEM_OBJECT_IS_SHRINKABLE,
+
 	.get_pages = i915_gem_object_get_pages_gtt,
 	.put_pages = i915_gem_object_put_pages_gtt,
+
+	.pwrite = i915_gem_object_pwrite_gtt,
 };
 
 struct drm_i915_gem_object *
