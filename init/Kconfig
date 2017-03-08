@@ -543,6 +543,9 @@ config RCU_STALL_COMMON
 	  the tiny variants to disable RCU CPU stall warnings, while
 	  making these warnings mandatory for the tree variants.
 
+config ARCH_RCU_ONLINE_EARLY
+	bool
+
 config CONTEXT_TRACKING
        bool
 
