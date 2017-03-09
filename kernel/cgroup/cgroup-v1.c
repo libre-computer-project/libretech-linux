@@ -346,7 +346,7 @@ static int cgroup_task_count(const struct cgroup *cgrp)
 
 	spin_lock_irq(&css_set_lock);
 	list_for_each_entry(link, &cgrp->cset_links, cset_link)
-		count += atomic_read(&link->cset->refcount);
+		count += refcount_read(&link->cset->refcount);
 	spin_unlock_irq(&css_set_lock);
 	return count;
 }
@@ -1286,7 +1286,7 @@ static u64 current_css_set_refcount_read(struct cgroup_subsys_state *css,
 	u64 count;
 
 	rcu_read_lock();
-	count = atomic_read(&task_css_set(current)->refcount);
+	count = refcount_read(&task_css_set(current)->refcount);
 	rcu_read_unlock();
 	return count;
 }
@@ -1329,7 +1329,7 @@ static int cgroup_css_links_read(struct seq_file *seq, void *v)
 		struct task_struct *task;
 		int count = 0;
 
-		seq_printf(seq, "css_set %p\n", cset);
+		seq_printf(seq, "css_set %pK\n", cset);
 
 		list_for_each_entry(task, &cset->tasks, cg_list) {
 			if (count++ > MAX_TASKS_SHOWN_PER_CSS)
