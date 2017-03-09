@@ -410,7 +410,7 @@ static int spi_cmd_complete(struct wilc *wilc, u8 cmd, u32 adr, u8 *b, u32 sz,
 
 	if (len2 > ARRAY_SIZE(wb)) {
 		dev_err(&spi->dev, "spi buffer size too small (%d) (%zu)\n",
-			 len2, ARRAY_SIZE(wb));
+			len2, ARRAY_SIZE(wb));
 		return N_FAIL;
 	}
 	/* zero spi write buffers. */
@@ -454,8 +454,8 @@ static int spi_cmd_complete(struct wilc *wilc, u8 cmd, u32 adr, u8 *b, u32 sz,
 		return N_FAIL;
 	}
 
-	if ((cmd == CMD_INTERNAL_READ) || (cmd == CMD_SINGLE_READ)
-	    || (cmd == CMD_DMA_READ) || (cmd == CMD_DMA_EXT_READ)) {
+	if ((cmd == CMD_INTERNAL_READ) || (cmd == CMD_SINGLE_READ) ||
+	    (cmd == CMD_DMA_READ) || (cmd == CMD_DMA_EXT_READ)) {
 		int retry;
 		/* u16 crc1, crc2; */
 		u8 crc[2];
