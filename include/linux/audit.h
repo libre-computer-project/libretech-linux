@@ -25,6 +25,8 @@
 
 #include <linux/sched.h>
 #include <linux/ptrace.h>
+#include <linux/cred.h>
+
 #include <uapi/linux/audit.h>
 
 #define AUDIT_INO_UNSET ((unsigned long)-1)

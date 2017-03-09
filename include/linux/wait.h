@@ -1213,4 +1213,7 @@ int wait_on_atomic_t(atomic_t *val, int (*action)(atomic_t *), unsigned mode)
 	return out_of_line_wait_on_atomic_t(val, action, mode);
 }
 
+/* NOTE: this is temporary, and it needs to come last, due to type dependencies: */
+#include <linux/sched/signal.h>
+
 #endif /* _LINUX_WAIT_H */
