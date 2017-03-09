@@ -184,7 +184,7 @@ DEFINE_EVENT(btrfs__inode, btrfs_inode_evict,
 
 TRACE_EVENT_CONDITION(btrfs_get_extent,
 
-	TP_PROTO(struct btrfs_root *root, struct inode *inode,
+	TP_PROTO(struct btrfs_root *root, struct btrfs_inode *inode,
 		 struct extent_map *map),
 
 	TP_ARGS(root, inode, map),
@@ -1473,6 +1473,49 @@ TRACE_EVENT(qgroup_update_counters,
 		  __entry->qgid,
 		  __entry->cur_old_count,
 		  __entry->cur_new_count)
+);
+
+TRACE_EVENT(qgroup_update_reserve,
+
+	TP_PROTO(struct btrfs_fs_info *fs_info, u64 qgid, u64 cur_reserved,
+		 s64 diff),
+
+	TP_ARGS(fs_info, qgid, cur_reserved, diff),
+
+	TP_STRUCT__entry_btrfs(
+		__field(	u64,	qgid			)
+		__field(	u64,	cur_reserved		)
+		__field(	s64,	diff			)
+	),
+
+	TP_fast_assign_btrfs(fs_info,
+		__entry->qgid		= qgid;
+		__entry->cur_reserved	= cur_reserved;
+		__entry->diff		= diff;
+	),
+
+	TP_printk_btrfs("qgid = %llu, cur_reserved = %llu, diff = %lld",
+		__entry->qgid, __entry->cur_reserved, __entry->diff)
+);
+
+TRACE_EVENT(qgroup_meta_reserve,
+
+	TP_PROTO(struct btrfs_fs_info *fs_info, u64 refroot, s64 diff),
+
+	TP_ARGS(fs_info, refroot, diff),
+
+	TP_STRUCT__entry_btrfs(
+		__field(	u64,	refroot			)
+		__field(	s64,	diff			)
+	),
+
+	TP_fast_assign_btrfs(fs_info,
+		__entry->refroot	= refroot;
+		__entry->diff		= diff;
+	),
+
+	TP_printk_btrfs("refroot = %llu, diff = %lld",
+		__entry->refroot, __entry->diff)
 );
 
 #endif /* _TRACE_BTRFS_H */
