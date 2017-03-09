@@ -56,6 +56,46 @@
 #define DYNTICK_TASK_EXIT_IDLE	   (DYNTICK_TASK_NEST_VALUE + \
 				    DYNTICK_TASK_FLAG)
 
+
+/*
+ * Grace-period counter management.
+ */
+
+/* Adjust sequence number for start of update-side operation. */
+static inline void rcu_seq_start(unsigned long *sp)
+{
+	WRITE_ONCE(*sp, *sp + 1);
+	smp_mb(); /* Ensure update-side operation after counter increment. */
+	WARN_ON_ONCE(!(*sp & 0x1));
+}
+
+/* Adjust sequence number for end of update-side operation. */
+static inline void rcu_seq_end(unsigned long *sp)
+{
+	smp_mb(); /* Ensure update-side operation before counter increment. */
+	WARN_ON_ONCE(!(*sp & 0x1));
+	WRITE_ONCE(*sp, *sp + 1);
+}
+
+/* Take a snapshot of the update side's sequence number. */
+static inline unsigned long rcu_seq_snap(unsigned long *sp)
+{
+	unsigned long s;
+
+	s = (READ_ONCE(*sp) + 3) & ~0x1;
+	smp_mb(); /* Above access must not bleed into critical section. */
+	return s;
+}
+
+/*
+ * Given a snapshot from rcu_seq_snap(), determine whether or not a
+ * full update-side operation has occurred.
+ */
+static inline bool rcu_seq_done(unsigned long *sp, unsigned long s)
+{
+	return ULONG_CMP_GE(READ_ONCE(*sp), s);
+}
+
 /*
  * debug_rcu_head_queue()/debug_rcu_head_unqueue() are used internally
  * by call_rcu() and rcu callback execution, and are therefore not part of the
@@ -109,12 +149,12 @@ static inline bool __rcu_reclaim(const char *rn, struct rcu_head *head)
 
 	rcu_lock_acquire(&rcu_callback_map);
 	if (__is_kfree_rcu_offset(offset)) {
-		RCU_TRACE(trace_rcu_invoke_kfree_callback(rn, head, offset));
+		RCU_TRACE(trace_rcu_invoke_kfree_callback(rn, head, offset);)
 		kfree((void *)head - offset);
 		rcu_lock_release(&rcu_callback_map);
 		return true;
 	} else {
-		RCU_TRACE(trace_rcu_invoke_callback(rn, head));
+		RCU_TRACE(trace_rcu_invoke_callback(rn, head);)
 		head->func(head);
 		rcu_lock_release(&rcu_callback_map);
 		return false;
@@ -143,5 +183,11 @@ void rcu_test_sync_prims(void);
  * that context switches can allow the state machine to make progress.
  */
 extern void resched_cpu(int cpu);
+
+#if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU)
+void srcu_test_sync_prims(void);
+#else /* #if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU) */
+static inline void srcu_test_sync_prims(void) { }
+#endif /* #else #if defined(CONFIG_SRCU) && defined(CONFIG_PROVE_RCU) */
 
 #endif /* __LINUX_RCU_H */
