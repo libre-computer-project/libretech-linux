@@ -489,10 +489,8 @@ struct i915_hotplug {
 			    &(dev)->mode_config.encoder_list,	\
 			    base.head)
 
-#define for_each_intel_connector(dev, intel_connector)		\
-	list_for_each_entry(intel_connector,			\
-			    &(dev)->mode_config.connector_list,	\
-			    base.head)
+#define for_each_intel_connector_iter(intel_connector, iter) \
+	while ((intel_connector = to_intel_connector(drm_connector_list_iter_next(iter))))
 
 #define for_each_encoder_on_crtc(dev, __crtc, intel_encoder) \
 	list_for_each_entry((intel_encoder), &(dev)->mode_config.encoder_list, base.head) \
@@ -4087,7 +4085,6 @@ __i915_request_irq_complete(const struct drm_i915_gem_request *req)
 	if (engine->irq_seqno_barrier &&
 	    test_and_clear_bit(ENGINE_IRQ_BREADCRUMB, &engine->irq_posted)) {
 		struct intel_breadcrumbs *b = &engine->breadcrumbs;
-		unsigned long flags;
 
 		/* The ordering of irq_posted versus applying the barrier
 		 * is crucial. The clearing of the current irq_posted must
@@ -4109,7 +4106,7 @@ __i915_request_irq_complete(const struct drm_i915_gem_request *req)
 		 * the seqno before we believe it coherent since they see
 		 * irq_posted == false but we are still running).
 		 */
-		spin_lock_irqsave(&b->irq_lock, flags);
+		spin_lock_irq(&b->irq_lock);
 		if (b->irq_wait && b->irq_wait->tsk != current)
 			/* Note that if the bottom-half is changed as we
 			 * are sending the wake-up, the new bottom-half will
@@ -4118,7 +4115,7 @@ __i915_request_irq_complete(const struct drm_i915_gem_request *req)
 			 * ourself.
 			 */
 			wake_up_process(b->irq_wait->tsk);
-		spin_unlock_irqrestore(&b->irq_lock, flags);
+		spin_unlock_irq(&b->irq_lock);
 
 		if (__i915_gem_request_completed(req, seqno))
 			return true;

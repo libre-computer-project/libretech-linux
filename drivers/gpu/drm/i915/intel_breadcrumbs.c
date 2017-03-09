@@ -47,12 +47,11 @@ static unsigned int __intel_breadcrumbs_wakeup(struct intel_breadcrumbs *b)
 unsigned int intel_engine_wakeup(struct intel_engine_cs *engine)
 {
 	struct intel_breadcrumbs *b = &engine->breadcrumbs;
-	unsigned long flags;
 	unsigned int result;
 
-	spin_lock_irqsave(&b->irq_lock, flags);
+	spin_lock_irq(&b->irq_lock);
 	result = __intel_breadcrumbs_wakeup(b);
-	spin_unlock_irqrestore(&b->irq_lock, flags);
+	spin_unlock_irq(&b->irq_lock);
 
 	return result;
 }
@@ -110,7 +109,6 @@ static void intel_breadcrumbs_fake_irq(unsigned long data)
 {
 	struct intel_engine_cs *engine = (struct intel_engine_cs *)data;
 	struct intel_breadcrumbs *b = &engine->breadcrumbs;
-	unsigned long flags;
 
 	/*
 	 * The timer persists in case we cannot enable interrupts,
@@ -120,10 +118,10 @@ static void intel_breadcrumbs_fake_irq(unsigned long data)
 	 * coherent seqno check.
 	 */
 
-	spin_lock_irqsave(&b->irq_lock, flags);
+	spin_lock_irq(&b->irq_lock);
 	if (!__intel_breadcrumbs_wakeup(b))
 		__intel_engine_disarm_breadcrumbs(engine);
-	spin_unlock_irqrestore(&b->irq_lock, flags);
+	spin_unlock_irq(&b->irq_lock);
 	if (!b->irq_armed)
 		return;
 
@@ -168,6 +166,7 @@ void __intel_engine_disarm_breadcrumbs(struct intel_engine_cs *engine)
 	struct intel_breadcrumbs *b = &engine->breadcrumbs;
 
 	lockdep_assert_held(&b->irq_lock);
+	GEM_BUG_ON(b->irq_wait);
 
 	if (b->irq_enabled) {
 		irq_disable(engine);
@@ -180,23 +179,30 @@ void __intel_engine_disarm_breadcrumbs(struct intel_engine_cs *engine)
 void intel_engine_disarm_breadcrumbs(struct intel_engine_cs *engine)
 {
 	struct intel_breadcrumbs *b = &engine->breadcrumbs;
-	unsigned long flags;
+	struct intel_wait *wait, *n;
 
 	if (!b->irq_armed)
 		return;
 
-	spin_lock_irqsave(&b->irq_lock, flags);
-
 	/* We only disarm the irq when we are idle (all requests completed),
-	 * so if there remains a sleeping waiter, it missed the request
+	 * so if the bottom-half remains asleep, it missed the request
 	 * completion.
 	 */
-	if (__intel_breadcrumbs_wakeup(b) & ENGINE_WAKEUP_ASLEEP)
-		missed_breadcrumb(engine);
 
+	spin_lock_irq(&b->rb_lock);
+	rbtree_postorder_for_each_entry_safe(wait, n, &b->waiters, node) {
+		RB_CLEAR_NODE(&wait->node);
+		if (wake_up_process(wait->tsk) && wait == b->irq_wait)
+			missed_breadcrumb(engine);
+	}
+	b->waiters = RB_ROOT;
+
+	spin_lock(&b->irq_lock);
+	b->irq_wait = NULL;
 	__intel_engine_disarm_breadcrumbs(engine);
+	spin_unlock(&b->irq_lock);
 
-	spin_unlock_irqrestore(&b->irq_lock, flags);
+	spin_unlock_irq(&b->rb_lock);
 }
 
 static bool use_fake_irq(const struct intel_breadcrumbs *b)

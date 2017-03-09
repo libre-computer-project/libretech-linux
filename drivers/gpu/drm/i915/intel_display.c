@@ -1990,10 +1990,13 @@ static unsigned int intel_tile_size(const struct drm_i915_private *dev_priv)
 	return IS_GEN2(dev_priv) ? 2048 : 4096;
 }
 
-static unsigned int intel_tile_width_bytes(const struct drm_i915_private *dev_priv,
-					   uint64_t fb_modifier, unsigned int cpp)
+static unsigned int
+intel_tile_width_bytes(const struct drm_framebuffer *fb, int plane)
 {
-	switch (fb_modifier) {
+	struct drm_i915_private *dev_priv = to_i915(fb->dev);
+	unsigned int cpp = fb->format->cpp[plane];
+
+	switch (fb->modifier) {
 	case DRM_FORMAT_MOD_NONE:
 		return cpp;
 	case I915_FORMAT_MOD_X_TILED:
@@ -2022,43 +2025,38 @@ static unsigned int intel_tile_width_bytes(const struct drm_i915_private *dev_pr
 		}
 		break;
 	default:
-		MISSING_CASE(fb_modifier);
+		MISSING_CASE(fb->modifier);
 		return cpp;
 	}
 }
 
-unsigned int intel_tile_height(const struct drm_i915_private *dev_priv,
-			       uint64_t fb_modifier, unsigned int cpp)
+static unsigned int
+intel_tile_height(const struct drm_framebuffer *fb, int plane)
 {
-	if (fb_modifier == DRM_FORMAT_MOD_NONE)
+	if (fb->modifier == DRM_FORMAT_MOD_NONE)
 		return 1;
 	else
-		return intel_tile_size(dev_priv) /
-			intel_tile_width_bytes(dev_priv, fb_modifier, cpp);
+		return intel_tile_size(to_i915(fb->dev)) /
+			intel_tile_width_bytes(fb, plane);
 }
 
 /* Return the tile dimensions in pixel units */
-static void intel_tile_dims(const struct drm_i915_private *dev_priv,
+static void intel_tile_dims(const struct drm_framebuffer *fb, int plane,
 			    unsigned int *tile_width,
-			    unsigned int *tile_height,
-			    uint64_t fb_modifier,
-			    unsigned int cpp)
+			    unsigned int *tile_height)
 {
-	unsigned int tile_width_bytes =
-		intel_tile_width_bytes(dev_priv, fb_modifier, cpp);
+	unsigned int tile_width_bytes = intel_tile_width_bytes(fb, plane);
+	unsigned int cpp = fb->format->cpp[plane];
 
 	*tile_width = tile_width_bytes / cpp;
-	*tile_height = intel_tile_size(dev_priv) / tile_width_bytes;
+	*tile_height = intel_tile_size(to_i915(fb->dev)) / tile_width_bytes;
 }
 
 unsigned int
-intel_fb_align_height(struct drm_i915_private *dev_priv,
-		      unsigned int height,
-		      uint32_t pixel_format,
-		      uint64_t fb_modifier)
+intel_fb_align_height(const struct drm_framebuffer *fb,
+		      int plane, unsigned int height)
 {
-	unsigned int cpp = drm_format_plane_cpp(pixel_format, 0);
-	unsigned int tile_height = intel_tile_height(dev_priv, fb_modifier, cpp);
+	unsigned int tile_height = intel_tile_height(fb, plane);
 
 	return ALIGN(height, tile_height);
 }
@@ -2099,21 +2097,27 @@ static unsigned int intel_linear_alignment(const struct drm_i915_private *dev_pr
 		return 0;
 }
 
-static unsigned int intel_surf_alignment(const struct drm_i915_private *dev_priv,
-					 uint64_t fb_modifier)
+static unsigned int intel_surf_alignment(const struct drm_framebuffer *fb,
+					 int plane)
 {
-	switch (fb_modifier) {
+	struct drm_i915_private *dev_priv = to_i915(fb->dev);
+
+	/* AUX_DIST needs only 4K alignment */
+	if (fb->format->format == DRM_FORMAT_NV12 && plane == 1)
+		return 4096;
+
+	switch (fb->modifier) {
 	case DRM_FORMAT_MOD_NONE:
 		return intel_linear_alignment(dev_priv);
 	case I915_FORMAT_MOD_X_TILED:
-		if (INTEL_INFO(dev_priv)->gen >= 9)
+		if (INTEL_GEN(dev_priv) >= 9)
 			return 256 * 1024;
 		return 0;
 	case I915_FORMAT_MOD_Y_TILED:
 	case I915_FORMAT_MOD_Yf_TILED:
 		return 1 * 1024 * 1024;
 	default:
-		MISSING_CASE(fb_modifier);
+		MISSING_CASE(fb->modifier);
 		return 0;
 	}
 }
@@ -2130,7 +2134,7 @@ intel_pin_and_fence_fb_obj(struct drm_framebuffer *fb, unsigned int rotation)
 
 	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
 
-	alignment = intel_surf_alignment(dev_priv, fb->modifier);
+	alignment = intel_surf_alignment(fb, 0);
 
 	intel_fill_fb_ggtt_view(&view, fb, rotation);
 
@@ -2291,8 +2295,7 @@ static u32 intel_adjust_tile_offset(int *x, int *y,
 		unsigned int pitch_tiles;
 
 		tile_size = intel_tile_size(dev_priv);
-		intel_tile_dims(dev_priv, &tile_width, &tile_height,
-				fb->modifier, cpp);
+		intel_tile_dims(fb, plane, &tile_width, &tile_height);
 
 		if (drm_rotation_90_or_270(rotation)) {
 			pitch_tiles = pitch / tile_height;
@@ -2347,8 +2350,7 @@ static u32 _intel_compute_tile_offset(const struct drm_i915_private *dev_priv,
 		unsigned int tile_rows, tiles, pitch_tiles;
 
 		tile_size = intel_tile_size(dev_priv);
-		intel_tile_dims(dev_priv, &tile_width, &tile_height,
-				fb_modifier, cpp);
+		intel_tile_dims(fb, plane, &tile_width, &tile_height);
 
 		if (drm_rotation_90_or_270(rotation)) {
 			pitch_tiles = pitch / tile_height;
@@ -2388,13 +2390,7 @@ u32 intel_compute_tile_offset(int *x, int *y,
 	const struct drm_framebuffer *fb = state->base.fb;
 	unsigned int rotation = state->base.rotation;
 	int pitch = intel_fb_pitch(fb, plane, rotation);
-	u32 alignment;
-
-	/* AUX_DIST needs only 4K alignment */
-	if (fb->format->format == DRM_FORMAT_NV12 && plane == 1)
-		alignment = 4096;
-	else
-		alignment = intel_surf_alignment(dev_priv, fb->modifier);
+	u32 alignment = intel_surf_alignment(fb, plane);
 
 	return _intel_compute_tile_offset(dev_priv, x, y, fb, plane, pitch,
 					  rotation, alignment);
@@ -2458,8 +2454,8 @@ intel_fill_fb_info(struct drm_i915_private *dev_priv,
 		 */
 		if (i915_gem_object_is_tiled(intel_fb->obj) &&
 		    (x + width) * cpp > fb->pitches[i]) {
-			DRM_DEBUG("bad fb plane %d offset: 0x%x\n",
-				  i, fb->offsets[i]);
+			DRM_DEBUG_KMS("bad fb plane %d offset: 0x%x\n",
+				      i, fb->offsets[i]);
 			return -EINVAL;
 		}
 
@@ -2471,7 +2467,7 @@ intel_fill_fb_info(struct drm_i915_private *dev_priv,
 		intel_fb->normal[i].y = y;
 
 		offset = _intel_compute_tile_offset(dev_priv, &x, &y,
-						    fb, 0, fb->pitches[i],
+						    fb, i, fb->pitches[i],
 						    DRM_ROTATE_0, tile_size);
 		offset /= tile_size;
 
@@ -2480,8 +2476,7 @@ intel_fill_fb_info(struct drm_i915_private *dev_priv,
 			unsigned int pitch_tiles;
 			struct drm_rect r;
 
-			intel_tile_dims(dev_priv, &tile_width, &tile_height,
-					fb->modifier, cpp);
+			intel_tile_dims(fb, i, &tile_width, &tile_height);
 
 			rot_info->plane[i].offset = offset;
 			rot_info->plane[i].stride = DIV_ROUND_UP(fb->pitches[i], tile_width * cpp);
@@ -2542,9 +2537,9 @@ intel_fill_fb_info(struct drm_i915_private *dev_priv,
 		max_size = max(max_size, offset + size);
 	}
 
-	if (max_size * tile_size > to_intel_framebuffer(fb)->obj->base.size) {
-		DRM_DEBUG("fb too big for bo (need %u bytes, have %zu bytes)\n",
-			  max_size * tile_size, to_intel_framebuffer(fb)->obj->base.size);
+	if (max_size * tile_size > intel_fb->obj->base.size) {
+		DRM_DEBUG_KMS("fb too big for bo (need %u bytes, have %zu bytes)\n",
+			      max_size * tile_size, intel_fb->obj->base.size);
 		return -EINVAL;
 	}
 
@@ -2846,7 +2841,6 @@ static int skl_max_plane_width(const struct drm_framebuffer *fb, int plane,
 
 static int skl_check_main_surface(struct intel_plane_state *plane_state)
 {
-	const struct drm_i915_private *dev_priv = to_i915(plane_state->base.plane->dev);
 	const struct drm_framebuffer *fb = plane_state->base.fb;
 	unsigned int rotation = plane_state->base.rotation;
 	int x = plane_state->base.src.x1 >> 16;
@@ -2865,8 +2859,7 @@ static int skl_check_main_surface(struct intel_plane_state *plane_state)
 
 	intel_add_fb_offsets(&x, &y, plane_state, 0);
 	offset = intel_compute_tile_offset(&x, &y, plane_state, 0);
-
-	alignment = intel_surf_alignment(dev_priv, fb->modifier);
+	alignment = intel_surf_alignment(fb, 0);
 
 	/*
 	 * AUX surface offset is specified as the distance from the
@@ -3186,16 +3179,13 @@ static void ironlake_update_primary_plane(struct drm_plane *primary,
 	POSTING_READ(reg);
 }
 
-u32 intel_fb_stride_alignment(const struct drm_i915_private *dev_priv,
-			      uint64_t fb_modifier, uint32_t pixel_format)
+static u32
+intel_fb_stride_alignment(const struct drm_framebuffer *fb, int plane)
 {
-	if (fb_modifier == DRM_FORMAT_MOD_NONE) {
+	if (fb->modifier == DRM_FORMAT_MOD_NONE)
 		return 64;
-	} else {
-		int cpp = drm_format_plane_cpp(pixel_format, 0);
-
-		return intel_tile_width_bytes(dev_priv, fb_modifier, cpp);
-	}
+	else
+		return intel_tile_width_bytes(fb, plane);
 }
 
 static void skl_detach_scaler(struct intel_crtc *intel_crtc, int id)
@@ -3228,21 +3218,21 @@ static void skl_detach_scalers(struct intel_crtc *intel_crtc)
 u32 skl_plane_stride(const struct drm_framebuffer *fb, int plane,
 		     unsigned int rotation)
 {
-	const struct drm_i915_private *dev_priv = to_i915(fb->dev);
-	u32 stride = intel_fb_pitch(fb, plane, rotation);
+	u32 stride;
+
+	if (plane >= fb->format->num_planes)
+		return 0;
+
+	stride = intel_fb_pitch(fb, plane, rotation);
 
 	/*
 	 * The stride is either expressed as a multiple of 64 bytes chunks for
 	 * linear buffers or in number of tiles for tiled buffers.
 	 */
-	if (drm_rotation_90_or_270(rotation)) {
-		int cpp = fb->format->cpp[plane];
-
-		stride /= intel_tile_height(dev_priv, fb->modifier, cpp);
-	} else {
-		stride /= intel_fb_stride_alignment(dev_priv, fb->modifier,
-						    fb->format->format);
-	}
+	if (drm_rotation_90_or_270(rotation))
+		stride /= intel_tile_height(fb, plane);
+	else
+		stride /= intel_fb_stride_alignment(fb, plane);
 
 	return stride;
 }
@@ -7378,10 +7368,7 @@ i9xx_get_initial_plane_config(struct intel_crtc *crtc,
 	val = I915_READ(DSPSTRIDE(pipe));
 	fb->pitches[0] = val & 0xffffffc0;
 
-	aligned_height = intel_fb_align_height(dev_priv,
-					       fb->height,
-					       fb->format->format,
-					       fb->modifier);
+	aligned_height = intel_fb_align_height(fb, 0, fb->height);
 
 	plane_config->size = fb->pitches[0] * aligned_height;
 
@@ -8416,14 +8403,10 @@ skylake_get_initial_plane_config(struct intel_crtc *crtc,
 	fb->width = ((val >> 0) & 0x1fff) + 1;
 
 	val = I915_READ(PLANE_STRIDE(pipe, 0));
-	stride_mult = intel_fb_stride_alignment(dev_priv, fb->modifier,
-						fb->format->format);
+	stride_mult = intel_fb_stride_alignment(fb, 0);
 	fb->pitches[0] = (val & 0x3ff) * stride_mult;
 
-	aligned_height = intel_fb_align_height(dev_priv,
-					       fb->height,
-					       fb->format->format,
-					       fb->modifier);
+	aligned_height = intel_fb_align_height(fb, 0, fb->height);
 
 	plane_config->size = fb->pitches[0] * aligned_height;
 
@@ -8519,10 +8502,7 @@ ironlake_get_initial_plane_config(struct intel_crtc *crtc,
 	val = I915_READ(DSPSTRIDE(pipe));
 	fb->pitches[0] = val & 0xffffffc0;
 
-	aligned_height = intel_fb_align_height(dev_priv,
-					       fb->height,
-					       fb->format->format,
-					       fb->modifier);
+	aligned_height = intel_fb_align_height(fb, 0, fb->height);
 
 	plane_config->size = fb->pitches[0] * aligned_height;
 
@@ -10999,8 +10979,10 @@ static const struct drm_crtc_helper_funcs intel_helper_funcs = {
 static void intel_modeset_update_connector_atomic_state(struct drm_device *dev)
 {
 	struct intel_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 
-	for_each_intel_connector(dev, connector) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	for_each_intel_connector_iter(connector, &conn_iter) {
 		if (connector->base.state->crtc)
 			drm_connector_unreference(&connector->base);
 
@@ -11016,6 +10998,7 @@ static void intel_modeset_update_connector_atomic_state(struct drm_device *dev)
 			connector->base.state->crtc = NULL;
 		}
 	}
+	drm_connector_list_iter_end(&conn_iter);
 }
 
 static void
@@ -11263,7 +11246,6 @@ clear_intel_crtc_state(struct intel_crtc_state *crtc_state)
 {
 	struct drm_i915_private *dev_priv =
 		to_i915(crtc_state->base.crtc->dev);
-	struct drm_crtc_state tmp_state;
 	struct intel_crtc_scaler_state scaler_state;
 	struct intel_dpll_hw_state dpll_hw_state;
 	struct intel_shared_dpll *shared_dpll;
@@ -11275,7 +11257,6 @@ clear_intel_crtc_state(struct intel_crtc_state *crtc_state)
 	 * fixed, so that the crtc_state can be safely duplicated. For now,
 	 * only fields that are know to not cause problems are preserved. */
 
-	tmp_state = crtc_state->base;
 	scaler_state = crtc_state->scaler_state;
 	shared_dpll = crtc_state->shared_dpll;
 	dpll_hw_state = crtc_state->dpll_hw_state;
@@ -11283,9 +11264,11 @@ clear_intel_crtc_state(struct intel_crtc_state *crtc_state)
 	if (IS_VALLEYVIEW(dev_priv) || IS_CHERRYVIEW(dev_priv))
 		wm_state = crtc_state->wm;
 
-	memset(crtc_state, 0, sizeof *crtc_state);
+	/* Keep base drm_crtc_state intact, only clear our extended struct */
+	BUILD_BUG_ON(offsetof(struct intel_crtc_state, base));
+	memset(&crtc_state->base + 1, 0,
+	       sizeof(*crtc_state) - sizeof(crtc_state->base));
 
-	crtc_state->base = tmp_state;
 	crtc_state->scaler_state = scaler_state;
 	crtc_state->shared_dpll = shared_dpll;
 	crtc_state->dpll_hw_state = dpll_hw_state;
@@ -11924,28 +11907,37 @@ verify_connector_state(struct drm_device *dev,
 }
 
 static void
-verify_encoder_state(struct drm_device *dev)
+verify_encoder_state(struct drm_device *dev, struct drm_atomic_state *state)
 {
 	struct intel_encoder *encoder;
-	struct intel_connector *connector;
+	struct drm_connector *connector;
+	struct drm_connector_state *old_conn_state, *new_conn_state;
+	int i;
 
 	for_each_intel_encoder(dev, encoder) {
-		bool enabled = false;
+		bool enabled = false, found = false;
 		enum pipe pipe;
 
 		DRM_DEBUG_KMS("[ENCODER:%d:%s]\n",
 			      encoder->base.base.id,
 			      encoder->base.name);
 
-		for_each_intel_connector(dev, connector) {
-			if (connector->base.state->best_encoder != &encoder->base)
-				continue;
-			enabled = true;
+		for_each_oldnew_connector_in_state(state, connector, old_conn_state,
+						   new_conn_state, i) {
+			if (old_conn_state->best_encoder == &encoder->base)
+				found = true;
 
-			I915_STATE_WARN(connector->base.state->crtc !=
+			if (new_conn_state->best_encoder != &encoder->base)
+				continue;
+			found = enabled = true;
+
+			I915_STATE_WARN(new_conn_state->crtc !=
 					encoder->base.crtc,
 			     "connector's crtc doesn't match encoder crtc\n");
 		}
+
+		if (!found)
+			continue;
 
 		I915_STATE_WARN(!!encoder->base.crtc != enabled,
 		     "encoder's enabled state mismatch "
@@ -12147,7 +12139,7 @@ static void
 intel_modeset_verify_disabled(struct drm_device *dev,
 			      struct drm_atomic_state *state)
 {
-	verify_encoder_state(dev);
+	verify_encoder_state(dev, state);
 	verify_connector_state(dev, state, NULL);
 	verify_disabled_dpll_state(dev);
 }
@@ -13909,15 +13901,14 @@ fail:
 
 enum pipe intel_get_pipe_from_connector(struct intel_connector *connector)
 {
-	struct drm_encoder *encoder = connector->base.encoder;
 	struct drm_device *dev = connector->base.dev;
 
 	WARN_ON(!drm_modeset_is_locked(&dev->mode_config.connection_mutex));
 
-	if (!encoder || WARN_ON(!encoder->crtc))
+	if (!connector->base.state->crtc)
 		return INVALID_PIPE;
 
-	return to_intel_crtc(encoder->crtc)->pipe;
+	return to_intel_crtc(connector->base.state->crtc)->pipe;
 }
 
 int intel_get_pipe_from_crtc_id(struct drm_device *dev, void *data,
@@ -14318,14 +14309,14 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 		 */
 		if (tiling != I915_TILING_NONE &&
 		    tiling != intel_fb_modifier_to_tiling(mode_cmd->modifier[0])) {
-			DRM_DEBUG("tiling_mode doesn't match fb modifier\n");
+			DRM_DEBUG_KMS("tiling_mode doesn't match fb modifier\n");
 			goto err;
 		}
 	} else {
 		if (tiling == I915_TILING_X) {
 			mode_cmd->modifier[0] = I915_FORMAT_MOD_X_TILED;
 		} else if (tiling == I915_TILING_Y) {
-			DRM_DEBUG("No Y tiling for legacy addfb\n");
+			DRM_DEBUG_KMS("No Y tiling for legacy addfb\n");
 			goto err;
 		}
 	}
@@ -14335,16 +14326,16 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 	case I915_FORMAT_MOD_Y_TILED:
 	case I915_FORMAT_MOD_Yf_TILED:
 		if (INTEL_GEN(dev_priv) < 9) {
-			DRM_DEBUG("Unsupported tiling 0x%llx!\n",
-				  mode_cmd->modifier[0]);
+			DRM_DEBUG_KMS("Unsupported tiling 0x%llx!\n",
+				      mode_cmd->modifier[0]);
 			goto err;
 		}
 	case DRM_FORMAT_MOD_NONE:
 	case I915_FORMAT_MOD_X_TILED:
 		break;
 	default:
-		DRM_DEBUG("Unsupported fb modifier 0x%llx!\n",
-			  mode_cmd->modifier[0]);
+		DRM_DEBUG_KMS("Unsupported fb modifier 0x%llx!\n",
+			      mode_cmd->modifier[0]);
 		goto err;
 	}
 
@@ -14354,26 +14345,17 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 	 */
 	if (INTEL_INFO(dev_priv)->gen < 4 &&
 	    tiling != intel_fb_modifier_to_tiling(mode_cmd->modifier[0])) {
-		DRM_DEBUG("tiling_mode must match fb modifier exactly on gen2/3\n");
-		goto err;
-	}
-
-	stride_alignment = intel_fb_stride_alignment(dev_priv,
-						     mode_cmd->modifier[0],
-						     mode_cmd->pixel_format);
-	if (mode_cmd->pitches[0] & (stride_alignment - 1)) {
-		DRM_DEBUG("pitch (%d) must be at least %u byte aligned\n",
-			  mode_cmd->pitches[0], stride_alignment);
+		DRM_DEBUG_KMS("tiling_mode must match fb modifier exactly on gen2/3\n");
 		goto err;
 	}
 
 	pitch_limit = intel_fb_pitch_limit(dev_priv, mode_cmd->modifier[0],
 					   mode_cmd->pixel_format);
 	if (mode_cmd->pitches[0] > pitch_limit) {
-		DRM_DEBUG("%s pitch (%u) must be at less than %d\n",
-			  mode_cmd->modifier[0] != DRM_FORMAT_MOD_NONE ?
-			  "tiled" : "linear",
-			  mode_cmd->pitches[0], pitch_limit);
+		DRM_DEBUG_KMS("%s pitch (%u) must be at most %d\n",
+			      mode_cmd->modifier[0] != DRM_FORMAT_MOD_NONE ?
+			      "tiled" : "linear",
+			      mode_cmd->pitches[0], pitch_limit);
 		goto err;
 	}
 
@@ -14381,9 +14363,9 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 	 * If there's a fence, enforce that
 	 * the fb pitch and fence stride match.
 	 */
-	if (tiling != I915_TILING_NONE && mode_cmd->pitches[0] !=  stride) {
-		DRM_DEBUG("pitch (%d) must match tiling stride (%d)\n",
-			  mode_cmd->pitches[0], stride);
+	if (tiling != I915_TILING_NONE && mode_cmd->pitches[0] != stride) {
+		DRM_DEBUG_KMS("pitch (%d) must match tiling stride (%d)\n",
+			      mode_cmd->pitches[0], stride);
 		goto err;
 	}
 
@@ -14396,16 +14378,16 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 		break;
 	case DRM_FORMAT_XRGB1555:
 		if (INTEL_GEN(dev_priv) > 3) {
-			DRM_DEBUG("unsupported pixel format: %s\n",
-			          drm_get_format_name(mode_cmd->pixel_format, &format_name));
+			DRM_DEBUG_KMS("unsupported pixel format: %s\n",
+				      drm_get_format_name(mode_cmd->pixel_format, &format_name));
 			goto err;
 		}
 		break;
 	case DRM_FORMAT_ABGR8888:
 		if (!IS_VALLEYVIEW(dev_priv) && !IS_CHERRYVIEW(dev_priv) &&
 		    INTEL_GEN(dev_priv) < 9) {
-			DRM_DEBUG("unsupported pixel format: %s\n",
-			          drm_get_format_name(mode_cmd->pixel_format, &format_name));
+			DRM_DEBUG_KMS("unsupported pixel format: %s\n",
+				      drm_get_format_name(mode_cmd->pixel_format, &format_name));
 			goto err;
 		}
 		break;
@@ -14413,15 +14395,15 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 	case DRM_FORMAT_XRGB2101010:
 	case DRM_FORMAT_XBGR2101010:
 		if (INTEL_GEN(dev_priv) < 4) {
-			DRM_DEBUG("unsupported pixel format: %s\n",
-			          drm_get_format_name(mode_cmd->pixel_format, &format_name));
+			DRM_DEBUG_KMS("unsupported pixel format: %s\n",
+				      drm_get_format_name(mode_cmd->pixel_format, &format_name));
 			goto err;
 		}
 		break;
 	case DRM_FORMAT_ABGR2101010:
 		if (!IS_VALLEYVIEW(dev_priv) && !IS_CHERRYVIEW(dev_priv)) {
-			DRM_DEBUG("unsupported pixel format: %s\n",
-			          drm_get_format_name(mode_cmd->pixel_format, &format_name));
+			DRM_DEBUG_KMS("unsupported pixel format: %s\n",
+				      drm_get_format_name(mode_cmd->pixel_format, &format_name));
 			goto err;
 		}
 		break;
@@ -14430,14 +14412,14 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 	case DRM_FORMAT_YVYU:
 	case DRM_FORMAT_VYUY:
 		if (INTEL_GEN(dev_priv) < 5) {
-			DRM_DEBUG("unsupported pixel format: %s\n",
-			          drm_get_format_name(mode_cmd->pixel_format, &format_name));
+			DRM_DEBUG_KMS("unsupported pixel format: %s\n",
+				      drm_get_format_name(mode_cmd->pixel_format, &format_name));
 			goto err;
 		}
 		break;
 	default:
-		DRM_DEBUG("unsupported pixel format: %s\n",
-		          drm_get_format_name(mode_cmd->pixel_format, &format_name));
+		DRM_DEBUG_KMS("unsupported pixel format: %s\n",
+			      drm_get_format_name(mode_cmd->pixel_format, &format_name));
 		goto err;
 	}
 
@@ -14447,6 +14429,14 @@ static int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 
 	drm_helper_mode_fill_fb_struct(&dev_priv->drm,
 				       &intel_fb->base, mode_cmd);
+
+	stride_alignment = intel_fb_stride_alignment(&intel_fb->base, 0);
+	if (mode_cmd->pitches[0] & (stride_alignment - 1)) {
+		DRM_DEBUG_KMS("pitch (%d) must be at least %u byte aligned\n",
+			      mode_cmd->pitches[0], stride_alignment);
+		goto err;
+	}
+
 	intel_fb->obj = obj;
 
 	ret = intel_fill_fb_info(dev_priv, &intel_fb->base);
@@ -15052,6 +15042,7 @@ int intel_modeset_init(struct drm_device *dev)
 static void intel_enable_pipe_a(struct drm_device *dev)
 {
 	struct intel_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	struct drm_connector *crt = NULL;
 	struct intel_load_detect_pipe load_detect_temp;
 	struct drm_modeset_acquire_ctx *ctx = dev->mode_config.acquire_ctx;
@@ -15059,12 +15050,14 @@ static void intel_enable_pipe_a(struct drm_device *dev)
 	/* We can't just switch on the pipe A, we need to set things up with a
 	 * proper mode and output configuration. As a gross hack, enable pipe A
 	 * by enabling the load detect pipe once. */
-	for_each_intel_connector(dev, connector) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	for_each_intel_connector_iter(connector, &conn_iter) {
 		if (connector->encoder->type == INTEL_OUTPUT_ANALOG) {
 			crt = &connector->base;
 			break;
 		}
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	if (!crt)
 		return;
@@ -15310,6 +15303,7 @@ static void intel_modeset_readout_hw_state(struct drm_device *dev)
 	struct intel_crtc *crtc;
 	struct intel_encoder *encoder;
 	struct intel_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	int i;
 
 	dev_priv->active_crtcs = 0;
@@ -15380,7 +15374,8 @@ static void intel_modeset_readout_hw_state(struct drm_device *dev)
 			      pipe_name(pipe));
 	}
 
-	for_each_intel_connector(dev, connector) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	for_each_intel_connector_iter(connector, &conn_iter) {
 		if (connector->get_hw_state(connector)) {
 			connector->base.dpms = DRM_MODE_DPMS_ON;
 
@@ -15408,6 +15403,7 @@ static void intel_modeset_readout_hw_state(struct drm_device *dev)
 			      connector->base.base.id, connector->base.name,
 			      enableddisabled(connector->base.encoder));
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	for_each_intel_crtc(dev, crtc) {
 		struct intel_crtc_state *crtc_state =

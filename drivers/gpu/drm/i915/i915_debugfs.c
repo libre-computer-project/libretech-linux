@@ -1749,7 +1749,9 @@ static int i915_sr_status(struct seq_file *m, void *unused)
 	intel_runtime_pm_get(dev_priv);
 	intel_display_power_get(dev_priv, POWER_DOMAIN_INIT);
 
-	if (HAS_PCH_SPLIT(dev_priv))
+	if (INTEL_GEN(dev_priv) >= 9)
+		/* no global SR status; inspect per-plane WM */;
+	else if (HAS_PCH_SPLIT(dev_priv))
 		sr_enabled = I915_READ(WM1_LP_ILK) & WM1_LP_SR_EN;
 	else if (IS_I965GM(dev_priv) || IS_G4X(dev_priv) ||
 		 IS_I945G(dev_priv) || IS_I945GM(dev_priv))
@@ -2709,12 +2711,14 @@ static int i915_sink_crc(struct seq_file *m, void *data)
 	struct drm_i915_private *dev_priv = node_to_i915(m->private);
 	struct drm_device *dev = &dev_priv->drm;
 	struct intel_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	struct intel_dp *intel_dp = NULL;
 	int ret;
 	u8 crc[6];
 
 	drm_modeset_lock_all(dev);
-	for_each_intel_connector(dev, connector) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	for_each_intel_connector_iter(connector, &conn_iter) {
 		struct drm_crtc *crtc;
 
 		if (!connector->base.state->best_encoder)
@@ -2740,6 +2744,7 @@ static int i915_sink_crc(struct seq_file *m, void *data)
 	}
 	ret = -ENODEV;
 out:
+	drm_connector_list_iter_end(&conn_iter);
 	drm_modeset_unlock_all(dev);
 	return ret;
 }
@@ -3176,9 +3181,9 @@ static int i915_display_info(struct seq_file *m, void *unused)
 	struct drm_device *dev = &dev_priv->drm;
 	struct intel_crtc *crtc;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 
 	intel_runtime_pm_get(dev_priv);
-	drm_modeset_lock_all(dev);
 	seq_printf(m, "CRTC info\n");
 	seq_printf(m, "---------\n");
 	for_each_intel_crtc(dev, crtc) {
@@ -3186,6 +3191,7 @@ static int i915_display_info(struct seq_file *m, void *unused)
 		struct intel_crtc_state *pipe_config;
 		int x, y;
 
+		drm_modeset_lock(&crtc->base.mutex, NULL);
 		pipe_config = to_intel_crtc_state(crtc->base.state);
 
 		seq_printf(m, "CRTC %d: pipe: %c, active=%s, (size=%dx%d), dither=%s, bpp=%d\n",
@@ -3210,15 +3216,19 @@ static int i915_display_info(struct seq_file *m, void *unused)
 		seq_printf(m, "\tunderrun reporting: cpu=%s pch=%s \n",
 			   yesno(!crtc->cpu_fifo_underrun_disabled),
 			   yesno(!crtc->pch_fifo_underrun_disabled));
+		drm_modeset_unlock(&crtc->base.mutex);
 	}
 
 	seq_printf(m, "\n");
 	seq_printf(m, "Connector info\n");
 	seq_printf(m, "--------------\n");
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+	mutex_lock(&dev->mode_config.mutex);
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter)
 		intel_connector_info(m, connector);
-	}
-	drm_modeset_unlock_all(dev);
+	drm_connector_list_iter_end(&conn_iter);
+	mutex_unlock(&dev->mode_config.mutex);
+
 	intel_runtime_pm_put(dev_priv);
 
 	return 0;
@@ -3551,13 +3561,16 @@ static void drrs_status_per_crtc(struct seq_file *m,
 	struct i915_drrs *drrs = &dev_priv->drrs;
 	int vrefresh = 0;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->state->crtc != &intel_crtc->base)
 			continue;
 
 		seq_printf(m, "%s:\n", connector->name);
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	if (dev_priv->vbt.drrs_type == STATIC_DRRS_SUPPORT)
 		seq_puts(m, "\tVBT: DRRS_type: Static");
@@ -3643,9 +3656,10 @@ static int i915_dp_mst_info(struct seq_file *m, void *unused)
 	struct intel_encoder *intel_encoder;
 	struct intel_digital_port *intel_dig_port;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 
-	drm_modeset_lock_all(dev);
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->connector_type != DRM_MODE_CONNECTOR_DisplayPort)
 			continue;
 
@@ -3661,7 +3675,8 @@ static int i915_dp_mst_info(struct seq_file *m, void *unused)
 			   port_name(intel_dig_port->port));
 		drm_dp_mst_dump_topology(m, &intel_dig_port->dp.mst_mgr);
 	}
-	drm_modeset_unlock_all(dev);
+	drm_connector_list_iter_end(&conn_iter);
+
 	return 0;
 }
 
@@ -3673,13 +3688,11 @@ static ssize_t i915_displayport_test_active_write(struct file *file,
 	int status = 0;
 	struct drm_device *dev;
 	struct drm_connector *connector;
-	struct list_head *connector_list;
+	struct drm_connector_list_iter conn_iter;
 	struct intel_dp *intel_dp;
 	int val = 0;
 
 	dev = ((struct seq_file *)file->private_data)->private;
-
-	connector_list = &dev->mode_config.connector_list;
 
 	if (len == 0)
 		return 0;
@@ -3696,7 +3709,8 @@ static ssize_t i915_displayport_test_active_write(struct file *file,
 	input_buffer[len] = '\0';
 	DRM_DEBUG_DRIVER("Copied %d bytes from user\n", (unsigned int)len);
 
-	list_for_each_entry(connector, connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->connector_type !=
 		    DRM_MODE_CONNECTOR_DisplayPort)
 			continue;
@@ -3706,7 +3720,7 @@ static ssize_t i915_displayport_test_active_write(struct file *file,
 			intel_dp = enc_to_intel_dp(connector->encoder);
 			status = kstrtoint(input_buffer, 10, &val);
 			if (status < 0)
-				goto out;
+				break;
 			DRM_DEBUG_DRIVER("Got %d for test active\n", val);
 			/* To prevent erroneous activation of the compliance
 			 * testing code, only accept an actual value of 1 here
@@ -3717,6 +3731,7 @@ static ssize_t i915_displayport_test_active_write(struct file *file,
 				intel_dp->compliance.test_active = 0;
 		}
 	}
+	drm_connector_list_iter_end(&conn_iter);
 out:
 	kfree(input_buffer);
 	if (status < 0)
@@ -3730,10 +3745,11 @@ static int i915_displayport_test_active_show(struct seq_file *m, void *data)
 {
 	struct drm_device *dev = m->private;
 	struct drm_connector *connector;
-	struct list_head *connector_list = &dev->mode_config.connector_list;
+	struct drm_connector_list_iter conn_iter;
 	struct intel_dp *intel_dp;
 
-	list_for_each_entry(connector, connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->connector_type !=
 		    DRM_MODE_CONNECTOR_DisplayPort)
 			continue;
@@ -3748,6 +3764,7 @@ static int i915_displayport_test_active_show(struct seq_file *m, void *data)
 		} else
 			seq_puts(m, "0");
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	return 0;
 }
@@ -3774,10 +3791,11 @@ static int i915_displayport_test_data_show(struct seq_file *m, void *data)
 {
 	struct drm_device *dev = m->private;
 	struct drm_connector *connector;
-	struct list_head *connector_list = &dev->mode_config.connector_list;
+	struct drm_connector_list_iter conn_iter;
 	struct intel_dp *intel_dp;
 
-	list_for_each_entry(connector, connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->connector_type !=
 		    DRM_MODE_CONNECTOR_DisplayPort)
 			continue;
@@ -3801,6 +3819,7 @@ static int i915_displayport_test_data_show(struct seq_file *m, void *data)
 		} else
 			seq_puts(m, "0");
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	return 0;
 }
@@ -3825,10 +3844,11 @@ static int i915_displayport_test_type_show(struct seq_file *m, void *data)
 {
 	struct drm_device *dev = m->private;
 	struct drm_connector *connector;
-	struct list_head *connector_list = &dev->mode_config.connector_list;
+	struct drm_connector_list_iter conn_iter;
 	struct intel_dp *intel_dp;
 
-	list_for_each_entry(connector, connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->connector_type !=
 		    DRM_MODE_CONNECTOR_DisplayPort)
 			continue;
@@ -3840,6 +3860,7 @@ static int i915_displayport_test_type_show(struct seq_file *m, void *data)
 		} else
 			seq_puts(m, "0");
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	return 0;
 }
@@ -4125,6 +4146,41 @@ DEFINE_SIMPLE_ATTRIBUTE(i915_wedged_fops,
 			"%llu\n");
 
 static int
+fault_irq_set(struct drm_i915_private *i915,
+	      unsigned long *irq,
+	      unsigned long val)
+{
+	int err;
+
+	err = mutex_lock_interruptible(&i915->drm.struct_mutex);
+	if (err)
+		return err;
+
+	err = i915_gem_wait_for_idle(i915,
+				     I915_WAIT_LOCKED |
+				     I915_WAIT_INTERRUPTIBLE);
+	if (err)
+		goto err_unlock;
+
+	/* Retire to kick idle work */
+	i915_gem_retire_requests(i915);
+	GEM_BUG_ON(i915->gt.active_requests);
+
+	*irq = val;
+	mutex_unlock(&i915->drm.struct_mutex);
+
+	/* Flush idle worker to disarm irq */
+	while (flush_delayed_work(&i915->gt.idle_work))
+		;
+
+	return 0;
+
+err_unlock:
+	mutex_unlock(&i915->drm.struct_mutex);
+	return err;
+}
+
+static int
 i915_ring_missed_irq_get(void *data, u64 *val)
 {
 	struct drm_i915_private *dev_priv = data;
@@ -4136,18 +4192,9 @@ i915_ring_missed_irq_get(void *data, u64 *val)
 static int
 i915_ring_missed_irq_set(void *data, u64 val)
 {
-	struct drm_i915_private *dev_priv = data;
-	struct drm_device *dev = &dev_priv->drm;
-	int ret;
+	struct drm_i915_private *i915 = data;
 
-	/* Lock against concurrent debugfs callers */
-	ret = mutex_lock_interruptible(&dev->struct_mutex);
-	if (ret)
-		return ret;
-	dev_priv->gpu_error.missed_irq_rings = val;
-	mutex_unlock(&dev->struct_mutex);
-
-	return 0;
+	return fault_irq_set(i915, &i915->gpu_error.missed_irq_rings, val);
 }
 
 DEFINE_SIMPLE_ATTRIBUTE(i915_ring_missed_irq_fops,
@@ -4167,13 +4214,12 @@ i915_ring_test_irq_get(void *data, u64 *val)
 static int
 i915_ring_test_irq_set(void *data, u64 val)
 {
-	struct drm_i915_private *dev_priv = data;
+	struct drm_i915_private *i915 = data;
 
-	val &= INTEL_INFO(dev_priv)->ring_mask;
+	val &= INTEL_INFO(i915)->ring_mask;
 	DRM_DEBUG_DRIVER("Masking interrupts on rings 0x%08llx\n", val);
-	dev_priv->gpu_error.test_irq_rings = val;
 
-	return 0;
+	return fault_irq_set(i915, &i915->gpu_error.test_irq_rings, val);
 }
 
 DEFINE_SIMPLE_ATTRIBUTE(i915_ring_test_irq_fops,
