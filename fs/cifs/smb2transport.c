@@ -162,17 +162,6 @@ _smb2_find_smb_sess_tcon(struct cifs_ses *ses, __u32  tid)
  * Obtain tcon corresponding to the tid in the given
  * cifs_ses
  */
-struct cifs_tcon *
-smb2_find_smb_sess_tcon(struct cifs_ses *ses, __u32  tid)
-{
-	struct cifs_tcon *tcon;
-
-	spin_lock(&cifs_tcp_ses_lock);
-	tcon = _smb2_find_smb_sess_tcon(ses, tid);
-	spin_unlock(&cifs_tcp_ses_lock);
-
-	return tcon;
-}
 
 struct cifs_tcon *
 smb2_find_smb_tcon(struct TCP_Server_Info *server, __u64 ses_id, __u32  tid)
