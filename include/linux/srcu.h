@@ -82,6 +82,7 @@ int init_srcu_struct(struct srcu_struct *sp);
 #define __SRCU_DEP_MAP_INIT(srcu_name)
 #endif /* #else #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 
+void advance_srcu_gp(struct srcu_struct *sp);
 void process_srcu(struct work_struct *work);
 
 #define __SRCU_STRUCT_INIT(name)					\

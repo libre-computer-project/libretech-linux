@@ -188,6 +188,12 @@ static void smp_callin(void)
 	apic_ap_setup();
 
 	/*
+	 * Enable RCU readers on this CPU, needed for workqueues,
+	 * which are used in smp_store_cpu_info().
+	 */
+	rcu_cpu_starting(cpuid);
+
+	/*
 	 * Save our processor parameters. Note: this information
 	 * is needed for clock calibration.
 	 */

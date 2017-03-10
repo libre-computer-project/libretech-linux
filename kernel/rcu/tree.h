@@ -30,6 +30,7 @@
 #include <linux/seqlock.h>
 #include <linux/swait.h>
 #include <linux/stop_machine.h>
+#include "rcu_segcblist.h"
 
 /*
  * Define shape of hierarchy based on NR_CPUS, CONFIG_RCU_FANOUT, and
@@ -52,11 +53,7 @@
 #ifdef CONFIG_RCU_FANOUT_LEAF
 #define RCU_FANOUT_LEAF CONFIG_RCU_FANOUT_LEAF
 #else /* #ifdef CONFIG_RCU_FANOUT_LEAF */
-# ifdef CONFIG_64BIT
-# define RCU_FANOUT_LEAF 64
-# else
-# define RCU_FANOUT_LEAF 32
-# endif
+#define RCU_FANOUT_LEAF 16
 #endif /* #else #ifdef CONFIG_RCU_FANOUT_LEAF */
 
 #define RCU_FANOUT_1	      (RCU_FANOUT_LEAF)
@@ -113,6 +110,9 @@ struct rcu_dynticks {
 				    /* Process level is worth LLONG_MAX/2. */
 	int dynticks_nmi_nesting;   /* Track NMI nesting level. */
 	atomic_t dynticks;	    /* Even value for idle, else odd. */
+	bool rcu_need_heavy_qs;     /* GP old, need heavy quiescent state. */
+	unsigned long rcu_qs_ctr;   /* Light universal quiescent state ctr. */
+	bool rcu_urgent_qs;	    /* GP old need light quiescent state. */
 #ifdef CONFIG_NO_HZ_FULL_SYSIDLE
 	long long dynticks_idle_nesting;
 				    /* irq/process nesting level from idle. */
@@ -336,34 +336,9 @@ struct rcu_data {
 					/* period it is aware of. */
 
 	/* 2) batch handling */
-	/*
-	 * If nxtlist is not NULL, it is partitioned as follows.
-	 * Any of the partitions might be empty, in which case the
-	 * pointer to that partition will be equal to the pointer for
-	 * the following partition.  When the list is empty, all of
-	 * the nxttail elements point to the ->nxtlist pointer itself,
-	 * which in that case is NULL.
-	 *
-	 * [nxtlist, *nxttail[RCU_DONE_TAIL]):
-	 *	Entries that batch # <= ->completed
-	 *	The grace period for these entries has completed, and
-	 *	the other grace-period-completed entries may be moved
-	 *	here temporarily in rcu_process_callbacks().
-	 * [*nxttail[RCU_DONE_TAIL], *nxttail[RCU_WAIT_TAIL]):
-	 *	Entries that batch # <= ->completed - 1: waiting for current GP
-	 * [*nxttail[RCU_WAIT_TAIL], *nxttail[RCU_NEXT_READY_TAIL]):
-	 *	Entries known to have arrived before current GP ended
-	 * [*nxttail[RCU_NEXT_READY_TAIL], *nxttail[RCU_NEXT_TAIL]):
-	 *	Entries that might have arrived after current GP ended
-	 *	Note that the value of *nxttail[RCU_NEXT_TAIL] will
-	 *	always be NULL, as this is the end of the list.
-	 */
-	struct rcu_head *nxtlist;
-	struct rcu_head **nxttail[RCU_NEXT_SIZE];
-	unsigned long	nxtcompleted[RCU_NEXT_SIZE];
-					/* grace periods for sublists. */
-	long		qlen_lazy;	/* # of lazy queued callbacks */
-	long		qlen;		/* # of queued callbacks, incl lazy */
+	struct rcu_segcblist cblist;	/* Segmented callback list, with */
+					/* different callbacks waiting for */
+					/* different grace periods. */
 	long		qlen_last_fqs_check;
 					/* qlen at last check for QS forcing */
 	unsigned long	n_cbs_invoked;	/* count of RCU cbs invoked. */
@@ -482,7 +457,6 @@ struct rcu_state {
 	struct rcu_node *level[RCU_NUM_LVLS + 1];
 						/* Hierarchy levels (+1 to */
 						/*  shut bogus gcc warning) */
-	u8 flavor_mask;				/* bit in flavor mask. */
 	struct rcu_data __percpu *rda;		/* pointer of percu rcu_data. */
 	call_rcu_func_t call;			/* call_rcu() flavor. */
 	int ncpus;				/* # CPUs seen so far. */
@@ -502,14 +476,11 @@ struct rcu_state {
 
 	raw_spinlock_t orphan_lock ____cacheline_internodealigned_in_smp;
 						/* Protect following fields. */
-	struct rcu_head *orphan_nxtlist;	/* Orphaned callbacks that */
+	struct rcu_cblist orphan_pend;		/* Orphaned callbacks that */
 						/*  need a grace period. */
-	struct rcu_head **orphan_nxttail;	/* Tail of above. */
-	struct rcu_head *orphan_donelist;	/* Orphaned callbacks that */
+	struct rcu_cblist orphan_done;		/* Orphaned callbacks that */
 						/*  are ready to invoke. */
-	struct rcu_head **orphan_donetail;	/* Tail of above. */
-	long qlen_lazy;				/* Number of lazy callbacks. */
-	long qlen;				/* Total number of callbacks. */
+						/* (Contains counts.) */
 	/* End of fields guarded by orphan_lock. */
 
 	struct mutex barrier_mutex;		/* Guards barrier fields. */
@@ -596,6 +567,7 @@ extern struct rcu_state rcu_preempt_state;
 #endif /* #ifdef CONFIG_PREEMPT_RCU */
 
 int rcu_dynticks_snap(struct rcu_dynticks *rdtp);
+bool rcu_eqs_special_set(int cpu);
 
 #ifdef CONFIG_RCU_BOOST
 DECLARE_PER_CPU(unsigned int, rcu_cpu_kthread_status);
