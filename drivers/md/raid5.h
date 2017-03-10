@@ -542,6 +542,7 @@ struct r5worker {
 
 struct r5worker_group {
 	struct list_head handle_list;
+	struct list_head loprio_list;
 	struct r5conf *conf;
 	struct r5worker *workers;
 	int stripes_cnt;
@@ -569,6 +570,14 @@ enum r5_cache_state {
 	R5C_EXTRA_PAGE_IN_USE,	/* a stripe is using disk_info.extra_page
 				 * for prexor
 				 */
+};
+
+#define PENDING_IO_MAX 512
+#define PENDING_IO_ONE_FLUSH 128
+struct r5pending_data {
+	struct list_head sibling;
+	sector_t sector; /* stripe sector */
+	struct bio_list bios;
 };
 
 struct r5conf {
@@ -608,6 +617,7 @@ struct r5conf {
 						  */
 
 	struct list_head	handle_list; /* stripes needing handling */
+	struct list_head	loprio_list; /* low priority stripes */
 	struct list_head	hold_list; /* preread ready stripes */
 	struct list_head	delayed_list; /* stripes that have plugged requests */
 	struct list_head	bitmap_list; /* stripes delaying awaiting bitmap update */
@@ -687,9 +697,13 @@ struct r5conf {
 	int			worker_cnt_per_group;
 	struct r5l_log		*log;
 
-	struct bio_list		pending_bios;
 	spinlock_t		pending_bios_lock;
 	bool			batch_bio_dispatch;
+	struct r5pending_data	*pending_data;
+	struct list_head	free_list;
+	struct list_head	pending_list;
+	int			pending_data_cnt;
+	struct r5pending_data	*next_pending_data;
 };
 
 

@@ -58,6 +58,7 @@
 #include <linux/sched/signal.h>
 
 #include <trace/events/block.h>
+#include <linux/list_sort.h>
 
 #include "md.h"
 #include "raid5.h"
@@ -176,6 +177,13 @@ static int stripe_operations_active(struct stripe_head *sh)
 	       test_bit(STRIPE_COMPUTE_RUN, &sh->state);
 }
 
+static bool stripe_is_lowprio(struct stripe_head *sh)
+{
+	return (test_bit(STRIPE_R5C_FULL_STRIPE, &sh->state) ||
+		test_bit(STRIPE_R5C_PARTIAL_STRIPE, &sh->state)) &&
+	       !test_bit(STRIPE_R5C_CACHING, &sh->state);
+}
+
 static void raid5_wakeup_stripe_thread(struct stripe_head *sh)
 {
 	struct r5conf *conf = sh->raid_conf;
@@ -191,7 +199,10 @@ static void raid5_wakeup_stripe_thread(struct stripe_head *sh)
 	if (list_empty(&sh->lru)) {
 		struct r5worker_group *group;
 		group = conf->worker_groups + cpu_to_group(cpu);
-		list_add_tail(&sh->lru, &group->handle_list);
+		if (stripe_is_lowprio(sh))
+			list_add_tail(&sh->lru, &group->loprio_list);
+		else
+			list_add_tail(&sh->lru, &group->handle_list);
 		group->stripes_cnt++;
 		sh->group = group;
 	}
@@ -254,7 +265,12 @@ static void do_release_stripe(struct r5conf *conf, struct stripe_head *sh,
 			clear_bit(STRIPE_DELAYED, &sh->state);
 			clear_bit(STRIPE_BIT_DELAY, &sh->state);
 			if (conf->worker_cnt_per_group == 0) {
-				list_add_tail(&sh->lru, &conf->handle_list);
+				if (stripe_is_lowprio(sh))
+					list_add_tail(&sh->lru,
+							&conf->loprio_list);
+				else
+					list_add_tail(&sh->lru,
+							&conf->handle_list);
 			} else {
 				raid5_wakeup_stripe_thread(sh);
 				return;
@@ -863,41 +879,107 @@ static int use_new_offset(struct r5conf *conf, struct stripe_head *sh)
 	return 1;
 }
 
-static void flush_deferred_bios(struct r5conf *conf)
+static void dispatch_bio_list(struct bio_list *tmp)
 {
-	struct bio_list tmp;
 	struct bio *bio;
 
-	if (!conf->batch_bio_dispatch || !conf->group_cnt)
-		return;
-
-	bio_list_init(&tmp);
-	spin_lock(&conf->pending_bios_lock);
-	bio_list_merge(&tmp, &conf->pending_bios);
-	bio_list_init(&conf->pending_bios);
-	spin_unlock(&conf->pending_bios_lock);
-
-	while ((bio = bio_list_pop(&tmp)))
+	while ((bio = bio_list_pop(tmp)))
 		generic_make_request(bio);
 }
 
-static void defer_bio_issue(struct r5conf *conf, struct bio *bio)
+static int cmp_stripe(void *priv, struct list_head *a, struct list_head *b)
 {
-	/*
-	 * change group_cnt will drain all bios, so this is safe
-	 *
-	 * A read generally means a read-modify-write, which usually means a
-	 * randwrite, so we don't delay it
-	 */
-	if (!conf->batch_bio_dispatch || !conf->group_cnt ||
-	    bio_op(bio) == REQ_OP_READ) {
-		generic_make_request(bio);
+	const struct r5pending_data *da = list_entry(a,
+				struct r5pending_data, sibling);
+	const struct r5pending_data *db = list_entry(b,
+				struct r5pending_data, sibling);
+	if (da->sector > db->sector)
+		return 1;
+	if (da->sector < db->sector)
+		return -1;
+	return 0;
+}
+
+static void dispatch_defer_bios(struct r5conf *conf, int target,
+				struct bio_list *list)
+{
+	struct r5pending_data *data;
+	struct list_head *first, *next = NULL;
+	int cnt = 0;
+
+	if (conf->pending_data_cnt == 0)
 		return;
+
+	list_sort(NULL, &conf->pending_list, cmp_stripe);
+
+	first = conf->pending_list.next;
+
+	/* temporarily move the head */
+	if (conf->next_pending_data)
+		list_move_tail(&conf->pending_list,
+				&conf->next_pending_data->sibling);
+
+	while (!list_empty(&conf->pending_list)) {
+		data = list_first_entry(&conf->pending_list,
+			struct r5pending_data, sibling);
+		if (&data->sibling == first)
+			first = data->sibling.next;
+		next = data->sibling.next;
+
+		bio_list_merge(list, &data->bios);
+		list_move(&data->sibling, &conf->free_list);
+		cnt++;
+		if (cnt >= target)
+			break;
 	}
+	conf->pending_data_cnt -= cnt;
+	BUG_ON(conf->pending_data_cnt < 0 || cnt < target);
+
+	if (next != &conf->pending_list)
+		conf->next_pending_data = list_entry(next,
+				struct r5pending_data, sibling);
+	else
+		conf->next_pending_data = NULL;
+	/* list isn't empty */
+	if (first != &conf->pending_list)
+		list_move_tail(&conf->pending_list, first);
+}
+
+static void flush_deferred_bios(struct r5conf *conf)
+{
+	struct bio_list tmp = BIO_EMPTY_LIST;
+
+	if (conf->pending_data_cnt == 0)
+		return;
+
 	spin_lock(&conf->pending_bios_lock);
-	bio_list_add(&conf->pending_bios, bio);
+	dispatch_defer_bios(conf, conf->pending_data_cnt, &tmp);
+	BUG_ON(conf->pending_data_cnt != 0);
 	spin_unlock(&conf->pending_bios_lock);
-	md_wakeup_thread(conf->mddev->thread);
+
+	dispatch_bio_list(&tmp);
+}
+
+static void defer_issue_bios(struct r5conf *conf, sector_t sector,
+				struct bio_list *bios)
+{
+	struct bio_list tmp = BIO_EMPTY_LIST;
+	struct r5pending_data *ent;
+
+	spin_lock(&conf->pending_bios_lock);
+	ent = list_first_entry(&conf->free_list, struct r5pending_data,
+							sibling);
+	list_move_tail(&ent->sibling, &conf->pending_list);
+	ent->sector = sector;
+	bio_list_init(&ent->bios);
+	bio_list_merge(&ent->bios, bios);
+	conf->pending_data_cnt++;
+	if (conf->pending_data_cnt >= PENDING_IO_MAX)
+		dispatch_defer_bios(conf, PENDING_IO_ONE_FLUSH, &tmp);
+
+	spin_unlock(&conf->pending_bios_lock);
+
+	dispatch_bio_list(&tmp);
 }
 
 static void
@@ -910,6 +992,8 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 	struct r5conf *conf = sh->raid_conf;
 	int i, disks = sh->disks;
 	struct stripe_head *head_sh = sh;
+	struct bio_list pending_bios = BIO_EMPTY_LIST;
+	bool should_defer;
 
 	might_sleep();
 
@@ -925,6 +1009,8 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			return;
 		}
 	}
+
+	should_defer = conf->batch_bio_dispatch && conf->group_cnt;
 
 	for (i = disks; i--; ) {
 		int op, op_flags = 0;
@@ -1080,7 +1166,10 @@ again:
 				trace_block_bio_remap(bdev_get_queue(bi->bi_bdev),
 						      bi, disk_devt(conf->mddev->gendisk),
 						      sh->dev[i].sector);
-			defer_bio_issue(conf, bi);
+			if (should_defer && op_is_write(op))
+				bio_list_add(&pending_bios, bi);
+			else
+				generic_make_request(bi);
 		}
 		if (rrdev) {
 			if (s->syncing || s->expanding || s->expanded
@@ -1125,7 +1214,10 @@ again:
 				trace_block_bio_remap(bdev_get_queue(rbi->bi_bdev),
 						      rbi, disk_devt(conf->mddev->gendisk),
 						      sh->dev[i].sector);
-			defer_bio_issue(conf, rbi);
+			if (should_defer && op_is_write(op))
+				bio_list_add(&pending_bios, rbi);
+			else
+				generic_make_request(rbi);
 		}
 		if (!rdev && !rrdev) {
 			if (op_is_write(op))
@@ -1143,6 +1235,9 @@ again:
 		if (sh != head_sh)
 			goto again;
 	}
+
+	if (should_defer && !bio_list_empty(&pending_bios))
+		defer_issue_bios(conf, head_sh->sector, &pending_bios);
 }
 
 static struct dma_async_tx_descriptor *
@@ -5171,19 +5266,27 @@ static struct bio *chunk_aligned_read(struct mddev *mddev, struct bio *raid_bio)
  */
 static struct stripe_head *__get_priority_stripe(struct r5conf *conf, int group)
 {
-	struct stripe_head *sh = NULL, *tmp;
+	struct stripe_head *sh, *tmp;
 	struct list_head *handle_list = NULL;
-	struct r5worker_group *wg = NULL;
+	struct r5worker_group *wg;
+	bool second_try = !r5c_is_writeback(conf->log);
+	bool try_loprio = test_bit(R5C_LOG_TIGHT, &conf->cache_state);
 
+again:
+	wg = NULL;
+	sh = NULL;
 	if (conf->worker_cnt_per_group == 0) {
-		handle_list = &conf->handle_list;
+		handle_list = try_loprio ? &conf->loprio_list :
+					&conf->handle_list;
 	} else if (group != ANY_GROUP) {
-		handle_list = &conf->worker_groups[group].handle_list;
+		handle_list = try_loprio ? &conf->worker_groups[group].loprio_list :
+				&conf->worker_groups[group].handle_list;
 		wg = &conf->worker_groups[group];
 	} else {
 		int i;
 		for (i = 0; i < conf->group_cnt; i++) {
-			handle_list = &conf->worker_groups[i].handle_list;
+			handle_list = try_loprio ? &conf->worker_groups[i].loprio_list :
+				&conf->worker_groups[i].handle_list;
 			wg = &conf->worker_groups[i];
 			if (!list_empty(handle_list))
 				break;
@@ -5234,8 +5337,13 @@ static struct stripe_head *__get_priority_stripe(struct r5conf *conf, int group)
 		wg = NULL;
 	}
 
-	if (!sh)
-		return NULL;
+	if (!sh) {
+		if (second_try)
+			return NULL;
+		second_try = true;
+		try_loprio = !try_loprio;
+		goto again;
+	}
 
 	if (wg) {
 		wg->stripes_cnt--;
@@ -6545,6 +6653,7 @@ static int alloc_thread_groups(struct r5conf *conf, int cnt,
 
 		group = &(*worker_groups)[i];
 		INIT_LIST_HEAD(&group->handle_list);
+		INIT_LIST_HEAD(&group->loprio_list);
 		group->conf = conf;
 		group->workers = workers + i * cnt;
 
@@ -6648,6 +6757,7 @@ static void free_conf(struct r5conf *conf)
 			put_page(conf->disks[i].extra_page);
 	kfree(conf->disks);
 	kfree(conf->stripe_hashtbl);
+	kfree(conf->pending_data);
 	kfree(conf);
 }
 
@@ -6757,6 +6867,14 @@ static struct r5conf *setup_conf(struct mddev *mddev)
 	conf = kzalloc(sizeof(struct r5conf), GFP_KERNEL);
 	if (conf == NULL)
 		goto abort;
+	INIT_LIST_HEAD(&conf->free_list);
+	INIT_LIST_HEAD(&conf->pending_list);
+	conf->pending_data = kzalloc(sizeof(struct r5pending_data) *
+		PENDING_IO_MAX, GFP_KERNEL);
+	if (!conf->pending_data)
+		goto abort;
+	for (i = 0; i < PENDING_IO_MAX; i++)
+		list_add(&conf->pending_data[i].sibling, &conf->free_list);
 	/* Don't enable multi-threading by default*/
 	if (!alloc_thread_groups(conf, 0, &group_cnt, &worker_cnt_per_group,
 				 &new_group)) {
@@ -6772,6 +6890,7 @@ static struct r5conf *setup_conf(struct mddev *mddev)
 	init_waitqueue_head(&conf->wait_for_stripe);
 	init_waitqueue_head(&conf->wait_for_overlap);
 	INIT_LIST_HEAD(&conf->handle_list);
+	INIT_LIST_HEAD(&conf->loprio_list);
 	INIT_LIST_HEAD(&conf->hold_list);
 	INIT_LIST_HEAD(&conf->delayed_list);
 	INIT_LIST_HEAD(&conf->bitmap_list);
@@ -6780,7 +6899,6 @@ static struct r5conf *setup_conf(struct mddev *mddev)
 	atomic_set(&conf->active_stripes, 0);
 	atomic_set(&conf->preread_active_stripes, 0);
 	atomic_set(&conf->active_aligned_reads, 0);
-	bio_list_init(&conf->pending_bios);
 	spin_lock_init(&conf->pending_bios_lock);
 	conf->batch_bio_dispatch = true;
 	rdev_for_each(rdev, mddev) {
@@ -7605,8 +7723,6 @@ static int raid5_resize(struct mddev *mddev, sector_t sectors)
 			return ret;
 	}
 	md_set_array_sectors(mddev, newsize);
-	set_capacity(mddev->gendisk, mddev->array_sectors);
-	revalidate_disk(mddev->gendisk);
 	if (sectors > mddev->dev_sectors &&
 	    mddev->recovery_cp > mddev->dev_sectors) {
 		mddev->recovery_cp = mddev->dev_sectors;
