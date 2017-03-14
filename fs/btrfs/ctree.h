@@ -39,6 +39,7 @@
 #include <linux/security.h>
 #include <linux/sizes.h>
 #include <linux/dynamic_debug.h>
+#include <linux/refcount.h>
 #include "extent_io.h"
 #include "extent_map.h"
 #include "async-thread.h"
@@ -518,7 +519,7 @@ struct btrfs_caching_control {
 	struct btrfs_work work;
 	struct btrfs_block_group_cache *block_group;
 	u64 progress;
-	atomic_t count;
+	refcount_t count;
 };
 
 /* Once caching_thread() finds this much free space, it will wake up waiters. */
@@ -1221,7 +1222,7 @@ struct btrfs_root {
 	dev_t anon_dev;
 
 	spinlock_t root_item_lock;
-	atomic_t refs;
+	refcount_t refs;
 
 	struct mutex delalloc_mutex;
 	spinlock_t delalloc_lock;
@@ -1259,7 +1260,7 @@ struct btrfs_root {
 	atomic_t will_be_snapshoted;
 
 	/* For qgroup metadata space reserve */
-	atomic_t qgroup_meta_rsv;
+	atomic64_t qgroup_meta_rsv;
 };
 static inline u32 btrfs_inode_sectorsize(const struct inode *inode)
 {

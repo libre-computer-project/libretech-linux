@@ -3755,6 +3755,7 @@ int btrfs_balance(struct btrfs_balance_control *bctl,
 		  struct btrfs_ioctl_balance_args *bargs)
 {
 	struct btrfs_fs_info *fs_info = bctl->fs_info;
+	u64 meta_target, data_target;
 	u64 allowed;
 	int mixed = 0;
 	int ret;
@@ -3851,11 +3852,16 @@ int btrfs_balance(struct btrfs_balance_control *bctl,
 		}
 	} while (read_seqretry(&fs_info->profiles_lock, seq));
 
-	if (btrfs_get_num_tolerated_disk_barrier_failures(bctl->meta.target) <
-		btrfs_get_num_tolerated_disk_barrier_failures(bctl->data.target)) {
+	/* if we're not converting, the target field is uninitialized */
+	meta_target = (bctl->meta.flags & BTRFS_BALANCE_ARGS_CONVERT) ?
+		bctl->meta.target : fs_info->avail_metadata_alloc_bits;
+	data_target = (bctl->data.flags & BTRFS_BALANCE_ARGS_CONVERT) ?
+		bctl->data.target : fs_info->avail_data_alloc_bits;
+	if (btrfs_get_num_tolerated_disk_barrier_failures(meta_target) <
+		btrfs_get_num_tolerated_disk_barrier_failures(data_target)) {
 		btrfs_warn(fs_info,
 			   "metadata profile 0x%llx has lower redundancy than data profile 0x%llx",
-			   bctl->meta.target, bctl->data.target);
+			   meta_target, data_target);
 	}
 
 	if (bctl->sys.flags & BTRFS_BALANCE_ARGS_CONVERT) {
@@ -4833,7 +4839,7 @@ static int __btrfs_alloc_chunk(struct btrfs_trans_handle *trans,
 	ret = add_extent_mapping(em_tree, em, 0);
 	if (!ret) {
 		list_add_tail(&em->list, &trans->transaction->pending_chunks);
-		atomic_inc(&em->refs);
+		refcount_inc(&em->refs);
 	}
 	write_unlock(&em_tree->lock);
 	if (ret) {
@@ -5295,22 +5301,22 @@ static struct btrfs_bio *alloc_btrfs_bio(int total_stripes, int real_stripes)
 		GFP_NOFS|__GFP_NOFAIL);
 
 	atomic_set(&bbio->error, 0);
-	atomic_set(&bbio->refs, 1);
+	refcount_set(&bbio->refs, 1);
 
 	return bbio;
 }
 
 void btrfs_get_bbio(struct btrfs_bio *bbio)
 {
-	WARN_ON(!atomic_read(&bbio->refs));
-	atomic_inc(&bbio->refs);
+	WARN_ON(!refcount_read(&bbio->refs));
+	refcount_inc(&bbio->refs);
 }
 
 void btrfs_put_bbio(struct btrfs_bio *bbio)
 {
 	if (!bbio)
 		return;
-	if (atomic_dec_and_test(&bbio->refs))
+	if (refcount_dec_and_test(&bbio->refs))
 		kfree(bbio);
 }
 
