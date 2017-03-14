@@ -1701,7 +1701,8 @@ static void mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *new_req)
 		case MMC_BLK_CMD_ERR:
 			req_pending = mmc_blk_rw_cmd_err(md, card, brq, old_req, req_pending);
 			if (mmc_blk_reset(md, card->host, type)) {
-				mmc_blk_rw_cmd_abort(card, old_req);
+				if (req_pending)
+					mmc_blk_rw_cmd_abort(card, old_req);
 				mmc_blk_rw_try_restart(mq, new_req);
 				return;
 			}
@@ -1817,6 +1818,7 @@ void mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		mmc_blk_issue_flush(mq, req);
 	} else {
 		mmc_blk_issue_rw_rq(mq, req);
+		card->host->context_info.is_waiting_last_req = false;
 	}
 
 out:
