@@ -192,7 +192,7 @@ void register_inmem_page(struct inode *inode, struct page *page)
 	trace_f2fs_register_inmem_page(page, INMEM);
 }
 
-static int __revoke_inmem_pages(struct inode *inode,
+static int __revoke_inmem_pages(struct inode *inode, struct page *p,
 				struct list_head *head, bool drop, bool recover)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -205,7 +205,10 @@ static int __revoke_inmem_pages(struct inode *inode,
 		if (drop)
 			trace_f2fs_commit_inmem_page(page, INMEM_DROP);
 
-		lock_page(page);
+		if (!p)
+			lock_page(page);
+		else if (p != page)
+			continue;
 
 		if (recover) {
 			struct dnode_of_data dn;
@@ -229,7 +232,7 @@ next:
 			ClearPageUptodate(page);
 		set_page_private(page, 0);
 		ClearPagePrivate(page);
-		f2fs_put_page(page, 1);
+		f2fs_put_page(page, p ? 0 : 1);
 
 		list_del(&cur->list);
 		kmem_cache_free(inmem_entry_slab, cur);
@@ -243,11 +246,20 @@ void drop_inmem_pages(struct inode *inode)
 	struct f2fs_inode_info *fi = F2FS_I(inode);
 
 	mutex_lock(&fi->inmem_lock);
-	__revoke_inmem_pages(inode, &fi->inmem_pages, true, false);
+	__revoke_inmem_pages(inode, NULL, &fi->inmem_pages, true, false);
 	mutex_unlock(&fi->inmem_lock);
 
 	clear_inode_flag(inode, FI_ATOMIC_FILE);
 	stat_dec_atomic_write(inode);
+}
+
+void drop_inmem_page(struct inode *inode, struct page *page)
+{
+	struct f2fs_inode_info *fi = F2FS_I(inode);
+
+	mutex_lock(&fi->inmem_lock);
+	__revoke_inmem_pages(inode, page, &fi->inmem_pages, true, false);
+	mutex_unlock(&fi->inmem_lock);
 }
 
 static int __commit_inmem_pages(struct inode *inode,
@@ -300,7 +312,7 @@ static int __commit_inmem_pages(struct inode *inode,
 							DATA, WRITE);
 
 	if (!err)
-		__revoke_inmem_pages(inode, revoke_list, false, false);
+		__revoke_inmem_pages(inode, NULL, revoke_list, false, false);
 
 	return err;
 }
@@ -330,12 +342,14 @@ int commit_inmem_pages(struct inode *inode)
 		 * recovery or rewrite & commit last transaction. For other
 		 * error number, revoking was done by filesystem itself.
 		 */
-		ret = __revoke_inmem_pages(inode, &revoke_list, false, true);
+		ret = __revoke_inmem_pages(inode, NULL, &revoke_list,
+							false, true);
 		if (ret)
 			err = ret;
 
 		/* drop all uncommitted pages */
-		__revoke_inmem_pages(inode, &fi->inmem_pages, true, false);
+		__revoke_inmem_pages(inode, NULL, &fi->inmem_pages,
+							true, false);
 	}
 	mutex_unlock(&fi->inmem_lock);
 
