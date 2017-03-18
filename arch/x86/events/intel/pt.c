@@ -411,6 +411,7 @@ static u64 pt_config_filters(struct perf_event *event)
 
 static void pt_config(struct perf_event *event)
 {
+	struct pt *pt = this_cpu_ptr(&pt_ctx);
 	u64 reg;
 
 	if (!event->hw.itrace_started) {
@@ -429,11 +430,15 @@ static void pt_config(struct perf_event *event)
 	reg |= (event->attr.config & PT_CONFIG_MASK);
 
 	event->hw.config = reg;
-	wrmsrl(MSR_IA32_RTIT_CTL, reg);
+	if (READ_ONCE(pt->vmx_on))
+		perf_aux_output_flag(&pt->handle, PERF_AUX_FLAG_PARTIAL);
+	else
+		wrmsrl(MSR_IA32_RTIT_CTL, reg);
 }
 
 static void pt_config_stop(struct perf_event *event)
 {
+	struct pt *pt = this_cpu_ptr(&pt_ctx);
 	u64 ctl = READ_ONCE(event->hw.config);
 
 	/* may be already stopped by a PMI */
@@ -441,7 +446,8 @@ static void pt_config_stop(struct perf_event *event)
 		return;
 
 	ctl &= ~RTIT_CTL_TRACEEN;
-	wrmsrl(MSR_IA32_RTIT_CTL, ctl);
+	if (!READ_ONCE(pt->vmx_on))
+		wrmsrl(MSR_IA32_RTIT_CTL, ctl);
 
 	WRITE_ONCE(event->hw.config, ctl);
 
@@ -753,7 +759,8 @@ static void pt_handle_status(struct pt *pt)
 		 */
 		if (!pt_cap_get(PT_CAP_topa_multiple_entries) ||
 		    buf->output_off == sizes(TOPA_ENTRY(buf->cur, buf->cur_idx)->size)) {
-			local_inc(&buf->lost);
+			perf_aux_output_flag(&pt->handle,
+			                     PERF_AUX_FLAG_TRUNCATED);
 			advance++;
 		}
 	}
@@ -846,8 +853,10 @@ static int pt_buffer_reset_markers(struct pt_buffer *buf,
 
 	/* can't stop in the middle of an output region */
 	if (buf->output_off + handle->size + 1 <
-	    sizes(TOPA_ENTRY(buf->cur, buf->cur_idx)->size))
+	    sizes(TOPA_ENTRY(buf->cur, buf->cur_idx)->size)) {
+		perf_aux_output_flag(handle, PERF_AUX_FLAG_TRUNCATED);
 		return -EINVAL;
+	}
 
 
 	/* single entry ToPA is handled by marking all regions STOP=1 INT=1 */
@@ -1171,12 +1180,6 @@ void intel_pt_interrupt(void)
 	if (!READ_ONCE(pt->handle_nmi))
 		return;
 
-	/*
-	 * If VMX is on and PT does not support it, don't touch anything.
-	 */
-	if (READ_ONCE(pt->vmx_on))
-		return;
-
 	if (!event)
 		return;
 
@@ -1192,8 +1195,7 @@ void intel_pt_interrupt(void)
 
 	pt_update_head(pt);
 
-	perf_aux_output_end(&pt->handle, local_xchg(&buf->data_size, 0),
-			    local_xchg(&buf->lost, 0));
+	perf_aux_output_end(&pt->handle, local_xchg(&buf->data_size, 0));
 
 	if (!event->hw.state) {
 		int ret;
@@ -1208,7 +1210,7 @@ void intel_pt_interrupt(void)
 		/* snapshot counters don't use PMI, so it's safe */
 		ret = pt_buffer_reset_markers(buf, &pt->handle);
 		if (ret) {
-			perf_aux_output_end(&pt->handle, 0, true);
+			perf_aux_output_end(&pt->handle, 0);
 			return;
 		}
 
@@ -1237,12 +1239,19 @@ void intel_pt_handle_vmx(int on)
 	local_irq_save(flags);
 	WRITE_ONCE(pt->vmx_on, on);
 
-	if (on) {
-		/* prevent pt_config_stop() from writing RTIT_CTL */
-		event = pt->handle.event;
-		if (event)
-			event->hw.config = 0;
-	}
+	/*
+	 * If an AUX transaction is in progress, it will contain
+	 * gap(s), so flag it PARTIAL to inform the user.
+	 */
+	event = pt->handle.event;
+	if (event)
+		perf_aux_output_flag(&pt->handle,
+		                     PERF_AUX_FLAG_PARTIAL);
+
+	/* Turn PTs back on */
+	if (!on && event)
+		wrmsrl(MSR_IA32_RTIT_CTL, event->hw.config);
+
 	local_irq_restore(flags);
 }
 EXPORT_SYMBOL_GPL(intel_pt_handle_vmx);
@@ -1256,9 +1265,6 @@ static void pt_event_start(struct perf_event *event, int mode)
 	struct hw_perf_event *hwc = &event->hw;
 	struct pt *pt = this_cpu_ptr(&pt_ctx);
 	struct pt_buffer *buf;
-
-	if (READ_ONCE(pt->vmx_on))
-		return;
 
 	buf = perf_aux_output_begin(&pt->handle, event);
 	if (!buf)
@@ -1280,7 +1286,7 @@ static void pt_event_start(struct perf_event *event, int mode)
 	return;
 
 fail_end_stop:
-	perf_aux_output_end(&pt->handle, 0, true);
+	perf_aux_output_end(&pt->handle, 0);
 fail_stop:
 	hwc->state = PERF_HES_STOPPED;
 }
@@ -1321,8 +1327,7 @@ static void pt_event_stop(struct perf_event *event, int mode)
 			pt->handle.head =
 				local_xchg(&buf->data_size,
 					   buf->nr_pages << PAGE_SHIFT);
-		perf_aux_output_end(&pt->handle, local_xchg(&buf->data_size, 0),
-				    local_xchg(&buf->lost, 0));
+		perf_aux_output_end(&pt->handle, local_xchg(&buf->data_size, 0));
 	}
 }
 
