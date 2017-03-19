@@ -1,22 +1,17 @@
 /*
- * Device Tree file for Freescale LS2080a RDB Board.
- *
- * Copyright (C) 2016-17, Freescale Semiconductor
- *
- * Abhimanyu Saini <abhimanyu.saini@nxp.com>
- * Bhupesh Sharma <bhupesh.sharma@freescale.com>
+ * Copyright (C) 2016 Amarula Solutions B.V.
+ * Copyright (C) 2016 Engicam S.r.l.
  *
  * This file is dual-licensed: you can use it either under the terms
- * of the GPLv2 or the X11 license, at your option. Note that this dual
+ * of the GPL or the X11 license, at your option. Note that this dual
  * licensing only applies to this file, and not this project as a
  * whole.
  *
- *  a) This library is free software; you can redistribute it and/or
- *     modify it under the terms of the GNU General Public License as
- *     published by the Free Software Foundation; either version 2 of the
- *     License, or (at your option) any later version.
+ *  a) This file is free software; you can redistribute it and/or
+ *     modify it under the terms of the GNU General Public License
+ *     version 2 as published by the Free Software Foundation.
  *
- *     This library is distributed in the hope that it will be useful,
+ *     This file is distributed in the hope that it will be useful,
  *     but WITHOUT ANY WARRANTY; without even the implied warranty of
  *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *     GNU General Public License for more details.
@@ -47,19 +42,35 @@
 
 /dts-v1/;
 
-#include "fsl-ls2080a.dtsi"
-#include "fsl-ls208xa-rdb.dtsi"
+#include "imx6q.dtsi"
+#include "imx6qdl-icore.dtsi"
 
 / {
-	model = "Freescale Layerscape 2080a RDB Board";
-	compatible = "fsl,ls2080a-rdb", "fsl,ls2080a";
+	model = "Engicam i.CoreM6 Quad/Dual OpenFrame Capacitive touch 12 Kit";
+	compatible = "engicam,imx6-icore", "fsl,imx6q";
+};
 
-	aliases {
-		serial0 = &serial0;
-		serial1 = &serial1;
-	};
+&ldb {
+	status = "okay";
 
-	chosen {
-		stdout-path = "serial1:115200n8";
+	lvds-channel@0 {
+		fsl,data-mapping = "spwg";
+		fsl,data-width = <18>;
+		status = "okay";
+
+		display-timings {
+			native-mode = <&timing0>;
+			timing0: timing0 {
+				clock-frequency = <46800000>;
+				hactive = <1280>;
+				vactive = <480>;
+				hback-porch = <353>;
+				hfront-porch = <47>;
+				vback-porch = <39>;
+				vfront-porch = <4>;
+				hsync-len = <8>;
+				vsync-len = <2>;
+			};
+		};
 	};
 };

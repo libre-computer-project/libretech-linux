@@ -404,6 +404,8 @@ dtb-$(CONFIG_SOC_IMX6Q) += \
 	imx6q-h100.dtb \
 	imx6q-hummingboard.dtb \
 	imx6q-icore.dtb \
+	imx6q-icore-ofcap10.dtb \
+	imx6q-icore-ofcap12.dtb \
 	imx6q-icore-rqs.dtb \
 	imx6q-marsboard.dtb \
 	imx6q-mccmon6.dtb \
@@ -464,6 +466,7 @@ dtb-$(CONFIG_SOC_IMX7D) += \
 	imx7d-nitrogen7.dtb \
 	imx7d-sbc-imx7.dtb \
 	imx7d-sdb.dtb \
+	imx7d-sdb-sht11.dtb \
 	imx7s-colibri-eval-v3.dtb \
 	imx7s-warp.dtb
 dtb-$(CONFIG_SOC_LS1021A) += \
@@ -494,6 +497,10 @@ dtb-$(CONFIG_ARCH_MXS) += \
 	imx28-cfa10056.dtb \
 	imx28-cfa10057.dtb \
 	imx28-cfa10058.dtb \
+	imx28-duckbill-2-485.dtb \
+	imx28-duckbill-2.dtb \
+	imx28-duckbill-2-enocean.dtb \
+	imx28-duckbill-2-spi.dtb \
 	imx28-duckbill.dtb \
 	imx28-eukrea-mbmx283lc.dtb \
 	imx28-eukrea-mbmx287lc.dtb \
