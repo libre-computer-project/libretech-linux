@@ -970,7 +970,6 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		int may_enter_fs;
 		enum page_references references = PAGEREF_RECLAIM_CLEAN;
 		bool dirty, writeback;
-		int ret = SWAP_SUCCESS;
 
 		cond_resched();
 
@@ -1143,13 +1142,9 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 * processes. Try to unmap it here.
 		 */
 		if (page_mapped(page)) {
-			switch (ret = try_to_unmap(page,
-				ttu_flags | TTU_BATCH_FLUSH)) {
-			case SWAP_FAIL:
+			if (!try_to_unmap(page, ttu_flags | TTU_BATCH_FLUSH)) {
 				nr_unmap_fail++;
 				goto activate_locked;
-			case SWAP_SUCCESS:
-				; /* try to free the page below */
 			}
 		}
 
