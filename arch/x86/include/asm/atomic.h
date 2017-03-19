@@ -237,6 +237,8 @@ ATOMIC_OPS(xor, ^)
 #undef ATOMIC_FETCH_OP
 #undef ATOMIC_OP
 
+int __arch_atomic_add_unless(atomic_t *v, int a, int u);
+
 /**
  * arch_atomic_inc_short - increment of a short integer
  * @v: pointer to type int
