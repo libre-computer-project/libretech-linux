@@ -561,6 +561,8 @@ struct f2fs_nm_info {
 	struct mutex build_lock;	/* lock for build free nids */
 	unsigned char (*free_nid_bitmap)[NAT_ENTRY_BITMAP_SIZE];
 	unsigned char *nat_block_bitmap;
+	unsigned short *free_nid_count;	/* free nid count of NAT block */
+	spinlock_t free_nid_lock;	/* protect updating of nid count */
 
 	/* for checkpoint */
 	char *nat_bitmap;		/* NAT bitmap pointer */
@@ -2182,6 +2184,7 @@ void destroy_node_manager_caches(void);
  */
 void register_inmem_page(struct inode *inode, struct page *page);
 void drop_inmem_pages(struct inode *inode);
+void drop_inmem_page(struct inode *inode, struct page *page);
 int commit_inmem_pages(struct inode *inode);
 void f2fs_balance_fs(struct f2fs_sb_info *sbi, bool need);
 void f2fs_balance_fs_bg(struct f2fs_sb_info *sbi);
