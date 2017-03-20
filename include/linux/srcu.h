@@ -22,7 +22,7 @@
  *	   Lai Jiangshan <laijs@cn.fujitsu.com>
  *
  * For detailed explanation of Read-Copy Update mechanism see -
- * 		Documentation/RCU/ *.txt
+ *		Documentation/RCU/ *.txt
  *
  */
 
@@ -32,35 +32,31 @@
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
+#include <linux/rcu_segcblist.h>
 
 struct srcu_array {
 	unsigned long lock_count[2];
 	unsigned long unlock_count[2];
 };
 
-struct rcu_batch {
-	struct rcu_head *head, **tail;
-};
-
-#define RCU_BATCH_INIT(name) { NULL, &(name.head) }
-
 struct srcu_struct {
 	unsigned long completed;
+	unsigned long srcu_gp_seq;
 	struct srcu_array __percpu *per_cpu_ref;
-	spinlock_t queue_lock; /* protect ->batch_queue, ->running */
-	bool running;
-	/* callbacks just queued */
-	struct rcu_batch batch_queue;
-	/* callbacks try to do the first check_zero */
-	struct rcu_batch batch_check0;
-	/* callbacks done with the first check_zero and the flip */
-	struct rcu_batch batch_check1;
-	struct rcu_batch batch_done;
+	spinlock_t queue_lock; /* protect ->srcu_cblist, ->srcu_state */
+	int srcu_state;
+	struct rcu_segcblist srcu_cblist;
 	struct delayed_work work;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map dep_map;
 #endif /* #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 };
+
+/* Values for -> state variable. */
+#define SRCU_STATE_IDLE		0
+#define SRCU_STATE_SCAN1	1
+#define SRCU_STATE_SCAN2	2
+#define SRCU_STATE_DONE		3
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 
@@ -89,11 +85,8 @@ void process_srcu(struct work_struct *work);
 		.completed = -300,					\
 		.per_cpu_ref = &name##_srcu_array,			\
 		.queue_lock = __SPIN_LOCK_UNLOCKED(name.queue_lock),	\
-		.running = false,					\
-		.batch_queue = RCU_BATCH_INIT(name.batch_queue),	\
-		.batch_check0 = RCU_BATCH_INIT(name.batch_check0),	\
-		.batch_check1 = RCU_BATCH_INIT(name.batch_check1),	\
-		.batch_done = RCU_BATCH_INIT(name.batch_done),		\
+		.srcu_state = SRCU_STATE_IDLE,				\
+		.srcu_cblist = RCU_SEGCBLIST_INITIALIZER(name.srcu_cblist),\
 		.work = __DELAYED_WORK_INITIALIZER(name.work, process_srcu, 0),\
 		__SRCU_DEP_MAP_INIT(name)				\
 	}
