@@ -52,18 +52,28 @@ enum crb_cancel {
 	CRB_CANCEL_INVOKE	= BIT(0),
 };
 
-struct crb_control_area {
-	u32 req;
-	u32 sts;
-	u32 cancel;
-	u32 start;
-	u32 int_enable;
-	u32 int_sts;
-	u32 cmd_size;
-	u32 cmd_pa_low;
-	u32 cmd_pa_high;
-	u32 rsp_size;
-	u64 rsp_pa;
+struct crb_regs_head {
+	u32 loc_state;
+	u32 reserved1;
+	u32 loc_ctrl;
+	u32 loc_sts;
+	u8 reserved2[32];
+	u64 intf_id;
+	u64 ctrl_ext;
+} __packed;
+
+struct crb_regs_tail {
+	u32 ctrl_req;
+	u32 ctrl_sts;
+	u32 ctrl_cancel;
+	u32 ctrl_start;
+	u32 ctrl_int_enable;
+	u32 ctrl_int_sts;
+	u32 ctrl_cmd_size;
+	u32 ctrl_cmd_pa_low;
+	u32 ctrl_cmd_pa_high;
+	u32 ctrl_rsp_size;
+	u64 ctrl_rsp_pa;
 } __packed;
 
 enum crb_status {
@@ -78,7 +88,8 @@ enum crb_flags {
 struct crb_priv {
 	unsigned int flags;
 	void __iomem *iobase;
-	struct crb_control_area __iomem *cca;
+	struct crb_regs_head __iomem *regs_h;
+	struct crb_regs_tail __iomem *regs_t;
 	u8 __iomem *cmd;
 	u8 __iomem *rsp;
 	u32 cmd_size;
@@ -104,10 +115,29 @@ static int __maybe_unused crb_go_idle(struct device *dev, struct crb_priv *priv)
 	if (priv->flags & CRB_FL_ACPI_START)
 		return 0;
 
-	iowrite32(CRB_CTRL_REQ_GO_IDLE, &priv->cca->req);
+	iowrite32(CRB_CTRL_REQ_GO_IDLE, &priv->regs_t->ctrl_req);
 	/* we don't really care when this settles */
 
 	return 0;
+}
+
+static bool crb_wait_for_reg_32(u32 __iomem *reg, u32 mask, u32 value,
+				unsigned long timeout)
+{
+	ktime_t start;
+	ktime_t stop;
+
+	start = ktime_get();
+	stop = ktime_add(start, ms_to_ktime(timeout));
+
+	do {
+		if ((ioread32(reg) & mask) == value)
+			return true;
+
+		usleep_range(50, 100);
+	} while (ktime_before(ktime_get(), stop));
+
+	return false;
 }
 
 /**
@@ -127,22 +157,14 @@ static int __maybe_unused crb_go_idle(struct device *dev, struct crb_priv *priv)
 static int __maybe_unused crb_cmd_ready(struct device *dev,
 					struct crb_priv *priv)
 {
-	ktime_t stop, start;
-
 	if (priv->flags & CRB_FL_ACPI_START)
 		return 0;
 
-	iowrite32(CRB_CTRL_REQ_CMD_READY, &priv->cca->req);
-
-	start = ktime_get();
-	stop = ktime_add(start, ms_to_ktime(TPM2_TIMEOUT_C));
-	do {
-		if (!(ioread32(&priv->cca->req) & CRB_CTRL_REQ_CMD_READY))
-			return 0;
-		usleep_range(50, 100);
-	} while (ktime_before(ktime_get(), stop));
-
-	if (ioread32(&priv->cca->req) & CRB_CTRL_REQ_CMD_READY) {
+	iowrite32(CRB_CTRL_REQ_CMD_READY, &priv->regs_t->ctrl_req);
+	if (!crb_wait_for_reg_32(&priv->regs_t->ctrl_req,
+				 CRB_CTRL_REQ_CMD_READY /* mask */,
+				 0, /* value */
+				 TPM2_TIMEOUT_C)) {
 		dev_warn(dev, "cmdReady timed out\n");
 		return -ETIME;
 	}
@@ -155,7 +177,7 @@ static u8 crb_status(struct tpm_chip *chip)
 	struct crb_priv *priv = dev_get_drvdata(&chip->dev);
 	u8 sts = 0;
 
-	if ((ioread32(&priv->cca->start) & CRB_START_INVOKE) !=
+	if ((ioread32(&priv->regs_t->ctrl_start) & CRB_START_INVOKE) !=
 	    CRB_START_INVOKE)
 		sts |= CRB_DRV_STS_COMPLETE;
 
@@ -171,13 +193,12 @@ static int crb_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 	if (count < 6)
 		return -EIO;
 
-	if (ioread32(&priv->cca->sts) & CRB_CTRL_STS_ERROR)
+	if (ioread32(&priv->regs_t->ctrl_sts) & CRB_CTRL_STS_ERROR)
 		return -EIO;
 
 	memcpy_fromio(buf, priv->rsp, 6);
 	expected = be32_to_cpup((__be32 *) &buf[2]);
-
-	if (expected > count)
+	if (expected > count || expected < 6)
 		return -EIO;
 
 	memcpy_fromio(&buf[6], &priv->rsp[6], expected - 6);
@@ -210,7 +231,7 @@ static int crb_send(struct tpm_chip *chip, u8 *buf, size_t len)
 	/* Zero the cancel register so that the next command will not get
 	 * canceled.
 	 */
-	iowrite32(0, &priv->cca->cancel);
+	iowrite32(0, &priv->regs_t->ctrl_cancel);
 
 	if (len > priv->cmd_size) {
 		dev_err(&chip->dev, "invalid command count value %zd %d\n",
@@ -224,7 +245,7 @@ static int crb_send(struct tpm_chip *chip, u8 *buf, size_t len)
 	wmb();
 
 	if (priv->flags & CRB_FL_CRB_START)
-		iowrite32(CRB_START_INVOKE, &priv->cca->start);
+		iowrite32(CRB_START_INVOKE, &priv->regs_t->ctrl_start);
 
 	if (priv->flags & CRB_FL_ACPI_START)
 		rc = crb_do_acpi_start(chip);
@@ -236,7 +257,7 @@ static void crb_cancel(struct tpm_chip *chip)
 {
 	struct crb_priv *priv = dev_get_drvdata(&chip->dev);
 
-	iowrite32(CRB_CANCEL_INVOKE, &priv->cca->cancel);
+	iowrite32(CRB_CANCEL_INVOKE, &priv->regs_t->ctrl_cancel);
 
 	if ((priv->flags & CRB_FL_ACPI_START) && crb_do_acpi_start(chip))
 		dev_err(&chip->dev, "ACPI Start failed\n");
@@ -245,7 +266,7 @@ static void crb_cancel(struct tpm_chip *chip)
 static bool crb_req_canceled(struct tpm_chip *chip, u8 status)
 {
 	struct crb_priv *priv = dev_get_drvdata(&chip->dev);
-	u32 cancel = ioread32(&priv->cca->cancel);
+	u32 cancel = ioread32(&priv->regs_t->ctrl_cancel);
 
 	return (cancel & CRB_CANCEL_INVOKE) == CRB_CANCEL_INVOKE;
 }
@@ -295,6 +316,27 @@ static void __iomem *crb_map_res(struct device *dev, struct crb_priv *priv,
 	return priv->iobase + (new_res.start - io_res->start);
 }
 
+/*
+ * Work around broken BIOSs that return inconsistent values from the ACPI
+ * region vs the registers. Trust the ACPI region. Such broken systems
+ * probably cannot send large TPM commands since the buffer will be truncated.
+ */
+static u64 crb_fixup_cmd_size(struct device *dev, struct resource *io_res,
+			      u64 start, u64 size)
+{
+	if (io_res->start > start || io_res->end < start)
+		return size;
+
+	if (start + size - 1 <= io_res->end)
+		return size;
+
+	dev_err(dev,
+		FW_BUG "ACPI region does not cover the entire command/response buffer. %pr vs %llx %llx\n",
+		io_res, start, size);
+
+	return io_res->end - start + 1;
+}
+
 static int crb_map_io(struct acpi_device *device, struct crb_priv *priv,
 		      struct acpi_table_tpm2 *buf)
 {
@@ -324,10 +366,22 @@ static int crb_map_io(struct acpi_device *device, struct crb_priv *priv,
 	if (IS_ERR(priv->iobase))
 		return PTR_ERR(priv->iobase);
 
-	priv->cca = crb_map_res(dev, priv, &io_res, buf->control_address,
-				sizeof(struct crb_control_area));
-	if (IS_ERR(priv->cca))
-		return PTR_ERR(priv->cca);
+	/* The ACPI IO region starts at the head area and continues to include
+	 * the control area, as one nice sane region except for some older
+	 * stuff that puts the control area outside the ACPI IO region.
+	 */
+	if (!(priv->flags & CRB_FL_ACPI_START)) {
+		if (buf->control_address == io_res.start +
+		    sizeof(*priv->regs_h))
+			priv->regs_h = priv->iobase;
+		else
+			dev_warn(dev, FW_BUG "Bad ACPI memory layout");
+	}
+
+	priv->regs_t = crb_map_res(dev, priv, &io_res, buf->control_address,
+				   sizeof(struct crb_regs_tail));
+	if (IS_ERR(priv->regs_t))
+		return PTR_ERR(priv->regs_t);
 
 	/*
 	 * PTT HW bug w/a: wake up the device to access
@@ -337,10 +391,11 @@ static int crb_map_io(struct acpi_device *device, struct crb_priv *priv,
 	if (ret)
 		return ret;
 
-	pa_high = ioread32(&priv->cca->cmd_pa_high);
-	pa_low  = ioread32(&priv->cca->cmd_pa_low);
+	pa_high = ioread32(&priv->regs_t->ctrl_cmd_pa_high);
+	pa_low  = ioread32(&priv->regs_t->ctrl_cmd_pa_low);
 	cmd_pa = ((u64)pa_high << 32) | pa_low;
-	cmd_size = ioread32(&priv->cca->cmd_size);
+	cmd_size = crb_fixup_cmd_size(dev, &io_res, cmd_pa,
+				      ioread32(&priv->regs_t->ctrl_cmd_size));
 
 	dev_dbg(dev, "cmd_hi = %X cmd_low = %X cmd_size %X\n",
 		pa_high, pa_low, cmd_size);
@@ -351,9 +406,10 @@ static int crb_map_io(struct acpi_device *device, struct crb_priv *priv,
 		goto out;
 	}
 
-	memcpy_fromio(&rsp_pa, &priv->cca->rsp_pa, 8);
+	memcpy_fromio(&rsp_pa, &priv->regs_t->ctrl_rsp_pa, 8);
 	rsp_pa = le64_to_cpu(rsp_pa);
-	rsp_size = ioread32(&priv->cca->rsp_size);
+	rsp_size = crb_fixup_cmd_size(dev, &io_res, rsp_pa,
+				      ioread32(&priv->regs_t->ctrl_rsp_size));
 
 	if (cmd_pa != rsp_pa) {
 		priv->rsp = crb_map_res(dev, priv, &io_res, rsp_pa, rsp_size);
@@ -479,10 +535,33 @@ static int crb_pm_runtime_resume(struct device *dev)
 
 	return crb_cmd_ready(dev, priv);
 }
+
+static int crb_pm_suspend(struct device *dev)
+{
+	int ret;
+
+	ret = tpm_pm_suspend(dev);
+	if (ret)
+		return ret;
+
+	return crb_pm_runtime_suspend(dev);
+}
+
+static int crb_pm_resume(struct device *dev)
+{
+	int ret;
+
+	ret = crb_pm_runtime_resume(dev);
+	if (ret)
+		return ret;
+
+	return tpm_pm_resume(dev);
+}
+
 #endif /* CONFIG_PM */
 
 static const struct dev_pm_ops crb_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(tpm_pm_suspend, tpm_pm_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(crb_pm_suspend, crb_pm_resume)
 	SET_RUNTIME_PM_OPS(crb_pm_runtime_suspend, crb_pm_runtime_resume, NULL)
 };
 
