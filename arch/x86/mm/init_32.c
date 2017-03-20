@@ -67,6 +67,7 @@ bool __read_mostly __vmalloc_start_set = false;
  */
 static pmd_t * __init one_md_table_init(pgd_t *pgd)
 {
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd_table;
 
@@ -75,13 +76,15 @@ static pmd_t * __init one_md_table_init(pgd_t *pgd)
 		pmd_table = (pmd_t *)alloc_low_page();
 		paravirt_alloc_pmd(&init_mm, __pa(pmd_table) >> PAGE_SHIFT);
 		set_pgd(pgd, __pgd(__pa(pmd_table) | _PAGE_PRESENT));
-		pud = pud_offset(pgd, 0);
+		p4d = p4d_offset(pgd, 0);
+		pud = pud_offset(p4d, 0);
 		BUG_ON(pmd_table != pmd_offset(pud, 0));
 
 		return pmd_table;
 	}
 #endif
-	pud = pud_offset(pgd, 0);
+	p4d = p4d_offset(pgd, 0);
+	pud = pud_offset(p4d, 0);
 	pmd_table = pmd_offset(pud, 0);
 
 	return pmd_table;
@@ -390,8 +393,11 @@ pte_t *kmap_pte;
 
 static inline pte_t *kmap_get_fixmap_pte(unsigned long vaddr)
 {
-	return pte_offset_kernel(pmd_offset(pud_offset(pgd_offset_k(vaddr),
-			vaddr), vaddr), vaddr);
+	pgd_t *pgd = pgd_offset_k(vaddr);
+	p4d_t *p4d = p4d_offset(pgd, vaddr);
+	pud_t *pud = pud_offset(p4d, vaddr);
+	pmd_t *pmd = pmd_offset(pud, vaddr);
+	return pte_offset_kernel(pmd, vaddr);
 }
 
 static void __init kmap_init(void)
@@ -410,6 +416,7 @@ static void __init permanent_kmaps_init(pgd_t *pgd_base)
 {
 	unsigned long vaddr;
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
@@ -418,7 +425,8 @@ static void __init permanent_kmaps_init(pgd_t *pgd_base)
 	page_table_range_init(vaddr, vaddr + PAGE_SIZE*LAST_PKMAP, pgd_base);
 
 	pgd = swapper_pg_dir + pgd_index(vaddr);
-	pud = pud_offset(pgd, vaddr);
+	p4d = p4d_offset(pgd, vaddr);
+	pud = pud_offset(p4d, vaddr);
 	pmd = pmd_offset(pud, vaddr);
 	pte = pte_offset_kernel(pmd, vaddr);
 	pkmap_page_table = pte;
@@ -450,6 +458,7 @@ void __init native_pagetable_init(void)
 {
 	unsigned long pfn, va;
 	pgd_t *pgd, *base = swapper_pg_dir;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
@@ -469,7 +478,8 @@ void __init native_pagetable_init(void)
 		if (!pgd_present(*pgd))
 			break;
 
-		pud = pud_offset(pgd, va);
+		p4d = p4d_offset(pgd, va);
+		pud = pud_offset(p4d, va);
 		pmd = pmd_offset(pud, va);
 		if (!pmd_present(*pmd))
 			break;
@@ -716,15 +726,17 @@ void __init paging_init(void)
  */
 static void __init test_wp_bit(void)
 {
+	int wp_works_ok;
+
 	printk(KERN_INFO
   "Checking if this processor honours the WP bit even in supervisor mode...");
 
 	/* Any page-aligned address will do, the test is non-destructive */
 	__set_fixmap(FIX_WP_TEST, __pa(&swapper_pg_dir), PAGE_KERNEL_RO);
-	boot_cpu_data.wp_works_ok = do_test_wp_bit();
+	wp_works_ok = do_test_wp_bit();
 	clear_fixmap(FIX_WP_TEST);
 
-	if (!boot_cpu_data.wp_works_ok) {
+	if (!wp_works_ok) {
 		printk(KERN_CONT "No.\n");
 		panic("Linux doesn't support CPUs with broken WP.");
 	} else {
@@ -811,8 +823,7 @@ void __init mem_init(void)
 	BUG_ON(VMALLOC_START				>= VMALLOC_END);
 	BUG_ON((unsigned long)high_memory		> VMALLOC_START);
 
-	if (boot_cpu_data.wp_works_ok < 0)
-		test_wp_bit();
+	test_wp_bit();
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
