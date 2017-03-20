@@ -37,7 +37,8 @@
 static int handle_ri(struct kvm_vcpu *vcpu)
 {
 	if (test_kvm_facility(vcpu->kvm, 64)) {
-		vcpu->arch.sie_block->ecb3 |= 0x01;
+		VCPU_EVENT(vcpu, 3, "%s", "ENABLE: RI (lazy)");
+		vcpu->arch.sie_block->ecb3 |= ECB3_RI;
 		kvm_s390_retry_instr(vcpu);
 		return 0;
 	} else
@@ -759,6 +760,7 @@ static const intercept_handler_t b2_handlers[256] = {
 	[0x3b] = handle_io_inst,
 	[0x3c] = handle_io_inst,
 	[0x50] = handle_ipte_interlock,
+	[0x56] = handle_sthyi,
 	[0x5f] = handle_io_inst,
 	[0x74] = handle_io_inst,
 	[0x76] = handle_io_inst,
