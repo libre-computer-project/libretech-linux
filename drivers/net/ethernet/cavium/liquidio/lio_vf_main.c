@@ -39,12 +39,6 @@ MODULE_PARM_DESC(debug, "NETIF_MSG debug bits");
 
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV | NETIF_MSG_PROBE | NETIF_MSG_LINK)
 
-/* Bit mask values for lio->ifstate */
-#define   LIO_IFSTATE_DROQ_OPS             0x01
-#define   LIO_IFSTATE_REGISTERED           0x02
-#define   LIO_IFSTATE_RUNNING              0x04
-#define   LIO_IFSTATE_RX_TIMESTAMP_ENABLED 0x08
-
 struct liquidio_if_cfg_context {
 	int octeon_id;
 
@@ -336,36 +330,6 @@ static struct pci_driver liquidio_vf_pci_driver = {
 };
 
 /**
- * \brief check interface state
- * @param lio per-network private data
- * @param state_flag flag state to check
- */
-static int ifstate_check(struct lio *lio, int state_flag)
-{
-	return atomic_read(&lio->ifstate) & state_flag;
-}
-
-/**
- * \brief set interface state
- * @param lio per-network private data
- * @param state_flag flag state to set
- */
-static void ifstate_set(struct lio *lio, int state_flag)
-{
-	atomic_set(&lio->ifstate, (atomic_read(&lio->ifstate) | state_flag));
-}
-
-/**
- * \brief clear interface state
- * @param lio per-network private data
- * @param state_flag flag state to clear
- */
-static void ifstate_reset(struct lio *lio, int state_flag)
-{
-	atomic_set(&lio->ifstate, (atomic_read(&lio->ifstate) & ~(state_flag)));
-}
-
-/**
  * \brief Stop Tx queues
  * @param netdev network device
  */
@@ -506,7 +470,8 @@ static void delete_glists(struct lio *lio)
 				kfree(g);
 		} while (g);
 
-		if (lio->glists_virt_base && lio->glists_virt_base[i]) {
+		if (lio->glists_virt_base && lio->glists_virt_base[i] &&
+		    lio->glists_dma_base && lio->glists_dma_base[i]) {
 			lio_dma_free(lio->oct_dev,
 				     lio->glist_entry_size * lio->tx_qsize,
 				     lio->glists_virt_base[i],
@@ -780,6 +745,7 @@ liquidio_msix_intr_handler(int irq __attribute__((unused)), void *dev)
 static int octeon_setup_interrupt(struct octeon_device *oct)
 {
 	struct msix_entry *msix_entries;
+	char *queue_irq_names = NULL;
 	int num_alloc_ioq_vectors;
 	int num_ioq_vectors;
 	int irqret;
@@ -788,10 +754,25 @@ static int octeon_setup_interrupt(struct octeon_device *oct)
 	if (oct->msix_on) {
 		oct->num_msix_irqs = oct->sriov_info.rings_per_vf;
 
+		/* allocate storage for the names assigned to each irq */
+		oct->irq_name_storage =
+			kcalloc(MAX_IOQ_INTERRUPTS_PER_VF, INTRNAMSIZ,
+				GFP_KERNEL);
+		if (!oct->irq_name_storage) {
+			dev_err(&oct->pci_dev->dev, "Irq name storage alloc failed...\n");
+			return -ENOMEM;
+		}
+
+		queue_irq_names = oct->irq_name_storage;
+
 		oct->msix_entries = kcalloc(
 		    oct->num_msix_irqs, sizeof(struct msix_entry), GFP_KERNEL);
-		if (!oct->msix_entries)
-			return 1;
+		if (!oct->msix_entries) {
+			dev_err(&oct->pci_dev->dev, "Memory Alloc failed...\n");
+			kfree(oct->irq_name_storage);
+			oct->irq_name_storage = NULL;
+			return -ENOMEM;
+		}
 
 		msix_entries = (struct msix_entry *)oct->msix_entries;
 
@@ -805,16 +786,23 @@ static int octeon_setup_interrupt(struct octeon_device *oct)
 			dev_err(&oct->pci_dev->dev, "unable to Allocate MSI-X interrupts\n");
 			kfree(oct->msix_entries);
 			oct->msix_entries = NULL;
-			return 1;
+			kfree(oct->irq_name_storage);
+			oct->irq_name_storage = NULL;
+			return num_alloc_ioq_vectors;
 		}
 		dev_dbg(&oct->pci_dev->dev, "OCTEON: Enough MSI-X interrupts are allocated...\n");
 
 		num_ioq_vectors = oct->num_msix_irqs;
 
 		for (i = 0; i < num_ioq_vectors; i++) {
+			snprintf(&queue_irq_names[IRQ_NAME_OFF(i)], INTRNAMSIZ,
+				 "LiquidIO%u-vf%u-rxtx-%u",
+				 oct->octeon_id, oct->vf_num, i);
+
 			irqret = request_irq(msix_entries[i].vector,
 					     liquidio_msix_intr_handler, 0,
-					     "octeon", &oct->ioq_vector[i]);
+					     &queue_irq_names[IRQ_NAME_OFF(i)],
+					     &oct->ioq_vector[i]);
 			if (irqret) {
 				dev_err(&oct->pci_dev->dev,
 					"OCTEON: Request_irq failed for MSIX interrupt Error: %d\n",
@@ -830,7 +818,9 @@ static int octeon_setup_interrupt(struct octeon_device *oct)
 				pci_disable_msix(oct->pci_dev);
 				kfree(oct->msix_entries);
 				oct->msix_entries = NULL;
-				return 1;
+				kfree(oct->irq_name_storage);
+				oct->irq_name_storage = NULL;
+				return irqret;
 			}
 			oct->ioq_vector[i].vector = msix_entries[i].vector;
 			/* assign the cpu mask for this msix interrupt vector */
@@ -975,6 +965,8 @@ static void octeon_destroy_resources(struct octeon_device *oct)
 			pci_disable_msix(oct->pci_dev);
 			kfree(oct->msix_entries);
 			oct->msix_entries = NULL;
+			kfree(oct->irq_name_storage);
+			oct->irq_name_storage = NULL;
 		}
 		/* Soft reset the octeon device before exiting */
 		if (oct->pci_dev->reset_fn)
