@@ -83,6 +83,10 @@
 	status = "okay";
 };
 
+&cpu0 {
+	cpu-supply = <&reg_dcdc3>;
+};
+
 &de {
 	status = "okay";
 };
@@ -173,6 +177,10 @@
 };
 
 #include "axp223.dtsi"
+
+&ac_power_supply {
+	status = "okay";
+};
 
 &reg_aldo1 {
 	regulator-always-on;
