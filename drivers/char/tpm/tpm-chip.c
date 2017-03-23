@@ -217,8 +217,6 @@ struct tpm_chip *tpm_chip_alloc(struct device *pdev,
 	cdev_init(&chip->cdevs, &tpmrm_fops);
 	chip->cdev.owner = THIS_MODULE;
 	chip->cdevs.owner = THIS_MODULE;
-	chip->cdev.kobj.parent = &chip->dev.kobj;
-	chip->cdevs.kobj.parent = &chip->devs.kobj;
 
 	chip->work_space.context_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!chip->work_space.context_buf) {
@@ -269,17 +267,14 @@ struct tpm_chip *tpmm_chip_alloc(struct device *pdev,
 }
 EXPORT_SYMBOL_GPL(tpmm_chip_alloc);
 
-static void tpm_del_char_device(struct tpm_chip *chip, bool with_device)
+static void tpm_del_char_device(struct tpm_chip *chip)
 {
-	cdev_del(&chip->cdev);
-	if (with_device) {
-		device_del(&chip->dev);
+	cdev_device_del(&chip->cdev, &chip->dev);
 
-		/* Make the chip unavailable. */
-		mutex_lock(&idr_lock);
-		idr_replace(&dev_nums_idr, NULL, chip->dev_num);
-		mutex_unlock(&idr_lock);
-	}
+	/* Make the chip unavailable. */
+	mutex_lock(&idr_lock);
+	idr_replace(&dev_nums_idr, NULL, chip->dev_num);
+	mutex_unlock(&idr_lock);
 
 	/* Make the driver uncallable. */
 	down_write(&chip->ops_sem);
@@ -293,45 +288,23 @@ static int tpm_add_char_device(struct tpm_chip *chip)
 {
 	int rc;
 
-	rc = cdev_add(&chip->cdev, chip->dev.devt, 1);
+	rc = cdev_device_add(&chip->cdev, &chip->dev);
 	if (rc) {
 		dev_err(&chip->dev,
-			"unable to cdev_add() %s, major %d, minor %d, err=%d\n",
+			"unable to cdev_device_add() %s, major %d, minor %d, err=%d\n",
 			dev_name(&chip->dev), MAJOR(chip->dev.devt),
 			MINOR(chip->dev.devt), rc);
 		return rc;
 	}
 
-	rc = device_add(&chip->dev);
-	if (rc) {
-		dev_err(&chip->dev,
-			"unable to device_register() %s, major %d, minor %d, err=%d\n",
-			dev_name(&chip->dev), MAJOR(chip->dev.devt),
-			MINOR(chip->dev.devt), rc);
-		tpm_del_char_device(chip, false);
-		return rc;
-	}
-
 	if (chip->flags & TPM_CHIP_FLAG_TPM2)
-		rc = cdev_add(&chip->cdevs, chip->devs.devt, 1);
+		rc = cdev_device_add(&chip->cdevs, &chip->devs);
 	if (rc) {
 		dev_err(&chip->dev,
-			"unable to cdev_add() %s, major %d, minor %d, err=%d\n",
+			"unable to cdev_device_add() %s, major %d, minor %d, err=%d\n",
 			dev_name(&chip->devs), MAJOR(chip->devs.devt),
 			MINOR(chip->devs.devt), rc);
-		tpm_del_char_device(chip, true);
-		return rc;
-	}
-
-	if (chip->flags & TPM_CHIP_FLAG_TPM2)
-		rc = device_add(&chip->devs);
-	if (rc) {
-		dev_err(&chip->dev,
-			"unable to device_register() %s, major %d, minor %d, err=%d\n",
-			dev_name(&chip->devs), MAJOR(chip->devs.devt),
-			MINOR(chip->devs.devt), rc);
-		cdev_del(&chip->cdevs);
-		tpm_del_char_device(chip, true);
+		tpm_del_char_device(chip);
 		return rc;
 	}
 
@@ -450,10 +423,8 @@ void tpm_chip_unregister(struct tpm_chip *chip)
 {
 	tpm_del_legacy_sysfs(chip);
 	tpm_bios_log_teardown(chip);
-	if (chip->flags & TPM_CHIP_FLAG_TPM2) {
-		cdev_del(&chip->cdevs);
-		device_del(&chip->devs);
-	}
-	tpm_del_char_device(chip, true);
+	if (chip->flags & TPM_CHIP_FLAG_TPM2)
+		cdev_device_del(&chip->cdevs, &chip->devs);
+	tpm_del_char_device(chip);
 }
 EXPORT_SYMBOL_GPL(tpm_chip_unregister);
