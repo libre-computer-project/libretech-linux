@@ -536,6 +536,46 @@ struct sort_entry sort_cpu = {
 	.se_width_idx	= HISTC_CPU,
 };
 
+/* --sort cgroup_id */
+
+static int64_t _sort__cgroup_dev_cmp(u64 left_dev, u64 right_dev)
+{
+	return (int64_t)(right_dev - left_dev);
+}
+
+static int64_t _sort__cgroup_inode_cmp(u64 left_ino, u64 right_ino)
+{
+	return (int64_t)(right_ino - left_ino);
+}
+
+static int64_t
+sort__cgroup_id_cmp(struct hist_entry *left, struct hist_entry *right)
+{
+	int64_t ret;
+
+	ret = _sort__cgroup_dev_cmp(right->cgroup_id.dev, left->cgroup_id.dev);
+	if (ret != 0)
+		return ret;
+
+	return _sort__cgroup_inode_cmp(right->cgroup_id.ino,
+				       left->cgroup_id.ino);
+}
+
+static int hist_entry__cgroup_id_snprintf(struct hist_entry *he,
+					  char *bf, size_t size,
+					  unsigned int width __maybe_unused)
+{
+	return repsep_snprintf(bf, size, "%lu/0x%lx", he->cgroup_id.dev,
+			       he->cgroup_id.ino);
+}
+
+struct sort_entry sort_cgroup_id = {
+	.se_header      = "cgroup id (dev/inode)",
+	.se_cmp	        = sort__cgroup_id_cmp,
+	.se_snprintf    = hist_entry__cgroup_id_snprintf,
+	.se_width_idx	= HISTC_CGROUP_ID,
+};
+
 /* --sort socket */
 
 static int64_t
@@ -846,6 +886,9 @@ static int hist_entry__mispredict_snprintf(struct hist_entry *he, char *bf,
 static int64_t
 sort__cycles_cmp(struct hist_entry *left, struct hist_entry *right)
 {
+	if (!left->branch_info || !right->branch_info)
+		return cmp_null(left->branch_info, right->branch_info);
+
 	return left->branch_info->flags.cycles -
 		right->branch_info->flags.cycles;
 }
@@ -853,6 +896,8 @@ sort__cycles_cmp(struct hist_entry *left, struct hist_entry *right)
 static int hist_entry__cycles_snprintf(struct hist_entry *he, char *bf,
 				    size_t size, unsigned int width)
 {
+	if (!he->branch_info)
+		return scnprintf(bf, size, "%-.*s", width, "N/A");
 	if (he->branch_info->flags.cycles == 0)
 		return repsep_snprintf(bf, size, "%-*s", width, "-");
 	return repsep_snprintf(bf, size, "%-*hd", width,
@@ -1396,6 +1441,46 @@ struct sort_entry sort_transaction = {
 	.se_width_idx	= HISTC_TRANSACTION,
 };
 
+/* --sort symbol_size */
+
+static int64_t _sort__sym_size_cmp(struct symbol *sym_l, struct symbol *sym_r)
+{
+	int64_t size_l = sym_l != NULL ? symbol__size(sym_l) : 0;
+	int64_t size_r = sym_r != NULL ? symbol__size(sym_r) : 0;
+
+	return size_l < size_r ? -1 :
+		size_l == size_r ? 0 : 1;
+}
+
+static int64_t
+sort__sym_size_cmp(struct hist_entry *left, struct hist_entry *right)
+{
+	return _sort__sym_size_cmp(right->ms.sym, left->ms.sym);
+}
+
+static int _hist_entry__sym_size_snprintf(struct symbol *sym, char *bf,
+					  size_t bf_size, unsigned int width)
+{
+	if (sym)
+		return repsep_snprintf(bf, bf_size, "%*d", width, symbol__size(sym));
+
+	return repsep_snprintf(bf, bf_size, "%*s", width, "unknown");
+}
+
+static int hist_entry__sym_size_snprintf(struct hist_entry *he, char *bf,
+					 size_t size, unsigned int width)
+{
+	return _hist_entry__sym_size_snprintf(he->ms.sym, bf, size, width);
+}
+
+struct sort_entry sort_sym_size = {
+	.se_header	= "Symbol size",
+	.se_cmp		= sort__sym_size_cmp,
+	.se_snprintf	= hist_entry__sym_size_snprintf,
+	.se_width_idx	= HISTC_SYM_SIZE,
+};
+
+
 struct sort_dimension {
 	const char		*name;
 	struct sort_entry	*entry;
@@ -1418,6 +1503,8 @@ static struct sort_dimension common_sort_dimensions[] = {
 	DIM(SORT_GLOBAL_WEIGHT, "weight", sort_global_weight),
 	DIM(SORT_TRANSACTION, "transaction", sort_transaction),
 	DIM(SORT_TRACE, "trace", sort_trace),
+	DIM(SORT_SYM_SIZE, "symbol_size", sort_sym_size),
+	DIM(SORT_CGROUP_ID, "cgroup_id", sort_cgroup_id),
 };
 
 #undef DIM
