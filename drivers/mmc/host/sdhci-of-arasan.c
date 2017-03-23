@@ -28,13 +28,9 @@
 #include "sdhci-pltfm.h"
 #include <linux/of.h>
 
-#define SDHCI_ARASAN_CLK_CTRL_OFFSET	0x2c
 #define SDHCI_ARASAN_VENDOR_REGISTER	0x78
 
 #define VENDOR_ENHANCED_STROBE		BIT(0)
-#define CLK_CTRL_TIMEOUT_SHIFT		16
-#define CLK_CTRL_TIMEOUT_MASK		(0xf << CLK_CTRL_TIMEOUT_SHIFT)
-#define CLK_CTRL_TIMEOUT_MIN_EXP	13
 
 #define PHY_CLK_TOO_SLOW_HZ		400000
 
@@ -163,15 +159,15 @@ static int sdhci_arasan_syscon_write(struct sdhci_host *host,
 
 static unsigned int sdhci_arasan_get_timeout_clock(struct sdhci_host *host)
 {
-	u32 div;
 	unsigned long freq;
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 
-	div = readl(host->ioaddr + SDHCI_ARASAN_CLK_CTRL_OFFSET);
-	div = (div & CLK_CTRL_TIMEOUT_MASK) >> CLK_CTRL_TIMEOUT_SHIFT;
+	/* SDHCI timeout clock is in kHz */
+	freq = DIV_ROUND_UP(clk_get_rate(pltfm_host->clk), 1000);
 
-	freq = clk_get_rate(pltfm_host->clk);
-	freq /= 1 << (CLK_CTRL_TIMEOUT_MIN_EXP + div);
+	/* or in MHz */
+	if (host->caps & SDHCI_TIMEOUT_CLK_UNIT)
+		freq = DIV_ROUND_UP(freq, 1000);
 
 	return freq;
 }
@@ -198,9 +194,7 @@ static void sdhci_arasan_set_clock(struct sdhci_host *host, unsigned int clock)
 			 * through low speeds without power cycling.
 			 */
 			sdhci_set_clock(host, host->max_clk);
-			spin_unlock_irq(&host->lock);
 			phy_power_on(sdhci_arasan->phy);
-			spin_lock_irq(&host->lock);
 			sdhci_arasan->is_phy_on = true;
 
 			/*
@@ -219,18 +213,14 @@ static void sdhci_arasan_set_clock(struct sdhci_host *host, unsigned int clock)
 	}
 
 	if (ctrl_phy && sdhci_arasan->is_phy_on) {
-		spin_unlock_irq(&host->lock);
 		phy_power_off(sdhci_arasan->phy);
-		spin_lock_irq(&host->lock);
 		sdhci_arasan->is_phy_on = false;
 	}
 
 	sdhci_set_clock(host, clock);
 
 	if (ctrl_phy) {
-		spin_unlock_irq(&host->lock);
 		phy_power_on(sdhci_arasan->phy);
-		spin_lock_irq(&host->lock);
 		sdhci_arasan->is_phy_on = true;
 	}
 }
@@ -318,6 +308,9 @@ static int sdhci_arasan_suspend(struct device *dev)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
 	int ret;
+
+	if (host->tuning_mode != SDHCI_TUNING_MODE_3)
+		mmc_retune_needed(host->mmc);
 
 	ret = sdhci_suspend_host(host);
 	if (ret)
