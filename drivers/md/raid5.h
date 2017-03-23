@@ -224,10 +224,16 @@ struct stripe_head {
 	spinlock_t		batch_lock; /* only header's lock is useful */
 	struct list_head	batch_list; /* protected by head's batch lock*/
 
-	struct r5l_io_unit	*log_io;
+	union {
+		struct r5l_io_unit	*log_io;
+		struct ppl_io_unit	*ppl_io;
+	};
+
 	struct list_head	log_list;
 	sector_t		log_start; /* first meta block on the journal */
 	struct list_head	r5c; /* for r5c_cache->stripe_in_journal */
+
+	struct page		*ppl_page; /* partial parity of this stripe */
 	/**
 	 * struct stripe_operations
 	 * @target - STRIPE_OP_COMPUTE_BLK target
@@ -400,6 +406,7 @@ enum {
 	STRIPE_OP_BIODRAIN,
 	STRIPE_OP_RECONSTRUCT,
 	STRIPE_OP_CHECK,
+	STRIPE_OP_PARTIAL_PARITY,
 };
 
 /*
@@ -542,6 +549,7 @@ struct r5worker {
 
 struct r5worker_group {
 	struct list_head handle_list;
+	struct list_head loprio_list;
 	struct r5conf *conf;
 	struct r5worker *workers;
 	int stripes_cnt;
@@ -569,6 +577,14 @@ enum r5_cache_state {
 	R5C_EXTRA_PAGE_IN_USE,	/* a stripe is using disk_info.extra_page
 				 * for prexor
 				 */
+};
+
+#define PENDING_IO_MAX 512
+#define PENDING_IO_ONE_FLUSH 128
+struct r5pending_data {
+	struct list_head sibling;
+	sector_t sector; /* stripe sector */
+	struct bio_list bios;
 };
 
 struct r5conf {
@@ -608,6 +624,7 @@ struct r5conf {
 						  */
 
 	struct list_head	handle_list; /* stripes needing handling */
+	struct list_head	loprio_list; /* low priority stripes */
 	struct list_head	hold_list; /* preread ready stripes */
 	struct list_head	delayed_list; /* stripes that have plugged requests */
 	struct list_head	bitmap_list; /* stripes delaying awaiting bitmap update */
@@ -686,10 +703,15 @@ struct r5conf {
 	int			group_cnt;
 	int			worker_cnt_per_group;
 	struct r5l_log		*log;
+	void			*log_private;
 
-	struct bio_list		pending_bios;
 	spinlock_t		pending_bios_lock;
 	bool			batch_bio_dispatch;
+	struct r5pending_data	*pending_data;
+	struct list_head	free_list;
+	struct list_head	pending_list;
+	int			pending_data_cnt;
+	struct r5pending_data	*next_pending_data;
 };
 
 
@@ -765,34 +787,4 @@ extern struct stripe_head *
 raid5_get_active_stripe(struct r5conf *conf, sector_t sector,
 			int previous, int noblock, int noquiesce);
 extern int raid5_calc_degraded(struct r5conf *conf);
-extern int r5l_init_log(struct r5conf *conf, struct md_rdev *rdev);
-extern void r5l_exit_log(struct r5l_log *log);
-extern int r5l_write_stripe(struct r5l_log *log, struct stripe_head *head_sh);
-extern void r5l_write_stripe_run(struct r5l_log *log);
-extern void r5l_flush_stripe_to_raid(struct r5l_log *log);
-extern void r5l_stripe_write_finished(struct stripe_head *sh);
-extern int r5l_handle_flush_request(struct r5l_log *log, struct bio *bio);
-extern void r5l_quiesce(struct r5l_log *log, int state);
-extern bool r5l_log_disk_error(struct r5conf *conf);
-extern bool r5c_is_writeback(struct r5l_log *log);
-extern int
-r5c_try_caching_write(struct r5conf *conf, struct stripe_head *sh,
-		      struct stripe_head_state *s, int disks);
-extern void
-r5c_finish_stripe_write_out(struct r5conf *conf, struct stripe_head *sh,
-			    struct stripe_head_state *s);
-extern void r5c_release_extra_page(struct stripe_head *sh);
-extern void r5c_use_extra_page(struct stripe_head *sh);
-extern void r5l_wake_reclaim(struct r5l_log *log, sector_t space);
-extern void r5c_handle_cached_data_endio(struct r5conf *conf,
-	struct stripe_head *sh, int disks, struct bio_list *return_bi);
-extern int r5c_cache_data(struct r5l_log *log, struct stripe_head *sh,
-			  struct stripe_head_state *s);
-extern void r5c_make_stripe_write_out(struct stripe_head *sh);
-extern void r5c_flush_cache(struct r5conf *conf, int num);
-extern void r5c_check_stripe_cache_usage(struct r5conf *conf);
-extern void r5c_check_cached_full_stripe(struct r5conf *conf);
-extern struct md_sysfs_entry r5c_journal_mode;
-extern void r5c_update_on_rdev_error(struct mddev *mddev);
-extern bool r5c_big_stripe_cached(struct r5conf *conf, sector_t sect);
 #endif

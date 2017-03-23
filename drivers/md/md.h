@@ -122,6 +122,13 @@ struct md_rdev {
 					   * sysfs entry */
 
 	struct badblocks badblocks;
+
+	struct {
+		short offset;	/* Offset from superblock to start of PPL.
+				 * Not used by external metadata. */
+		unsigned int size;	/* Size in sectors of the PPL space */
+		sector_t sector;	/* First sector of the PPL space */
+	} ppl;
 };
 enum flag_bits {
 	Faulty,			/* device is known to have a fault */
@@ -219,9 +226,6 @@ enum mddev_flags {
 				 * it then */
 	MD_JOURNAL_CLEAN,	/* A raid with journal is already clean */
 	MD_HAS_JOURNAL,		/* The raid array has journal feature set */
-	MD_RELOAD_SB,		/* Reload the superblock because another node
-				 * updated it.
-				 */
 	MD_CLUSTER_RESYNC_LOCKED, /* cluster raid only, which means node
 				   * already took resync lock, need to
 				   * release the lock */
@@ -229,6 +233,7 @@ enum mddev_flags {
 				 * supported as calls to md_error() will
 				 * never cause the array to become failed.
 				 */
+	MD_HAS_PPL,		/* The raid array has PPL feature set */
 };
 
 enum mddev_sb_flags {
@@ -540,6 +545,8 @@ struct md_personality
 	/* congested implements bdi.congested_fn().
 	 * Will not be called while array is 'suspended' */
 	int (*congested)(struct mddev *mddev, int bits);
+	/* Changes the consistency policy of an active array. */
+	int (*change_consistency_policy)(struct mddev *mddev, const char *buf);
 };
 
 struct md_sysfs_entry {
