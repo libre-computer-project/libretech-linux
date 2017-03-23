@@ -131,30 +131,27 @@ static __le32 ext4_xattr_block_csum(struct inode *inode,
 }
 
 static int ext4_xattr_block_csum_verify(struct inode *inode,
-					sector_t block_nr,
-					struct ext4_xattr_header *hdr)
+					struct buffer_head *bh)
 {
-	if (ext4_has_metadata_csum(inode->i_sb) &&
-	    (hdr->h_checksum != ext4_xattr_block_csum(inode, block_nr, hdr)))
-		return 0;
-	return 1;
-}
+	struct ext4_xattr_header *hdr = BHDR(bh);
+	int ret = 1;
 
-static void ext4_xattr_block_csum_set(struct inode *inode,
-				      sector_t block_nr,
-				      struct ext4_xattr_header *hdr)
-{
-	if (!ext4_has_metadata_csum(inode->i_sb))
-		return;
-
-	hdr->h_checksum = ext4_xattr_block_csum(inode, block_nr, hdr);
+	if (ext4_has_metadata_csum(inode->i_sb)) {
+		lock_buffer(bh);
+		ret = hdr->h_checksum == ext4_xattr_block_csum(inode,
+							bh->b_blocknr, hdr);
+		unlock_buffer(bh);
+	}
+	return ret;
 }
 
 static inline int ext4_handle_dirty_xattr_block(handle_t *handle,
 						struct inode *inode,
 						struct buffer_head *bh)
 {
-	ext4_xattr_block_csum_set(inode, bh->b_blocknr, BHDR(bh));
+	if (ext4_has_metadata_csum(inode->i_sb))
+		BHDR(bh)->h_checksum = ext4_xattr_block_csum(inode,
+						bh->b_blocknr, BHDR(bh));
 	return ext4_handle_dirty_metadata(handle, inode, bh);
 }
 
@@ -233,7 +230,7 @@ ext4_xattr_check_block(struct inode *inode, struct buffer_head *bh)
 	if (BHDR(bh)->h_magic != cpu_to_le32(EXT4_XATTR_MAGIC) ||
 	    BHDR(bh)->h_blocks != cpu_to_le32(1))
 		return -EFSCORRUPTED;
-	if (!ext4_xattr_block_csum_verify(inode, bh->b_blocknr, BHDR(bh)))
+	if (!ext4_xattr_block_csum_verify(inode, bh))
 		return -EFSBADCRC;
 	error = ext4_xattr_check_names(BFIRST(bh), bh->b_data + bh->b_size,
 				       bh->b_data);
