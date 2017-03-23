@@ -685,6 +685,25 @@ static const struct dmi_system_id fujitsu_dmi_table[] __initconst = {
 
 /* ACPI device for LCD brightness control */
 
+static int fujitsu_backlight_register(void)
+{
+	struct backlight_properties props = {
+		.brightness = fujitsu_bl->brightness_level,
+		.max_brightness = fujitsu_bl->max_brightness - 1,
+		.type = BACKLIGHT_PLATFORM
+	};
+	struct backlight_device *bd;
+
+	bd = backlight_device_register("fujitsu-laptop", NULL, NULL,
+				       &fujitsu_bl_ops, &props);
+	if (IS_ERR(bd))
+		return PTR_ERR(bd);
+
+	fujitsu_bl->bl_device = bd;
+
+	return 0;
+}
+
 static int acpi_fujitsu_bl_add(struct acpi_device *device)
 {
 	int state = 0;
@@ -762,6 +781,12 @@ static int acpi_fujitsu_bl_add(struct acpi_device *device)
 		fujitsu_bl->max_brightness = FUJITSU_LCD_N_LEVELS;
 	get_lcd_level();
 
+	if (acpi_video_get_backlight_type() == acpi_backlight_vendor) {
+		error = fujitsu_backlight_register();
+		if (error)
+			goto err_unregister_input_dev;
+	}
+
 	return 0;
 
 err_unregister_input_dev:
@@ -778,6 +803,7 @@ static int acpi_fujitsu_bl_remove(struct acpi_device *device)
 	struct fujitsu_bl *fujitsu_bl = acpi_driver_data(device);
 	struct input_dev *input = fujitsu_bl->input;
 
+	backlight_device_unregister(fujitsu_bl->bl_device);
 	input_unregister_device(input);
 
 	fujitsu_bl->acpi_handle = NULL;
@@ -790,53 +816,45 @@ static int acpi_fujitsu_bl_remove(struct acpi_device *device)
 static void acpi_fujitsu_bl_notify(struct acpi_device *device, u32 event)
 {
 	struct input_dev *input;
-	int keycode;
-	int oldb, newb;
+	int oldb, newb, keycode;
 
 	input = fujitsu_bl->input;
 
-	switch (event) {
-	case ACPI_FUJITSU_NOTIFY_CODE1:
-		keycode = 0;
-		oldb = fujitsu_bl->brightness_level;
-		get_lcd_level();
-		newb = fujitsu_bl->brightness_level;
-
-		vdbg_printk(FUJLAPTOP_DBG_TRACE,
-			    "brightness button event [%i -> %i (%i)]\n",
-			    oldb, newb, fujitsu_bl->brightness_changed);
-
-		if (oldb < newb) {
-			if (disable_brightness_adjust != 1) {
-				if (use_alt_lcd_levels)
-					set_lcd_level_alt(newb);
-				else
-					set_lcd_level(newb);
-			}
-			keycode = KEY_BRIGHTNESSUP;
-		} else if (oldb > newb) {
-			if (disable_brightness_adjust != 1) {
-				if (use_alt_lcd_levels)
-					set_lcd_level_alt(newb);
-				else
-					set_lcd_level(newb);
-			}
-			keycode = KEY_BRIGHTNESSDOWN;
-		}
-		break;
-	default:
+	if (event != ACPI_FUJITSU_NOTIFY_CODE1) {
 		keycode = KEY_UNKNOWN;
 		vdbg_printk(FUJLAPTOP_DBG_WARN,
 			    "unsupported event [0x%x]\n", event);
-		break;
-	}
-
-	if (keycode != 0) {
 		input_report_key(input, keycode, 1);
 		input_sync(input);
 		input_report_key(input, keycode, 0);
 		input_sync(input);
+		return;
 	}
+
+	oldb = fujitsu_bl->brightness_level;
+	get_lcd_level();
+	newb = fujitsu_bl->brightness_level;
+
+	vdbg_printk(FUJLAPTOP_DBG_TRACE,
+		    "brightness button event [%i -> %i (%i)]\n",
+		    oldb, newb, fujitsu_bl->brightness_changed);
+
+	if (oldb == newb)
+		return;
+
+	if (disable_brightness_adjust != 1) {
+		if (use_alt_lcd_levels)
+			set_lcd_level_alt(newb);
+		else
+			set_lcd_level(newb);
+	}
+
+	keycode = oldb < newb ? KEY_BRIGHTNESSUP : KEY_BRIGHTNESSDOWN;
+
+	input_report_key(input, keycode, 1);
+	input_sync(input);
+	input_report_key(input, keycode, 0);
+	input_sync(input);
 }
 
 /* ACPI device for hotkey handling */
@@ -935,6 +953,15 @@ static int acpi_fujitsu_laptop_add(struct acpi_device *device)
 
 	/* Suspect this is a keymap of the application panel, print it */
 	pr_info("BTNI: [0x%x]\n", call_fext_func(FUNC_BUTTONS, 0x0, 0x0, 0x0));
+
+	/* Sync backlight power status */
+	if (fujitsu_bl->bl_device &&
+	    acpi_video_get_backlight_type() == acpi_backlight_vendor) {
+		if (call_fext_func(FUNC_BACKLIGHT, 0x2, 0x4, 0x0) == 3)
+			fujitsu_bl->bl_device->props.power = FB_BLANK_POWERDOWN;
+		else
+			fujitsu_bl->bl_device->props.power = FB_BLANK_UNBLANK;
+	}
 
 #if IS_ENABLED(CONFIG_LEDS_CLASS)
 	if (call_fext_func(FUNC_LEDS, 0x0, 0x0, 0x0) & LOGOLAMP_POWERON) {
@@ -1192,7 +1219,7 @@ MODULE_DEVICE_TABLE(acpi, fujitsu_ids);
 
 static int __init fujitsu_init(void)
 {
-	int ret, max_brightness;
+	int ret;
 
 	if (acpi_disabled)
 		return -ENODEV;
@@ -1209,91 +1236,60 @@ static int __init fujitsu_init(void)
 
 	ret = acpi_bus_register_driver(&acpi_fujitsu_bl_driver);
 	if (ret)
-		goto fail_acpi;
+		goto err_free_fujitsu_bl;
 
 	/* Register platform stuff */
 
 	fujitsu_bl->pf_device = platform_device_alloc("fujitsu-laptop", -1);
 	if (!fujitsu_bl->pf_device) {
 		ret = -ENOMEM;
-		goto fail_platform_driver;
+		goto err_unregister_acpi;
 	}
 
 	ret = platform_device_add(fujitsu_bl->pf_device);
 	if (ret)
-		goto fail_platform_device1;
+		goto err_put_platform_device;
 
 	ret =
 	    sysfs_create_group(&fujitsu_bl->pf_device->dev.kobj,
 			       &fujitsu_pf_attribute_group);
 	if (ret)
-		goto fail_platform_device2;
-
-	/* Register backlight stuff */
-
-	if (acpi_video_get_backlight_type() == acpi_backlight_vendor) {
-		struct backlight_properties props;
-
-		memset(&props, 0, sizeof(struct backlight_properties));
-		max_brightness = fujitsu_bl->max_brightness;
-		props.type = BACKLIGHT_PLATFORM;
-		props.max_brightness = max_brightness - 1;
-		fujitsu_bl->bl_device = backlight_device_register("fujitsu-laptop",
-								  NULL, NULL,
-								  &fujitsu_bl_ops,
-								  &props);
-		if (IS_ERR(fujitsu_bl->bl_device)) {
-			ret = PTR_ERR(fujitsu_bl->bl_device);
-			fujitsu_bl->bl_device = NULL;
-			goto fail_sysfs_group;
-		}
-		fujitsu_bl->bl_device->props.brightness = fujitsu_bl->brightness_level;
-	}
+		goto err_del_platform_device;
 
 	ret = platform_driver_register(&fujitsu_pf_driver);
 	if (ret)
-		goto fail_backlight;
+		goto err_remove_sysfs_group;
 
 	/* Register laptop driver */
 
 	fujitsu_laptop = kzalloc(sizeof(struct fujitsu_laptop), GFP_KERNEL);
 	if (!fujitsu_laptop) {
 		ret = -ENOMEM;
-		goto fail_laptop;
+		goto err_unregister_platform_driver;
 	}
 
 	ret = acpi_bus_register_driver(&acpi_fujitsu_laptop_driver);
 	if (ret)
-		goto fail_laptop1;
-
-	/* Sync backlight power status (needs FUJ02E3 device, hence deferred) */
-	if (acpi_video_get_backlight_type() == acpi_backlight_vendor) {
-		if (call_fext_func(FUNC_BACKLIGHT, 0x2, 0x4, 0x0) == 3)
-			fujitsu_bl->bl_device->props.power = FB_BLANK_POWERDOWN;
-		else
-			fujitsu_bl->bl_device->props.power = FB_BLANK_UNBLANK;
-	}
+		goto err_free_fujitsu_laptop;
 
 	pr_info("driver " FUJITSU_DRIVER_VERSION " successfully loaded\n");
 
 	return 0;
 
-fail_laptop1:
+err_free_fujitsu_laptop:
 	kfree(fujitsu_laptop);
-fail_laptop:
+err_unregister_platform_driver:
 	platform_driver_unregister(&fujitsu_pf_driver);
-fail_backlight:
-	backlight_device_unregister(fujitsu_bl->bl_device);
-fail_sysfs_group:
+err_remove_sysfs_group:
 	sysfs_remove_group(&fujitsu_bl->pf_device->dev.kobj,
 			   &fujitsu_pf_attribute_group);
-fail_platform_device2:
+err_del_platform_device:
 	platform_device_del(fujitsu_bl->pf_device);
-fail_platform_device1:
+err_put_platform_device:
 	platform_device_put(fujitsu_bl->pf_device);
-fail_platform_driver:
+err_unregister_acpi:
 	acpi_bus_unregister_driver(&acpi_fujitsu_bl_driver);
-fail_acpi:
+err_free_fujitsu_bl:
 	kfree(fujitsu_bl);
 
 	return ret;
@@ -1306,8 +1302,6 @@ static void __exit fujitsu_cleanup(void)
 	kfree(fujitsu_laptop);
 
 	platform_driver_unregister(&fujitsu_pf_driver);
-
-	backlight_device_unregister(fujitsu_bl->bl_device);
 
 	sysfs_remove_group(&fujitsu_bl->pf_device->dev.kobj,
 			   &fujitsu_pf_attribute_group);
