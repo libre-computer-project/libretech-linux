@@ -33,6 +33,7 @@ DEFINE_IDR(dev_nums_idr);
 static DEFINE_MUTEX(idr_lock);
 
 struct class *tpm_class;
+struct class *tpmrm_class;
 dev_t tpm_devt;
 
 /**
@@ -128,7 +129,17 @@ static void tpm_dev_release(struct device *dev)
 	mutex_unlock(&idr_lock);
 
 	kfree(chip->log.bios_event_log);
+	kfree(chip->work_space.context_buf);
+	kfree(chip->work_space.session_buf);
 	kfree(chip);
+}
+
+static void tpm_devs_release(struct device *dev)
+{
+	struct tpm_chip *chip = container_of(dev, struct tpm_chip, devs);
+
+	/* release the master device reference */
+	put_device(&chip->dev);
 }
 
 /**
@@ -167,18 +178,35 @@ struct tpm_chip *tpm_chip_alloc(struct device *pdev,
 	chip->dev_num = rc;
 
 	device_initialize(&chip->dev);
+	device_initialize(&chip->devs);
 
 	chip->dev.class = tpm_class;
 	chip->dev.release = tpm_dev_release;
 	chip->dev.parent = pdev;
 	chip->dev.groups = chip->groups;
 
+	chip->devs.parent = pdev;
+	chip->devs.class = tpmrm_class;
+	chip->devs.release = tpm_devs_release;
+	/* get extra reference on main device to hold on
+	 * behalf of devs.  This holds the chip structure
+	 * while cdevs is in use.  The corresponding put
+	 * is in the tpm_devs_release
+	 */
+	get_device(&chip->dev);
+
 	if (chip->dev_num == 0)
 		chip->dev.devt = MKDEV(MISC_MAJOR, TPM_MINOR);
 	else
 		chip->dev.devt = MKDEV(MAJOR(tpm_devt), chip->dev_num);
 
+	chip->devs.devt =
+		MKDEV(MAJOR(tpm_devt), chip->dev_num + TPM_NUM_DEVICES);
+
 	rc = dev_set_name(&chip->dev, "tpm%d", chip->dev_num);
+	if (rc)
+		goto out;
+	rc = dev_set_name(&chip->devs, "tpmrm%d", chip->dev_num);
 	if (rc)
 		goto out;
 
@@ -186,12 +214,27 @@ struct tpm_chip *tpm_chip_alloc(struct device *pdev,
 		chip->flags |= TPM_CHIP_FLAG_VIRTUAL;
 
 	cdev_init(&chip->cdev, &tpm_fops);
+	cdev_init(&chip->cdevs, &tpmrm_fops);
 	chip->cdev.owner = THIS_MODULE;
+	chip->cdevs.owner = THIS_MODULE;
 	chip->cdev.kobj.parent = &chip->dev.kobj;
+	chip->cdevs.kobj.parent = &chip->devs.kobj;
+
+	chip->work_space.context_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!chip->work_space.context_buf) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	chip->work_space.session_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!chip->work_space.session_buf) {
+		rc = -ENOMEM;
+		goto out;
+	}
 
 	return chip;
 
 out:
+	put_device(&chip->devs);
 	put_device(&chip->dev);
 	return ERR_PTR(rc);
 }
@@ -226,6 +269,26 @@ struct tpm_chip *tpmm_chip_alloc(struct device *pdev,
 }
 EXPORT_SYMBOL_GPL(tpmm_chip_alloc);
 
+static void tpm_del_char_device(struct tpm_chip *chip, bool with_device)
+{
+	cdev_del(&chip->cdev);
+	if (with_device) {
+		device_del(&chip->dev);
+
+		/* Make the chip unavailable. */
+		mutex_lock(&idr_lock);
+		idr_replace(&dev_nums_idr, NULL, chip->dev_num);
+		mutex_unlock(&idr_lock);
+	}
+
+	/* Make the driver uncallable. */
+	down_write(&chip->ops_sem);
+	if (chip->flags & TPM_CHIP_FLAG_TPM2)
+		tpm2_shutdown(chip, TPM2_SU_CLEAR);
+	chip->ops = NULL;
+	up_write(&chip->ops_sem);
+}
+
 static int tpm_add_char_device(struct tpm_chip *chip)
 {
 	int rc;
@@ -236,7 +299,6 @@ static int tpm_add_char_device(struct tpm_chip *chip)
 			"unable to cdev_add() %s, major %d, minor %d, err=%d\n",
 			dev_name(&chip->dev), MAJOR(chip->dev.devt),
 			MINOR(chip->dev.devt), rc);
-
 		return rc;
 	}
 
@@ -246,8 +308,30 @@ static int tpm_add_char_device(struct tpm_chip *chip)
 			"unable to device_register() %s, major %d, minor %d, err=%d\n",
 			dev_name(&chip->dev), MAJOR(chip->dev.devt),
 			MINOR(chip->dev.devt), rc);
+		tpm_del_char_device(chip, false);
+		return rc;
+	}
 
-		cdev_del(&chip->cdev);
+	if (chip->flags & TPM_CHIP_FLAG_TPM2)
+		rc = cdev_add(&chip->cdevs, chip->devs.devt, 1);
+	if (rc) {
+		dev_err(&chip->dev,
+			"unable to cdev_add() %s, major %d, minor %d, err=%d\n",
+			dev_name(&chip->devs), MAJOR(chip->devs.devt),
+			MINOR(chip->devs.devt), rc);
+		tpm_del_char_device(chip, true);
+		return rc;
+	}
+
+	if (chip->flags & TPM_CHIP_FLAG_TPM2)
+		rc = device_add(&chip->devs);
+	if (rc) {
+		dev_err(&chip->dev,
+			"unable to device_register() %s, major %d, minor %d, err=%d\n",
+			dev_name(&chip->devs), MAJOR(chip->devs.devt),
+			MINOR(chip->devs.devt), rc);
+		cdev_del(&chip->cdevs);
+		tpm_del_char_device(chip, true);
 		return rc;
 	}
 
@@ -257,24 +341,6 @@ static int tpm_add_char_device(struct tpm_chip *chip)
 	mutex_unlock(&idr_lock);
 
 	return rc;
-}
-
-static void tpm_del_char_device(struct tpm_chip *chip)
-{
-	cdev_del(&chip->cdev);
-	device_del(&chip->dev);
-
-	/* Make the chip unavailable. */
-	mutex_lock(&idr_lock);
-	idr_replace(&dev_nums_idr, NULL, chip->dev_num);
-	mutex_unlock(&idr_lock);
-
-	/* Make the driver uncallable. */
-	down_write(&chip->ops_sem);
-	if (chip->flags & TPM_CHIP_FLAG_TPM2)
-		tpm2_shutdown(chip, TPM2_SU_CLEAR);
-	chip->ops = NULL;
-	up_write(&chip->ops_sem);
 }
 
 static void tpm_del_legacy_sysfs(struct tpm_chip *chip)
@@ -384,6 +450,10 @@ void tpm_chip_unregister(struct tpm_chip *chip)
 {
 	tpm_del_legacy_sysfs(chip);
 	tpm_bios_log_teardown(chip);
-	tpm_del_char_device(chip);
+	if (chip->flags & TPM_CHIP_FLAG_TPM2) {
+		cdev_del(&chip->cdevs);
+		device_del(&chip->devs);
+	}
+	tpm_del_char_device(chip, true);
 }
 EXPORT_SYMBOL_GPL(tpm_chip_unregister);
