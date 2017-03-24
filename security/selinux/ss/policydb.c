@@ -540,23 +540,23 @@ static int policydb_index(struct policydb *p)
 #endif
 
 	rc = -ENOMEM;
-	p->class_val_to_struct =
-		kzalloc(p->p_classes.nprim * sizeof(*(p->class_val_to_struct)),
-			GFP_KERNEL);
+	p->class_val_to_struct = kcalloc(p->p_classes.nprim,
+					 sizeof(*p->class_val_to_struct),
+					 GFP_KERNEL);
 	if (!p->class_val_to_struct)
 		goto out;
 
 	rc = -ENOMEM;
-	p->role_val_to_struct =
-		kzalloc(p->p_roles.nprim * sizeof(*(p->role_val_to_struct)),
-			GFP_KERNEL);
+	p->role_val_to_struct = kcalloc(p->p_roles.nprim,
+					sizeof(*p->role_val_to_struct),
+					GFP_KERNEL);
 	if (!p->role_val_to_struct)
 		goto out;
 
 	rc = -ENOMEM;
-	p->user_val_to_struct =
-		kzalloc(p->p_users.nprim * sizeof(*(p->user_val_to_struct)),
-			GFP_KERNEL);
+	p->user_val_to_struct = kcalloc(p->p_users.nprim,
+					sizeof(*p->user_val_to_struct),
+					GFP_KERNEL);
 	if (!p->user_val_to_struct)
 		goto out;
 
@@ -880,8 +880,6 @@ void policydb_destroy(struct policydb *p)
 	ebitmap_destroy(&p->filename_trans_ttypes);
 	ebitmap_destroy(&p->policycaps);
 	ebitmap_destroy(&p->permissive_map);
-
-	return;
 }
 
 /*
@@ -1843,7 +1841,7 @@ u32 string_to_av_perm(struct policydb *p, u16 tclass, const char *name)
 
 static int range_read(struct policydb *p, void *fp)
 {
-	struct range_trans *rt = NULL;
+	struct range_trans *rt;
 	struct mls_range *r = NULL;
 	int i, rc;
 	__le32 buf[2];
@@ -1854,7 +1852,7 @@ static int range_read(struct policydb *p, void *fp)
 
 	rc = next_entry(buf, fp, sizeof(u32));
 	if (rc)
-		goto out;
+		return rc;
 
 	nel = le32_to_cpu(buf[0]);
 	for (i = 0; i < nel; i++) {
@@ -1931,7 +1929,6 @@ static int filename_trans_read(struct policydb *p, void *fp)
 	nel = le32_to_cpu(buf[0]);
 
 	for (i = 0; i < nel; i++) {
-		ft = NULL;
 		otype = NULL;
 		name = NULL;
 
@@ -2008,7 +2005,7 @@ static int genfs_read(struct policydb *p, void *fp)
 
 	rc = next_entry(buf, fp, sizeof(u32));
 	if (rc)
-		goto out;
+		return rc;
 	nel = le32_to_cpu(buf[0]);
 
 	for (i = 0; i < nel; i++) {
@@ -2100,9 +2097,10 @@ static int genfs_read(struct policydb *p, void *fp)
 	}
 	rc = 0;
 out:
-	if (newgenfs)
+	if (newgenfs) {
 		kfree(newgenfs->fstype);
-	kfree(newgenfs);
+		kfree(newgenfs);
+	}
 	ocontext_destroy(newc, OCON_FSUSE);
 
 	return rc;
