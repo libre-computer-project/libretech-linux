@@ -1036,6 +1036,12 @@ int security_task_getioprio(struct task_struct *p)
 	return call_int_hook(task_getioprio, 0, p);
 }
 
+int security_task_prlimit(const struct cred *cred, const struct cred *tcred,
+			  unsigned int flags)
+{
+	return call_int_hook(task_prlimit, 0, cred, tcred, flags);
+}
+
 int security_task_setrlimit(struct task_struct *p, unsigned int resource,
 		struct rlimit *new_rlim)
 {
@@ -1622,7 +1628,7 @@ int security_audit_rule_match(u32 secid, u32 field, u32 op, void *lsmrule,
 }
 #endif /* CONFIG_AUDIT */
 
-struct security_hook_heads security_hook_heads = {
+struct security_hook_heads security_hook_heads __lsm_ro_after_init = {
 	.binder_set_context_mgr =
 		LIST_HEAD_INIT(security_hook_heads.binder_set_context_mgr),
 	.binder_transaction =
@@ -1793,6 +1799,8 @@ struct security_hook_heads security_hook_heads = {
 		LIST_HEAD_INIT(security_hook_heads.task_setioprio),
 	.task_getioprio =
 		LIST_HEAD_INIT(security_hook_heads.task_getioprio),
+	.task_prlimit =
+		LIST_HEAD_INIT(security_hook_heads.task_prlimit),
 	.task_setrlimit =
 		LIST_HEAD_INIT(security_hook_heads.task_setrlimit),
 	.task_setscheduler =
