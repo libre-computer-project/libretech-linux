@@ -68,6 +68,14 @@ int adreno_hw_init(struct msm_gpu *gpu)
 		return ret;
 	}
 
+	/* reset ringbuffer: */
+	gpu->rb->cur = gpu->rb->start;
+
+	/* reset completed fence seqno: */
+	adreno_gpu->memptrs->fence = gpu->fctx->completed_fence;
+	adreno_gpu->memptrs->rptr  = 0;
+	adreno_gpu->memptrs->wptr  = 0;
+
 	/* Setup REG_CP_RB_CNTL: */
 	adreno_gpu_write(adreno_gpu, REG_ADRENO_CP_RB_CNTL,
 			/* size is log2(quad-words): */
@@ -111,29 +119,20 @@ uint32_t adreno_last_fence(struct msm_gpu *gpu)
 
 void adreno_recover(struct msm_gpu *gpu)
 {
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct drm_device *dev = gpu->dev;
 	int ret;
 
+	// XXX pm-runtime??  we *need* the device to be off after this
+	// so maybe continuing to call ->pm_suspend/resume() is better?
+
 	gpu->funcs->pm_suspend(gpu);
-
-	/* reset ringbuffer: */
-	gpu->rb->cur = gpu->rb->start;
-
-	/* reset completed fence seqno: */
-	adreno_gpu->memptrs->fence = gpu->fctx->completed_fence;
-	adreno_gpu->memptrs->rptr  = 0;
-	adreno_gpu->memptrs->wptr  = 0;
-
 	gpu->funcs->pm_resume(gpu);
 
-	disable_irq(gpu->irq);
-	ret = gpu->funcs->hw_init(gpu);
+	ret = msm_gpu_hw_init(gpu);
 	if (ret) {
 		dev_err(dev->dev, "gpu hw init failed: %d\n", ret);
 		/* hmm, oh well? */
 	}
-	enable_irq(gpu->irq);
 }
 
 void adreno_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit,
@@ -259,8 +258,6 @@ void adreno_show(struct msm_gpu *gpu, struct seq_file *m)
 	seq_printf(m, "wptr:     %d\n", adreno_gpu->memptrs->wptr);
 	seq_printf(m, "rb wptr:  %d\n", get_wptr(gpu->rb));
 
-	gpu->funcs->pm_resume(gpu);
-
 	/* dump these out in a form that can be parsed by demsm: */
 	seq_printf(m, "IO:region %s 00000000 00020000\n", gpu->name);
 	for (i = 0; adreno_gpu->registers[i] != ~0; i += 2) {
@@ -273,8 +270,6 @@ void adreno_show(struct msm_gpu *gpu, struct seq_file *m)
 			seq_printf(m, "IO:R %08x %08x\n", addr<<2, val);
 		}
 	}
-
-	gpu->funcs->pm_suspend(gpu);
 }
 #endif
 
@@ -368,6 +363,10 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 			RB_SIZE);
 	if (ret)
 		return ret;
+
+	pm_runtime_set_autosuspend_delay(&pdev->dev, DRM_MSM_INACTIVE_PERIOD);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
 
 	ret = request_firmware(&adreno_gpu->pm4, adreno_gpu->info->pm4fw, drm->dev);
 	if (ret) {
