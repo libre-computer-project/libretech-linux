@@ -35,6 +35,7 @@ struct bpf_map_ops {
 	void *(*map_fd_get_ptr)(struct bpf_map *map, struct file *map_file,
 				int fd);
 	void (*map_fd_put_ptr)(void *ptr);
+	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 };
 
 struct bpf_map {
@@ -49,6 +50,7 @@ struct bpf_map {
 	const struct bpf_map_ops *ops;
 	struct work_struct work;
 	atomic_t usercnt;
+	struct bpf_map *inner_map_meta;
 };
 
 struct bpf_map_type_list {
@@ -275,6 +277,8 @@ int bpf_stackmap_copy(struct bpf_map *map, void *key, void *value);
 int bpf_fd_array_map_update_elem(struct bpf_map *map, struct file *map_file,
 				 void *key, void *value, u64 map_flags);
 void bpf_fd_array_map_clear(struct bpf_map *map);
+int bpf_fd_htab_map_update_elem(struct bpf_map *map, struct file *map_file,
+				void *key, void *value, u64 map_flags);
 
 /* memcpy that is used with 8-byte aligned pointers, power-of-8 size and
  * forced to use 'long' read/writes to try to atomically copy long counters.
