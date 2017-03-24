@@ -3254,7 +3254,7 @@ u32 skl_plane_stride(const struct drm_framebuffer *fb, int plane,
 	return stride;
 }
 
-u32 skl_plane_ctl_format(uint32_t pixel_format)
+static u32 skl_plane_ctl_format(uint32_t pixel_format)
 {
 	switch (pixel_format) {
 	case DRM_FORMAT_C8:
@@ -3295,7 +3295,7 @@ u32 skl_plane_ctl_format(uint32_t pixel_format)
 	return 0;
 }
 
-u32 skl_plane_ctl_tiling(uint64_t fb_modifier)
+static u32 skl_plane_ctl_tiling(uint64_t fb_modifier)
 {
 	switch (fb_modifier) {
 	case DRM_FORMAT_MOD_NONE:
@@ -3313,7 +3313,7 @@ u32 skl_plane_ctl_tiling(uint64_t fb_modifier)
 	return 0;
 }
 
-u32 skl_plane_ctl_rotation(unsigned int rotation)
+static u32 skl_plane_ctl_rotation(unsigned int rotation)
 {
 	switch (rotation) {
 	case DRM_ROTATE_0:
@@ -3333,6 +3333,37 @@ u32 skl_plane_ctl_rotation(unsigned int rotation)
 	}
 
 	return 0;
+}
+
+u32 skl_plane_ctl(const struct intel_crtc_state *crtc_state,
+		  const struct intel_plane_state *plane_state)
+{
+	struct drm_i915_private *dev_priv =
+		to_i915(plane_state->base.plane->dev);
+	const struct drm_framebuffer *fb = plane_state->base.fb;
+	unsigned int rotation = plane_state->base.rotation;
+	const struct drm_intel_sprite_colorkey *key = &plane_state->ckey;
+	u32 plane_ctl;
+
+	plane_ctl = PLANE_CTL_ENABLE;
+
+	if (!IS_GEMINILAKE(dev_priv)) {
+		plane_ctl |=
+			PLANE_CTL_PIPE_GAMMA_ENABLE |
+			PLANE_CTL_PIPE_CSC_ENABLE |
+			PLANE_CTL_PLANE_GAMMA_DISABLE;
+	}
+
+	plane_ctl |= skl_plane_ctl_format(fb->format->format);
+	plane_ctl |= skl_plane_ctl_tiling(fb->modifier);
+	plane_ctl |= skl_plane_ctl_rotation(rotation);
+
+	if (key->flags & I915_SET_COLORKEY_DESTINATION)
+		plane_ctl |= PLANE_CTL_KEY_ENABLE_DESTINATION;
+	else if (key->flags & I915_SET_COLORKEY_SOURCE)
+		plane_ctl |= PLANE_CTL_KEY_ENABLE_SOURCE;
+
+	return plane_ctl;
 }
 
 static void skylake_update_primary_plane(struct drm_plane *plane,
@@ -3360,18 +3391,7 @@ static void skylake_update_primary_plane(struct drm_plane *plane,
 	int dst_h = drm_rect_height(&plane_state->base.dst);
 	unsigned long irqflags;
 
-	plane_ctl = PLANE_CTL_ENABLE;
-
-	if (!IS_GEMINILAKE(dev_priv)) {
-		plane_ctl |=
-			PLANE_CTL_PIPE_GAMMA_ENABLE |
-			PLANE_CTL_PIPE_CSC_ENABLE |
-			PLANE_CTL_PLANE_GAMMA_DISABLE;
-	}
-
-	plane_ctl |= skl_plane_ctl_format(fb->format->format);
-	plane_ctl |= skl_plane_ctl_tiling(fb->modifier);
-	plane_ctl |= skl_plane_ctl_rotation(rotation);
+	plane_ctl = skl_plane_ctl(crtc_state, plane_state);
 
 	/* Sizes are 0 based */
 	src_w--;
@@ -9159,7 +9179,33 @@ out:
 	return active;
 }
 
+static u32 i845_cursor_ctl(const struct intel_crtc_state *crtc_state,
+			   const struct intel_plane_state *plane_state)
+{
+	unsigned int width = plane_state->base.crtc_w;
+	unsigned int stride = roundup_pow_of_two(width) * 4;
+
+	switch (stride) {
+	default:
+		WARN_ONCE(1, "Invalid cursor width/stride, width=%u, stride=%u\n",
+			  width, stride);
+		stride = 256;
+		/* fallthrough */
+	case 256:
+	case 512:
+	case 1024:
+	case 2048:
+		break;
+	}
+
+	return CURSOR_ENABLE |
+		CURSOR_GAMMA_ENABLE |
+		CURSOR_FORMAT_ARGB |
+		CURSOR_STRIDE(stride);
+}
+
 static void i845_update_cursor(struct drm_crtc *crtc, u32 base,
+			       const struct intel_crtc_state *crtc_state,
 			       const struct intel_plane_state *plane_state)
 {
 	struct drm_device *dev = crtc->dev;
@@ -9170,26 +9216,8 @@ static void i845_update_cursor(struct drm_crtc *crtc, u32 base,
 	if (plane_state && plane_state->base.visible) {
 		unsigned int width = plane_state->base.crtc_w;
 		unsigned int height = plane_state->base.crtc_h;
-		unsigned int stride = roundup_pow_of_two(width) * 4;
 
-		switch (stride) {
-		default:
-			WARN_ONCE(1, "Invalid cursor width/stride, width=%u, stride=%u\n",
-				  width, stride);
-			stride = 256;
-			/* fallthrough */
-		case 256:
-		case 512:
-		case 1024:
-		case 2048:
-			break;
-		}
-
-		cntl |= CURSOR_ENABLE |
-			CURSOR_GAMMA_ENABLE |
-			CURSOR_FORMAT_ARGB |
-			CURSOR_STRIDE(stride);
-
+		cntl = i845_cursor_ctl(crtc_state, plane_state);
 		size = (height << 12) | width;
 	}
 
@@ -9222,7 +9250,45 @@ static void i845_update_cursor(struct drm_crtc *crtc, u32 base,
 	}
 }
 
+static u32 i9xx_cursor_ctl(const struct intel_crtc_state *crtc_state,
+			   const struct intel_plane_state *plane_state)
+{
+	struct drm_i915_private *dev_priv =
+		to_i915(plane_state->base.plane->dev);
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->base.crtc);
+	enum pipe pipe = crtc->pipe;
+	u32 cntl;
+
+	cntl = MCURSOR_GAMMA_ENABLE;
+
+	if (HAS_DDI(dev_priv))
+		cntl |= CURSOR_PIPE_CSC_ENABLE;
+
+	cntl |= pipe << 28; /* Connect to correct pipe */
+
+	switch (plane_state->base.crtc_w) {
+	case 64:
+		cntl |= CURSOR_MODE_64_ARGB_AX;
+		break;
+	case 128:
+		cntl |= CURSOR_MODE_128_ARGB_AX;
+		break;
+	case 256:
+		cntl |= CURSOR_MODE_256_ARGB_AX;
+		break;
+	default:
+		MISSING_CASE(plane_state->base.crtc_w);
+		return 0;
+	}
+
+	if (plane_state->base.rotation & DRM_ROTATE_180)
+		cntl |= CURSOR_ROTATE_180;
+
+	return cntl;
+}
+
 static void i9xx_update_cursor(struct drm_crtc *crtc, u32 base,
+			       const struct intel_crtc_state *crtc_state,
 			       const struct intel_plane_state *plane_state)
 {
 	struct drm_device *dev = crtc->dev;
@@ -9231,30 +9297,8 @@ static void i9xx_update_cursor(struct drm_crtc *crtc, u32 base,
 	int pipe = intel_crtc->pipe;
 	uint32_t cntl = 0;
 
-	if (plane_state && plane_state->base.visible) {
-		cntl = MCURSOR_GAMMA_ENABLE;
-		switch (plane_state->base.crtc_w) {
-			case 64:
-				cntl |= CURSOR_MODE_64_ARGB_AX;
-				break;
-			case 128:
-				cntl |= CURSOR_MODE_128_ARGB_AX;
-				break;
-			case 256:
-				cntl |= CURSOR_MODE_256_ARGB_AX;
-				break;
-			default:
-				MISSING_CASE(plane_state->base.crtc_w);
-				return;
-		}
-		cntl |= pipe << 28; /* Connect to correct pipe */
-
-		if (HAS_DDI(dev_priv))
-			cntl |= CURSOR_PIPE_CSC_ENABLE;
-
-		if (plane_state->base.rotation & DRM_ROTATE_180)
-			cntl |= CURSOR_ROTATE_180;
-	}
+	if (plane_state && plane_state->base.visible)
+		cntl = i9xx_cursor_ctl(crtc_state, plane_state);
 
 	if (intel_crtc->cursor_cntl != cntl) {
 		I915_WRITE_FW(CURCNTR(pipe), cntl);
@@ -9271,6 +9315,7 @@ static void i9xx_update_cursor(struct drm_crtc *crtc, u32 base,
 
 /* If no-part of the cursor is visible on the framebuffer, then the GPU may hang... */
 static void intel_crtc_update_cursor(struct drm_crtc *crtc,
+				     const struct intel_crtc_state *crtc_state,
 				     const struct intel_plane_state *plane_state)
 {
 	struct drm_device *dev = crtc->dev;
@@ -9310,9 +9355,9 @@ static void intel_crtc_update_cursor(struct drm_crtc *crtc,
 	I915_WRITE_FW(CURPOS(pipe), pos);
 
 	if (IS_I845G(dev_priv) || IS_I865G(dev_priv))
-		i845_update_cursor(crtc, base, plane_state);
+		i845_update_cursor(crtc, base, crtc_state, plane_state);
 	else
-		i9xx_update_cursor(crtc, base, plane_state);
+		i9xx_update_cursor(crtc, base, crtc_state, plane_state);
 
 	spin_unlock_irqrestore(&dev_priv->uncore.lock, irqflags);
 }
@@ -13742,7 +13787,7 @@ intel_disable_cursor_plane(struct drm_plane *plane,
 	struct intel_crtc *intel_crtc = to_intel_crtc(crtc);
 
 	intel_crtc->cursor_addr = 0;
-	intel_crtc_update_cursor(crtc, NULL);
+	intel_crtc_update_cursor(crtc, NULL, NULL);
 }
 
 static void
@@ -13764,7 +13809,7 @@ intel_update_cursor_plane(struct drm_plane *plane,
 		addr = obj->phys_handle->busaddr;
 
 	intel_crtc->cursor_addr = addr;
-	intel_crtc_update_cursor(crtc, state);
+	intel_crtc_update_cursor(crtc, crtc_state, state);
 }
 
 static struct intel_plane *

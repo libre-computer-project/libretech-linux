@@ -83,7 +83,10 @@ void intel_uc_sanitize_options(struct drm_i915_private *dev_priv)
 
 void intel_uc_init_early(struct drm_i915_private *dev_priv)
 {
-	mutex_init(&dev_priv->guc.send_mutex);
+	struct intel_guc *guc = &dev_priv->guc;
+
+	mutex_init(&guc->send_mutex);
+	guc->send = intel_guc_send_mmio;
 }
 
 void intel_uc_init_fw(struct drm_i915_private *dev_priv)
@@ -95,13 +98,28 @@ void intel_uc_init_fw(struct drm_i915_private *dev_priv)
 		intel_uc_prepare_fw(dev_priv, &dev_priv->guc.fw);
 }
 
+void intel_uc_fini_fw(struct drm_i915_private *dev_priv)
+{
+	struct intel_uc_fw *guc_fw = &dev_priv->guc.fw;
+	struct intel_uc_fw *huc_fw = &dev_priv->huc.fw;
+	struct drm_i915_gem_object *obj;
+
+	obj = fetch_and_zero(&guc_fw->obj);
+	if (obj)
+		i915_gem_object_put(obj);
+
+	guc_fw->fetch_status = INTEL_UC_FIRMWARE_NONE;
+
+	obj = fetch_and_zero(&huc_fw->obj);
+	if (obj)
+		i915_gem_object_put(obj);
+
+	huc_fw->fetch_status = INTEL_UC_FIRMWARE_NONE;
+}
+
 int intel_uc_init_hw(struct drm_i915_private *dev_priv)
 {
 	int ret, attempts;
-
-	/* GuC not enabled, nothing to do */
-	if (!i915.enable_guc_loading)
-		return 0;
 
 	gen9_reset_guc_interrupts(dev_priv);
 
@@ -109,9 +127,13 @@ int intel_uc_init_hw(struct drm_i915_private *dev_priv)
 	i915_ggtt_enable_guc(dev_priv);
 
 	if (i915.enable_guc_submission) {
+		/*
+		 * This is stuff we need to have available at fw load time
+		 * if we are planning to enable submission later
+		 */
 		ret = i915_guc_submission_init(dev_priv);
 		if (ret)
-			goto err;
+			goto err_guc;
 	}
 
 	/* WaEnableuKernelHeaderValidFix:skl */
@@ -150,7 +172,7 @@ int intel_uc_init_hw(struct drm_i915_private *dev_priv)
 
 		ret = i915_guc_submission_enable(dev_priv);
 		if (ret)
-			goto err_submission;
+			goto err_interrupts;
 	}
 
 	return 0;
@@ -164,11 +186,12 @@ int intel_uc_init_hw(struct drm_i915_private *dev_priv)
 	 * nonfatal error (i.e. it doesn't prevent driver load, but
 	 * marks the GPU as wedged until reset).
 	 */
+err_interrupts:
+	gen9_disable_guc_interrupts(dev_priv);
 err_submission:
 	if (i915.enable_guc_submission)
 		i915_guc_submission_fini(dev_priv);
-
-err:
+err_guc:
 	i915_ggtt_disable_guc(dev_priv);
 
 	DRM_ERROR("GuC init failed\n");
@@ -185,11 +208,21 @@ err:
 	return ret;
 }
 
+void intel_uc_fini_hw(struct drm_i915_private *dev_priv)
+{
+	if (i915.enable_guc_submission) {
+		i915_guc_submission_disable(dev_priv);
+		gen9_disable_guc_interrupts(dev_priv);
+		i915_guc_submission_fini(dev_priv);
+	}
+	i915_ggtt_disable_guc(dev_priv);
+}
+
 /*
  * Read GuC command/status register (SOFT_SCRATCH_0)
  * Return true if it contains a response rather than a command
  */
-static bool intel_guc_recv(struct intel_guc *guc, u32 *status)
+static bool guc_recv(struct intel_guc *guc, u32 *status)
 {
 	struct drm_i915_private *dev_priv = guc_to_i915(guc);
 
@@ -198,7 +231,10 @@ static bool intel_guc_recv(struct intel_guc *guc, u32 *status)
 	return INTEL_GUC_RECV_IS_RESPONSE(val);
 }
 
-int intel_guc_send(struct intel_guc *guc, const u32 *action, u32 len)
+/*
+ * This function implements the MMIO based host to GuC interface.
+ */
+int intel_guc_send_mmio(struct intel_guc *guc, const u32 *action, u32 len)
 {
 	struct drm_i915_private *dev_priv = guc_to_i915(guc);
 	u32 status;
@@ -226,9 +262,9 @@ int intel_guc_send(struct intel_guc *guc, const u32 *action, u32 len)
 	 * up to that length of time, then switch to a slower sleep-wait loop.
 	 * No inte_guc_send command should ever take longer than 10ms.
 	 */
-	ret = wait_for_us(intel_guc_recv(guc, &status), 10);
+	ret = wait_for_us(guc_recv(guc, &status), 10);
 	if (ret)
-		ret = wait_for(intel_guc_recv(guc, &status), 10);
+		ret = wait_for(guc_recv(guc, &status), 10);
 	if (status != INTEL_GUC_STATUS_SUCCESS) {
 		/*
 		 * Either the GuC explicitly returned an error (which
