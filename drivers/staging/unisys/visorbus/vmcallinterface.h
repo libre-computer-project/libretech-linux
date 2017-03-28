@@ -12,8 +12,8 @@
  * details.
  */
 
-#ifndef __IOMONINTF_H__
-#define __IOMONINTF_H__
+#ifndef __VMCALLINTERFACE_H__
+#define __VMCALLINTERFACE_H__
 
 /*
  * This file contains all structures needed to support the VMCALLs for IO
@@ -54,12 +54,12 @@ __unisys_extended_vmcall_gnuc(unsigned long long tuple,
 	return result;
 }
 
-#ifdef VMCALL_IO_CONTROLVM_ADDR
-#undef VMCALL_IO_CONTROLVM_ADDR
+#ifdef VMCALL_CONTROLVM_ADDR
+#undef VMCALL_CONTROLVM_ADDR
 #endif	/*  */
 
 /* define subsystem number for AppOS, used in uislib driver  */
-#define MDS_APPOS 0x4000000000000000L	/* subsystem = 62 - AppOS */
+#define MDS_APPOS 0x4000000000000000L /* subsystem = 62 - AppOS */
 enum vmcall_monitor_interface_method_tuple { /* VMCALL identification tuples  */
 	    /* Note: when a new VMCALL is added:
 	     * - the 1st 2 hex digits correspond to one of the
@@ -72,7 +72,7 @@ enum vmcall_monitor_interface_method_tuple { /* VMCALL identification tuples  */
 	     *   type of VMCALL
 	     */
 	/* used by all Guests, not just IO */
-	VMCALL_IO_CONTROLVM_ADDR = 0x0501,
+	VMCALL_CONTROLVM_ADDR = 0x0501,
 	/* Allow caller to query virtual time offset */
 	VMCALL_QUERY_GUEST_VIRTUAL_TIME_OFFSET = 0x0708,
 	/* LOGEVENT Post Code (RDX) with specified subsystem mask */
@@ -83,19 +83,19 @@ enum vmcall_monitor_interface_method_tuple { /* VMCALL identification tuples  */
 };
 
 #define VMCALL_SUCCESS 0
-#define VMCALL_SUCCESSFUL(result)	(result == 0)
+#define VMCALL_SUCCESSFUL(result) (result == 0)
 
 #define unisys_vmcall(tuple, reg_ebx, reg_ecx) \
 	__unisys_vmcall_gnuc(tuple, reg_ebx, reg_ecx)
 #define unisys_extended_vmcall(tuple, reg_ebx, reg_ecx, reg_edx) \
 	__unisys_extended_vmcall_gnuc(tuple, reg_ebx, reg_ecx, reg_edx)
 #define ISSUE_IO_VMCALL(method, param, result) \
-	(result = unisys_vmcall(method, (param) & 0xFFFFFFFF,	\
+	(result = unisys_vmcall(method, (param) & 0xFFFFFFFF, \
 				(param) >> 32))
 
 /* Structures for IO VMCALLs */
 
-/* Parameters to VMCALL_IO_CONTROLVM_ADDR interface */
+/* Parameters to VMCALL_CONTROLVM_ADDR interface */
 struct vmcall_io_controlvm_addr_params {
 	/* The Guest-relative physical address of the ControlVm channel. */
 	/* This VMCall fills this in with the appropriate address. */
@@ -162,16 +162,16 @@ enum event_pc {			/* POSTCODE event identifier tuples */
  * entered/exited from.
  */
 
-#define POSTCODE_LINUX(EVENT_PC, pc16bit1, pc16bit2, severity)		\
-do {									\
-	unsigned long long post_code_temp;				\
-	post_code_temp = (((u64)CURRENT_FILE_PC) << 56) |		\
-		(((u64)EVENT_PC) << 44) |				\
-		((((u64)__LINE__) & 0xFFF) << 32) |			\
-		((((u64)pc16bit1) & 0xFFFF) << 16) |			\
-		(((u64)pc16bit2) & 0xFFFF);				\
-	unisys_extended_vmcall(VMCALL_POST_CODE_LOGEVENT, severity,     \
-			       MDS_APPOS, post_code_temp);              \
+#define POSTCODE_LINUX(EVENT_PC, pc16bit1, pc16bit2, severity) \
+do { \
+	unsigned long long post_code_temp; \
+	post_code_temp = (((u64)CURRENT_FILE_PC) << 56) | \
+		(((u64)EVENT_PC) << 44) | \
+		((((u64)__LINE__) & 0xFFF) << 32) | \
+		((((u64)pc16bit1) & 0xFFFF) << 16) | \
+		(((u64)pc16bit2) & 0xFFFF); \
+	unisys_extended_vmcall(VMCALL_POST_CODE_LOGEVENT, severity, \
+			       MDS_APPOS, post_code_temp); \
 } while (0)
 
-#endif /* __IOMONINTF_H__ */
+#endif /* __VMCALLINTERFACE_H__ */
