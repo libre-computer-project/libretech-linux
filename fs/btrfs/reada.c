@@ -209,9 +209,9 @@ cleanup:
 	return;
 }
 
-int btree_readahead_hook(struct btrfs_fs_info *fs_info,
-			 struct extent_buffer *eb, int err)
+int btree_readahead_hook(struct extent_buffer *eb, int err)
 {
+	struct btrfs_fs_info *fs_info = eb->fs_info;
 	int ret = 0;
 	struct reada_extent *re;
 
@@ -235,10 +235,10 @@ start_machine:
 	return ret;
 }
 
-static struct reada_zone *reada_find_zone(struct btrfs_fs_info *fs_info,
-					  struct btrfs_device *dev, u64 logical,
+static struct reada_zone *reada_find_zone(struct btrfs_device *dev, u64 logical,
 					  struct btrfs_bio *bbio)
 {
+	struct btrfs_fs_info *fs_info = dev->fs_info;
 	int ret;
 	struct reada_zone *zone;
 	struct btrfs_block_group_cache *cache = NULL;
@@ -246,11 +246,9 @@ static struct reada_zone *reada_find_zone(struct btrfs_fs_info *fs_info,
 	u64 end;
 	int i;
 
-	zone = NULL;
 	spin_lock(&fs_info->reada_lock);
-	ret = radix_tree_gang_lookup(&dev->reada_zones, (void **)&zone,
-				     logical >> PAGE_SHIFT, 1);
-	if (ret == 1 && logical >= zone->start && logical <= zone->end) {
+	zone = radix_tree_lookup(&dev->reada_zones, logical >> PAGE_SHIFT);
+	if (zone && logical >= zone->start && logical <= zone->end) {
 		kref_get(&zone->refcnt);
 		spin_unlock(&fs_info->reada_lock);
 		return zone;
@@ -269,6 +267,12 @@ static struct reada_zone *reada_find_zone(struct btrfs_fs_info *fs_info,
 	zone = kzalloc(sizeof(*zone), GFP_KERNEL);
 	if (!zone)
 		return NULL;
+
+	ret = radix_tree_preload(GFP_KERNEL);
+	if (ret) {
+		kfree(zone);
+		return NULL;
+	}
 
 	zone->start = start;
 	zone->end = end;
@@ -291,14 +295,15 @@ static struct reada_zone *reada_find_zone(struct btrfs_fs_info *fs_info,
 
 	if (ret == -EEXIST) {
 		kfree(zone);
-		ret = radix_tree_gang_lookup(&dev->reada_zones, (void **)&zone,
-					     logical >> PAGE_SHIFT, 1);
-		if (ret == 1 && logical >= zone->start && logical <= zone->end)
+		zone = radix_tree_lookup(&dev->reada_zones,
+				logical >> PAGE_SHIFT);
+		if (zone && logical >= zone->start && logical <= zone->end)
 			kref_get(&zone->refcnt);
 		else
 			zone = NULL;
 	}
 	spin_unlock(&fs_info->reada_lock);
+	radix_tree_preload_end();
 
 	return zone;
 }
@@ -313,7 +318,6 @@ static struct reada_extent *reada_find_extent(struct btrfs_fs_info *fs_info,
 	struct btrfs_bio *bbio = NULL;
 	struct btrfs_device *dev;
 	struct btrfs_device *prev_dev;
-	u32 blocksize;
 	u64 length;
 	int real_stripes;
 	int nzones = 0;
@@ -334,7 +338,6 @@ static struct reada_extent *reada_find_extent(struct btrfs_fs_info *fs_info,
 	if (!re)
 		return NULL;
 
-	blocksize = fs_info->nodesize;
 	re->logical = logical;
 	re->top = *top;
 	INIT_LIST_HEAD(&re->extctl);
@@ -344,10 +347,10 @@ static struct reada_extent *reada_find_extent(struct btrfs_fs_info *fs_info,
 	/*
 	 * map block
 	 */
-	length = blocksize;
+	length = fs_info->nodesize;
 	ret = btrfs_map_block(fs_info, BTRFS_MAP_GET_READ_MIRRORS, logical,
 			&length, &bbio, 0);
-	if (ret || !bbio || length < blocksize)
+	if (ret || !bbio || length < fs_info->nodesize)
 		goto error;
 
 	if (bbio->num_stripes > BTRFS_MAX_MIRRORS) {
@@ -367,7 +370,7 @@ static struct reada_extent *reada_find_extent(struct btrfs_fs_info *fs_info,
 		 if (!dev->bdev)
 			continue;
 
-		zone = reada_find_zone(fs_info, dev, logical, bbio);
+		zone = reada_find_zone(dev, logical, bbio);
 		if (!zone)
 			continue;
 
@@ -386,6 +389,10 @@ static struct reada_extent *reada_find_extent(struct btrfs_fs_info *fs_info,
 		goto error;
 	}
 
+	ret = radix_tree_preload(GFP_KERNEL);
+	if (ret)
+		goto error;
+
 	/* insert extent in reada_tree + all per-device trees, all or nothing */
 	btrfs_dev_replace_lock(&fs_info->dev_replace, 0);
 	spin_lock(&fs_info->reada_lock);
@@ -395,13 +402,16 @@ static struct reada_extent *reada_find_extent(struct btrfs_fs_info *fs_info,
 		re_exist->refcnt++;
 		spin_unlock(&fs_info->reada_lock);
 		btrfs_dev_replace_unlock(&fs_info->dev_replace, 0);
+		radix_tree_preload_end();
 		goto error;
 	}
 	if (ret) {
 		spin_unlock(&fs_info->reada_lock);
 		btrfs_dev_replace_unlock(&fs_info->dev_replace, 0);
+		radix_tree_preload_end();
 		goto error;
 	}
+	radix_tree_preload_end();
 	prev_dev = NULL;
 	dev_replace_is_ongoing = btrfs_dev_replace_is_ongoing(
 			&fs_info->dev_replace);
@@ -597,7 +607,6 @@ static int reada_pick_zone(struct btrfs_device *dev)
 	u64 top_elems = 0;
 	u64 top_locked_elems = 0;
 	unsigned long index = 0;
-	int ret;
 
 	if (dev->reada_curr_zone) {
 		reada_peer_zones_set_lock(dev->reada_curr_zone, 0);
@@ -608,9 +617,8 @@ static int reada_pick_zone(struct btrfs_device *dev)
 	while (1) {
 		struct reada_zone *zone;
 
-		ret = radix_tree_gang_lookup(&dev->reada_zones,
-					     (void **)&zone, index, 1);
-		if (ret == 0)
+		zone = radix_tree_lookup(&dev->reada_zones, index);
+		if (!zone)
 			break;
 		index = (zone->end >> PAGE_SHIFT) + 1;
 		if (zone->locked) {
@@ -639,9 +647,9 @@ static int reada_pick_zone(struct btrfs_device *dev)
 	return 1;
 }
 
-static int reada_start_machine_dev(struct btrfs_fs_info *fs_info,
-				   struct btrfs_device *dev)
+static int reada_start_machine_dev(struct btrfs_device *dev)
 {
+	struct btrfs_fs_info *fs_info = dev->fs_info;
 	struct reada_extent *re = NULL;
 	int mirror_num = 0;
 	struct extent_buffer *eb = NULL;
@@ -662,19 +670,18 @@ static int reada_start_machine_dev(struct btrfs_fs_info *fs_info,
 	 * a contiguous block of extents, we could also coagulate them or use
 	 * plugging to speed things up
 	 */
-	ret = radix_tree_gang_lookup(&dev->reada_extents, (void **)&re,
-				     dev->reada_next >> PAGE_SHIFT, 1);
-	if (ret == 0 || re->logical > dev->reada_curr_zone->end) {
+	re = radix_tree_lookup(&dev->reada_extents,
+			dev->reada_next >> PAGE_SHIFT);
+	if (!re || re->logical > dev->reada_curr_zone->end) {
 		ret = reada_pick_zone(dev);
 		if (!ret) {
 			spin_unlock(&fs_info->reada_lock);
 			return 0;
 		}
-		re = NULL;
-		ret = radix_tree_gang_lookup(&dev->reada_extents, (void **)&re,
-					dev->reada_next >> PAGE_SHIFT, 1);
+		re = radix_tree_lookup(&dev->reada_extents,
+				dev->reada_next >> PAGE_SHIFT);
 	}
-	if (ret == 0) {
+	if (!re) {
 		spin_unlock(&fs_info->reada_lock);
 		return 0;
 	}
@@ -754,8 +761,7 @@ static void __reada_start_machine(struct btrfs_fs_info *fs_info)
 		list_for_each_entry(device, &fs_devices->devices, dev_list) {
 			if (atomic_read(&device->reada_in_flight) <
 			    MAX_IN_FLIGHT)
-				enqueued += reada_start_machine_dev(fs_info,
-								    device);
+				enqueued += reada_start_machine_dev(device);
 		}
 		mutex_unlock(&fs_devices->device_list_mutex);
 		total += enqueued;
@@ -802,7 +808,6 @@ static void dump_devs(struct btrfs_fs_info *fs_info, int all)
 	struct btrfs_device *device;
 	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices;
 	unsigned long index;
-	int ret;
 	int i;
 	int j;
 	int cnt;
@@ -814,9 +819,9 @@ static void dump_devs(struct btrfs_fs_info *fs_info, int all)
 		index = 0;
 		while (1) {
 			struct reada_zone *zone;
-			ret = radix_tree_gang_lookup(&device->reada_zones,
-						     (void **)&zone, index, 1);
-			if (ret == 0)
+
+			zone = radix_tree_lookup(&device->reada_zones, index);
+			if (!zone)
 				break;
 			pr_debug("  zone %llu-%llu elems %llu locked %d devs",
 				    zone->start, zone->end, zone->elems,
@@ -834,11 +839,10 @@ static void dump_devs(struct btrfs_fs_info *fs_info, int all)
 		cnt = 0;
 		index = 0;
 		while (all) {
-			struct reada_extent *re = NULL;
+			struct reada_extent *re;
 
-			ret = radix_tree_gang_lookup(&device->reada_extents,
-						     (void **)&re, index, 1);
-			if (ret == 0)
+			re = radix_tree_lookup(&device->reada_extents, index);
+			if (!re)
 				break;
 			pr_debug("  re: logical %llu size %u empty %d scheduled %d",
 				re->logical, fs_info->nodesize,
@@ -863,11 +867,10 @@ static void dump_devs(struct btrfs_fs_info *fs_info, int all)
 	index = 0;
 	cnt = 0;
 	while (all) {
-		struct reada_extent *re = NULL;
+		struct reada_extent *re;
 
-		ret = radix_tree_gang_lookup(&fs_info->reada_tree, (void **)&re,
-					     index, 1);
-		if (ret == 0)
+		re = radix_tree_lookup(&fs_info->reada_tree, index);
+		if (!re)
 			break;
 		if (!re->scheduled) {
 			index = (re->logical >> PAGE_SHIFT) + 1;

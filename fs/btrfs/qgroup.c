@@ -2487,18 +2487,6 @@ out:
 	spin_unlock(&fs_info->qgroup_lock);
 }
 
-void assert_qgroups_uptodate(struct btrfs_trans_handle *trans)
-{
-	if (list_empty(&trans->qgroup_ref_list) && !trans->delayed_ref_elem.seq)
-		return;
-	btrfs_err(trans->fs_info,
-		"qgroups not uptodate in trans handle %p:  list is%s empty, seq is %#x.%x",
-		trans, list_empty(&trans->qgroup_ref_list) ? "" : " not",
-		(u32)(trans->delayed_ref_elem.seq >> 32),
-		(u32)trans->delayed_ref_elem.seq);
-	BUG();
-}
-
 /*
  * returns < 0 on error, 0 when more leafs are to be scanned.
  * returns 1 when done.
@@ -2948,20 +2936,20 @@ int btrfs_qgroup_reserve_meta(struct btrfs_root *root, int num_bytes,
 	ret = qgroup_reserve(root, num_bytes, enforce);
 	if (ret < 0)
 		return ret;
-	atomic_add(num_bytes, &root->qgroup_meta_rsv);
+	atomic64_add(num_bytes, &root->qgroup_meta_rsv);
 	return ret;
 }
 
 void btrfs_qgroup_free_meta_all(struct btrfs_root *root)
 {
 	struct btrfs_fs_info *fs_info = root->fs_info;
-	int reserved;
+	u64 reserved;
 
 	if (!test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags) ||
 	    !is_fstree(root->objectid))
 		return;
 
-	reserved = atomic_xchg(&root->qgroup_meta_rsv, 0);
+	reserved = atomic64_xchg(&root->qgroup_meta_rsv, 0);
 	if (reserved == 0)
 		return;
 	btrfs_qgroup_free_refroot(fs_info, root->objectid, reserved);
@@ -2976,8 +2964,8 @@ void btrfs_qgroup_free_meta(struct btrfs_root *root, int num_bytes)
 		return;
 
 	BUG_ON(num_bytes != round_down(num_bytes, fs_info->nodesize));
-	WARN_ON(atomic_read(&root->qgroup_meta_rsv) < num_bytes);
-	atomic_sub(num_bytes, &root->qgroup_meta_rsv);
+	WARN_ON(atomic64_read(&root->qgroup_meta_rsv) < num_bytes);
+	atomic64_sub(num_bytes, &root->qgroup_meta_rsv);
 	btrfs_qgroup_free_refroot(fs_info, root->objectid, num_bytes);
 }
 
