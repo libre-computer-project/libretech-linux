@@ -398,6 +398,9 @@ struct intel_plane_state {
 		int x, y;
 	} aux;
 
+	/* plane control register */
+	u32 ctl;
+
 	/*
 	 * scaler_id
 	 *    = -1 : not using a scaler
@@ -1236,8 +1239,8 @@ void intel_ddi_disable_transcoder_func(struct drm_i915_private *dev_priv,
 				       enum transcoder cpu_transcoder);
 void intel_ddi_enable_pipe_clock(const struct intel_crtc_state *crtc_state);
 void intel_ddi_disable_pipe_clock(const  struct intel_crtc_state *crtc_state);
-bool intel_ddi_pll_select(struct intel_crtc *crtc,
-			  struct intel_crtc_state *crtc_state);
+struct intel_encoder *
+intel_ddi_get_crtc_new_encoder(struct intel_crtc_state *crtc_state);
 void intel_ddi_set_pipe_settings(const struct intel_crtc_state *crtc_state);
 void intel_ddi_prepare_link_retrain(struct intel_dp *intel_dp);
 bool intel_ddi_connector_get_hw_state(struct intel_connector *intel_connector);
@@ -1445,12 +1448,12 @@ static inline u32 intel_plane_ggtt_offset(const struct intel_plane_state *state)
 	return i915_ggtt_offset(state->vma);
 }
 
-u32 skl_plane_ctl_format(uint32_t pixel_format);
-u32 skl_plane_ctl_tiling(uint64_t fb_modifier);
-u32 skl_plane_ctl_rotation(unsigned int rotation);
+u32 skl_plane_ctl(const struct intel_crtc_state *crtc_state,
+		  const struct intel_plane_state *plane_state);
 u32 skl_plane_stride(const struct drm_framebuffer *fb, int plane,
 		     unsigned int rotation);
 int skl_check_plane_surface(struct intel_plane_state *plane_state);
+int i9xx_check_plane_surface(struct intel_plane_state *plane_state);
 
 /* intel_csr.c */
 void intel_csr_ucode_init(struct drm_i915_private *);
