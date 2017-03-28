@@ -470,7 +470,8 @@ static void delete_glists(struct lio *lio)
 				kfree(g);
 		} while (g);
 
-		if (lio->glists_virt_base && lio->glists_virt_base[i]) {
+		if (lio->glists_virt_base && lio->glists_virt_base[i] &&
+		    lio->glists_dma_base && lio->glists_dma_base[i]) {
 			lio_dma_free(lio->oct_dev,
 				     lio->glist_entry_size * lio->tx_qsize,
 				     lio->glists_virt_base[i],
@@ -686,13 +687,12 @@ static void update_txq_status(struct octeon_device *oct, int iq_num)
 			netif_wake_subqueue(netdev, iq->q_index);
 			INCR_INSTRQUEUE_PKT_COUNT(lio->oct_dev, iq_num,
 						  tx_restart, 1);
-		} else {
-			if (!octnet_iq_is_full(oct, lio->txq)) {
-				INCR_INSTRQUEUE_PKT_COUNT(
-				    lio->oct_dev, lio->txq, tx_restart, 1);
-				wake_q(netdev, lio->txq);
-			}
 		}
+	} else if (netif_queue_stopped(netdev) && lio->linfo.link.s.link_up &&
+		   (!octnet_iq_is_full(oct, lio->txq))) {
+		INCR_INSTRQUEUE_PKT_COUNT(lio->oct_dev,
+					  lio->txq, tx_restart, 1);
+		netif_wake_queue(netdev);
 	}
 }
 
@@ -1153,6 +1153,8 @@ static void liquidio_destroy_nic_device(struct octeon_device *oct, int ifidx)
 
 	if (atomic_read(&lio->ifstate) & LIO_IFSTATE_REGISTERED)
 		unregister_netdev(netdev);
+
+	cleanup_rx_oom_poll_fn(netdev);
 
 	cleanup_link_status_change_wq(netdev);
 
@@ -1633,8 +1635,12 @@ static int liquidio_napi_poll(struct napi_struct *napi, int budget)
 	/* Flush the instruction queue */
 	iq = oct->instr_queue[iq_no];
 	if (iq) {
-		/* Process iq buffers with in the budget limits */
-		tx_done = octeon_flush_iq(oct, iq, budget);
+		if (atomic_read(&iq->instr_pending))
+			/* Process iq buffers with in the budget limits */
+			tx_done = octeon_flush_iq(oct, iq, budget);
+		else
+			tx_done = 1;
+
 		/* Update iq read-index rather than waiting for next interrupt.
 		 * Return back if tx_done is false.
 		 */
@@ -2992,6 +2998,9 @@ static int setup_nic_devices(struct octeon_device *octeon_dev)
 					     0);
 
 		if (setup_link_status_change_wq(netdev))
+			goto setup_nic_dev_fail;
+
+		if (setup_rx_oom_poll_fn(netdev))
 			goto setup_nic_dev_fail;
 
 		/* Register the network device with the OS */
