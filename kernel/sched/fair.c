@@ -3173,6 +3173,36 @@ static inline int propagate_entity_load_avg(struct sched_entity *se)
 	return 1;
 }
 
+/*
+ * Check if we need to update the load and the utilization of a blocked
+ * group_entity:
+ */
+static inline bool skip_blocked_update(struct sched_entity *se)
+{
+	struct cfs_rq *gcfs_rq = group_cfs_rq(se);
+
+	/*
+	 * If sched_entity still have not zero load or utilization, we have to
+	 * decay it:
+	 */
+	if (se->avg.load_avg || se->avg.util_avg)
+		return false;
+
+	/*
+	 * If there is a pending propagation, we have to update the load and
+	 * the utilization of the sched_entity:
+	 */
+	if (gcfs_rq->propagate_avg)
+		return false;
+
+	/*
+	 * Otherwise, the load and the utilization of the sched_entity is
+	 * already zero and there is no pending propagation, so it will be a
+	 * waste of time to try to decay it:
+	 */
+	return true;
+}
+
 #else /* CONFIG_FAIR_GROUP_SCHED */
 
 static inline void update_tg_load_avg(struct cfs_rq *cfs_rq, int force) {}
@@ -4271,8 +4301,9 @@ static u64 distribute_cfs_runtime(struct cfs_bandwidth *cfs_b,
 	list_for_each_entry_rcu(cfs_rq, &cfs_b->throttled_cfs_rq,
 				throttled_list) {
 		struct rq *rq = rq_of(cfs_rq);
+		struct rq_flags rf;
 
-		raw_spin_lock(&rq->lock);
+		rq_lock(rq, &rf);
 		if (!cfs_rq_throttled(cfs_rq))
 			goto next;
 
@@ -4289,7 +4320,7 @@ static u64 distribute_cfs_runtime(struct cfs_bandwidth *cfs_b,
 			unthrottle_cfs_rq(cfs_rq);
 
 next:
-		raw_spin_unlock(&rq->lock);
+		rq_unlock(rq, &rf);
 
 		if (!remaining)
 			break;
@@ -5097,15 +5128,16 @@ void cpu_load_update_nohz_stop(void)
 	unsigned long curr_jiffies = READ_ONCE(jiffies);
 	struct rq *this_rq = this_rq();
 	unsigned long load;
+	struct rq_flags rf;
 
 	if (curr_jiffies == this_rq->last_load_update_tick)
 		return;
 
 	load = weighted_cpuload(cpu_of(this_rq));
-	raw_spin_lock(&this_rq->lock);
+	rq_lock(this_rq, &rf);
 	update_rq_clock(this_rq);
 	cpu_load_update_nohz(this_rq, curr_jiffies, load);
-	raw_spin_unlock(&this_rq->lock);
+	rq_unlock(this_rq, &rf);
 }
 #else /* !CONFIG_NO_HZ_COMMON */
 static inline void cpu_load_update_nohz(struct rq *this_rq,
@@ -6769,7 +6801,7 @@ static void detach_task(struct task_struct *p, struct lb_env *env)
 	lockdep_assert_held(&env->src_rq->lock);
 
 	p->on_rq = TASK_ON_RQ_MIGRATING;
-	deactivate_task(env->src_rq, p, 0);
+	deactivate_task(env->src_rq, p, DEQUEUE_NOCLOCK);
 	set_task_cpu(p, env->dst_cpu);
 }
 
@@ -6902,7 +6934,7 @@ static void attach_task(struct rq *rq, struct task_struct *p)
 	lockdep_assert_held(&rq->lock);
 
 	BUG_ON(task_rq(p) != rq);
-	activate_task(rq, p, 0);
+	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	p->on_rq = TASK_ON_RQ_QUEUED;
 	check_preempt_curr(rq, p, 0);
 }
@@ -6913,9 +6945,12 @@ static void attach_task(struct rq *rq, struct task_struct *p)
  */
 static void attach_one_task(struct rq *rq, struct task_struct *p)
 {
-	raw_spin_lock(&rq->lock);
+	struct rq_flags rf;
+
+	rq_lock(rq, &rf);
+	update_rq_clock(rq);
 	attach_task(rq, p);
-	raw_spin_unlock(&rq->lock);
+	rq_unlock(rq, &rf);
 }
 
 /*
@@ -6926,8 +6961,10 @@ static void attach_tasks(struct lb_env *env)
 {
 	struct list_head *tasks = &env->tasks;
 	struct task_struct *p;
+	struct rq_flags rf;
 
-	raw_spin_lock(&env->dst_rq->lock);
+	rq_lock(env->dst_rq, &rf);
+	update_rq_clock(env->dst_rq);
 
 	while (!list_empty(tasks)) {
 		p = list_first_entry(tasks, struct task_struct, se.group_node);
@@ -6936,7 +6973,7 @@ static void attach_tasks(struct lb_env *env)
 		attach_task(env->dst_rq, p);
 	}
 
-	raw_spin_unlock(&env->dst_rq->lock);
+	rq_unlock(env->dst_rq, &rf);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -6944,9 +6981,9 @@ static void update_blocked_averages(int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	struct cfs_rq *cfs_rq;
-	unsigned long flags;
+	struct rq_flags rf;
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
+	rq_lock_irqsave(rq, &rf);
 	update_rq_clock(rq);
 
 	/*
@@ -6954,6 +6991,8 @@ static void update_blocked_averages(int cpu)
 	 * list_add_leaf_cfs_rq() for details.
 	 */
 	for_each_leaf_cfs_rq(rq, cfs_rq) {
+		struct sched_entity *se;
+
 		/* throttled entities do not contribute to load */
 		if (throttled_hierarchy(cfs_rq))
 			continue;
@@ -6961,11 +7000,12 @@ static void update_blocked_averages(int cpu)
 		if (update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true))
 			update_tg_load_avg(cfs_rq, 0);
 
-		/* Propagate pending load changes to the parent */
-		if (cfs_rq->tg->se[cpu])
-			update_load_avg(cfs_rq->tg->se[cpu], 0);
+		/* Propagate pending load changes to the parent, if any: */
+		se = cfs_rq->tg->se[cpu];
+		if (se && !skip_blocked_update(se))
+			update_load_avg(se, 0);
 	}
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
+	rq_unlock_irqrestore(rq, &rf);
 }
 
 /*
@@ -7019,12 +7059,12 @@ static inline void update_blocked_averages(int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	struct cfs_rq *cfs_rq = &rq->cfs;
-	unsigned long flags;
+	struct rq_flags rf;
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
+	rq_lock_irqsave(rq, &rf);
 	update_rq_clock(rq);
 	update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true);
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
+	rq_unlock_irqrestore(rq, &rf);
 }
 
 static unsigned long task_h_load(struct task_struct *p)
@@ -8042,7 +8082,7 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 	struct sched_domain *sd_parent = sd->parent;
 	struct sched_group *group;
 	struct rq *busiest;
-	unsigned long flags;
+	struct rq_flags rf;
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(load_balance_mask);
 
 	struct lb_env env = {
@@ -8105,7 +8145,7 @@ redo:
 		env.loop_max  = min(sysctl_sched_nr_migrate, busiest->nr_running);
 
 more_balance:
-		raw_spin_lock_irqsave(&busiest->lock, flags);
+		rq_lock_irqsave(busiest, &rf);
 		update_rq_clock(busiest);
 
 		/*
@@ -8122,14 +8162,14 @@ more_balance:
 		 * See task_rq_lock() family for the details.
 		 */
 
-		raw_spin_unlock(&busiest->lock);
+		rq_unlock(busiest, &rf);
 
 		if (cur_ld_moved) {
 			attach_tasks(&env);
 			ld_moved += cur_ld_moved;
 		}
 
-		local_irq_restore(flags);
+		local_irq_restore(rf.flags);
 
 		if (env.flags & LBF_NEED_BREAK) {
 			env.flags &= ~LBF_NEED_BREAK;
@@ -8207,6 +8247,8 @@ more_balance:
 			sd->nr_balance_failed++;
 
 		if (need_active_balance(&env)) {
+			unsigned long flags;
+
 			raw_spin_lock_irqsave(&busiest->lock, flags);
 
 			/* don't kick the active_load_balance_cpu_stop,
@@ -8444,8 +8486,9 @@ static int active_load_balance_cpu_stop(void *data)
 	struct rq *target_rq = cpu_rq(target_cpu);
 	struct sched_domain *sd;
 	struct task_struct *p = NULL;
+	struct rq_flags rf;
 
-	raw_spin_lock_irq(&busiest_rq->lock);
+	rq_lock_irq(busiest_rq, &rf);
 
 	/* make sure the requested cpu hasn't gone down in the meantime */
 	if (unlikely(busiest_cpu != smp_processor_id() ||
@@ -8496,7 +8539,7 @@ static int active_load_balance_cpu_stop(void *data)
 	rcu_read_unlock();
 out_unlock:
 	busiest_rq->active_balance = 0;
-	raw_spin_unlock(&busiest_rq->lock);
+	rq_unlock(busiest_rq, &rf);
 
 	if (p)
 		attach_one_task(target_rq, p);
@@ -8794,10 +8837,13 @@ static void nohz_idle_balance(struct rq *this_rq, enum cpu_idle_type idle)
 		 * do the balance.
 		 */
 		if (time_after_eq(jiffies, rq->next_balance)) {
-			raw_spin_lock_irq(&rq->lock);
+			struct rq_flags rf;
+
+			rq_lock_irq(rq, &rf);
 			update_rq_clock(rq);
 			cpu_load_update_idle(rq);
-			raw_spin_unlock_irq(&rq->lock);
+			rq_unlock_irq(rq, &rf);
+
 			rebalance_domains(rq, CPU_IDLE);
 		}
 
@@ -8988,8 +9034,9 @@ static void task_fork_fair(struct task_struct *p)
 	struct cfs_rq *cfs_rq;
 	struct sched_entity *se = &p->se, *curr;
 	struct rq *rq = this_rq();
+	struct rq_flags rf;
 
-	raw_spin_lock(&rq->lock);
+	rq_lock(rq, &rf);
 	update_rq_clock(rq);
 
 	cfs_rq = task_cfs_rq(current);
@@ -9010,7 +9057,7 @@ static void task_fork_fair(struct task_struct *p)
 	}
 
 	se->vruntime -= cfs_rq->min_vruntime;
-	raw_spin_unlock(&rq->lock);
+	rq_unlock(rq, &rf);
 }
 
 /*
@@ -9372,7 +9419,6 @@ static DEFINE_MUTEX(shares_mutex);
 int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 {
 	int i;
-	unsigned long flags;
 
 	/*
 	 * We can't change the weight of the root cgroup.
@@ -9389,19 +9435,17 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 	tg->shares = shares;
 	for_each_possible_cpu(i) {
 		struct rq *rq = cpu_rq(i);
-		struct sched_entity *se;
+		struct sched_entity *se = tg->se[i];
+		struct rq_flags rf;
 
-		se = tg->se[i];
 		/* Propagate contribution to hierarchy */
-		raw_spin_lock_irqsave(&rq->lock, flags);
-
-		/* Possible calls to update_curr() need rq clock */
+		rq_lock_irqsave(rq, &rf);
 		update_rq_clock(rq);
 		for_each_sched_entity(se) {
 			update_load_avg(se, UPDATE_TG);
 			update_cfs_shares(se);
 		}
-		raw_spin_unlock_irqrestore(&rq->lock, flags);
+		rq_unlock_irqrestore(rq, &rf);
 	}
 
 done:
