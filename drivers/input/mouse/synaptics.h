@@ -90,6 +90,7 @@
 #define SYN_CAP_ADV_GESTURE(ex0c)	((ex0c) & 0x080000)
 #define SYN_CAP_REDUCED_FILTERING(ex0c)	((ex0c) & 0x000400)
 #define SYN_CAP_IMAGE_SENSOR(ex0c)	((ex0c) & 0x000800)
+#define SYN_CAP_INTERTOUCH(ex0c)	((ex0c) & 0x004000)
 
 /*
  * The following descibes response for the 0x10 query.
@@ -111,9 +112,9 @@
 #define SYN_CAP_EXT_BUTTONS_STICK(ex10)	((ex10) & 0x010000)
 #define SYN_CAP_SECUREPAD(ex10)		((ex10) & 0x020000)
 
-#define SYN_CAP_EXT_BUTTON_STICK_L(eb)	(!!((eb) & 0x01))
-#define SYN_CAP_EXT_BUTTON_STICK_M(eb)	(!!((eb) & 0x02))
-#define SYN_CAP_EXT_BUTTON_STICK_R(eb)	(!!((eb) & 0x04))
+#define SYN_EXT_BUTTON_STICK_L(eb)	(((eb) & BIT(0)) >> 0)
+#define SYN_EXT_BUTTON_STICK_M(eb)	(((eb) & BIT(1)) >> 1)
+#define SYN_EXT_BUTTON_STICK_R(eb)	(((eb) & BIT(2)) >> 2)
 
 /* synaptics modes query bits */
 #define SYN_MODE_ABSOLUTE(m)		((m) & (1 << 7))
@@ -161,19 +162,23 @@ struct synaptics_hw_state {
 	signed char scroll;
 };
 
+/* Data read from the touchpad */
+struct synaptics_device_info {
+	u32 model_id;		/* Model-ID */
+	u32 firmware_id;	/* Firmware-ID */
+	u32 board_id;		/* Board-ID */
+	u32 capabilities;	/* Capabilities */
+	u32 ext_cap;		/* Extended Capabilities */
+	u32 ext_cap_0c;		/* Ext Caps from 0x0c query */
+	u32 ext_cap_10;		/* Ext Caps from 0x10 query */
+	u32 identity;		/* Identification */
+	u32 x_res, y_res;	/* X/Y resolution in units/mm */
+	u32 x_max, y_max;	/* Max coordinates (from FW) */
+	u32 x_min, y_min;	/* Min coordinates (from FW) */
+};
+
 struct synaptics_data {
-	/* Data read from the touchpad */
-	unsigned long int model_id;		/* Model-ID */
-	unsigned long int firmware_id;		/* Firmware-ID */
-	unsigned long int board_id;		/* Board-ID */
-	unsigned long int capabilities;		/* Capabilities */
-	unsigned long int ext_cap;		/* Extended Capabilities */
-	unsigned long int ext_cap_0c;		/* Ext Caps from 0x0c query */
-	unsigned long int ext_cap_10;		/* Ext Caps from 0x10 query */
-	unsigned long int identity;		/* Identification */
-	unsigned int x_res, y_res;		/* X/Y resolution in units/mm */
-	unsigned int x_max, y_max;		/* Max coordinates (from FW) */
-	unsigned int x_min, y_min;		/* Min coordinates (from FW) */
+	struct synaptics_device_info info;
 
 	unsigned char pkt_type;			/* packet type - old, new, etc */
 	unsigned char mode;			/* current mode byte */
@@ -200,8 +205,10 @@ struct synaptics_data {
 
 void synaptics_module_init(void);
 int synaptics_detect(struct psmouse *psmouse, bool set_properties);
-int synaptics_init(struct psmouse *psmouse);
+int synaptics_init_absolute(struct psmouse *psmouse);
 int synaptics_init_relative(struct psmouse *psmouse);
+int synaptics_init_smbus(struct psmouse *psmouse);
+int synaptics_init(struct psmouse *psmouse);
 void synaptics_reset(struct psmouse *psmouse);
 
 #endif /* _SYNAPTICS_H */
