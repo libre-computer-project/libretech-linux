@@ -25,6 +25,7 @@
 #include <asm/cpu.h>
 #include <asm/fpu/api.h>
 #include <asm/isc.h>
+#include <asm/guarded_storage.h>
 
 #define KVM_S390_BSCA_CPU_SLOTS 64
 #define KVM_S390_ESCA_CPU_SLOTS 248
@@ -164,11 +165,21 @@ struct kvm_s390_sie_block {
 #define ICTL_RRBE	0x00001000
 #define ICTL_TPROT	0x00000200
 	__u32	ictl;			/* 0x0048 */
+#define ECA_CEI		0x80000000
+#define ECA_IB		0x40000000
+#define ECA_SIGPI	0x10000000
+#define ECA_MVPGI	0x01000000
+#define ECA_VX		0x00020000
+#define ECA_PROTEXCI	0x00002000
+#define ECA_SII		0x00000001
 	__u32	eca;			/* 0x004c */
 #define ICPT_INST	0x04
 #define ICPT_PROGI	0x08
 #define ICPT_INSTPROGI	0x0C
+#define ICPT_EXTREQ	0x10
 #define ICPT_EXTINT	0x14
+#define ICPT_IOREQ	0x18
+#define ICPT_WAIT	0x1c
 #define ICPT_VALIDITY	0x20
 #define ICPT_STOP	0x28
 #define ICPT_OPEREXC	0x2C
@@ -182,10 +193,19 @@ struct kvm_s390_sie_block {
 	__u32	ipb;			/* 0x0058 */
 	__u32	scaoh;			/* 0x005c */
 	__u8	reserved60;		/* 0x0060 */
+#define ECB_GS		0x40
+#define ECB_TE		0x10
+#define ECB_SRSI	0x04
+#define ECB_HOSTPROTINT	0x02
 	__u8	ecb;			/* 0x0061 */
+#define ECB2_CMMA	0x80
+#define ECB2_IEP	0x20
+#define ECB2_PFMFI	0x08
+#define ECB2_ESCA	0x04
 	__u8    ecb2;                   /* 0x0062 */
-#define ECB3_AES 0x04
 #define ECB3_DEA 0x08
+#define ECB3_AES 0x04
+#define ECB3_RI  0x01
 	__u8    ecb3;			/* 0x0063 */
 	__u32	scaol;			/* 0x0064 */
 	__u8	reserved68[4];		/* 0x0068 */
@@ -219,11 +239,14 @@ struct kvm_s390_sie_block {
 	__u32	crycbd;			/* 0x00fc */
 	__u64	gcr[16];		/* 0x0100 */
 	__u64	gbea;			/* 0x0180 */
-	__u8	reserved188[24];	/* 0x0188 */
+	__u8    reserved188[8];		/* 0x0188 */
+	__u64   sdnxo;			/* 0x0190 */
+	__u8    reserved198[8];		/* 0x0198 */
 	__u32	fac;			/* 0x01a0 */
 	__u8	reserved1a4[20];	/* 0x01a4 */
 	__u64	cbrlo;			/* 0x01b8 */
 	__u8	reserved1c0[8];		/* 0x01c0 */
+#define ECD_HOSTREGMGMT	0x20000000
 	__u32	ecd;			/* 0x01c8 */
 	__u8	reserved1cc[18];	/* 0x01cc */
 	__u64	pp;			/* 0x01de */
@@ -554,6 +577,7 @@ struct kvm_vcpu_arch {
 	/* if vsie is active, currently executed shadow sie control block */
 	struct kvm_s390_sie_block *vsie_block;
 	unsigned int      host_acrs[NUM_ACRS];
+	struct gs_cb      *host_gscb;
 	struct fpu	  host_fpregs;
 	struct kvm_s390_local_interrupt local_int;
 	struct hrtimer    ckc_timer;
@@ -574,6 +598,7 @@ struct kvm_vcpu_arch {
 	 */
 	seqcount_t cputm_seqcount;
 	__u64 cputm_start;
+	bool gs_enabled;
 };
 
 struct kvm_vm_stat {
