@@ -7,3 +7,10 @@ menuconfig SND_SOC_MESON
 	  Say Y or M if you want to add support for codecs attached to
 	  the Amlogic Meson SoCs Audio interfaces. You will also need to
 	  select the audio interfaces to support below.
+
+config SND_SOC_MESON_I2S
+	tristate "Meson i2s interface"
+	depends on SND_SOC_MESON
+	help
+	  Say Y or M if you want to add support for i2s dma driver for Amlogic
+	  Meson SoCs.
