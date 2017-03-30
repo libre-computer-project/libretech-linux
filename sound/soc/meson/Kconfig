@@ -1,0 +1,9 @@
+menuconfig SND_SOC_MESON
+	tristate "ASoC support for Amlogic Meson SoCs"
+	depends on ARCH_MESON || COMPILE_TEST
+	select MFD_CORE
+	select REGMAP_MMIO
+	help
+	  Say Y or M if you want to add support for codecs attached to
+	  the Amlogic Meson SoCs Audio interfaces. You will also need to
+	  select the audio interfaces to support below.
