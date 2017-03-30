@@ -1313,6 +1313,33 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		v.val = sk->sk_incoming_cpu;
 		break;
 
+	case SO_MEMINFO:
+	{
+		u32 meminfo[SK_MEMINFO_VARS];
+
+		if (get_user(len, optlen))
+			return -EFAULT;
+
+		sk_get_meminfo(sk, meminfo);
+
+		len = min_t(unsigned int, len, sizeof(meminfo));
+		if (copy_to_user(optval, &meminfo, len))
+			return -EFAULT;
+
+		goto lenout;
+	}
+
+#ifdef CONFIG_NET_RX_BUSY_POLL
+	case SO_INCOMING_NAPI_ID:
+		v.val = READ_ONCE(sk->sk_napi_id);
+
+		/* aggregate non-NAPI IDs down to 0 */
+		if (v.val < MIN_NAPI_ID)
+			v.val = 0;
+
+		break;
+#endif
+
 	default:
 		/* We implement the SO_SNDLOWAT etc to not be settable
 		 * (1003.1g 7).
@@ -2867,6 +2894,21 @@ void sk_common_release(struct sock *sk)
 }
 EXPORT_SYMBOL(sk_common_release);
 
+void sk_get_meminfo(const struct sock *sk, u32 *mem)
+{
+	memset(mem, 0, sizeof(*mem) * SK_MEMINFO_VARS);
+
+	mem[SK_MEMINFO_RMEM_ALLOC] = sk_rmem_alloc_get(sk);
+	mem[SK_MEMINFO_RCVBUF] = sk->sk_rcvbuf;
+	mem[SK_MEMINFO_WMEM_ALLOC] = sk_wmem_alloc_get(sk);
+	mem[SK_MEMINFO_SNDBUF] = sk->sk_sndbuf;
+	mem[SK_MEMINFO_FWD_ALLOC] = sk->sk_forward_alloc;
+	mem[SK_MEMINFO_WMEM_QUEUED] = sk->sk_wmem_queued;
+	mem[SK_MEMINFO_OPTMEM] = atomic_read(&sk->sk_omem_alloc);
+	mem[SK_MEMINFO_BACKLOG] = sk->sk_backlog.len;
+	mem[SK_MEMINFO_DROPS] = atomic_read(&sk->sk_drops);
+}
+
 #ifdef CONFIG_PROC_FS
 #define PROTO_INUSE_NR	64	/* should be enough for the first time */
 struct prot_inuse {
@@ -3207,3 +3249,14 @@ static int __init proto_init(void)
 subsys_initcall(proto_init);
 
 #endif /* PROC_FS */
+
+#ifdef CONFIG_NET_RX_BUSY_POLL
+bool sk_busy_loop_end(void *p, unsigned long start_time)
+{
+	struct sock *sk = p;
+
+	return !skb_queue_empty(&sk->sk_receive_queue) ||
+	       sk_busy_loop_timeout(sk, start_time);
+}
+EXPORT_SYMBOL(sk_busy_loop_end);
+#endif /* CONFIG_NET_RX_BUSY_POLL */

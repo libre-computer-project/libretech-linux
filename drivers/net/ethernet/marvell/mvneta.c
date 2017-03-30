@@ -4099,6 +4099,8 @@ static int mvneta_port_power_up(struct mvneta_port *pp, int phy_mode)
 		break;
 	case PHY_INTERFACE_MODE_RGMII:
 	case PHY_INTERFACE_MODE_RGMII_ID:
+	case PHY_INTERFACE_MODE_RGMII_RXID:
+	case PHY_INTERFACE_MODE_RGMII_TXID:
 		ctrl |= MVNETA_GMAC2_PORT_RGMII;
 		break;
 	default:
@@ -4449,8 +4451,11 @@ static int mvneta_resume(struct device *device)
 		mvneta_fixed_link_update(pp, dev->phydev);
 
 	netif_device_attach(dev);
-	if (netif_running(dev))
+	if (netif_running(dev)) {
 		mvneta_open(dev);
+		mvneta_set_rx_mode(dev);
+	}
+
 	return 0;
 }
 #endif
