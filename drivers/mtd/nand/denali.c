@@ -45,24 +45,22 @@ MODULE_PARM_DESC(onfi_timing_mode,
  * We define a macro here that combines all interrupts this driver uses into
  * a single constant value, for convenience.
  */
-#define DENALI_IRQ_ALL	(INTR_STATUS__DMA_CMD_COMP | \
-			INTR_STATUS__ECC_TRANSACTION_DONE | \
-			INTR_STATUS__ECC_ERR | \
-			INTR_STATUS__PROGRAM_FAIL | \
-			INTR_STATUS__LOAD_COMP | \
-			INTR_STATUS__PROGRAM_COMP | \
-			INTR_STATUS__TIME_OUT | \
-			INTR_STATUS__ERASE_FAIL | \
-			INTR_STATUS__RST_COMP | \
-			INTR_STATUS__ERASE_COMP)
+#define DENALI_IRQ_ALL	(INTR__DMA_CMD_COMP | \
+			INTR__ECC_TRANSACTION_DONE | \
+			INTR__ECC_ERR | \
+			INTR__PROGRAM_FAIL | \
+			INTR__LOAD_COMP | \
+			INTR__PROGRAM_COMP | \
+			INTR__TIME_OUT | \
+			INTR__ERASE_FAIL | \
+			INTR__RST_COMP | \
+			INTR__ERASE_COMP)
 
 /*
  * indicates whether or not the internal value for the flash bank is
  * valid or not
  */
 #define CHIP_SELECT_INVALID	-1
-
-#define SUPPORT_8BITECC		1
 
 /*
  * This macro divides two integers and rounds fractional values up
@@ -90,11 +88,6 @@ static inline struct denali_nand_info *mtd_to_denali(struct mtd_info *mtd)
 
 #define DENALI_READ	0
 #define DENALI_WRITE	0x100
-
-/* types of device accesses. We can issue commands and get status */
-#define COMMAND_CYCLE	0
-#define ADDR_CYCLE	1
-#define STATUS_CYCLE	2
 
 /*
  * this is a helper macro that allows us to
@@ -164,7 +157,7 @@ static void read_status(struct denali_nand_info *denali)
 static void reset_bank(struct denali_nand_info *denali)
 {
 	uint32_t irq_status;
-	uint32_t irq_mask = INTR_STATUS__RST_COMP | INTR_STATUS__TIME_OUT;
+	uint32_t irq_mask = INTR__RST_COMP | INTR__TIME_OUT;
 
 	clear_interrupts(denali);
 
@@ -172,7 +165,7 @@ static void reset_bank(struct denali_nand_info *denali)
 
 	irq_status = wait_for_irq(denali, irq_mask);
 
-	if (irq_status & INTR_STATUS__TIME_OUT)
+	if (irq_status & INTR__TIME_OUT)
 		dev_err(denali->dev, "reset bank failed.\n");
 }
 
@@ -182,22 +175,22 @@ static uint16_t denali_nand_reset(struct denali_nand_info *denali)
 	int i;
 
 	for (i = 0; i < denali->max_banks; i++)
-		iowrite32(INTR_STATUS__RST_COMP | INTR_STATUS__TIME_OUT,
+		iowrite32(INTR__RST_COMP | INTR__TIME_OUT,
 		denali->flash_reg + INTR_STATUS(i));
 
 	for (i = 0; i < denali->max_banks; i++) {
 		iowrite32(1 << i, denali->flash_reg + DEVICE_RESET);
 		while (!(ioread32(denali->flash_reg + INTR_STATUS(i)) &
-			(INTR_STATUS__RST_COMP | INTR_STATUS__TIME_OUT)))
+			(INTR__RST_COMP | INTR__TIME_OUT)))
 			cpu_relax();
 		if (ioread32(denali->flash_reg + INTR_STATUS(i)) &
-			INTR_STATUS__TIME_OUT)
+			INTR__TIME_OUT)
 			dev_dbg(denali->dev,
 			"NAND Reset operation timed out on bank %d\n", i);
 	}
 
 	for (i = 0; i < denali->max_banks; i++)
-		iowrite32(INTR_STATUS__RST_COMP | INTR_STATUS__TIME_OUT,
+		iowrite32(INTR__RST_COMP | INTR__TIME_OUT,
 			  denali->flash_reg + INTR_STATUS(i));
 
 	return PASS;
@@ -347,52 +340,25 @@ static void get_samsung_nand_para(struct denali_nand_info *denali,
 
 static void get_toshiba_nand_para(struct denali_nand_info *denali)
 {
-	uint32_t tmp;
-
 	/*
 	 * Workaround to fix a controller bug which reports a wrong
 	 * spare area size for some kind of Toshiba NAND device
 	 */
 	if ((ioread32(denali->flash_reg + DEVICE_MAIN_AREA_SIZE) == 4096) &&
-		(ioread32(denali->flash_reg + DEVICE_SPARE_AREA_SIZE) == 64)) {
+		(ioread32(denali->flash_reg + DEVICE_SPARE_AREA_SIZE) == 64))
 		iowrite32(216, denali->flash_reg + DEVICE_SPARE_AREA_SIZE);
-		tmp = ioread32(denali->flash_reg + DEVICES_CONNECTED) *
-			ioread32(denali->flash_reg + DEVICE_SPARE_AREA_SIZE);
-		iowrite32(tmp,
-				denali->flash_reg + LOGICAL_PAGE_SPARE_SIZE);
-#if SUPPORT_15BITECC
-		iowrite32(15, denali->flash_reg + ECC_CORRECTION);
-#elif SUPPORT_8BITECC
-		iowrite32(8, denali->flash_reg + ECC_CORRECTION);
-#endif
-	}
 }
 
 static void get_hynix_nand_para(struct denali_nand_info *denali,
 							uint8_t device_id)
 {
-	uint32_t main_size, spare_size;
-
 	switch (device_id) {
 	case 0xD5: /* Hynix H27UAG8T2A, H27UBG8U5A or H27UCG8VFA */
 	case 0xD7: /* Hynix H27UDG8VEM, H27UCG8UDM or H27UCG8V5A */
 		iowrite32(128, denali->flash_reg + PAGES_PER_BLOCK);
 		iowrite32(4096, denali->flash_reg + DEVICE_MAIN_AREA_SIZE);
 		iowrite32(224, denali->flash_reg + DEVICE_SPARE_AREA_SIZE);
-		main_size = 4096 *
-			ioread32(denali->flash_reg + DEVICES_CONNECTED);
-		spare_size = 224 *
-			ioread32(denali->flash_reg + DEVICES_CONNECTED);
-		iowrite32(main_size,
-				denali->flash_reg + LOGICAL_PAGE_DATA_SIZE);
-		iowrite32(spare_size,
-				denali->flash_reg + LOGICAL_PAGE_SPARE_SIZE);
 		iowrite32(0, denali->flash_reg + DEVICE_WIDTH);
-#if SUPPORT_15BITECC
-		iowrite32(15, denali->flash_reg + ECC_CORRECTION);
-#elif SUPPORT_8BITECC
-		iowrite32(8, denali->flash_reg + ECC_CORRECTION);
-#endif
 		break;
 	default:
 		dev_warn(denali->dev,
@@ -653,7 +619,6 @@ static irqreturn_t denali_isr(int irq, void *dev_id)
 	spin_unlock(&denali->irq_lock);
 	return result;
 }
-#define BANK(x) ((x) << 24)
 
 static uint32_t wait_for_irq(struct denali_nand_info *denali, uint32_t irq_mask)
 {
@@ -722,7 +687,7 @@ static int denali_send_pipeline_cmd(struct denali_nand_info *denali,
 	uint32_t addr, cmd, irq_status, irq_mask;
 
 	if (op == DENALI_READ)
-		irq_mask = INTR_STATUS__LOAD_COMP;
+		irq_mask = INTR__LOAD_COMP;
 	else if (op == DENALI_WRITE)
 		irq_mask = 0;
 	else
@@ -829,8 +794,7 @@ static int write_oob_data(struct mtd_info *mtd, uint8_t *buf, int page)
 {
 	struct denali_nand_info *denali = mtd_to_denali(mtd);
 	uint32_t irq_status;
-	uint32_t irq_mask = INTR_STATUS__PROGRAM_COMP |
-						INTR_STATUS__PROGRAM_FAIL;
+	uint32_t irq_mask = INTR__PROGRAM_COMP | INTR__PROGRAM_FAIL;
 	int status = 0;
 
 	denali->page = page;
@@ -857,7 +821,7 @@ static int write_oob_data(struct mtd_info *mtd, uint8_t *buf, int page)
 static void read_oob_data(struct mtd_info *mtd, uint8_t *buf, int page)
 {
 	struct denali_nand_info *denali = mtd_to_denali(mtd);
-	uint32_t irq_mask = INTR_STATUS__LOAD_COMP;
+	uint32_t irq_mask = INTR__LOAD_COMP;
 	uint32_t irq_status, addr, cmd;
 
 	denali->page = page;
@@ -918,7 +882,7 @@ static bool handle_ecc(struct denali_nand_info *denali, uint8_t *buf,
 	bool check_erased_page = false;
 	unsigned int bitflips = 0;
 
-	if (irq_status & INTR_STATUS__ECC_ERR) {
+	if (irq_status & INTR__ECC_ERR) {
 		/* read the ECC errors. we'll ignore them for now */
 		uint32_t err_address, err_correction_info, err_byte,
 			 err_sector, err_device, err_correction_value;
@@ -975,7 +939,7 @@ static bool handle_ecc(struct denali_nand_info *denali, uint8_t *buf,
 		 * for a while for this interrupt
 		 */
 		while (!(read_interrupt_status(denali) &
-				INTR_STATUS__ECC_TRANSACTION_DONE))
+				INTR__ECC_TRANSACTION_DONE))
 			cpu_relax();
 		clear_interrupts(denali);
 		denali_set_intr_modes(denali, true);
@@ -1026,8 +990,7 @@ static int write_page(struct mtd_info *mtd, struct nand_chip *chip,
 	dma_addr_t addr = denali->buf.dma_buf;
 	size_t size = mtd->writesize + mtd->oobsize;
 	uint32_t irq_status;
-	uint32_t irq_mask = INTR_STATUS__DMA_CMD_COMP |
-						INTR_STATUS__PROGRAM_FAIL;
+	uint32_t irq_mask = INTR__DMA_CMD_COMP | INTR__PROGRAM_FAIL;
 
 	/*
 	 * if it is a raw xfer, we want to disable ecc and send the spare area.
@@ -1125,8 +1088,7 @@ static int denali_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 	size_t size = mtd->writesize + mtd->oobsize;
 
 	uint32_t irq_status;
-	uint32_t irq_mask = INTR_STATUS__ECC_TRANSACTION_DONE |
-			    INTR_STATUS__ECC_ERR;
+	uint32_t irq_mask = INTR__ECC_TRANSACTION_DONE | INTR__ECC_ERR;
 	bool check_erased_page = false;
 
 	if (page != denali->page) {
@@ -1174,7 +1136,7 @@ static int denali_read_page_raw(struct mtd_info *mtd, struct nand_chip *chip,
 	struct denali_nand_info *denali = mtd_to_denali(mtd);
 	dma_addr_t addr = denali->buf.dma_buf;
 	size_t size = mtd->writesize + mtd->oobsize;
-	uint32_t irq_mask = INTR_STATUS__DMA_CMD_COMP;
+	uint32_t irq_mask = INTR__DMA_CMD_COMP;
 
 	if (page != denali->page) {
 		dev_err(denali->dev,
@@ -1247,10 +1209,9 @@ static int denali_erase(struct mtd_info *mtd, int page)
 	index_addr(denali, cmd, 0x1);
 
 	/* wait for erase to complete or failure to occur */
-	irq_status = wait_for_irq(denali, INTR_STATUS__ERASE_COMP |
-					INTR_STATUS__ERASE_FAIL);
+	irq_status = wait_for_irq(denali, INTR__ERASE_COMP | INTR__ERASE_FAIL);
 
-	return irq_status & INTR_STATUS__ERASE_FAIL ? NAND_STATUS_FAIL : PASS;
+	return irq_status & INTR__ERASE_FAIL ? NAND_STATUS_FAIL : PASS;
 }
 
 static void denali_cmdfunc(struct mtd_info *mtd, unsigned int cmd, int col,
@@ -1413,9 +1374,61 @@ static void denali_drv_init(struct denali_nand_info *denali)
 	denali->irq_status = 0;
 }
 
+static int denali_multidev_fixup(struct denali_nand_info *denali)
+{
+	struct nand_chip *chip = &denali->nand;
+	struct mtd_info *mtd = nand_to_mtd(chip);
+
+	/*
+	 * Support for multi device:
+	 * When the IP configuration is x16 capable and two x8 chips are
+	 * connected in parallel, DEVICES_CONNECTED should be set to 2.
+	 * In this case, the core framework knows nothing about this fact,
+	 * so we should tell it the _logical_ pagesize and anything necessary.
+	 */
+	denali->devnum = ioread32(denali->flash_reg + DEVICES_CONNECTED);
+
+	/*
+	 * On some SoCs, DEVICES_CONNECTED is not auto-detected.
+	 * For those, DEVICES_CONNECTED is left to 0.  Set 1 if it is the case.
+	 */
+	if (denali->devnum == 0) {
+		denali->devnum = 1;
+		iowrite32(1, denali->flash_reg + DEVICES_CONNECTED);
+	}
+
+	if (denali->devnum == 1)
+		return 0;
+
+	if (denali->devnum != 2) {
+		dev_err(denali->dev, "unsupported number of devices %d\n",
+			denali->devnum);
+		return -EINVAL;
+	}
+
+	/* 2 chips in parallel */
+	mtd->size <<= 1;
+	mtd->erasesize <<= 1;
+	mtd->writesize <<= 1;
+	mtd->oobsize <<= 1;
+	chip->chipsize <<= 1;
+	chip->page_shift += 1;
+	chip->phys_erase_shift += 1;
+	chip->bbt_erase_shift += 1;
+	chip->chip_shift += 1;
+	chip->pagemask <<= 1;
+	chip->ecc.size <<= 1;
+	chip->ecc.bytes <<= 1;
+	chip->ecc.strength <<= 1;
+	denali->bbtskipbytes <<= 1;
+
+	return 0;
+}
+
 int denali_init(struct denali_nand_info *denali)
 {
-	struct mtd_info *mtd = nand_to_mtd(&denali->nand);
+	struct nand_chip *chip = &denali->nand;
+	struct mtd_info *mtd = nand_to_mtd(chip);
 	int ret;
 
 	if (denali->platform == INTEL_CE4100) {
@@ -1450,12 +1463,13 @@ int denali_init(struct denali_nand_info *denali)
 	/* now that our ISR is registered, we can enable interrupts */
 	denali_set_intr_modes(denali, true);
 	mtd->name = "denali-nand";
+	nand_set_flash_node(chip, denali->dev->of_node);
 
 	/* register the driver with the NAND core subsystem */
-	denali->nand.select_chip = denali_select_chip;
-	denali->nand.cmdfunc = denali_cmdfunc;
-	denali->nand.read_byte = denali_read_byte;
-	denali->nand.waitfunc = denali_waitfunc;
+	chip->select_chip = denali_select_chip;
+	chip->cmdfunc = denali_cmdfunc;
+	chip->read_byte = denali_read_byte;
+	chip->waitfunc = denali_waitfunc;
 
 	/*
 	 * scan for NAND devices attached to the controller
@@ -1493,54 +1507,35 @@ int denali_init(struct denali_nand_info *denali)
 	}
 
 	/*
-	 * support for multi nand
-	 * MTD known nothing about multi nand, so we should tell it
-	 * the real pagesize and anything necessery
-	 */
-	denali->devnum = ioread32(denali->flash_reg + DEVICES_CONNECTED);
-	denali->nand.chipsize <<= denali->devnum - 1;
-	denali->nand.page_shift += denali->devnum - 1;
-	denali->nand.pagemask = (denali->nand.chipsize >>
-						denali->nand.page_shift) - 1;
-	denali->nand.bbt_erase_shift += denali->devnum - 1;
-	denali->nand.phys_erase_shift = denali->nand.bbt_erase_shift;
-	denali->nand.chip_shift += denali->devnum - 1;
-	mtd->writesize <<= denali->devnum - 1;
-	mtd->oobsize <<= denali->devnum - 1;
-	mtd->erasesize <<= denali->devnum - 1;
-	mtd->size = denali->nand.numchips * denali->nand.chipsize;
-	denali->bbtskipbytes *= denali->devnum;
-
-	/*
 	 * second stage of the NAND scan
 	 * this stage requires information regarding ECC and
 	 * bad block management.
 	 */
 
 	/* Bad block management */
-	denali->nand.bbt_td = &bbt_main_descr;
-	denali->nand.bbt_md = &bbt_mirror_descr;
+	chip->bbt_td = &bbt_main_descr;
+	chip->bbt_md = &bbt_mirror_descr;
 
 	/* skip the scan for now until we have OOB read and write support */
-	denali->nand.bbt_options |= NAND_BBT_USE_FLASH;
-	denali->nand.options |= NAND_SKIP_BBTSCAN;
-	denali->nand.ecc.mode = NAND_ECC_HW_SYNDROME;
+	chip->bbt_options |= NAND_BBT_USE_FLASH;
+	chip->options |= NAND_SKIP_BBTSCAN;
+	chip->ecc.mode = NAND_ECC_HW_SYNDROME;
 
 	/* no subpage writes on denali */
-	denali->nand.options |= NAND_NO_SUBPAGE_WRITE;
+	chip->options |= NAND_NO_SUBPAGE_WRITE;
 
 	/*
 	 * Denali Controller only support 15bit and 8bit ECC in MRST,
 	 * so just let controller do 15bit ECC for MLC and 8bit ECC for
 	 * SLC if possible.
 	 * */
-	if (!nand_is_slc(&denali->nand) &&
+	if (!nand_is_slc(chip) &&
 			(mtd->oobsize > (denali->bbtskipbytes +
 			ECC_15BITS * (mtd->writesize /
 			ECC_SECTOR_SIZE)))) {
 		/* if MLC OOB size is large enough, use 15bit ECC*/
-		denali->nand.ecc.strength = 15;
-		denali->nand.ecc.bytes = ECC_15BITS;
+		chip->ecc.strength = 15;
+		chip->ecc.bytes = ECC_15BITS;
 		iowrite32(15, denali->flash_reg + ECC_CORRECTION);
 	} else if (mtd->oobsize < (denali->bbtskipbytes +
 			ECC_8BITS * (mtd->writesize /
@@ -1548,24 +1543,26 @@ int denali_init(struct denali_nand_info *denali)
 		pr_err("Your NAND chip OOB is not large enough to contain 8bit ECC correction codes");
 		goto failed_req_irq;
 	} else {
-		denali->nand.ecc.strength = 8;
-		denali->nand.ecc.bytes = ECC_8BITS;
+		chip->ecc.strength = 8;
+		chip->ecc.bytes = ECC_8BITS;
 		iowrite32(8, denali->flash_reg + ECC_CORRECTION);
 	}
 
 	mtd_set_ooblayout(mtd, &denali_ooblayout_ops);
-	denali->nand.ecc.bytes *= denali->devnum;
-	denali->nand.ecc.strength *= denali->devnum;
 
 	/* override the default read operations */
-	denali->nand.ecc.size = ECC_SECTOR_SIZE * denali->devnum;
-	denali->nand.ecc.read_page = denali_read_page;
-	denali->nand.ecc.read_page_raw = denali_read_page_raw;
-	denali->nand.ecc.write_page = denali_write_page;
-	denali->nand.ecc.write_page_raw = denali_write_page_raw;
-	denali->nand.ecc.read_oob = denali_read_oob;
-	denali->nand.ecc.write_oob = denali_write_oob;
-	denali->nand.erase = denali_erase;
+	chip->ecc.size = ECC_SECTOR_SIZE;
+	chip->ecc.read_page = denali_read_page;
+	chip->ecc.read_page_raw = denali_read_page_raw;
+	chip->ecc.write_page = denali_write_page;
+	chip->ecc.write_page_raw = denali_write_page_raw;
+	chip->ecc.read_oob = denali_read_oob;
+	chip->ecc.write_oob = denali_write_oob;
+	chip->erase = denali_erase;
+
+	ret = denali_multidev_fixup(denali);
+	if (ret)
+		goto failed_req_irq;
 
 	ret = nand_scan_tail(mtd);
 	if (ret)
