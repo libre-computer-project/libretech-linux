@@ -357,6 +357,11 @@
 				#reset-cells = <1>;
 			};
 
+			chipid@220 {
+				compatible = "amlogic,meson-gx-socinfo";
+				reg = <0x0 0x00220 0x0 0x4>;
+			};
+
 			uart_AO: serial@4c0 {
 				compatible = "amlogic,meson-uart";
 				reg = <0x0 0x004c0 0x0 0x14>;
