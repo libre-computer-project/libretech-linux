@@ -12,5 +12,5 @@ config SND_SOC_MESON_I2S
 	tristate "Meson i2s interface"
 	depends on SND_SOC_MESON
 	help
-	  Say Y or M if you want to add support for i2s dma driver for Amlogic
+	  Say Y or M if you want to add support for i2s driver for Amlogic
 	  Meson SoCs.
