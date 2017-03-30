@@ -29,6 +29,12 @@
 #include <asm/ftrace.h>
 #include <asm/nops.h>
 
+#if defined(CONFIG_FUNCTION_GRAPH_TRACER) && \
+	!defined(CC_USING_FENTRY) && \
+	!defined(CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE)
+# error Your compiler does not support function graph tracing
+#endif
+
 #ifdef CONFIG_DYNAMIC_FTRACE
 
 int ftrace_arch_code_modify_prepare(void)
