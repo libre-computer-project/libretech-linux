@@ -365,6 +365,15 @@
 				#reset-cells = <1>;
 			};
 
+			sec_AO: ao-secure@140 {
+				compatible = "amlogic,meson-gx-ao-secure", "syscon", "simple-mfd";
+				reg = <0x0 0x140 0x0 0x140>;
+
+				chipid {
+					compatible = "amlogic,meson-gx-chipid";
+				};
+			};
+
 			uart_AO: serial@4c0 {
 				compatible = "amlogic,meson-uart";
 				reg = <0x0 0x004c0 0x0 0x14>;
