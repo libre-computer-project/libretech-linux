@@ -52,3 +52,23 @@ Board compatible values:
   - "amlogic,q201" (Meson gxm s912)
   - "nexbox,a95x" (Meson gxbb or Meson gxl s905x)
   - "nexbox,a1" (Meson gxm s912)
+
+Amlogic Meson GX SoCs Information
+----------------------------------
+
+The Meson SoCs have a Product Register that allows to retrieve SoC type,
+package and revision information. If present, a device node for this register
+should be added.
+
+Required properties:
+  - compatible: For Meson GX SoCs, must be "amlogic,meson-gx-socinfo".
+  - reg: Base address and length of the register block.
+
+Examples
+--------
+
+	chipid@220 {
+		compatible = "amlogic,meson-gx-socinfo";
+		reg = <0x0 0x00220 0x0 0x4>;
+	};
+
