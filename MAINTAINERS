@@ -1498,6 +1498,8 @@ F:	drivers/cpufreq/mvebu-cpufreq.c
 F:	drivers/irqchip/irq-armada-370-xp.c
 F:	drivers/irqchip/irq-mvebu-*
 F:	drivers/rtc/rtc-armada38x.c
+F:	drivers/pinctrl/mvebu/
+F:	arch/arm/configs/mvebu_*_defconfig
 
 ARM/Marvell Berlin SoC support
 M:	Jisheng Zhang <jszhang@marvell.com>
