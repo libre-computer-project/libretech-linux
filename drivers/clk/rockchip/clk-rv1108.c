@@ -93,9 +93,24 @@ static struct rockchip_pll_rate_table rv1108_pll_rates[] = {
 	}
 
 static struct rockchip_cpuclk_rate_table rv1108_cpuclk_rates[] __initdata = {
-	RV1108_CPUCLK_RATE(816000000, 4),
-	RV1108_CPUCLK_RATE(600000000, 4),
-	RV1108_CPUCLK_RATE(312000000, 4),
+	RV1108_CPUCLK_RATE(1608000000, 7),
+	RV1108_CPUCLK_RATE(1512000000, 7),
+	RV1108_CPUCLK_RATE(1488000000, 5),
+	RV1108_CPUCLK_RATE(1416000000, 5),
+	RV1108_CPUCLK_RATE(1392000000, 5),
+	RV1108_CPUCLK_RATE(1296000000, 5),
+	RV1108_CPUCLK_RATE(1200000000, 5),
+	RV1108_CPUCLK_RATE(1104000000, 5),
+	RV1108_CPUCLK_RATE(1008000000, 5),
+	RV1108_CPUCLK_RATE(912000000, 5),
+	RV1108_CPUCLK_RATE(816000000, 3),
+	RV1108_CPUCLK_RATE(696000000, 3),
+	RV1108_CPUCLK_RATE(600000000, 3),
+	RV1108_CPUCLK_RATE(500000000, 3),
+	RV1108_CPUCLK_RATE(408000000, 1),
+	RV1108_CPUCLK_RATE(312000000, 1),
+	RV1108_CPUCLK_RATE(216000000, 1),
+	RV1108_CPUCLK_RATE(96000000, 1),
 };
 
 static const struct rockchip_cpuclk_reg_data rv1108_cpuclk_data = {
@@ -105,7 +120,7 @@ static const struct rockchip_cpuclk_reg_data rv1108_cpuclk_data = {
 	.mux_core_alt = 1,
 	.mux_core_main = 0,
 	.mux_core_shift = 8,
-	.mux_core_mask = 0x1,
+	.mux_core_mask = 0x3,
 };
 
 PNAME(mux_pll_p)		= { "xin24m", "xin24m"};
@@ -133,11 +148,11 @@ PNAME(mux_i2s2_p)		= { "i2s2_src", "i2s2_frac", "xin12m" };
 
 static struct rockchip_pll_clock rv1108_pll_clks[] __initdata = {
 	[apll] = PLL(pll_rk3399, PLL_APLL, "apll", mux_pll_p, 0, RV1108_PLL_CON(0),
-		     RV1108_PLL_CON(3), 8, 31, 0, rv1108_pll_rates),
+		     RV1108_PLL_CON(3), 8, 0, 0, rv1108_pll_rates),
 	[dpll] = PLL(pll_rk3399, PLL_DPLL, "dpll", mux_pll_p, 0, RV1108_PLL_CON(8),
-		     RV1108_PLL_CON(11), 8, 31, 0, NULL),
+		     RV1108_PLL_CON(11), 8, 1, 0, NULL),
 	[gpll] = PLL(pll_rk3399, PLL_GPLL, "gpll", mux_pll_p, 0, RV1108_PLL_CON(16),
-		     RV1108_PLL_CON(19), 8, 31, ROCKCHIP_PLL_SYNC_RATE, rv1108_pll_rates),
+		     RV1108_PLL_CON(19), 8, 2, 0, rv1108_pll_rates),
 };
 
 #define MFLAGS CLK_MUX_HIWORD_MASK
