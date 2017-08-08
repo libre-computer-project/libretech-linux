@@ -1068,8 +1068,8 @@ static int rockchip_thermal_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "no irq resource?\n");
-		return -EINVAL;
+		dev_err(&pdev->dev, "no irq resource: %d\n", irq);
+		return irq;
 	}
 
 	thermal = devm_kzalloc(&pdev->dev, sizeof(struct rockchip_thermal_data),
