@@ -45,6 +45,43 @@ static void disk_add_events(struct gendisk *disk);
 static void disk_del_events(struct gendisk *disk);
 static void disk_release_events(struct gendisk *disk);
 
+void part_inc_in_flight(struct request_queue *q, struct hd_struct *part, int rw)
+{
+	if (q->mq_ops)
+		return;
+
+	atomic_inc(&part->in_flight[rw]);
+	if (part->partno)
+		atomic_inc(&part_to_disk(part)->part0.in_flight[rw]);
+}
+
+void part_dec_in_flight(struct request_queue *q, struct hd_struct *part, int rw)
+{
+	if (q->mq_ops)
+		return;
+
+	atomic_dec(&part->in_flight[rw]);
+	if (part->partno)
+		atomic_dec(&part_to_disk(part)->part0.in_flight[rw]);
+}
+
+void part_in_flight(struct request_queue *q, struct hd_struct *part,
+		    unsigned int inflight[2])
+{
+	if (q->mq_ops) {
+		blk_mq_in_flight(q, part, inflight);
+		return;
+	}
+
+	inflight[0] = atomic_read(&part->in_flight[0]) +
+			atomic_read(&part->in_flight[1]);
+	if (part->partno) {
+		part = &part_to_disk(part)->part0;
+		inflight[1] = atomic_read(&part->in_flight[0]) +
+				atomic_read(&part->in_flight[1]);
+	}
+}
+
 /**
  * disk_get_part - get partition
  * @disk: disk to look partition from
@@ -1204,6 +1241,7 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 	struct disk_part_iter piter;
 	struct hd_struct *hd;
 	char buf[BDEVNAME_SIZE];
+	unsigned int inflight[2];
 	int cpu;
 
 	/*
@@ -1217,8 +1255,9 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 	disk_part_iter_init(&piter, gp, DISK_PITER_INCL_EMPTY_PART0);
 	while ((hd = disk_part_iter_next(&piter))) {
 		cpu = part_stat_lock();
-		part_round_stats(cpu, hd);
+		part_round_stats(gp->queue, cpu, hd);
 		part_stat_unlock();
+		part_in_flight(gp->queue, hd, inflight);
 		seq_printf(seqf, "%4d %7d %s %lu %lu %lu "
 			   "%u %lu %lu %lu %u %u %u %u\n",
 			   MAJOR(part_devt(hd)), MINOR(part_devt(hd)),
@@ -1231,7 +1270,7 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 			   part_stat_read(hd, merges[WRITE]),
 			   part_stat_read(hd, sectors[WRITE]),
 			   jiffies_to_msecs(part_stat_read(hd, ticks[WRITE])),
-			   part_in_flight(hd),
+			   inflight[0],
 			   jiffies_to_msecs(part_stat_read(hd, io_ticks)),
 			   jiffies_to_msecs(part_stat_read(hd, time_in_queue))
 			);

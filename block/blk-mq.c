@@ -83,6 +83,41 @@ static void blk_mq_hctx_clear_pending(struct blk_mq_hw_ctx *hctx,
 	sbitmap_clear_bit(&hctx->ctx_map, ctx->index_hw);
 }
 
+struct mq_inflight {
+	struct hd_struct *part;
+	unsigned int *inflight;
+};
+
+static void blk_mq_check_inflight(struct blk_mq_hw_ctx *hctx,
+				  struct request *rq, void *priv,
+				  bool reserved)
+{
+	struct mq_inflight *mi = priv;
+
+	if (test_bit(REQ_ATOM_STARTED, &rq->atomic_flags) &&
+	    !test_bit(REQ_ATOM_COMPLETE, &rq->atomic_flags)) {
+		/*
+		 * index[0] counts the specific partition that was asked
+		 * for. index[1] counts the ones that are active on the
+		 * whole device, so increment that if mi->part is indeed
+		 * a partition, and not a whole device.
+		 */
+		if (rq->part == mi->part)
+			mi->inflight[0]++;
+		if (mi->part->partno)
+			mi->inflight[1]++;
+	}
+}
+
+void blk_mq_in_flight(struct request_queue *q, struct hd_struct *part,
+		      unsigned int inflight[2])
+{
+	struct mq_inflight mi = { .part = part, .inflight = inflight, };
+
+	inflight[0] = inflight[1] = 0;
+	blk_mq_queue_tag_busy_iter(q, blk_mq_check_inflight, &mi);
+}
+
 void blk_freeze_queue_start(struct request_queue *q)
 {
 	int freeze_depth;
