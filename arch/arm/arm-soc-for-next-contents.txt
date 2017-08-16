@@ -1,4 +1,11 @@
-next/fixes-non-critical
+next/cleanup
+	hisi/fixes
+		git://github.com/hisilicon/linux-hisi tags/hisi-fixes-for-4.14
+	omap/fixes-not-urgent-dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.14/fixes-not-urgent-dt-signed
+	patch
+		ARM: Convert to using %pOF instead of full_name
+		soc: versatile: remove unnecessary static in realview_soc_probe()
 
 next/soc
 	samsung/soc
@@ -17,8 +24,32 @@ next/soc
 		git://git.infradead.org/linux-mvebu tags/mvebu-soc-4.14-1
 	gemini/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/gemini-for-arm-soc-1
+	rockchip/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-soc32-1
 
 next/dt
+	samsung/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-4.14
+	stm32/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/atorgue/stm32 tags/stm32-dt-for-v4.14-1
+	renesas/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-dt-bindings-for-v4.14
+	renesas/dt-2
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-dt-for-v4.14
+	rockchip/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-dts32-1
+	sunxi/dt
+		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt-for-4.14
+	gemini/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/gemini-dts-1
+	mvebu/dt
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt-4.14-1
+	omap/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.14/dt-v3-signed
+	uniphier/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/masahiroy/linux-uniphier tags/uniphier-dt-v4.14
+	qcom/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-dts-for-4.14
 
 next/defconfig
 	samsung/defconfig
@@ -48,6 +79,24 @@ next/drivers
 		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-drivers-for-v4.14
 
 next/dt64
+	samsung/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt64-4.14
+	renesas/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-dt-for-v4.14
+	mvebu/dt64
+		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.14-1
+	rockchip/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-dts64-1
+	sunxi/dt64
+		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt64-for-4.14
+	juno/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/juno-updates-4.14
+	uniphier/dt64
+		git://git.kernel.org/pub/scm/linux/kernel/git/masahiroy/linux-uniphier tags/uniphier-dt64-v4.14
+	hisi/dt64
+		git://github.com/hisilicon/linux-hisi tags/hisi-arm64-dt-for-4.14-v2
+	qcom/arm64
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-arm64-for-4.14
 
 next/arm64
 	patch
