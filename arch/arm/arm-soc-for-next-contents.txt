@@ -1,0 +1,73 @@
+next/fixes-non-critical
+
+next/soc
+	samsung/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-4.14
+	ep93xx/adc
+		https://github.com/sverdlin/linux tags/arm-ep93xx-adc
+	renesas/soc
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-soc-for-v4.14
+	omap/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.14/soc-signed
+	omap/debug-ll
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.14/debug-ll-signed
+	patch
+		MAINTAINERS: update ARM/ZTE entry
+	mvebu/soc
+		git://git.infradead.org/linux-mvebu tags/mvebu-soc-4.14-1
+	gemini/soc
+		git://git.kernel.org/pub/scm/linux/kernel/git/linusw/linux-nomadik tags/gemini-for-arm-soc-1
+
+next/dt
+
+next/defconfig
+	samsung/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-defconfig-4.14
+	defconfig/cleanup
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-defconfig-arm-cleanups-4.14
+	renesas/defconfig
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-defconfig-for-v4.14
+	sunxi/defconfig
+		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-defconfig-for-4.14
+	omap/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/tmlind/linux-omap tags/omap-for-v4.14/defconfig-signed
+
+next/drivers
+	patch
+		firmware: Convert to using %pOF instead of full_name
+		bus: Convert to using %pOF instead of full_name
+		soc: Convert to using %pOF instead of full_name
+		memory: Convert to using %pOF instead of full_name
+	tee/enhancements
+		http://git.linaro.org/people/jens.wiklander/linux-tee tags/tee-drv-for-4.14
+	rockchip/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-drivers-1
+	qcom/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/agross/linux tags/qcom-drivers-for-4.14
+	renesas/drivers
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-drivers-for-v4.14
+
+next/dt64
+
+next/arm64
+	patch
+		arm64: defconfig: Enable CONFIG_WQ_POWER_EFFICIENT_DEFAULT
+	renesas/arm64-defconfig
+		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-arm64-defconfig-for-v4.14
+	patch
+		arm64: defconfig: enable CONFIG_UNIPHIER_WATCHDOG
+	mvebu/arm64-defconfig
+		git://git.infradead.org/linux-mvebu tags/mvebu-arm64-4.14-1
+	patch
+		arm64: defconfig: add recently added crypto drivers as modules
+	hisilicon/arm64-defconfig
+		git://github.com/hisilicon/linux-hisi tags/hisi-defconfig-for-4.14
+
+fixes
+	<no branch> (05969566e6d64113a861adc6c17cbba685c640b3)
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.13
+	<no branch> (8317562097acec4c9e9750eb91115687931bca35)
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.13-2
+	<no branch> (8ff235fe7a8c4a5824c223b9996457174442e73a)
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.13-dt-fixes
+
