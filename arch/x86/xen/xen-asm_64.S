@@ -47,7 +47,6 @@ xen_pv_trap segment_not_present
 xen_pv_trap stack_segment
 xen_pv_trap general_protection
 xen_pv_trap page_fault
-xen_pv_trap async_page_fault
 xen_pv_trap spurious_interrupt_bug
 xen_pv_trap coprocessor_error
 xen_pv_trap alignment_check
