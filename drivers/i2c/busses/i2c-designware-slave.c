@@ -177,6 +177,8 @@ static int i2c_dw_reg_slave(struct i2c_client *slave)
 		return -EBUSY;
 	if (slave->flags & I2C_CLIENT_TEN)
 		return -EAFNOSUPPORT;
+	pm_runtime_get_sync(dev->dev);
+
 	/*
 	 * Set slave address in the IC_SAR register,
 	 * the address to which the DW_apb_i2c responds.
@@ -205,6 +207,7 @@ static int i2c_dw_unreg_slave(struct i2c_client *slave)
 	dev->disable_int(dev);
 	dev->disable(dev);
 	dev->slave = NULL;
+	pm_runtime_put(dev->dev);
 
 	return 0;
 }
@@ -382,7 +385,6 @@ int i2c_dw_probe_slave(struct dw_i2c_dev *dev)
 	ret = i2c_add_numbered_adapter(adap);
 	if (ret)
 		dev_err(dev->dev, "failure adding adapter: %d\n", ret);
-	pm_runtime_put_noidle(dev->dev);
 
 	return ret;
 }
