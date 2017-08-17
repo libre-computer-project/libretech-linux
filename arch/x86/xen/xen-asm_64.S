@@ -1,14 +1,8 @@
 /*
- * Asm versions of Xen pv-ops, suitable for either direct use or
- * inlining.  The inline versions are the same as the direct-use
- * versions, with the pre- and post-amble chopped off.
- *
- * This code is encoded for size rather than absolute efficiency, with
- * a view to being able to inline as much as possible.
+ * Asm versions of Xen pv-ops, suitable for direct use.
  *
  * We only bother with direct forms (ie, vcpu in pda) of the
- * operations here; the indirect forms are better handled in C, since
- * they're generally too large to inline anyway.
+ * operations here; the indirect forms are better handled in C.
  */
 
 #include <asm/errno.h>
@@ -20,7 +14,7 @@
 
 #include <xen/interface/xen.h>
 
-#include "xen-asm.h"
+#include <linux/linkage.h>
 
 .macro xen_pv_trap name
 ENTRY(xen_\name)
@@ -80,9 +74,7 @@ hypercall_iret = hypercall_page + __HYPERVISOR_iret * 32
  */
 ENTRY(xen_iret)
 	pushq $0
-1:	jmp hypercall_iret
-ENDPATCH(xen_iret)
-RELOC(xen_iret, 1b+1)
+	jmp hypercall_iret
 
 ENTRY(xen_sysret64)
 	/*
@@ -99,9 +91,7 @@ ENTRY(xen_sysret64)
 	pushq %rcx
 
 	pushq $VGCF_in_syscall
-1:	jmp hypercall_iret
-ENDPATCH(xen_sysret64)
-RELOC(xen_sysret64, 1b+1)
+	jmp hypercall_iret
 
 /*
  * Xen handles syscall callbacks much like ordinary exceptions, which
