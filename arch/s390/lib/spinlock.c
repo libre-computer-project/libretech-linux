@@ -142,6 +142,7 @@ int arch_spin_trylock_retry(arch_spinlock_t *lp)
 			if (__atomic_cmpxchg_bool(&lp->lock, 0, cpu))
 				return 1;
 		}
+		smp_mb();
 	}
 	return 0;
 }
@@ -162,6 +163,7 @@ void _raw_read_lock_wait(arch_rwlock_t *rw)
 				smp_yield_cpu(~owner);
 			count = spin_retry;
 		}
+		smp_mb();
 		old = ACCESS_ONCE(rw->lock);
 		owner = ACCESS_ONCE(rw->owner);
 		if (old < 0)
@@ -178,6 +180,7 @@ int _raw_read_trylock_retry(arch_rwlock_t *rw)
 	int old;
 
 	while (count-- > 0) {
+		smp_mb();
 		old = ACCESS_ONCE(rw->lock);
 		if (old < 0)
 			continue;
@@ -202,9 +205,9 @@ void _raw_write_lock_wait(arch_rwlock_t *rw, int prev)
 				smp_yield_cpu(~owner);
 			count = spin_retry;
 		}
+		smp_mb();
 		old = ACCESS_ONCE(rw->lock);
 		owner = ACCESS_ONCE(rw->owner);
-		smp_mb();
 		if (old >= 0) {
 			prev = __RAW_LOCK(&rw->lock, 0x80000000, __RAW_OP_OR);
 			old = prev;
@@ -251,6 +254,7 @@ int _raw_write_trylock_retry(arch_rwlock_t *rw)
 	int old;
 
 	while (count-- > 0) {
+		smp_mb();
 		old = ACCESS_ONCE(rw->lock);
 		if (old)
 			continue;
