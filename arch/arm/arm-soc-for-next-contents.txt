@@ -131,4 +131,10 @@ fixes
 		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.13-dt-fixes
 	<no branch> (8cd7b51ff57c74260b20c97623b0e0d420c22be8)
 		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-fixes4-for-v4.13
+	<no branch> (d86e63e1f0b7868c55c8d4a54854b85e2bac690b)
+		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-fixes-for-4.13-2
+	<no branch> (c40bc54fdf2d52a80f66b365f1eac9d43b32e107)
+		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-fixes-4.13-3
+	patch
+		soc: ti: ti_sci_pm_domains: Populate name for genpd
 
