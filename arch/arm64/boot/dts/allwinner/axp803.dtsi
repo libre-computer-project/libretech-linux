@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 ARM Ltd.
+ * Copyright 2017 Icenowy Zheng <icenowy@aosc.xyz>
  *
  * This file is dual-licensed: you can use it either under the terms
  * of the GPL or the X11 license, at your option. Note that this dual
@@ -40,88 +40,111 @@
  *     OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <arm/sunxi-h3-h5.dtsi>
+/*
+ * AXP803 Integrated Power Management Chip
+ * http://files.pine64.org/doc/datasheet/pine64/AXP803_Datasheet_V1.0.pdf
+ */
 
-/ {
-	cpus {
-		#address-cells = <1>;
-		#size-cells = <0>;
+&axp803 {
+	interrupt-controller;
+	#interrupt-cells = <1>;
 
-		cpu@0 {
-			compatible = "arm,cortex-a53", "arm,armv8";
-			device_type = "cpu";
-			reg = <0>;
-			enable-method = "psci";
+	regulators {
+		/* Default work frequency for buck regulators */
+		x-powers,dcdc-freq = <3000>;
+
+		reg_aldo1: aldo1 {
+			regulator-name = "aldo1";
 		};
 
-		cpu@1 {
-			compatible = "arm,cortex-a53", "arm,armv8";
-			device_type = "cpu";
-			reg = <1>;
-			enable-method = "psci";
+		reg_aldo2: aldo2 {
+			regulator-name = "aldo2";
 		};
 
-		cpu@2 {
-			compatible = "arm,cortex-a53", "arm,armv8";
-			device_type = "cpu";
-			reg = <2>;
-			enable-method = "psci";
+		reg_aldo3: aldo3 {
+			regulator-name = "aldo3";
 		};
 
-		cpu@3 {
-			compatible = "arm,cortex-a53", "arm,armv8";
-			device_type = "cpu";
-			reg = <3>;
-			enable-method = "psci";
+		reg_dc1sw: dc1sw {
+			regulator-name = "dc1sw";
+		};
+
+		reg_dcdc1: dcdc1 {
+			regulator-name = "dcdc1";
+		};
+
+		reg_dcdc2: dcdc2 {
+			regulator-name = "dcdc2";
+		};
+
+		reg_dcdc3: dcdc3 {
+			regulator-name = "dcdc3";
+		};
+
+		reg_dcdc4: dcdc4 {
+			regulator-name = "dcdc4";
+		};
+
+		reg_dcdc5: dcdc5 {
+			regulator-name = "dcdc5";
+		};
+
+		reg_dcdc6: dcdc6 {
+			regulator-name = "dcdc6";
+		};
+
+		reg_dldo1: dldo1 {
+			regulator-name = "dldo1";
+		};
+
+		reg_dldo2: dldo2 {
+			regulator-name = "dldo2";
+		};
+
+		reg_dldo3: dldo3 {
+			regulator-name = "dldo3";
+		};
+
+		reg_dldo4: dldo4 {
+			regulator-name = "dldo4";
+		};
+
+		reg_eldo1: eldo1 {
+			regulator-name = "eldo1";
+		};
+
+		reg_eldo2: eldo2 {
+			regulator-name = "eldo2";
+		};
+
+		reg_eldo3: eldo3 {
+			regulator-name = "eldo3";
+		};
+
+		reg_fldo1: fldo1 {
+			regulator-name = "fldo1";
+		};
+
+		reg_fldo2: fldo2 {
+			regulator-name = "fldo2";
+		};
+
+		reg_ldo_io0: ldo-io0 {
+			regulator-name = "ldo-io0";
+			status = "disabled";
+		};
+
+		reg_ldo_io1: ldo-io1 {
+			regulator-name = "ldo-io1";
+			status = "disabled";
+		};
+
+		reg_rtc_ldo: rtc-ldo {
+			/* RTC_LDO is a fixed, always-on regulator */
+			regulator-always-on;
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-name = "rtc-ldo";
 		};
 	};
-
-	psci {
-		compatible = "arm,psci-0.2";
-		method = "smc";
-	};
-
-	timer {
-		compatible = "arm,armv8-timer";
-		interrupts = <GIC_PPI 13
-				(GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>,
-			     <GIC_PPI 14
-				(GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>,
-			     <GIC_PPI 11
-				(GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>,
-			     <GIC_PPI 10
-				(GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>;
-	};
-};
-
-&ccu {
-	compatible = "allwinner,sun50i-h5-ccu";
-};
-
-&mmc0 {
-	compatible = "allwinner,sun50i-h5-mmc",
-		     "allwinner,sun50i-a64-mmc";
-	clocks = <&ccu CLK_BUS_MMC0>, <&ccu CLK_MMC0>;
-	clock-names = "ahb", "mmc";
-};
-
-&mmc1 {
-	compatible = "allwinner,sun50i-h5-mmc",
-		     "allwinner,sun50i-a64-mmc";
-	clocks = <&ccu CLK_BUS_MMC1>, <&ccu CLK_MMC1>;
-	clock-names = "ahb", "mmc";
-};
-
-&mmc2 {
-	compatible = "allwinner,sun50i-h5-emmc",
-		     "allwinner,sun50i-a64-emmc";
-	clocks = <&ccu CLK_BUS_MMC2>, <&ccu CLK_MMC2>;
-	clock-names = "ahb", "mmc";
-};
-
-&pio {
-	interrupts = <GIC_SPI 11 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 23 IRQ_TYPE_LEVEL_HIGH>;
-	compatible = "allwinner,sun50i-h5-pinctrl";
 };
