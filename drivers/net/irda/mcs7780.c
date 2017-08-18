@@ -66,7 +66,7 @@
 #define MCS_VENDOR_ID 0x9710
 #define MCS_PRODUCT_ID 0x7780
 
-static struct usb_device_id mcs_table[] = {
+static const struct usb_device_id mcs_table[] = {
 	/* MosChip Corp.,  MCS7780 FIR-USB Adapter */
 	{USB_DEVICE(MCS_VENDOR_ID, MCS_PRODUCT_ID)},
 	{},
@@ -141,9 +141,19 @@ static int mcs_set_reg(struct mcs_cb *mcs, __u16 reg, __u16 val)
 static int mcs_get_reg(struct mcs_cb *mcs, __u16 reg, __u16 * val)
 {
 	struct usb_device *dev = mcs->usbdev;
-	int ret = usb_control_msg(dev, usb_rcvctrlpipe(dev, 0), MCS_RDREQ,
-				  MCS_RD_RTYPE, 0, reg, val, 2,
-				  msecs_to_jiffies(MCS_CTRL_TIMEOUT));
+	void *dmabuf;
+	int ret;
+
+	dmabuf = kmalloc(sizeof(__u16), GFP_KERNEL);
+	if (!dmabuf)
+		return -ENOMEM;
+
+	ret = usb_control_msg(dev, usb_rcvctrlpipe(dev, 0), MCS_RDREQ,
+			      MCS_RD_RTYPE, 0, reg, dmabuf, 2,
+			      msecs_to_jiffies(MCS_CTRL_TIMEOUT));
+
+	memcpy(val, dmabuf, sizeof(__u16));
+	kfree(dmabuf);
 
 	return ret;
 }

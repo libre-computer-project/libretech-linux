@@ -54,9 +54,8 @@
 #include <net/devlink.h>
 #include "mlx5_core.h"
 #include "fs_core.h"
-#ifdef CONFIG_MLX5_CORE_EN
+#include "lib/mpfs.h"
 #include "eswitch.h"
-#endif
 #include "lib/mlx5.h"
 #include "fpga/core.h"
 #include "accel/ipsec.h"
@@ -897,13 +896,17 @@ static int mlx5_init_once(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 		goto err_tables_cleanup;
 	}
 
-#ifdef CONFIG_MLX5_CORE_EN
+	err = mlx5_mpfs_init(dev);
+	if (err) {
+		dev_err(&pdev->dev, "Failed to init l2 table %d\n", err);
+		goto err_rl_cleanup;
+	}
+
 	err = mlx5_eswitch_init(dev);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to init eswitch %d\n", err);
-		goto err_rl_cleanup;
+		goto err_mpfs_cleanup;
 	}
-#endif
 
 	err = mlx5_sriov_init(dev);
 	if (err) {
@@ -922,13 +925,11 @@ static int mlx5_init_once(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 err_sriov_cleanup:
 	mlx5_sriov_cleanup(dev);
 err_eswitch_cleanup:
-#ifdef CONFIG_MLX5_CORE_EN
 	mlx5_eswitch_cleanup(dev->priv.eswitch);
-
+err_mpfs_cleanup:
+	mlx5_mpfs_cleanup(dev);
 err_rl_cleanup:
-#endif
 	mlx5_cleanup_rl_table(dev);
-
 err_tables_cleanup:
 	mlx5_cleanup_mkey_table(dev);
 	mlx5_cleanup_srq_table(dev);
@@ -946,9 +947,8 @@ static void mlx5_cleanup_once(struct mlx5_core_dev *dev)
 {
 	mlx5_fpga_cleanup(dev);
 	mlx5_sriov_cleanup(dev);
-#ifdef CONFIG_MLX5_CORE_EN
 	mlx5_eswitch_cleanup(dev->priv.eswitch);
-#endif
+	mlx5_mpfs_cleanup(dev);
 	mlx5_cleanup_rl_table(dev);
 	mlx5_cleanup_reserved_gids(dev);
 	mlx5_cleanup_mkey_table(dev);
@@ -1106,10 +1106,6 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 		goto err_fs;
 	}
 
-#ifdef CONFIG_MLX5_CORE_EN
-	mlx5_eswitch_attach(dev->priv.eswitch);
-#endif
-
 	err = mlx5_sriov_attach(dev);
 	if (err) {
 		dev_err(&pdev->dev, "sriov init failed %d\n", err);
@@ -1153,9 +1149,6 @@ err_fpga_start:
 	mlx5_sriov_detach(dev);
 
 err_sriov:
-#ifdef CONFIG_MLX5_CORE_EN
-	mlx5_eswitch_detach(dev->priv.eswitch);
-#endif
 	mlx5_cleanup_fs(dev);
 
 err_fs:
@@ -1227,9 +1220,6 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	mlx5_fpga_device_stop(dev);
 
 	mlx5_sriov_detach(dev);
-#ifdef CONFIG_MLX5_CORE_EN
-	mlx5_eswitch_detach(dev->priv.eswitch);
-#endif
 	mlx5_cleanup_fs(dev);
 	free_comp_eqs(dev);
 	mlx5_stop_eqs(dev);
@@ -1260,7 +1250,7 @@ struct mlx5_core_event_handler {
 };
 
 static const struct devlink_ops mlx5_devlink_ops = {
-#ifdef CONFIG_MLX5_CORE_EN
+#ifdef CONFIG_MLX5_ESWITCH
 	.eswitch_mode_set = mlx5_devlink_eswitch_mode_set,
 	.eswitch_mode_get = mlx5_devlink_eswitch_mode_get,
 	.eswitch_inline_mode_set = mlx5_devlink_eswitch_inline_mode_set,
@@ -1299,6 +1289,9 @@ static int init_one(struct pci_dev *pdev,
 	spin_lock_init(&priv->ctx_lock);
 	mutex_init(&dev->pci_status_mutex);
 	mutex_init(&dev->intf_state_mutex);
+
+	INIT_LIST_HEAD(&priv->waiting_events_list);
+	priv->is_accum_events = false;
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 	err = init_srcu_struct(&priv->pfault_srcu);
@@ -1354,7 +1347,6 @@ clean_srcu:
 	cleanup_srcu_struct(&priv->pfault_srcu);
 clean_dev:
 #endif
-	pci_set_drvdata(pdev, NULL);
 	devlink_free(devlink);
 
 	return err;
@@ -1381,7 +1373,6 @@ static void remove_one(struct pci_dev *pdev)
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 	cleanup_srcu_struct(&priv->pfault_srcu);
 #endif
-	pci_set_drvdata(pdev, NULL);
 	devlink_free(devlink);
 }
 
