@@ -77,6 +77,12 @@ next/dt
 		ARM: dts: versatile: fix PCI bus dtc warnings
 	sunxi/dt-2
 		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt-for-4.14-2
+	patch
+		ARM: dts: augment Ux500 to use DT cpufreq
+	zynq/dt
+		https://github.com/Xilinx/linux-xlnx tags/zynq-dt-for-4.14
+	davinci/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.14/dt
 
 next/defconfig
 	samsung/defconfig
@@ -97,8 +103,10 @@ next/defconfig
 		http://github.com/Broadcom/stblinux tags/arm-soc/for-4.14/defconfig
 	imx/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/shawnguo/linux tags/imx-defconfig-4.14
-	<no branch> (f6982786df61513c3614c91d492f3c1b21da6128)
+	tegra/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.14-arm-defconfig
+	davinci/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.14/defconfig
 
 next/drivers
 	patch
@@ -116,11 +124,11 @@ next/drivers
 		https://git.kernel.org/pub/scm/linux/kernel/git/horms/renesas tags/renesas-drivers-for-v4.14
 	amlogic/driver
 		git://git.kernel.org/pub/scm/linux/kernel/git/khilman/linux-amlogic tags/amlogic-drivers
-	<no branch> (52510ee934885ec846faaa5d029329c9ba0e6ecc)
+	mediatek/soc
 		https://github.com/mbgg/linux-mediatek tags/v4.13-next-soc
 	tegra/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.14-soc
-	<no branch> (122954edfdf5888dbd532acf2b945af15660da66)
+	tegra/firmware
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.14-firmware
 	drivers/reset
 		git://git.pengutronix.de/git/pza/linux tags/reset-for-4.14
@@ -167,6 +175,8 @@ qcom/dt64-3
 		git://git.infradead.org/linux-mvebu tags/mvebu-dt64-4.14-2
 	sunxi/dt64-2
 		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt64-for-4.14-2
+	zynq/dt64
+		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-4.14
 
 next/arm64
 	patch
@@ -206,4 +216,7 @@ fixes
 	patch
 		soc: ti: ti_sci_pm_domains: Populate name for genpd
 		soc: ti: knav: Add a NULL pointer check for kdev in knav_pool_create
+	<no branch> (3fb3b3c4b68e33bb4acf42361b6a0db96115de35)
+		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.13-drivers-fixes
+
 
