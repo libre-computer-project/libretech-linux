@@ -346,7 +346,15 @@ early_initcall(tegra_init_fuse);
 #ifdef CONFIG_ARM64
 static int __init tegra_init_soc(void)
 {
+	struct device_node *np;
 	struct device *soc;
+
+	/* make sure we're running on Tegra */
+	np = of_find_matching_node(NULL, tegra_fuse_match);
+	if (!np)
+		return 0;
+
+	of_node_put(np);
 
 	soc = tegra_soc_device_register();
 	if (IS_ERR(soc)) {
@@ -356,5 +364,5 @@ static int __init tegra_init_soc(void)
 
 	return 0;
 }
-device_initcall(tegra_init_soc)
+device_initcall(tegra_init_soc);
 #endif
