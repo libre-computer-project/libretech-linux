@@ -184,6 +184,7 @@ struct skd_request_context {
 
 	struct fit_comp_error_info err_info;
 
+	blk_status_t status;
 };
 
 struct skd_special_context {
@@ -309,7 +310,7 @@ static inline void skd_reg_write64(struct skd_device *skdev, u64 val,
 }
 
 
-#define SKD_IRQ_DEFAULT SKD_IRQ_MSI
+#define SKD_IRQ_DEFAULT SKD_IRQ_MSIX
 static int skd_isr_type = SKD_IRQ_DEFAULT;
 
 module_param(skd_isr_type, int, 0444);
@@ -478,8 +479,10 @@ static bool skd_fail_all(struct request_queue *q)
 	}
 }
 
-static void skd_process_request(struct request *req, bool last)
+static blk_status_t skd_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
+				    const struct blk_mq_queue_data *mqd)
 {
+	struct request *const req = mqd->rq;
 	struct request_queue *const q = req->q;
 	struct skd_device *skdev = q->queuedata;
 	struct skd_fitmsg_context *skmsg;
@@ -491,6 +494,11 @@ static void skd_process_request(struct request *req, bool last)
 	const u32 lba = blk_rq_pos(req);
 	const u32 count = blk_rq_sectors(req);
 	const int data_dir = rq_data_dir(req);
+
+	if (unlikely(skdev->state != SKD_DRVR_STATE_ONLINE))
+		return skd_fail_all(q) ? BLK_STS_IOERR : BLK_STS_RESOURCE;
+
+	blk_mq_start_request(req);
 
 	WARN_ONCE(tag >= skd_max_queue_depth, "%#x > %#x (nr_requests = %lu)\n",
 		  tag, skd_max_queue_depth, q->nr_requests);
@@ -514,7 +522,7 @@ static void skd_process_request(struct request *req, bool last)
 		dev_dbg(&skdev->pdev->dev, "error Out\n");
 		skd_end_request(skdev, blk_mq_rq_from_pdu(skreq),
 				BLK_STS_RESOURCE);
-		return;
+		return BLK_STS_OK;
 	}
 
 	dma_sync_single_for_device(&skdev->pdev->dev, skreq->sksg_dma_address,
@@ -578,47 +586,33 @@ static void skd_process_request(struct request *req, bool last)
 	if (skd_max_req_per_msg == 1) {
 		skd_send_fitmsg(skdev, skmsg);
 	} else {
-		if (last ||
+		if (mqd->last ||
 		    fmh->num_protocol_cmds_coalesced >= skd_max_req_per_msg) {
 			skd_send_fitmsg(skdev, skmsg);
 			skdev->skmsg = NULL;
 		}
 		spin_unlock_irqrestore(&skdev->lock, flags);
 	}
-}
-
-static blk_status_t skd_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
-				    const struct blk_mq_queue_data *mqd)
-{
-	struct request *req = mqd->rq;
-	struct request_queue *q = req->q;
-	struct skd_device *skdev = q->queuedata;
-
-	if (skdev->state == SKD_DRVR_STATE_ONLINE) {
-		blk_mq_start_request(req);
-		skd_process_request(req, mqd->last);
-
-		return BLK_STS_OK;
-	} else {
-		return skd_fail_all(q) ? BLK_STS_IOERR : BLK_STS_RESOURCE;
-	}
 
 	return BLK_STS_OK;
 }
 
-static enum blk_eh_timer_return skd_timed_out(struct request *req)
+static enum blk_eh_timer_return skd_timed_out(struct request *req,
+					      bool reserved)
 {
 	struct skd_device *skdev = req->q->queuedata;
 
 	dev_err(&skdev->pdev->dev, "request with tag %#x timed out\n",
 		blk_mq_unique_tag(req));
 
-	return BLK_EH_HANDLED;
+	return BLK_EH_RESET_TIMER;
 }
 
 static void skd_end_request(struct skd_device *skdev, struct request *req,
 			    blk_status_t error)
 {
+	struct skd_request_context *skreq = blk_mq_rq_to_pdu(req);
+
 	if (unlikely(error)) {
 		char *cmd = (rq_data_dir(req) == READ) ? "read" : "write";
 		u32 lba = (u32)blk_rq_pos(req);
@@ -631,19 +625,15 @@ static void skd_end_request(struct skd_device *skdev, struct request *req,
 		dev_dbg(&skdev->pdev->dev, "id=0x%x error=%d\n", req->tag,
 			error);
 
-	blk_mq_end_request(req, error);
+	skreq->status = error;
+	blk_mq_complete_request(req);
 }
 
-/* Only called in case of a request timeout */
 static void skd_softirq_done(struct request *req)
 {
-	struct skd_device *skdev = req->q->queuedata;
 	struct skd_request_context *skreq = blk_mq_rq_to_pdu(req);
-	unsigned long flags;
 
-	spin_lock_irqsave(&skdev->lock, flags);
-	skd_end_request(skdev, blk_mq_rq_from_pdu(skreq), BLK_STS_TIMEOUT);
-	spin_unlock_irqrestore(&skdev->lock, flags);
+	blk_mq_end_request(req, skreq->status);
 }
 
 static bool skd_preop_sg_list(struct skd_device *skdev,
@@ -1564,17 +1554,11 @@ static int skd_isr_completion_posted(struct skd_device *skdev,
 		 * Make sure the request ID for the slot matches.
 		 */
 		if (skreq->id != req_id) {
-			dev_dbg(&skdev->pdev->dev,
-				"mismatch comp_id=0x%x req_id=0x%x\n", req_id,
-				skreq->id);
-			{
-				u16 new_id = cmp_cntxt;
-				dev_err(&skdev->pdev->dev,
-					"Completion mismatch comp_id=0x%04x skreq=0x%04x new=0x%04x\n",
-					req_id, skreq->id, new_id);
+			dev_err(&skdev->pdev->dev,
+				"Completion mismatch comp_id=0x%04x skreq=0x%04x new=0x%04x\n",
+				req_id, skreq->id, cmp_cntxt);
 
-				continue;
-			}
+			continue;
 		}
 
 		SKD_ASSERT(skreq->state == SKD_REQ_STATE_BUSY);
@@ -2837,6 +2821,8 @@ err_out:
 
 static const struct blk_mq_ops skd_mq_ops = {
 	.queue_rq	= skd_mq_queue_rq,
+	.complete	= skd_softirq_done,
+	.timeout	= skd_timed_out,
 	.init_request	= skd_init_request,
 	.exit_request	= skd_exit_request,
 };
@@ -2900,8 +2886,6 @@ static int skd_cons_disk(struct skd_device *skdev)
 	queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, q);
 
 	blk_queue_rq_timeout(q, 8 * HZ);
-	blk_queue_rq_timed_out(q, skd_timed_out);
-	blk_queue_softirq_done(q, skd_softirq_done);
 
 	spin_lock_irqsave(&skdev->lock, flags);
 	dev_dbg(&skdev->pdev->dev, "stopping queue\n");
