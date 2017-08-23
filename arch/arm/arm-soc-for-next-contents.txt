@@ -30,6 +30,8 @@ next/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-soc32-1
 	tegra/arm64
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.14-arm-core
+	samsung/soc-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-4.14-2
 
 next/dt
 	samsung/dt
@@ -83,6 +85,8 @@ next/dt
 		https://github.com/Xilinx/linux-xlnx tags/zynq-dt-for-4.14
 	davinci/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.14/dt
+	samsung/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-4.14-2
 
 next/defconfig
 	samsung/defconfig
@@ -134,6 +138,11 @@ next/drivers
 		git://git.pengutronix.de/git/pza/linux tags/reset-for-4.14
 	sunxi/drivers
 		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-drivers-for-4.14
+	patch
+		soc/tegra: Restrict SoC device registration to Tegra
+		soc/tegra: fuse: Add missing semi-colon
+	samsung/drivers
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-drivers-4.14-2
 
 next/dt64
 	samsung/dt64
@@ -218,5 +227,6 @@ fixes
 		soc: ti: knav: Add a NULL pointer check for kdev in knav_pool_create
 	<no branch> (3fb3b3c4b68e33bb4acf42361b6a0db96115de35)
 		git://git.kernel.org/pub/scm/linux/kernel/git/abelloni/linux tags/at91-ab-4.13-drivers-fixes
-
-
+	patch
+		ARM: at91: don't select CONFIG_ARM_CPU_SUSPEND for old platforms
+		ARM: dts: exynos: add needs-hpd for Odroid-XU3/4
