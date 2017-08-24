@@ -46,6 +46,7 @@
  */
 
 #include <linux/net.h>
+#include <rdma/opa_addr.h>
 #define OPA_NUM_PKEY_BLOCKS_PER_SMP (OPA_SMP_DR_DATA_SIZE \
 			/ (OPA_PARTITION_TABLE_BLK_SIZE * sizeof(u16)))
 
@@ -150,13 +151,24 @@ static struct trap_node *check_and_add_trap(struct hfi1_ibport *ibp,
 	unsigned long flags;
 	unsigned long timeout;
 	int found = 0;
+	unsigned int queue_id;
+	static int trap_count;
+
+	queue_id = trap->data.generic_type & 0x0F;
+	if (queue_id >= RVT_MAX_TRAP_LISTS) {
+		trap_count++;
+		pr_err_ratelimited("hfi1: Invalid trap 0x%0x dropped. Total dropped: %d\n",
+				  trap->data.generic_type, trap_count);
+		kfree(trap);
+		return NULL;
+	}
 
 	/*
 	 * Since the retry (handle timeout) does not remove a trap request
 	 * from the list, all we have to do is compare the node.
 	 */
 	spin_lock_irqsave(&ibp->rvp.lock, flags);
-	trap_list = &ibp->rvp.trap_lists[trap->data.generic_type & 0x0F];
+	trap_list = &ibp->rvp.trap_lists[queue_id];
 
 	list_for_each_entry(node, &trap_list->list, list) {
 		if (node == trap) {
@@ -172,7 +184,7 @@ static struct trap_node *check_and_add_trap(struct hfi1_ibport *ibp,
 			trap_list->list_len++;
 			list_add_tail(&trap->list, &trap_list->list);
 		} else {
-			pr_warn_ratelimited("hfi1: Maximim trap limit reached for 0x%0x traps\n",
+			pr_warn_ratelimited("hfi1: Maximum trap limit reached for 0x%0x traps\n",
 					    trap->data.generic_type);
 			kfree(trap);
 		}
@@ -231,6 +243,61 @@ static void subn_handle_opa_trap_repress(struct hfi1_ibport *ibp,
 		}
 	}
 	spin_unlock_irqrestore(&ibp->rvp.lock, flags);
+}
+
+static void hfi1_update_sm_ah_attr(struct hfi1_ibport *ibp,
+				   struct rdma_ah_attr *attr, u32 dlid)
+{
+	rdma_ah_set_dlid(attr, dlid);
+	rdma_ah_set_port_num(attr, ppd_from_ibp(ibp)->port);
+	if (dlid >= be16_to_cpu(IB_MULTICAST_LID_BASE)) {
+		struct ib_global_route *grh = rdma_ah_retrieve_grh(attr);
+
+		rdma_ah_set_ah_flags(attr, IB_AH_GRH);
+		grh->sgid_index = 0;
+		grh->hop_limit = 1;
+		grh->dgid.global.subnet_prefix =
+			ibp->rvp.gid_prefix;
+		grh->dgid.global.interface_id = OPA_MAKE_ID(dlid);
+	}
+}
+
+static int hfi1_modify_qp0_ah(struct hfi1_ibport *ibp,
+			      struct rvt_ah *ah, u32 dlid)
+{
+	struct rdma_ah_attr attr;
+	struct rvt_qp *qp0;
+	int ret = -EINVAL;
+
+	memset(&attr, 0, sizeof(attr));
+	attr.type = ah->ibah.type;
+	hfi1_update_sm_ah_attr(ibp, &attr, dlid);
+	rcu_read_lock();
+	qp0 = rcu_dereference(ibp->rvp.qp[0]);
+	if (qp0)
+		ret = rdma_modify_ah(&ah->ibah, &attr);
+	rcu_read_unlock();
+	return ret;
+}
+
+static struct ib_ah *hfi1_create_qp0_ah(struct hfi1_ibport *ibp, u32 dlid)
+{
+	struct rdma_ah_attr attr;
+	struct ib_ah *ah = ERR_PTR(-EINVAL);
+	struct rvt_qp *qp0;
+	struct hfi1_pportdata *ppd = ppd_from_ibp(ibp);
+	struct hfi1_devdata *dd = dd_from_ppd(ppd);
+	u8 port_num = ppd->port;
+
+	memset(&attr, 0, sizeof(attr));
+	attr.type = rdma_ah_find_type(&dd->verbs_dev.rdi.ibdev, port_num);
+	hfi1_update_sm_ah_attr(ibp, &attr, dlid);
+	rcu_read_lock();
+	qp0 = rcu_dereference(ibp->rvp.qp[0]);
+	if (qp0)
+		ah = rdma_create_ah(qp0->ibqp.pd, &attr);
+	rcu_read_unlock();
+	return ah;
 }
 
 static void send_trap(struct hfi1_ibport *ibp, struct trap_node *trap)
@@ -372,12 +439,10 @@ static struct trap_node *create_trap_node(u8 type, __be16 trap_num, u32 lid)
  * Send a bad P_Key trap (ch. 14.3.8).
  */
 void hfi1_bad_pkey(struct hfi1_ibport *ibp, u32 key, u32 sl,
-		   u32 qp1, u32 qp2, u16 lid1, u16 lid2)
+		   u32 qp1, u32 qp2, u32 lid1, u32 lid2)
 {
 	struct trap_node *trap;
 	u32 lid = ppd_from_ibp(ibp)->lid;
-	u32 _lid1 = lid1;
-	u32 _lid2 = lid2;
 
 	ibp->rvp.n_pkt_drops++;
 	ibp->rvp.pkey_violations++;
@@ -388,8 +453,8 @@ void hfi1_bad_pkey(struct hfi1_ibport *ibp, u32 key, u32 sl,
 		return;
 
 	/* Send violation trap */
-	trap->data.ntc_257_258.lid1 = cpu_to_be32(_lid1);
-	trap->data.ntc_257_258.lid2 = cpu_to_be32(_lid2);
+	trap->data.ntc_257_258.lid1 = cpu_to_be32(lid1);
+	trap->data.ntc_257_258.lid2 = cpu_to_be32(lid2);
 	trap->data.ntc_257_258.key = cpu_to_be32(key);
 	trap->data.ntc_257_258.sl = sl << 3;
 	trap->data.ntc_257_258.qp1 = cpu_to_be32(qp1);
@@ -905,8 +970,8 @@ static int __subn_get_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 	pi->buffer_units = cpu_to_be32(buffer_units);
 
 	pi->opa_cap_mask = cpu_to_be16(ibp->rvp.port_cap3_flags);
-	pi->collectivemask_multicastmask = ((HFI1_COLLECTIVE_NR & 0x7)
-					    << 3 | (HFI1_MCAST_NR & 0x7));
+	pi->collectivemask_multicastmask = ((OPA_COLLECTIVE_NR & 0x7)
+					    << 3 | (OPA_MCAST_NR & 0x7));
 
 	/* HFI supports a replay buffer 128 LTPs in size */
 	pi->replay_depth.buffer = 0x80;
@@ -1116,8 +1181,8 @@ static int physical_transition_allowed(int old, int new)
 static int port_states_transition_allowed(struct hfi1_pportdata *ppd,
 					  u32 logical_new, u32 physical_new)
 {
-	u32 physical_old = driver_physical_state(ppd);
-	u32 logical_old = driver_logical_state(ppd);
+	u32 physical_old = driver_pstate(ppd);
+	u32 logical_old = driver_lstate(ppd);
 	int ret, logical_allowed, physical_allowed;
 
 	ret = logical_transition_allowed(logical_old, logical_new);
@@ -1284,8 +1349,8 @@ static int __subn_set_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 	struct hfi1_ibport *ibp;
 	u8 clientrereg;
 	unsigned long flags;
-	u32 smlid, opa_lid; /* tmp vars to hold LID values */
-	u16 lid;
+	u32 smlid;
+	u32 lid;
 	u8 ls_old, ls_new, ps_new;
 	u8 vls;
 	u8 msl;
@@ -1302,22 +1367,20 @@ static int __subn_set_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 		return reply((struct ib_mad_hdr *)smp);
 	}
 
-	opa_lid = be32_to_cpu(pi->lid);
-	if (opa_lid & 0xFFFF0000) {
-		pr_warn("OPA_PortInfo lid out of range: %X\n", opa_lid);
+	lid = be32_to_cpu(pi->lid);
+	if (lid & 0xFF000000) {
+		pr_warn("OPA_PortInfo lid out of range: %X\n", lid);
 		smp->status |= IB_SMP_INVALID_FIELD;
 		goto get_only;
 	}
 
-	lid = (u16)(opa_lid & 0x0000FFFF);
 
 	smlid = be32_to_cpu(pi->sm_lid);
-	if (smlid & 0xFFFF0000) {
+	if (smlid & 0xFF000000) {
 		pr_warn("OPA_PortInfo SM lid out of range: %X\n", smlid);
 		smp->status |= IB_SMP_INVALID_FIELD;
 		goto get_only;
 	}
-	smlid &= 0x0000FFFF;
 
 	clientrereg = (pi->clientrereg_subnettimeout &
 			OPA_PI_MASK_CLIENT_REREGISTER);
@@ -1332,12 +1395,16 @@ static int __subn_set_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 	ls_old = driver_lstate(ppd);
 
 	ibp->rvp.mkey = pi->mkey;
-	ibp->rvp.gid_prefix = pi->subnet_prefix;
+	if (ibp->rvp.gid_prefix != pi->subnet_prefix) {
+		ibp->rvp.gid_prefix = pi->subnet_prefix;
+		event.event = IB_EVENT_GID_CHANGE;
+		ib_dispatch_event(&event);
+	}
 	ibp->rvp.mkey_lease_period = be16_to_cpu(pi->mkey_lease_period);
 
 	/* Must be a valid unicast LID address. */
 	if ((lid == 0 && ls_old > IB_PORT_INIT) ||
-	    lid >= be16_to_cpu(IB_MULTICAST_LID_BASE)) {
+	     (hfi1_is_16B_mcast(lid))) {
 		smp->status |= IB_SMP_INVALID_FIELD;
 		pr_warn("SubnSet(OPA_PortInfo) lid invalid 0x%x\n",
 			lid);
@@ -1350,6 +1417,16 @@ static int __subn_set_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 		hfi1_set_lid(ppd, lid, pi->mkeyprotect_lmc & OPA_PI_MASK_LMC);
 		event.event = IB_EVENT_LID_CHANGE;
 		ib_dispatch_event(&event);
+
+		if (HFI1_PORT_GUID_INDEX + 1 < HFI1_GUIDS_PER_PORT) {
+			/* Manufacture GID from LID to support extended
+			 * addresses
+			 */
+			ppd->guids[HFI1_PORT_GUID_INDEX + 1] =
+				be64_to_cpu(OPA_MAKE_ID(lid));
+			event.event = IB_EVENT_GID_CHANGE;
+			ib_dispatch_event(&event);
+		}
 	}
 
 	msl = pi->smsl & OPA_PI_MASK_SMSL;
@@ -1360,7 +1437,7 @@ static int __subn_set_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 
 	/* Must be a valid unicast LID address. */
 	if ((smlid == 0 && ls_old > IB_PORT_INIT) ||
-	    smlid >= be16_to_cpu(IB_MULTICAST_LID_BASE)) {
+	     (hfi1_is_16B_mcast(smlid))) {
 		smp->status |= IB_SMP_INVALID_FIELD;
 		pr_warn("SubnSet(OPA_PortInfo) smlid invalid 0x%x\n", smlid);
 	} else if (smlid != ibp->rvp.sm_lid || msl != ibp->rvp.sm_sl) {
@@ -1368,7 +1445,7 @@ static int __subn_set_opa_portinfo(struct opa_smp *smp, u32 am, u8 *data,
 		spin_lock_irqsave(&ibp->rvp.lock, flags);
 		if (ibp->rvp.sm_ah) {
 			if (smlid != ibp->rvp.sm_lid)
-				rdma_ah_set_dlid(&ibp->rvp.sm_ah->attr, smlid);
+				hfi1_modify_qp0_ah(ibp, ibp->rvp.sm_ah, smlid);
 			if (msl != ibp->rvp.sm_sl)
 				rdma_ah_set_sl(&ibp->rvp.sm_ah->attr, msl);
 		}

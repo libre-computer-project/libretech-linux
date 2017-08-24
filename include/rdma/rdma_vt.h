@@ -64,7 +64,7 @@
 #define RVT_MAX_PKEY_VALUES 16
 
 #define RVT_MAX_TRAP_LEN 100 /* Limit pending trap list */
-#define RVT_MAX_TRAP_LISTS ((IB_NOTICE_TYPE_INFO & 0x0F) + 1)
+#define RVT_MAX_TRAP_LISTS 5 /*((IB_NOTICE_TYPE_INFO & 0x0F) + 1)*/
 #define RVT_TRAP_TIMEOUT 4096 /* 4.096 usec */
 
 struct trap_list {
@@ -91,7 +91,7 @@ struct rvt_ibport {
 	__be16 pma_counter_select[5];
 	u16 pma_tag;
 	u16 mkey_lease_period;
-	u16 sm_lid;
+	u32 sm_lid;
 	u8 sm_sl;
 	u8 mkeyprot;
 	u8 subnet_timeout;

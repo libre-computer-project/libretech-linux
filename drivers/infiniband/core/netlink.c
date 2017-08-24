@@ -38,6 +38,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <rdma/rdma_netlink.h>
+#include <linux/module.h>
 #include "core_priv.h"
 
 #include "core_priv.h"
@@ -83,6 +84,15 @@ static bool is_nl_valid(unsigned int type, unsigned int op)
 		return false;
 
 	cb_table = rdma_nl_types[type].cb_table;
+#ifdef CONFIG_MODULES
+	if (!cb_table) {
+		mutex_unlock(&rdma_nl_mutex);
+		request_module("rdma-netlink-subsys-%d", type);
+		mutex_lock(&rdma_nl_mutex);
+		cb_table = rdma_nl_types[type].cb_table;
+	}
+#endif
+
 	if (!cb_table || (!cb_table[op].dump && !cb_table[op].doit))
 		return false;
 	return true;
@@ -290,3 +300,5 @@ void rdma_nl_exit(void)
 
 	netlink_kernel_release(nls);
 }
+
+MODULE_ALIAS_NET_PF_PROTO(PF_NETLINK, NETLINK_RDMA);

@@ -648,7 +648,6 @@ u64 create_pbc(struct hfi1_pportdata *ppd, u64 flags, int srate_mbs, u32 vl,
 #define NUM_PCIE_SERDES 16	/* number of PCIe serdes on the SBus */
 extern const u8 pcie_serdes_broadcast[];
 extern const u8 pcie_pcs_addrs[2][NUM_PCIE_SERDES];
-extern uint platform_config_load;
 
 /* SBus commands */
 #define RESET_SBUS_RECEIVER 0x20
@@ -748,12 +747,10 @@ int is_ax(struct hfi1_devdata *dd);
 int is_bx(struct hfi1_devdata *dd);
 u32 read_physical_state(struct hfi1_devdata *dd);
 u32 chip_to_opa_pstate(struct hfi1_devdata *dd, u32 chip_pstate);
-u32 get_logical_state(struct hfi1_pportdata *ppd);
-void cache_physical_state(struct hfi1_pportdata *ppd);
 const char *opa_lstate_name(u32 lstate);
 const char *opa_pstate_name(u32 pstate);
-u32 driver_physical_state(struct hfi1_pportdata *ppd);
-u32 driver_logical_state(struct hfi1_pportdata *ppd);
+u32 driver_pstate(struct hfi1_pportdata *ppd);
+u32 driver_lstate(struct hfi1_pportdata *ppd);
 
 int acquire_lcb_access(struct hfi1_devdata *dd, int sleep_ok);
 int release_lcb_access(struct hfi1_devdata *dd, int sleep_ok);
