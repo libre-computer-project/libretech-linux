@@ -197,7 +197,7 @@ static const struct dev_pm_ops replicator_dev_pm_ops = {
 			   NULL)
 };
 
-static struct amba_id replicator_ids[] = {
+static const struct amba_id replicator_ids[] = {
 	{
 		.id     = 0x000bb909,
 		.mask   = 0x000fffff,
