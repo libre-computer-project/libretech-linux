@@ -32,6 +32,8 @@ next/soc
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.14-arm-core
 	samsung/soc-2
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-4.14-2
+	rockchip/soc-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-soc32-2
 
 next/dt
 	samsung/dt
@@ -87,6 +89,10 @@ next/dt
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.14/dt
 	samsung/dt-2
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-dt-4.14-2
+	aspeed/dt
+		git://git.kernel.org/pub/scm/linux/kernel/git/joel/aspeed tags/aspeed-4.14-devicetree
+	rockchip/dt-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-dts32-2
 
 next/defconfig
 	samsung/defconfig
@@ -111,6 +117,8 @@ next/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/tegra/linux tags/tegra-for-4.14-arm-defconfig
 	davinci/defconfig
 		git://git.kernel.org/pub/scm/linux/kernel/git/nsekhar/linux-davinci tags/davinci-for-v4.14/defconfig
+	aspeed/defconfig
+		git://git.kernel.org/pub/scm/linux/kernel/git/joel/aspeed tags/aspeed-4.14-defconfig
 
 next/drivers
 	patch
@@ -143,6 +151,8 @@ next/drivers
 		soc/tegra: fuse: Add missing semi-colon
 	samsung/drivers
 		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-drivers-4.14-2
+	firmware/scpi
+		git://git.kernel.org/pub/scm/linux/kernel/git/sudeep.holla/linux tags/scpi-fixes-4.14
 
 next/dt64
 	samsung/dt64
@@ -186,6 +196,8 @@ qcom/dt64-3
 		https://git.kernel.org/pub/scm/linux/kernel/git/sunxi/linux tags/sunxi-dt64-for-4.14-2
 	zynq/dt64
 		https://github.com/Xilinx/linux-xlnx tags/zynqmp-dt-for-4.14
+	rockchip/dt64-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/mmind/linux-rockchip tags/v4.14-rockchip-dts64-2
 
 next/arm64
 	patch
