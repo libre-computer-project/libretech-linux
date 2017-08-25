@@ -747,7 +747,7 @@ EXPORT_SYMBOL(ib_set_client_data);
  * chapter 11 of the InfiniBand Architecture Specification).  This
  * callback may occur in interrupt context.
  */
-int ib_register_event_handler  (struct ib_event_handler *event_handler)
+void ib_register_event_handler(struct ib_event_handler *event_handler)
 {
 	unsigned long flags;
 
@@ -755,8 +755,6 @@ int ib_register_event_handler  (struct ib_event_handler *event_handler)
 	list_add_tail(&event_handler->list,
 		      &event_handler->device->event_handler_list);
 	spin_unlock_irqrestore(&event_handler->device->event_handler_lock, flags);
-
-	return 0;
 }
 EXPORT_SYMBOL(ib_register_event_handler);
 
@@ -767,15 +765,13 @@ EXPORT_SYMBOL(ib_register_event_handler);
  * Unregister an event handler registered with
  * ib_register_event_handler().
  */
-int ib_unregister_event_handler(struct ib_event_handler *event_handler)
+void ib_unregister_event_handler(struct ib_event_handler *event_handler)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&event_handler->device->event_handler_lock, flags);
 	list_del(&event_handler->list);
 	spin_unlock_irqrestore(&event_handler->device->event_handler_lock, flags);
-
-	return 0;
 }
 EXPORT_SYMBOL(ib_unregister_event_handler);
 
@@ -1005,14 +1001,17 @@ int ib_modify_port(struct ib_device *device,
 		   u8 port_num, int port_modify_mask,
 		   struct ib_port_modify *port_modify)
 {
-	if (!device->modify_port)
-		return -ENOSYS;
+	int rc;
 
 	if (!rdma_is_port_valid(device, port_num))
 		return -EINVAL;
 
-	return device->modify_port(device, port_num, port_modify_mask,
-				   port_modify);
+	if (device->modify_port)
+		rc = device->modify_port(device, port_num, port_modify_mask,
+					   port_modify);
+	else
+		rc = rdma_protocol_roce(device, port_num) ? 0 : -ENOSYS;
+	return rc;
 }
 EXPORT_SYMBOL(ib_modify_port);
 
