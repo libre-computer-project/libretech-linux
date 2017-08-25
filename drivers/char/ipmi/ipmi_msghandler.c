@@ -265,6 +265,7 @@ struct ipmi_proc_entry {
 struct bmc_device {
 	struct platform_device pdev;
 	struct ipmi_device_id  id;
+	ipmi_smi_t             intf;
 	unsigned char          guid[16];
 	int                    guid_set;
 	char                   name[16];
@@ -2866,6 +2867,7 @@ int ipmi_register_smi(const struct ipmi_smi_handlers *handlers,
 	}
 	intf->intf_num = -1; /* Mark it invalid for now. */
 	kref_init(&intf->refcount);
+	intf->bmc->intf = intf;
 	intf->bmc->id = *device_id;
 	intf->si_dev = si_dev;
 	for (j = 0; j < IPMI_MAX_CHANNELS; j++) {
