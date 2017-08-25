@@ -146,10 +146,10 @@ void calculate_cpu_foreign_map(void)
 			       &temp_foreign_map, &cpu_sibling_map[i]);
 }
 
-struct plat_smp_ops *mp_ops;
+const struct plat_smp_ops *mp_ops;
 EXPORT_SYMBOL(mp_ops);
 
-void register_smp_ops(struct plat_smp_ops *ops)
+void register_smp_ops(const struct plat_smp_ops *ops)
 {
 	if (mp_ops)
 		printk(KERN_WARNING "Overriding previously set SMP ops\n");
@@ -376,15 +376,15 @@ asmlinkage void start_secondary(void)
 	cpumask_set_cpu(cpu, &cpu_coherent_mask);
 	notify_cpu_starting(cpu);
 
-	complete(&cpu_running);
-	synchronise_count_slave(cpu);
-
 	set_cpu_online(cpu, true);
 
 	set_cpu_sibling_map(cpu);
 	set_cpu_core_map(cpu);
 
 	calculate_cpu_foreign_map();
+
+	complete(&cpu_running);
+	synchronise_count_slave(cpu);
 
 	/*
 	 * irq will be enabled in ->smp_finish(), enabling it too early
