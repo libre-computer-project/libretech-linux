@@ -813,13 +813,14 @@ static int uffdio_zeropage(int ufd, unsigned long offset)
 		if (uffdio_zeropage.zeropage != page_size) {
 			fprintf(stderr, "UFFDIO_ZEROPAGE unexpected %Ld\n",
 				uffdio_zeropage.zeropage), exit(1);
-		} else
+		} else {
 			if (test_uffdio_zeropage_eexist) {
 				test_uffdio_zeropage_eexist = false;
 				retry_uffdio_zeropage(ufd, &uffdio_zeropage,
 						      offset);
 			}
 			return 1;
+		}
 	} else {
 		fprintf(stderr,
 			"UFFDIO_ZEROPAGE succeeded %Ld\n",
