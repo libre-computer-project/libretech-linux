@@ -60,6 +60,9 @@
 					   overrides the coredump filter bits */
 #define MADV_DODUMP	70		/* Clear the MADV_NODUMP flag */
 
+#define MADV_WIPEONFORK 71		/* Zero memory on fork, child only */
+#define MADV_KEEPONFORK 72		/* Undo MADV_WIPEONFORK */
+
 /* compatibility flags */
 #define MAP_FILE	0
 #define MAP_VARIABLE	0
