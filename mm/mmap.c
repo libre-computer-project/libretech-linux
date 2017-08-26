@@ -3003,7 +3003,7 @@ void exit_mmap(struct mm_struct *mm)
 	unmap_vmas(&tlb, vma, 0, -1);
 
 	set_bit(MMF_OOM_SKIP, &mm->flags);
-	if (tsk_is_oom_victim(current)) {
+	if (unlikely(tsk_is_oom_victim(current))) {
 		/*
 		 * Wait for oom_reap_task() to stop working on this
 		 * mm. Because MMF_OOM_SKIP is already set before
