@@ -3700,7 +3700,8 @@ static int __init swapfile_init(void)
 {
 	int nid;
 
-	swap_avail_heads = kmalloc(nr_node_ids * sizeof(struct plist_head), GFP_KERNEL);
+	swap_avail_heads = kmalloc_array(nr_node_ids, sizeof(struct plist_head),
+					 GFP_KERNEL);
 	if (!swap_avail_heads) {
 		pr_emerg("Not enough memory for swap heads, swap is disabled\n");
 		return -ENOMEM;
