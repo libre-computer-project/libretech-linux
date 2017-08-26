@@ -487,8 +487,8 @@ static inline void show_swap_cache_info(void)
 {
 }
 
-#define free_swap_and_cache(e) (is_migration_entry(e) || is_device_private_entry(e))
-#define swapcache_prepare(e) (is_migration_entry(e) || is_device_private_entry(e))
+#define free_swap_and_cache(e) ({(is_migration_entry(e) || is_device_private_entry(e));})
+#define swapcache_prepare(e) ({(is_migration_entry(e) || is_device_private_entry(e));})
 
 static inline int add_swap_count_continuation(swp_entry_t swp, gfp_t gfp_mask)
 {
