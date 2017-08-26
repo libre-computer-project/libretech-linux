@@ -35,17 +35,17 @@
 
 #define PA_SECTION_SIZE (1UL << PA_SECTION_SHIFT)
 
-
+#if defined(CONFIG_DEVICE_PRIVATE) || defined(CONFIG_DEVICE_PUBLIC)
 /*
  * Device private memory see HMM (Documentation/vm/hmm.txt) or hmm.h
  */
 DEFINE_STATIC_KEY_FALSE(device_private_key);
 EXPORT_SYMBOL(device_private_key);
+static const struct mmu_notifier_ops hmm_mmu_notifier_ops;
+#endif /* CONFIG_DEVICE_PRIVATE || CONFIG_DEVICE_PUBLIC */
 
 
 #ifdef CONFIG_HMM
-static const struct mmu_notifier_ops hmm_mmu_notifier_ops;
-
 /*
  * struct hmm - HMM per mm struct
  *
