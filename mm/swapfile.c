@@ -595,6 +595,7 @@ new_cluster:
 static void __del_from_avail_list(struct swap_info_struct *p)
 {
 	int nid;
+
 	for_each_node(nid)
 		plist_del(&p->avail_lists[nid], &swap_avail_heads[nid]);
 }
@@ -3106,6 +3107,9 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
+	if (!swap_avail_heads)
+		return -ENOMEM;
+
 	p = alloc_swap_info();
 	if (IS_ERR(p))
 		return PTR_ERR(p);
@@ -3697,8 +3701,10 @@ static int __init swapfile_init(void)
 	int nid;
 
 	swap_avail_heads = kmalloc(nr_node_ids * sizeof(struct plist_head), GFP_KERNEL);
-	if (!swap_avail_heads)
+	if (!swap_avail_heads) {
+		pr_emerg("Not enough memory for swap heads, swap is disabled\n");
 		return -ENOMEM;
+	}
 
 	for_each_node(nid)
 		plist_head_init(&swap_avail_heads[nid]);
