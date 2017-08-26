@@ -165,17 +165,13 @@ static noinline depot_stack_handle_t save_stack(gfp_t flags)
 	return handle;
 }
 
-noinline void __set_page_owner(struct page *page, unsigned int order,
-					gfp_t gfp_mask)
+static inline void __set_page_owner_handle(struct page_ext *page_ext,
+	depot_stack_handle_t handle, unsigned int order, gfp_t gfp_mask)
 {
-	struct page_ext *page_ext = lookup_page_ext(page);
 	struct page_owner *page_owner;
 
-	if (unlikely(!page_ext))
-		return;
-
 	page_owner = get_page_owner(page_ext);
-	page_owner->handle = save_stack(gfp_mask);
+	page_owner->handle = handle;
 	page_owner->order = order;
 	page_owner->gfp_mask = gfp_mask;
 	page_owner->last_migrate_reason = -1;
@@ -183,18 +179,17 @@ noinline void __set_page_owner(struct page *page, unsigned int order,
 	__set_bit(PAGE_EXT_OWNER, &page_ext->flags);
 }
 
-static void __set_page_owner_init(struct page_ext *page_ext,
-					depot_stack_handle_t handle)
+noinline void __set_page_owner(struct page *page, unsigned int order,
+					gfp_t gfp_mask)
 {
-	struct page_owner *page_owner;
+	struct page_ext *page_ext = lookup_page_ext(page);
+	depot_stack_handle_t handle;
 
-	page_owner = get_page_owner(page_ext);
-	page_owner->handle = handle;
-	page_owner->order = 0;
-	page_owner->gfp_mask = 0;
-	page_owner->last_migrate_reason = -1;
+	if (unlikely(!page_ext))
+		return;
 
-	__set_bit(PAGE_EXT_OWNER, &page_ext->flags);
+	handle = save_stack(gfp_mask);
+	__set_page_owner_handle(page_ext, handle, order, gfp_mask);
 }
 
 void __set_page_owner_migrate_reason(struct page *page, int reason)
@@ -582,12 +577,12 @@ static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 			if (unlikely(!page_ext))
 				continue;
 
-			/* Maybe overraping zone */
+			/* Maybe overlaping zone */
 			if (test_bit(PAGE_EXT_OWNER, &page_ext->flags))
 				continue;
 
 			/* Found early allocated page */
-			__set_page_owner_init(page_ext, init_handle);
+			__set_page_owner_handle(page_ext, init_handle, 0, 0);
 			count++;
 		}
 	}
