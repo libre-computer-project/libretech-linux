@@ -2302,8 +2302,6 @@ static void dlm_free_dead_locks(struct dlm_ctxt *dlm,
 	struct dlm_lock *lock, *next;
 	unsigned int freed = 0;
 	int reserved_tmp = 0;
-	struct list_head *queue = NULL;
-	int i;
 
 	/* this node is the lockres master:
 	 * 1) remove any stale locks for the dead node
