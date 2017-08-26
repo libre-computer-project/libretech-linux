@@ -2075,7 +2075,7 @@ get_fence_array(struct drm_i915_gem_execbuffer2 *args,
 		return ERR_PTR(-EFAULT);
 
 	fences = kvmalloc_array(args->num_cliprects, sizeof(*fences),
-				__GFP_NOWARN | GFP_TEMPORARY);
+				__GFP_NOWARN | GFP_KERNEL);
 	if (!fences)
 		return ERR_PTR(-ENOMEM);
 
