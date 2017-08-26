@@ -577,7 +577,7 @@ static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 			if (unlikely(!page_ext))
 				continue;
 
-			/* Maybe overlaping zone */
+			/* Maybe overlapping zone */
 			if (test_bit(PAGE_EXT_OWNER, &page_ext->flags))
 				continue;
 
