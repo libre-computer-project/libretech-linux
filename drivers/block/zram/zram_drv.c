@@ -455,7 +455,7 @@ void zram_page_end_io(struct bio *bio)
 }
 
 /*
- * Returns 0 if the submission is successful.
+ * Returns 1 if the submission is successful.
  */
 static int read_from_bdev_async(struct zram *zram, struct bio_vec *bvec,
 			unsigned long entry, struct bio *parent)
