@@ -765,7 +765,8 @@ static int refresh_cpu_vm_stats(bool do_pagesets)
 	}
 
 #ifdef CONFIG_NUMA
-	changes += fold_diff(global_zone_diff, global_numa_diff, global_node_diff);
+	changes += fold_diff(global_zone_diff, global_numa_diff,
+			     global_node_diff);
 #else
 	changes += fold_diff(global_zone_diff, global_node_diff);
 #endif
@@ -859,6 +860,7 @@ void drain_zonestat(struct zone *zone, struct per_cpu_pageset *pset)
 	for (i = 0; i < NR_VM_NUMA_STAT_ITEMS; i++)
 		if (pset->vm_numa_stat_diff[i]) {
 			int v = pset->vm_numa_stat_diff[i];
+
 			pset->vm_numa_stat_diff[i] = 0;
 			atomic_long_add(v, &zone->vm_numa_stat[i]);
 			atomic_long_add(v, &vm_numa_stat[i]);
@@ -1638,7 +1640,7 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 	v += NR_VM_ZONE_STAT_ITEMS;
 
 #ifdef CONFIG_NUMA
-	for(i = 0; i < NR_VM_NUMA_STAT_ITEMS; i++)
+	for (i = 0; i < NR_VM_NUMA_STAT_ITEMS; i++)
 		v[i] = global_numa_state(i);
 	v += NR_VM_NUMA_STAT_ITEMS;
 #endif
