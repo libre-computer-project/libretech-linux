@@ -4841,6 +4841,8 @@ static __init int setup_numa_zonelist_order(char *s)
 }
 early_param("numa_zonelist_order", setup_numa_zonelist_order);
 
+char numa_zonelist_order[] = "Node";
+
 /*
  * sysctl handler for numa_zonelist_order
  */
@@ -4851,12 +4853,8 @@ int numa_zonelist_order_handler(struct ctl_table *table, int write,
 	char *str;
 	int ret;
 
-	if (!write) {
-		int len = sizeof("Node");
-		if (copy_to_user(buffer, "Node", len))
-			return -EFAULT;
-		return len;
-	}
+	if (!write)
+		return proc_dostring(table, write, buffer, length, ppos);
 	str = memdup_user_nul(buffer, 16);
 	if (IS_ERR(str))
 		return PTR_ERR(str);
