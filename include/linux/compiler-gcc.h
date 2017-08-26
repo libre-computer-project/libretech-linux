@@ -203,22 +203,6 @@
 #endif
 #endif
 
-#ifdef CONFIG_STACK_VALIDATION
-#define annotate_unreachable() ({					\
-	asm("%c0:\n\t"							\
-	    ".pushsection .discard.unreachable\n\t"			\
-	    ".long %c0b - .\n\t"					\
-	    ".popsection\n\t" : : "i" (__LINE__));			\
-})
-#define ASM_UNREACHABLE							\
-	"999:\n\t"							\
-	".pushsection .discard.unreachable\n\t"				\
-	".long 999b - .\n\t"						\
-	".popsection\n\t"
-#else
-#define annotate_unreachable()
-#endif
-
 /*
  * Mark a position in code as unreachable.  This can be used to
  * suppress control flow warnings after asm blocks that transfer
