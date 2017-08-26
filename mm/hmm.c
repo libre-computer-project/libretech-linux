@@ -41,11 +41,12 @@
  */
 DEFINE_STATIC_KEY_FALSE(device_private_key);
 EXPORT_SYMBOL(device_private_key);
-static const struct mmu_notifier_ops hmm_mmu_notifier_ops;
 #endif /* CONFIG_DEVICE_PRIVATE || CONFIG_DEVICE_PUBLIC */
 
 
-#ifdef CONFIG_HMM
+#if IS_ENABLED(CONFIG_HMM_MIRROR)
+static const struct mmu_notifier_ops hmm_mmu_notifier_ops;
+
 /*
  * struct hmm - HMM per mm struct
  *
@@ -128,9 +129,7 @@ void hmm_mm_destroy(struct mm_struct *mm)
 {
 	kfree(mm->hmm);
 }
-#endif /* CONFIG_HMM */
 
-#if IS_ENABLED(CONFIG_HMM_MIRROR)
 static void hmm_invalidate_range(struct hmm *hmm,
 				 enum hmm_update_type action,
 				 unsigned long start,
