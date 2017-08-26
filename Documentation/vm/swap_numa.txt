@@ -1,0 +1,18 @@
+If the system has more than one swap device and swap device has the node
+information, we can make use of this information to decide which swap
+device to use in get_swap_pages() to get better performance.
+
+The current code uses a priority based list, swap_avail_list, to decide
+which swap device to use and if multiple swap devices share the same
+priority, they are used round robin. This change here replaces the single
+global swap_avail_list with a per-numa-node list, i.e. for each numa node,
+it sees its own priority based list of available swap devices. Swap
+device's priority can be promoted on its matching node's swap_avail_list.
+
+The current swap device's priority is set as: user can set a >=0 value,
+or the system will pick one starting from -1 then downwards. The priority
+value in the swap_avail_list is the negated value of the swap device's
+due to plist being sorted from low to high. The new policy doesn't change
+the semantics for priority >=0 cases, the previous starting from -1 then
+downwards now becomes starting from -2 then downwards and -1 is reserved
+as the promoted value.
