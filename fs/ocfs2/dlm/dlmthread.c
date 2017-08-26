@@ -587,13 +587,13 @@ static int dlm_dirty_list_empty(struct dlm_ctxt *dlm)
 
 static void dlm_flush_asts(struct dlm_ctxt *dlm)
 {
-	int ret;
+	int ret = 0;
 	struct dlm_lock *lock;
 	struct dlm_lock_resource *res;
 	u8 hi;
 
 	spin_lock(&dlm->ast_lock);
-	while (!list_empty(&dlm->pending_asts)) {
+	while (!list_empty(&dlm->pending_asts) && !ret) {
 		lock = list_entry(dlm->pending_asts.next,
 				  struct dlm_lock, ast_list);
 		/* get an extra ref on lock */
@@ -628,8 +628,20 @@ static void dlm_flush_asts(struct dlm_ctxt *dlm)
 			mlog(0, "%s: res %.*s, AST queued while flushing last "
 			     "one\n", dlm->name, res->lockname.len,
 			     res->lockname.name);
-		} else
+	} else {
+		if (unlikely(ret < 0)) {
+			/* If this AST is not sent back successfully,
+			 * there is no chance that the second lock
+			 * request comes.
+			 */
+			spin_lock(&res->spinlock);
+			__dlm_lockres_reserve_ast(res);
+			spin_unlock(&res->spinlock);
+			__dlm_queue_ast(dlm, lock);
+		} else {
 			lock->ast_pending = 0;
+		}
+	}
 
 		/* drop the extra ref.
 		 * this may drop it completely. */
@@ -637,7 +649,9 @@ static void dlm_flush_asts(struct dlm_ctxt *dlm)
 		dlm_lockres_release_ast(dlm, res);
 	}
 
-	while (!list_empty(&dlm->pending_basts)) {
+	ret = 0;
+
+	while (!list_empty(&dlm->pending_basts) && !ret) {
 		lock = list_entry(dlm->pending_basts.next,
 				  struct dlm_lock, bast_list);
 		/* get an extra ref on lock */
@@ -650,7 +664,6 @@ static void dlm_flush_asts(struct dlm_ctxt *dlm)
 		spin_lock(&lock->spinlock);
 		BUG_ON(lock->ml.highest_blocked <= LKM_IVMODE);
 		hi = lock->ml.highest_blocked;
-		lock->ml.highest_blocked = LKM_IVMODE;
 		spin_unlock(&lock->spinlock);
 
 		/* remove from list (including ref) */
@@ -680,8 +693,19 @@ static void dlm_flush_asts(struct dlm_ctxt *dlm)
 			mlog(0, "%s: res %.*s, BAST queued while flushing last "
 			     "one\n", dlm->name, res->lockname.len,
 			     res->lockname.name);
-		} else
+		} else if (unlikely(ret)) {
+			spin_lock(&res->spinlock);
+			__dlm_lockres_reserve_ast(res);
+			spin_unlock(&res->spinlock);
+			__dlm_queue_bast(dlm, lock);
+		} else {
 			lock->bast_pending = 0;
+			/* Set ::highest_blocked to invalid after
+			 * sending BAST successfully so that
+			 * no more BAST would be queued.
+			 */
+			lock->ml.highest_blocked = LKM_IVMODE;
+		}
 
 		/* drop the extra ref.
 		 * this may drop it completely. */
