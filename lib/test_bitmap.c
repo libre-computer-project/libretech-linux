@@ -232,8 +232,9 @@ static void __init test_bitmap_parselist(void)
 		}
 
 		if (ptest.flags & PARSE_TIME)
-			pr_err("test %d: input is '%s' OK, Time: %lu\n",
-					i, ptest.in, cycles);
+			pr_err("test %d: input is '%s' OK, Time: %llu\n",
+					i, ptest.in,
+					(unsigned long long)cycles);
 	}
 }
 
