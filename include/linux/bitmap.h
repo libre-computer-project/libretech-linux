@@ -366,7 +366,7 @@ static inline int bitmap_parse(const char *buf, unsigned int buflen,
  * Linux bitmaps are internally arrays of unsigned longs, i.e. 32-bit
  * integers in 32-bit environment, and 64-bit integers in 64-bit one.
  *
- * There are four combinations of endianess and length of the word in linux
+ * There are four combinations of endianness and length of the word in linux
  * ABIs: LE64, BE64, LE32 and BE32.
  *
  * On 64-bit kernels 64-bit LE and BE numbers are naturally ordered in
