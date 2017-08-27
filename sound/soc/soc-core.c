@@ -1451,9 +1451,10 @@ static int soc_probe_component(struct snd_soc_card *card,
 
 	soc_init_component_debugfs(component);
 
-	if (component->dapm_widgets) {
-		ret = snd_soc_dapm_new_controls(dapm, component->dapm_widgets,
-			component->num_dapm_widgets);
+	if (component->driver->dapm_widgets) {
+		ret = snd_soc_dapm_new_controls(dapm,
+					component->driver->dapm_widgets,
+					component->driver->num_dapm_widgets);
 
 		if (ret != 0) {
 			dev_err(component->dev,
@@ -1495,12 +1496,14 @@ static int soc_probe_component(struct snd_soc_card *card,
 		}
 	}
 
-	if (component->controls)
-		snd_soc_add_component_controls(component, component->controls,
-				     component->num_controls);
-	if (component->dapm_routes)
-		snd_soc_dapm_add_routes(dapm, component->dapm_routes,
-					component->num_dapm_routes);
+	if (component->driver->controls)
+		snd_soc_add_component_controls(component,
+					       component->driver->controls,
+					       component->driver->num_controls);
+	if (component->driver->dapm_routes)
+		snd_soc_dapm_add_routes(dapm,
+					component->driver->dapm_routes,
+					component->driver->num_dapm_routes);
 
 	list_add(&dapm->list, &card->dapm_list);
 	list_add(&component->card_list, &card->component_dev_list);
@@ -3182,13 +3185,6 @@ static int snd_soc_component_initialize(struct snd_soc_component *component,
 	if (driver->stream_event)
 		dapm->stream_event = snd_soc_component_stream_event;
 
-	component->controls = driver->controls;
-	component->num_controls = driver->num_controls;
-	component->dapm_widgets = driver->dapm_widgets;
-	component->num_dapm_widgets = driver->num_dapm_widgets;
-	component->dapm_routes = driver->dapm_routes;
-	component->num_dapm_routes = driver->num_dapm_routes;
-
 	INIT_LIST_HEAD(&component->dai_list);
 	mutex_init(&component->io_mutex);
 
@@ -3280,40 +3276,40 @@ static void snd_soc_component_del_unlocked(struct snd_soc_component *component)
 }
 
 int snd_soc_register_component(struct device *dev,
-			       const struct snd_soc_component_driver *cmpnt_drv,
+			       const struct snd_soc_component_driver *component_driver,
 			       struct snd_soc_dai_driver *dai_drv,
 			       int num_dai)
 {
-	struct snd_soc_component *cmpnt;
+	struct snd_soc_component *component;
 	int ret;
 
-	cmpnt = kzalloc(sizeof(*cmpnt), GFP_KERNEL);
-	if (!cmpnt) {
+	component = kzalloc(sizeof(*component), GFP_KERNEL);
+	if (!component) {
 		dev_err(dev, "ASoC: Failed to allocate memory\n");
 		return -ENOMEM;
 	}
 
-	ret = snd_soc_component_initialize(cmpnt, cmpnt_drv, dev);
+	ret = snd_soc_component_initialize(component, component_driver, dev);
 	if (ret)
 		goto err_free;
 
-	cmpnt->ignore_pmdown_time = true;
-	cmpnt->registered_as_component = true;
+	component->ignore_pmdown_time = true;
+	component->registered_as_component = true;
 
-	ret = snd_soc_register_dais(cmpnt, dai_drv, num_dai, true);
+	ret = snd_soc_register_dais(component, dai_drv, num_dai, true);
 	if (ret < 0) {
 		dev_err(dev, "ASoC: Failed to register DAIs: %d\n", ret);
 		goto err_cleanup;
 	}
 
-	snd_soc_component_add(cmpnt);
+	snd_soc_component_add(component);
 
 	return 0;
 
 err_cleanup:
-	snd_soc_component_cleanup(cmpnt);
+	snd_soc_component_cleanup(component);
 err_free:
-	kfree(cmpnt);
+	kfree(component);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(snd_soc_register_component);
@@ -3325,22 +3321,26 @@ EXPORT_SYMBOL_GPL(snd_soc_register_component);
  */
 void snd_soc_unregister_component(struct device *dev)
 {
-	struct snd_soc_component *cmpnt;
+	struct snd_soc_component *component;
+	int found = 0;
 
 	mutex_lock(&client_mutex);
-	list_for_each_entry(cmpnt, &component_list, list) {
-		if (dev == cmpnt->dev && cmpnt->registered_as_component)
-			goto found;
+	list_for_each_entry(component, &component_list, list) {
+		if (dev != component->dev ||
+		    !component->registered_as_component)
+			continue;
+
+		snd_soc_tplg_component_remove(component, SND_SOC_TPLG_INDEX_ALL);
+		snd_soc_component_del_unlocked(component);
+		found = 1;
+		break;
 	}
 	mutex_unlock(&client_mutex);
-	return;
 
-found:
-	snd_soc_tplg_component_remove(cmpnt, SND_SOC_TPLG_INDEX_ALL);
-	snd_soc_component_del_unlocked(cmpnt);
-	mutex_unlock(&client_mutex);
-	snd_soc_component_cleanup(cmpnt);
-	kfree(cmpnt);
+	if (found) {
+		snd_soc_component_cleanup(component);
+		kfree(component);
+	}
 }
 EXPORT_SYMBOL_GPL(snd_soc_unregister_component);
 
