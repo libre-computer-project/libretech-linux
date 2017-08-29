@@ -568,7 +568,7 @@ static struct attribute *w1_master_default_attrs[] = {
 	NULL
 };
 
-static struct attribute_group w1_master_defattr_group = {
+static const struct attribute_group w1_master_defattr_group = {
 	.attrs = w1_master_default_attrs,
 };
 
@@ -729,6 +729,8 @@ int w1_attach_slave_device(struct w1_master *dev, struct w1_reg_num *rn)
 	atomic_set(&sl->refcnt, 1);
 	atomic_inc(&sl->master->refcnt);
 	dev->slave_count++;
+	dev_info(&dev->dev, "Attaching one wire slave %02x.%012llx crc %02x\n",
+		  rn->family, (unsigned long long)rn->id, rn->crc);
 
 	/* slave modules need to be loaded in a context with unlocked mutex */
 	mutex_unlock(&dev->mutex);
