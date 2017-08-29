@@ -596,6 +596,86 @@ static nokprobe_inline void do_cmp_unsigned(struct pt_regs *regs, unsigned long 
 	regs->ccr = (regs->ccr & ~(0xf << shift)) | (crval << shift);
 }
 
+static nokprobe_inline void do_cmpb(struct pt_regs *regs, unsigned long v1,
+				unsigned long v2, int rd)
+{
+	unsigned long long out_val, mask;
+	int i;
+
+	out_val = 0;
+	for (i = 0; i < 8; i++) {
+		mask = 0xffUL << (i * 8);
+		if ((v1 & mask) == (v2 & mask))
+			out_val |= mask;
+	}
+
+	regs->gpr[rd] = out_val;
+}
+
+/*
+ * The size parameter is used to adjust the equivalent popcnt instruction.
+ * popcntb = 8, popcntw = 32, popcntd = 64
+ */
+static nokprobe_inline void do_popcnt(struct pt_regs *regs, unsigned long v1,
+				int size, int ra)
+{
+	unsigned long long out = v1;
+
+	out -= (out >> 1) & 0x5555555555555555;
+	out = (0x3333333333333333 & out) + (0x3333333333333333 & (out >> 2));
+	out = (out + (out >> 4)) & 0x0f0f0f0f0f0f0f0f;
+
+	if (size == 8) {	/* popcntb */
+		regs->gpr[ra] = out;
+		return;
+	}
+	out += out >> 8;
+	out += out >> 16;
+	if (size == 32) {	/* popcntw */
+		regs->gpr[ra] = out & 0x0000003f0000003f;
+		return;
+	}
+
+	out = (out + (out >> 32)) & 0x7f;
+	regs->gpr[ra] = out;	/* popcntd */
+}
+
+#ifdef CONFIG_PPC64
+static nokprobe_inline void do_bpermd(struct pt_regs *regs, unsigned long v1,
+				unsigned long v2, int ra)
+{
+	unsigned char perm, idx;
+	unsigned int i;
+
+	perm = 0;
+	for (i = 0; i < 8; i++) {
+		idx = (v1 >> (i * 8)) & 0xff;
+		if (idx < 64)
+			if (v2 & PPC_BIT(idx))
+				perm |= 1 << i;
+	}
+	regs->gpr[ra] = perm;
+}
+#endif /* CONFIG_PPC64 */
+/*
+ * The size parameter adjusts the equivalent prty instruction.
+ * prtyw = 32, prtyd = 64
+ */
+static nokprobe_inline void do_prty(struct pt_regs *regs, unsigned long v,
+				int size, int ra)
+{
+	unsigned long long res = v ^ (v >> 8);
+
+	res ^= res >> 16;
+	if (size == 32) {		/* prtyw */
+		regs->gpr[ra] = res & 0x0000000100000001;
+		return;
+	}
+
+	res ^= res >> 32;
+	regs->gpr[ra] = res & 1;	/*prtyd */
+}
+
 static nokprobe_inline int trap_compare(long v1, long v2)
 {
 	int ret = 0;
@@ -1064,6 +1144,10 @@ int analyse_instr(struct instruction_op *op, struct pt_regs *regs,
 			do_cmp_unsigned(regs, val, val2, rd >> 2);
 			goto instr_done;
 
+		case 508: /* cmpb */
+			do_cmpb(regs, regs->gpr[rd], regs->gpr[rb], ra);
+			goto instr_done;
+
 /*
  * Arithmetic instructions
  */
@@ -1171,6 +1255,14 @@ int analyse_instr(struct instruction_op *op, struct pt_regs *regs,
 /*
  * Logical instructions
  */
+		case 15:	/* isel */
+			mb = (instr >> 6) & 0x1f; /* bc */
+			val = (regs->ccr >> (31 - mb)) & 1;
+			val2 = (ra) ? regs->gpr[ra] : 0;
+
+			regs->gpr[rd] = (val) ? val2 : regs->gpr[rb];
+			goto logical_done;
+
 		case 26:	/* cntlzw */
 			asm("cntlzw %0,%1" : "=r" (regs->gpr[ra]) :
 			    "r" (regs->gpr[rd]));
@@ -1189,16 +1281,36 @@ int analyse_instr(struct instruction_op *op, struct pt_regs *regs,
 			regs->gpr[ra] = regs->gpr[rd] & ~regs->gpr[rb];
 			goto logical_done;
 
+		case 122:	/* popcntb */
+			do_popcnt(regs, regs->gpr[rd], 8, ra);
+			goto logical_done;
+
 		case 124:	/* nor */
 			regs->gpr[ra] = ~(regs->gpr[rd] | regs->gpr[rb]);
 			goto logical_done;
 
+		case 154:	/* prtyw */
+			do_prty(regs, regs->gpr[rd], 32, ra);
+			goto logical_done;
+
+		case 186:	/* prtyd */
+			do_prty(regs, regs->gpr[rd], 64, ra);
+			goto logical_done;
+#ifdef CONFIG_PPC64
+		case 252:	/* bpermd */
+			do_bpermd(regs, regs->gpr[rd], regs->gpr[rb], ra);
+			goto logical_done;
+#endif
 		case 284:	/* xor */
 			regs->gpr[ra] = ~(regs->gpr[rd] ^ regs->gpr[rb]);
 			goto logical_done;
 
 		case 316:	/* xor */
 			regs->gpr[ra] = regs->gpr[rd] ^ regs->gpr[rb];
+			goto logical_done;
+
+		case 378:	/* popcntw */
+			do_popcnt(regs, regs->gpr[rd], 32, ra);
 			goto logical_done;
 
 		case 412:	/* orc */
@@ -1212,7 +1324,11 @@ int analyse_instr(struct instruction_op *op, struct pt_regs *regs,
 		case 476:	/* nand */
 			regs->gpr[ra] = ~(regs->gpr[rd] & regs->gpr[rb]);
 			goto logical_done;
-
+#ifdef CONFIG_PPC64
+		case 506:	/* popcntd */
+			do_popcnt(regs, regs->gpr[rd], 64, ra);
+			goto logical_done;
+#endif
 		case 922:	/* extsh */
 			regs->gpr[ra] = (signed short) regs->gpr[rd];
 			goto logical_done;

@@ -531,7 +531,7 @@ u32 xive_native_default_eq_shift(void)
 }
 EXPORT_SYMBOL_GPL(xive_native_default_eq_shift);
 
-bool xive_native_init(void)
+bool __init xive_native_init(void)
 {
 	struct device_node *np;
 	struct resource r;
@@ -551,7 +551,7 @@ bool xive_native_init(void)
 		pr_devel("not found !\n");
 		return false;
 	}
-	pr_devel("Found %s\n", np->full_name);
+	pr_devel("Found %pOF\n", np);
 
 	/* Resource 1 is HV window */
 	if (of_address_to_resource(np, 1, &r)) {

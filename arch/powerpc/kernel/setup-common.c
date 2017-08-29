@@ -481,7 +481,7 @@ void __init smp_setup_cpu_maps(void)
 		__be32 cpu_be;
 		int j, len;
 
-		DBG("  * %s...\n", dn->full_name);
+		DBG("  * %pOF...\n", dn);
 
 		intserv = of_get_property(dn, "ibm,ppc-interrupt-server#s",
 				&len);
@@ -915,13 +915,6 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Reserve large chunks of memory for use by CMA for KVM. */
 	kvm_cma_reserve();
-
-	/*
-	 * Reserve any gigantic pages requested on the command line.
-	 * memblock needs to have been initialized by the time this is
-	 * called since this will reserve memory.
-	 */
-	reserve_hugetlb_gpages();
 
 	klp_init_thread_info(&init_thread_info);
 

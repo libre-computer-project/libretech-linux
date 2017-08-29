@@ -190,7 +190,7 @@ static u32 xive_scan_interrupts(struct xive_cpu *xc, bool just_peek)
  * This is used to perform the magic loads from an ESB
  * described in xive.h
  */
-static u8 xive_poke_esb(struct xive_irq_data *xd, u32 offset)
+static notrace u8 xive_poke_esb(struct xive_irq_data *xd, u32 offset)
 {
 	u64 val;
 
@@ -204,7 +204,7 @@ static u8 xive_poke_esb(struct xive_irq_data *xd, u32 offset)
 }
 
 #ifdef CONFIG_XMON
-static void xive_dump_eq(const char *name, struct xive_q *q)
+static notrace void xive_dump_eq(const char *name, struct xive_q *q)
 {
 	u32 i0, i1, idx;
 
@@ -218,7 +218,7 @@ static void xive_dump_eq(const char *name, struct xive_q *q)
 		    q->toggle, i0, i1);
 }
 
-void xmon_xive_do_dump(int cpu)
+notrace void xmon_xive_do_dump(int cpu)
 {
 	struct xive_cpu *xc = per_cpu(xive_cpu, cpu);
 
@@ -671,6 +671,10 @@ static int xive_irq_set_affinity(struct irq_data *d,
 	/* Is this valid ? */
 	if (cpumask_any_and(cpumask, cpu_online_mask) >= nr_cpu_ids)
 		return -EINVAL;
+
+	/* Don't do anything if the interrupt isn't started */
+	if (!irqd_is_started(d))
+		return IRQ_SET_MASK_OK;
 
 	/*
 	 * If existing target is already in the new mask, and is
@@ -1395,8 +1399,8 @@ void xive_shutdown(void)
 	xive_ops->shutdown();
 }
 
-bool xive_core_init(const struct xive_ops *ops, void __iomem *area, u32 offset,
-		    u8 max_prio)
+bool __init xive_core_init(const struct xive_ops *ops, void __iomem *area, u32 offset,
+			   u8 max_prio)
 {
 	xive_tima = area;
 	xive_tima_offset = offset;

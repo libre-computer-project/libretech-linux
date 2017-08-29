@@ -288,6 +288,8 @@ void system_reset_exception(struct pt_regs *regs)
 	if (!nested)
 		nmi_enter();
 
+	__this_cpu_inc(irq_stat.sreset_irqs);
+
 	/* See if any machine dependent calls */
 	if (ppc_md.system_reset_exception) {
 		if (ppc_md.system_reset_exception(regs))
@@ -311,39 +313,6 @@ out:
 
 	/* What should we do here? We could issue a shutdown or hard reset. */
 }
-
-#ifdef CONFIG_PPC64
-/*
- * This function is called in real mode. Strictly no printk's please.
- *
- * regs->nip and regs->msr contains srr0 and ssr1.
- */
-long machine_check_early(struct pt_regs *regs)
-{
-	long handled = 0;
-
-	__this_cpu_inc(irq_stat.mce_exceptions);
-
-	if (cur_cpu_spec && cur_cpu_spec->machine_check_early)
-		handled = cur_cpu_spec->machine_check_early(regs);
-	return handled;
-}
-
-long hmi_exception_realmode(struct pt_regs *regs)
-{
-	__this_cpu_inc(irq_stat.hmi_exceptions);
-
-	wait_for_subcore_guest_exit();
-
-	if (ppc_md.hmi_exception_early)
-		ppc_md.hmi_exception_early(regs);
-
-	wait_for_tb_resync();
-
-	return 0;
-}
-
-#endif
 
 /*
  * I/O accesses can cause machine checks on powermacs.
@@ -397,11 +366,6 @@ static inline int check_io_access(struct pt_regs *regs)
 /* On 4xx, the reason for the machine check or program exception
    is in the ESR. */
 #define get_reason(regs)	((regs)->dsisr)
-#ifndef CONFIG_FSL_BOOKE
-#define get_mc_reason(regs)	((regs)->dsisr)
-#else
-#define get_mc_reason(regs)	(mfspr(SPRN_MCSR))
-#endif
 #define REASON_FP		ESR_FP
 #define REASON_ILLEGAL		(ESR_PIL | ESR_PUO)
 #define REASON_PRIVILEGED	ESR_PPR
@@ -415,108 +379,17 @@ static inline int check_io_access(struct pt_regs *regs)
 /* On non-4xx, the reason for the machine check or program
    exception is in the MSR. */
 #define get_reason(regs)	((regs)->msr)
-#define get_mc_reason(regs)	((regs)->msr)
-#define REASON_TM		0x200000
-#define REASON_FP		0x100000
-#define REASON_ILLEGAL		0x80000
-#define REASON_PRIVILEGED	0x40000
-#define REASON_TRAP		0x20000
+#define REASON_TM		SRR1_PROGTM
+#define REASON_FP		SRR1_PROGFPE
+#define REASON_ILLEGAL		SRR1_PROGILL
+#define REASON_PRIVILEGED	SRR1_PROGPRIV
+#define REASON_TRAP		SRR1_PROGTRAP
 
 #define single_stepping(regs)	((regs)->msr & MSR_SE)
 #define clear_single_step(regs)	((regs)->msr &= ~MSR_SE)
 #endif
 
-#if defined(CONFIG_4xx)
-int machine_check_4xx(struct pt_regs *regs)
-{
-	unsigned long reason = get_mc_reason(regs);
-
-	if (reason & ESR_IMCP) {
-		printk("Instruction");
-		mtspr(SPRN_ESR, reason & ~ESR_IMCP);
-	} else
-		printk("Data");
-	printk(" machine check in kernel mode.\n");
-
-	return 0;
-}
-
-int machine_check_440A(struct pt_regs *regs)
-{
-	unsigned long reason = get_mc_reason(regs);
-
-	printk("Machine check in kernel mode.\n");
-	if (reason & ESR_IMCP){
-		printk("Instruction Synchronous Machine Check exception\n");
-		mtspr(SPRN_ESR, reason & ~ESR_IMCP);
-	}
-	else {
-		u32 mcsr = mfspr(SPRN_MCSR);
-		if (mcsr & MCSR_IB)
-			printk("Instruction Read PLB Error\n");
-		if (mcsr & MCSR_DRB)
-			printk("Data Read PLB Error\n");
-		if (mcsr & MCSR_DWB)
-			printk("Data Write PLB Error\n");
-		if (mcsr & MCSR_TLBP)
-			printk("TLB Parity Error\n");
-		if (mcsr & MCSR_ICP){
-			flush_instruction_cache();
-			printk("I-Cache Parity Error\n");
-		}
-		if (mcsr & MCSR_DCSP)
-			printk("D-Cache Search Parity Error\n");
-		if (mcsr & MCSR_DCFP)
-			printk("D-Cache Flush Parity Error\n");
-		if (mcsr & MCSR_IMPE)
-			printk("Machine Check exception is imprecise\n");
-
-		/* Clear MCSR */
-		mtspr(SPRN_MCSR, mcsr);
-	}
-	return 0;
-}
-
-int machine_check_47x(struct pt_regs *regs)
-{
-	unsigned long reason = get_mc_reason(regs);
-	u32 mcsr;
-
-	printk(KERN_ERR "Machine check in kernel mode.\n");
-	if (reason & ESR_IMCP) {
-		printk(KERN_ERR
-		       "Instruction Synchronous Machine Check exception\n");
-		mtspr(SPRN_ESR, reason & ~ESR_IMCP);
-		return 0;
-	}
-	mcsr = mfspr(SPRN_MCSR);
-	if (mcsr & MCSR_IB)
-		printk(KERN_ERR "Instruction Read PLB Error\n");
-	if (mcsr & MCSR_DRB)
-		printk(KERN_ERR "Data Read PLB Error\n");
-	if (mcsr & MCSR_DWB)
-		printk(KERN_ERR "Data Write PLB Error\n");
-	if (mcsr & MCSR_TLBP)
-		printk(KERN_ERR "TLB Parity Error\n");
-	if (mcsr & MCSR_ICP) {
-		flush_instruction_cache();
-		printk(KERN_ERR "I-Cache Parity Error\n");
-	}
-	if (mcsr & MCSR_DCSP)
-		printk(KERN_ERR "D-Cache Search Parity Error\n");
-	if (mcsr & PPC47x_MCSR_GPR)
-		printk(KERN_ERR "GPR Parity Error\n");
-	if (mcsr & PPC47x_MCSR_FPR)
-		printk(KERN_ERR "FPR Parity Error\n");
-	if (mcsr & PPC47x_MCSR_IPR)
-		printk(KERN_ERR "Machine Check exception is imprecise\n");
-
-	/* Clear MCSR */
-	mtspr(SPRN_MCSR, mcsr);
-
-	return 0;
-}
-#elif defined(CONFIG_E500)
+#if defined(CONFIG_E500)
 int machine_check_e500mc(struct pt_regs *regs)
 {
 	unsigned long mcsr = mfspr(SPRN_MCSR);
@@ -618,7 +491,7 @@ silent_out:
 
 int machine_check_e500(struct pt_regs *regs)
 {
-	unsigned long reason = get_mc_reason(regs);
+	unsigned long reason = mfspr(SPRN_MCSR);
 
 	if (reason & MCSR_BUS_RBERR) {
 		if (fsl_rio_mcheck_exception(regs))
@@ -665,7 +538,7 @@ int machine_check_generic(struct pt_regs *regs)
 #elif defined(CONFIG_E200)
 int machine_check_e200(struct pt_regs *regs)
 {
-	unsigned long reason = get_mc_reason(regs);
+	unsigned long reason = mfspr(SPRN_MCSR);
 
 	printk("Machine check in kernel mode.\n");
 	printk("Caused by (from MCSR=%lx): ", reason);
@@ -687,35 +560,10 @@ int machine_check_e200(struct pt_regs *regs)
 
 	return 0;
 }
-#elif defined(CONFIG_PPC_8xx)
-int machine_check_8xx(struct pt_regs *regs)
-{
-	unsigned long reason = get_mc_reason(regs);
-
-	pr_err("Machine check in kernel mode.\n");
-	pr_err("Caused by (from SRR1=%lx): ", reason);
-	if (reason & 0x40000000)
-		pr_err("Fetch error at address %lx\n", regs->nip);
-	else
-		pr_err("Data access error at address %lx\n", regs->dar);
-
-#ifdef CONFIG_PCI
-	/* the qspan pci read routines can cause machine checks -- Cort
-	 *
-	 * yuck !!! that totally needs to go away ! There are better ways
-	 * to deal with that than having a wart in the mcheck handler.
-	 * -- BenH
-	 */
-	bad_page_fault(regs, regs->dar, SIGBUS);
-	return 1;
-#else
-	return 0;
-#endif
-}
-#else
+#elif defined(CONFIG_PPC32)
 int machine_check_generic(struct pt_regs *regs)
 {
-	unsigned long reason = get_mc_reason(regs);
+	unsigned long reason = regs->msr;
 
 	printk("Machine check in kernel mode.\n");
 	printk("Caused by (from SRR1=%lx): ", reason);
@@ -755,7 +603,9 @@ void machine_check_exception(struct pt_regs *regs)
 	enum ctx_state prev_state = exception_enter();
 	int recover = 0;
 
-	__this_cpu_inc(irq_stat.mce_exceptions);
+	/* 64s accounts the mce in machine_check_early when in HVMODE */
+	if (!IS_ENABLED(CONFIG_PPC_BOOK3S_64) || !cpu_has_feature(CPU_FTR_HVMODE))
+		__this_cpu_inc(irq_stat.mce_exceptions);
 
 	add_taint(TAINT_MACHINE_CHECK, LOCKDEP_NOW_UNRELIABLE);
 
@@ -1671,24 +1521,6 @@ void performance_monitor_exception(struct pt_regs *regs)
 
 	perf_irq(regs);
 }
-
-#ifdef CONFIG_8xx
-void SoftwareEmulation(struct pt_regs *regs)
-{
-	CHECK_FULL_REGS(regs);
-
-	if (!user_mode(regs)) {
-		debugger(regs);
-		die("Kernel Mode Unimplemented Instruction or SW FPU Emulation",
-			regs, SIGFPE);
-	}
-
-	if (!emulate_math(regs))
-		return;
-
-	_exception(SIGILL, regs, ILL_ILLOPC, regs->nip);
-}
-#endif /* CONFIG_8xx */
 
 #ifdef CONFIG_PPC_ADV_DEBUG_REGS
 static void handle_debug(struct pt_regs *regs, unsigned long debug_status)

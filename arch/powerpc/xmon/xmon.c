@@ -89,6 +89,7 @@ static unsigned long nidump = 16;
 static unsigned long ncsum = 4096;
 static int termch;
 static char tmpstr[128];
+static int tracing_enabled;
 
 static long bus_error_jmp[JMP_BUF_LEN];
 static int catch_memory_errors;
@@ -234,6 +235,7 @@ Commands:\n\
   "\
   dr	dump stream of raw bytes\n\
   dt	dump the tracing buffers (uses printk)\n\
+  dtc	dump the tracing buffers for current CPU (uses printk)\n\
 "
 #ifdef CONFIG_PPC_POWERNV
 "  dx#   dump xive on CPU #\n\
@@ -460,6 +462,9 @@ static int xmon_core(struct pt_regs *regs, int fromipi)
 
 	local_irq_save(flags);
 	hard_irq_disable();
+
+	tracing_enabled = tracing_is_on();
+	tracing_off();
 
 	bp = in_breakpoint_table(regs->nip, &offset);
 	if (bp != NULL) {
@@ -981,6 +986,8 @@ cmds(struct pt_regs *excp)
 			break;
 		case 'x':
 		case 'X':
+			if (tracing_enabled)
+				tracing_on();
 			return cmd;
 		case EOF:
 			printf(" <no input ...>\n");
@@ -2231,6 +2238,17 @@ static void xmon_rawdump (unsigned long adrs, long ndump)
 	printf("\n");
 }
 
+static void dump_tracing(void)
+{
+	int c;
+
+	c = inchar();
+	if (c == 'c')
+		ftrace_dump(DUMP_ORIG);
+	else
+		ftrace_dump(DUMP_ALL);
+}
+
 #ifdef CONFIG_PPC64
 static void dump_one_paca(int cpu)
 {
@@ -2507,6 +2525,11 @@ dump(void)
 	}
 #endif
 
+	if (c == 't') {
+		dump_tracing();
+		return;
+	}
+
 	if (c == '\n')
 		termch = c;
 
@@ -2525,9 +2548,6 @@ dump(void)
 		dump_log_buf();
 	} else if (c == 'o') {
 		dump_opal_msglog();
-	} else if (c == 't') {
-		ftrace_dump(DUMP_ALL);
-		tracing_on();
 	} else if (c == 'r') {
 		scanhex(&ndump);
 		if (ndump == 0)
