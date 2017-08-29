@@ -2263,11 +2263,45 @@ static void dlm_revalidate_lvb(struct dlm_ctxt *dlm,
 	}
 }
 
+static int dlm_drop_pending_ast_bast(struct dlm_ctxt *dlm,
+			struct dlm_lock *lock)
+{
+	int reserved = 0;
+
+	spin_lock(&dlm->ast_lock);
+	if (!list_empty(&lock->ast_list)) {
+		mlog(0, "%s: drop pending AST for lock(cookie=%u:%llu).\n",
+			dlm->name,
+			dlm_get_lock_cookie_node(be64_to_cpu(lock->ml.cookie)),
+			dlm_get_lock_cookie_seq(be64_to_cpu(lock->ml.cookie)));
+		list_del_init(&lock->ast_list);
+		lock->ast_pending = 0;
+		dlm_lock_put(lock);
+		reserved++;
+	}
+
+	if (!list_empty(&lock->bast_list)) {
+		mlog(0, "%s: drop pending BAST for lock(cookie=%u:%llu).\n",
+			dlm->name,
+			dlm_get_lock_cookie_node(be64_to_cpu(lock->ml.cookie)),
+			dlm_get_lock_cookie_seq(be64_to_cpu(lock->ml.cookie)));
+		list_del_init(&lock->bast_list);
+		lock->bast_pending = 0;
+		dlm_lock_put(lock);
+		reserved++;
+	}
+	spin_unlock(&dlm->ast_lock);
+
+	return reserved;
+}
+
 static void dlm_free_dead_locks(struct dlm_ctxt *dlm,
-				struct dlm_lock_resource *res, u8 dead_node)
+		struct dlm_lock_resource *res, u8 dead_node,
+		int *reserved)
 {
 	struct dlm_lock *lock, *next;
 	unsigned int freed = 0;
+	int reserved_tmp = 0;
 
 	/* this node is the lockres master:
 	 * 1) remove any stale locks for the dead node
@@ -2284,6 +2318,9 @@ static void dlm_free_dead_locks(struct dlm_ctxt *dlm,
 		if (lock->ml.node == dead_node) {
 			list_del_init(&lock->list);
 			dlm_lock_put(lock);
+
+			reserved_tmp += dlm_drop_pending_ast_bast(dlm, lock);
+
 			/* Can't schedule DLM_UNLOCK_FREE_LOCK - do manually */
 			dlm_lock_put(lock);
 			freed++;
@@ -2293,6 +2330,9 @@ static void dlm_free_dead_locks(struct dlm_ctxt *dlm,
 		if (lock->ml.node == dead_node) {
 			list_del_init(&lock->list);
 			dlm_lock_put(lock);
+
+			reserved_tmp += dlm_drop_pending_ast_bast(dlm, lock);
+
 			/* Can't schedule DLM_UNLOCK_FREE_LOCK - do manually */
 			dlm_lock_put(lock);
 			freed++;
@@ -2307,6 +2347,8 @@ static void dlm_free_dead_locks(struct dlm_ctxt *dlm,
 			freed++;
 		}
 	}
+
+	*reserved = reserved_tmp;
 
 	if (freed) {
 		mlog(0, "%s:%.*s: freed %u locks for dead node %u, "
@@ -2367,6 +2409,7 @@ static void dlm_do_local_recovery_cleanup(struct dlm_ctxt *dlm, u8 dead_node)
 	for (i = 0; i < DLM_HASH_BUCKETS; i++) {
 		bucket = dlm_lockres_hash(dlm, i);
 		hlist_for_each_entry_safe(res, tmp, bucket, hash_node) {
+			int reserved = 0;
  			/* always prune any $RECOVERY entries for dead nodes,
  			 * otherwise hangs can occur during later recovery */
 			if (dlm_is_recovery_lock(res->lockname.name,
@@ -2420,7 +2463,7 @@ static void dlm_do_local_recovery_cleanup(struct dlm_ctxt *dlm, u8 dead_node)
 					continue;
 				}
 			} else if (res->owner == dlm->node_num) {
-				dlm_free_dead_locks(dlm, res, dead_node);
+				dlm_free_dead_locks(dlm, res, dead_node, &reserved);
 				__dlm_lockres_calc_usage(dlm, res);
 			} else if (res->owner == DLM_LOCK_RES_OWNER_UNKNOWN) {
 				if (test_bit(dead_node, res->refmap)) {
@@ -2432,6 +2475,10 @@ static void dlm_do_local_recovery_cleanup(struct dlm_ctxt *dlm, u8 dead_node)
 				}
 			}
 			spin_unlock(&res->spinlock);
+			while (reserved) {
+				dlm_lockres_release_ast(dlm, res);
+				reserved--;
+			}
 		}
 	}
 
