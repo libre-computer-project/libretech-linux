@@ -52,6 +52,7 @@
 #include <linux/slab.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_hdrs.h>
+#include <rdma/opa_addr.h>
 #include "qp.h"
 #include "vt.h"
 #include "trace.h"
@@ -421,15 +422,6 @@ bail:
 	return ret;
 }
 
-static void free_qpn(struct rvt_qpn_table *qpt, u32 qpn)
-{
-	struct rvt_qpn_map *map;
-
-	map = qpt->map + qpn / RVT_BITS_PER_PAGE;
-	if (map->page)
-		clear_bit(qpn & RVT_BITS_PER_PAGE_MASK, map->page);
-}
-
 /**
  * rvt_clear_mr_refs - Drop help mr refs
  * @qp: rvt qp data structure
@@ -643,6 +635,19 @@ static void rvt_reset_qp(struct rvt_dev_info *rdi, struct rvt_qp *qp,
 	lockdep_assert_held(&qp->r_lock);
 	lockdep_assert_held(&qp->s_hlock);
 	lockdep_assert_held(&qp->s_lock);
+}
+
+/** rvt_free_qpn - Free a qpn from the bit map
+ * @qpt: QP table
+ * @qpn: queue pair number to free
+ */
+static void rvt_free_qpn(struct rvt_qpn_table *qpt, u32 qpn)
+{
+	struct rvt_qpn_map *map;
+
+	map = qpt->map + (qpn & RVT_QPN_MASK) / RVT_BITS_PER_PAGE;
+	if (map->page)
+		clear_bit(qpn & RVT_BITS_PER_PAGE_MASK, map->page);
 }
 
 /**
@@ -914,7 +919,7 @@ bail_ip:
 		kref_put(&qp->ip->ref, rvt_release_mmap_info);
 
 bail_qpn:
-	free_qpn(&rdi->qp_dev->qpn_table, qp->ibqp.qp_num);
+	rvt_free_qpn(&rdi->qp_dev->qpn_table, qp->ibqp.qp_num);
 
 bail_rq_wq:
 	if (!qp->ip)
@@ -1062,6 +1067,7 @@ int rvt_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	int mig = 0;
 	int pmtu = 0; /* for gcc warning only */
 	enum rdma_link_layer link;
+	int opa_ah;
 
 	link = rdma_port_get_link_layer(ibqp->device, qp->port_num);
 
@@ -1072,6 +1078,7 @@ int rvt_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	cur_state = attr_mask & IB_QP_CUR_STATE ?
 		attr->cur_qp_state : qp->state;
 	new_state = attr_mask & IB_QP_STATE ? attr->qp_state : cur_state;
+	opa_ah = rdma_cap_opa_ah(ibqp->device, qp->port_num);
 
 	if (!ib_modify_qp_is_ok(cur_state, new_state, ibqp->qp_type,
 				attr_mask, link))
@@ -1082,17 +1089,31 @@ int rvt_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 		goto inval;
 
 	if (attr_mask & IB_QP_AV) {
-		if (rdma_ah_get_dlid(&attr->ah_attr) >=
-		    be16_to_cpu(IB_MULTICAST_LID_BASE))
-			goto inval;
+		if (opa_ah) {
+			if (rdma_ah_get_dlid(&attr->ah_attr) >=
+				opa_get_mcast_base(OPA_MCAST_NR))
+				goto inval;
+		} else {
+			if (rdma_ah_get_dlid(&attr->ah_attr) >=
+				be16_to_cpu(IB_MULTICAST_LID_BASE))
+				goto inval;
+		}
+
 		if (rvt_check_ah(qp->ibqp.device, &attr->ah_attr))
 			goto inval;
 	}
 
 	if (attr_mask & IB_QP_ALT_PATH) {
-		if (rdma_ah_get_dlid(&attr->alt_ah_attr) >=
-		    be16_to_cpu(IB_MULTICAST_LID_BASE))
-			goto inval;
+		if (opa_ah) {
+			if (rdma_ah_get_dlid(&attr->alt_ah_attr) >=
+				opa_get_mcast_base(OPA_MCAST_NR))
+				goto inval;
+		} else {
+			if (rdma_ah_get_dlid(&attr->alt_ah_attr) >=
+				be16_to_cpu(IB_MULTICAST_LID_BASE))
+				goto inval;
+		}
+
 		if (rvt_check_ah(qp->ibqp.device, &attr->alt_ah_attr))
 			goto inval;
 		if (attr->alt_pkey_index >= rvt_get_npkeys(rdi))
@@ -1239,7 +1260,6 @@ int rvt_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 
 	if (attr_mask & IB_QP_PATH_MTU) {
 		qp->pmtu = rdi->driver_f.mtu_from_qp(rdi, qp, pmtu);
-		qp->path_mtu = rdi->driver_f.mtu_to_path_mtu(qp->pmtu);
 		qp->log_pmtu = ilog2(qp->pmtu);
 	}
 
@@ -1299,19 +1319,6 @@ inval:
 	spin_unlock(&qp->s_hlock);
 	spin_unlock_irq(&qp->r_lock);
 	return -EINVAL;
-}
-
-/** rvt_free_qpn - Free a qpn from the bit map
- * @qpt: QP table
- * @qpn: queue pair number to free
- */
-static void rvt_free_qpn(struct rvt_qpn_table *qpt, u32 qpn)
-{
-	struct rvt_qpn_map *map;
-
-	map = qpt->map + qpn / RVT_BITS_PER_PAGE;
-	if (map->page)
-		clear_bit(qpn & RVT_BITS_PER_PAGE_MASK, map->page);
 }
 
 /**
@@ -1375,7 +1382,7 @@ int rvt_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 
 	attr->qp_state = qp->state;
 	attr->cur_qp_state = attr->qp_state;
-	attr->path_mtu = qp->path_mtu;
+	attr->path_mtu = rdi->driver_f.mtu_to_path_mtu(qp->pmtu);
 	attr->path_mig_state = qp->s_mig_state;
 	attr->qkey = qp->qkey;
 	attr->rq_psn = qp->r_psn & rdi->dparms.psn_mask;
@@ -1695,22 +1702,23 @@ static int rvt_post_one_wr(struct rvt_qp *qp,
 	wqe->length = 0;
 	j = 0;
 	if (wr->num_sge) {
+		struct rvt_sge *last_sge = NULL;
+
 		acc = wr->opcode >= IB_WR_RDMA_READ ?
 			IB_ACCESS_LOCAL_WRITE : 0;
 		for (i = 0; i < wr->num_sge; i++) {
 			u32 length = wr->sg_list[i].length;
-			int ok;
 
 			if (length == 0)
 				continue;
-			ok = rvt_lkey_ok(rkt, pd, &wqe->sg_list[j],
-					 &wr->sg_list[i], acc);
-			if (!ok) {
-				ret = -EINVAL;
+			ret = rvt_lkey_ok(rkt, pd, &wqe->sg_list[j], last_sge,
+					  &wr->sg_list[i], acc);
+			if (unlikely(ret < 0))
 				goto bail_inval_free;
-			}
 			wqe->length += length;
-			j++;
+			if (ret)
+				last_sge = &wqe->sg_list[j];
+			j += ret;
 		}
 		wqe->wr.num_sge = j;
 	}
@@ -1757,7 +1765,7 @@ static int rvt_post_one_wr(struct rvt_qp *qp,
 		wqe->wr.send_flags &= ~RVT_SEND_RESERVE_USED;
 		qp->s_avail--;
 	}
-	trace_rvt_post_one_wr(qp, wqe);
+	trace_rvt_post_one_wr(qp, wqe, wr->num_sge);
 	smp_wmb(); /* see request builders */
 	qp->s_head = next;
 
