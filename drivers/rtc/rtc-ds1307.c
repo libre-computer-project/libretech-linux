@@ -39,6 +39,7 @@ enum ds_type {
 	ds_1338,
 	ds_1339,
 	ds_1340,
+	ds_1341,
 	ds_1388,
 	ds_3231,
 	m41t0,
@@ -115,9 +116,7 @@ enum ds_type {
 
 
 struct ds1307 {
-	u8			offset; /* register's offset */
 	u8			regs[11];
-	u16			nvram_offset;
 	struct nvmem_config	nvmem_cfg;
 	enum ds_type		type;
 	unsigned long		flags;
@@ -126,7 +125,6 @@ struct ds1307 {
 	struct device		*dev;
 	struct regmap		*regmap;
 	const char		*name;
-	int			irq;
 	struct rtc_device	*rtc;
 #ifdef CONFIG_COMMON_CLK
 	struct clk_hw		clks[2];
@@ -137,18 +135,47 @@ struct chip_desc {
 	unsigned		alarm:1;
 	u16			nvram_offset;
 	u16			nvram_size;
+	u8			offset; /* register's offset */
 	u8			century_reg;
 	u8			century_enable_bit;
 	u8			century_bit;
+	u8			bbsqi_bit;
+	irq_handler_t		irq_handler;
+	const struct rtc_class_ops *rtc_ops;
 	u16			trickle_charger_reg;
-	u8			trickle_charger_setup;
 	u8			(*do_trickle_setup)(struct ds1307 *, uint32_t,
 						    bool);
 };
 
+static int ds1307_get_time(struct device *dev, struct rtc_time *t);
+static int ds1307_set_time(struct device *dev, struct rtc_time *t);
 static u8 do_trickle_setup_ds1339(struct ds1307 *, uint32_t ohms, bool diode);
+static irqreturn_t rx8130_irq(int irq, void *dev_id);
+static int rx8130_read_alarm(struct device *dev, struct rtc_wkalrm *t);
+static int rx8130_set_alarm(struct device *dev, struct rtc_wkalrm *t);
+static int rx8130_alarm_irq_enable(struct device *dev, unsigned int enabled);
+static irqreturn_t mcp794xx_irq(int irq, void *dev_id);
+static int mcp794xx_read_alarm(struct device *dev, struct rtc_wkalrm *t);
+static int mcp794xx_set_alarm(struct device *dev, struct rtc_wkalrm *t);
+static int mcp794xx_alarm_irq_enable(struct device *dev, unsigned int enabled);
 
-static struct chip_desc chips[last_ds_type] = {
+static const struct rtc_class_ops rx8130_rtc_ops = {
+	.read_time      = ds1307_get_time,
+	.set_time       = ds1307_set_time,
+	.read_alarm     = rx8130_read_alarm,
+	.set_alarm      = rx8130_set_alarm,
+	.alarm_irq_enable = rx8130_alarm_irq_enable,
+};
+
+static const struct rtc_class_ops mcp794xx_rtc_ops = {
+	.read_time      = ds1307_get_time,
+	.set_time       = ds1307_set_time,
+	.read_alarm     = mcp794xx_read_alarm,
+	.set_alarm      = mcp794xx_set_alarm,
+	.alarm_irq_enable = mcp794xx_alarm_irq_enable,
+};
+
+static const struct chip_desc chips[last_ds_type] = {
 	[ds_1307] = {
 		.nvram_offset	= 8,
 		.nvram_size	= 56,
@@ -170,6 +197,7 @@ static struct chip_desc chips[last_ds_type] = {
 		.alarm		= 1,
 		.century_reg	= DS1307_REG_MONTH,
 		.century_bit	= DS1337_BIT_CENTURY,
+		.bbsqi_bit	= DS1339_BIT_BBSQI,
 		.trickle_charger_reg = 0x10,
 		.do_trickle_setup = &do_trickle_setup_ds1339,
 	},
@@ -179,25 +207,36 @@ static struct chip_desc chips[last_ds_type] = {
 		.century_bit	= DS1340_BIT_CENTURY,
 		.trickle_charger_reg = 0x08,
 	},
+	[ds_1341] = {
+		.century_reg	= DS1307_REG_MONTH,
+		.century_bit	= DS1337_BIT_CENTURY,
+	},
 	[ds_1388] = {
+		.offset		= 1,
 		.trickle_charger_reg = 0x0a,
 	},
 	[ds_3231] = {
 		.alarm		= 1,
 		.century_reg	= DS1307_REG_MONTH,
 		.century_bit	= DS1337_BIT_CENTURY,
+		.bbsqi_bit	= DS3231_BIT_BBSQW,
 	},
 	[rx_8130] = {
 		.alarm		= 1,
 		/* this is battery backed SRAM */
 		.nvram_offset	= 0x20,
 		.nvram_size	= 4,	/* 32bit (4 word x 8 bit) */
+		.offset		= 0x10,
+		.irq_handler = rx8130_irq,
+		.rtc_ops = &rx8130_rtc_ops,
 	},
 	[mcp794xx] = {
 		.alarm		= 1,
 		/* this is battery backed SRAM */
 		.nvram_offset	= 0x20,
 		.nvram_size	= 0x40,
+		.irq_handler = mcp794xx_irq,
+		.rtc_ops = &mcp794xx_rtc_ops,
 	},
 };
 
@@ -209,6 +248,7 @@ static const struct i2c_device_id ds1307_id[] = {
 	{ "ds1339", ds_1339 },
 	{ "ds1388", ds_1388 },
 	{ "ds1340", ds_1340 },
+	{ "ds1341", ds_1341 },
 	{ "ds3231", ds_3231 },
 	{ "m41t0", m41t0 },
 	{ "m41t00", m41t00 },
@@ -251,6 +291,10 @@ static const struct of_device_id ds1307_of_match[] = {
 	{
 		.compatible = "dallas,ds1340",
 		.data = (void *)ds_1340
+	},
+	{
+		.compatible = "dallas,ds1341",
+		.data = (void *)ds_1341
 	},
 	{
 		.compatible = "maxim,ds3231",
@@ -298,6 +342,7 @@ static const struct acpi_device_id ds1307_acpi_ids[] = {
 	{ .id = "DS1339", .driver_data = ds_1339 },
 	{ .id = "DS1388", .driver_data = ds_1388 },
 	{ .id = "DS1340", .driver_data = ds_1340 },
+	{ .id = "DS1341", .driver_data = ds_1341 },
 	{ .id = "DS3231", .driver_data = ds_3231 },
 	{ .id = "M41T0", .driver_data = m41t0 },
 	{ .id = "M41T00", .driver_data = m41t00 },
@@ -354,7 +399,7 @@ static int ds1307_get_time(struct device *dev, struct rtc_time *t)
 	const struct chip_desc *chip = &chips[ds1307->type];
 
 	/* read the RTC date and time registers all at once */
-	ret = regmap_bulk_read(ds1307->regmap, ds1307->offset, ds1307->regs, 7);
+	ret = regmap_bulk_read(ds1307->regmap, chip->offset, ds1307->regs, 7);
 	if (ret) {
 		dev_err(dev, "%s error %d\n", "read", ret);
 		return ret;
@@ -446,7 +491,7 @@ static int ds1307_set_time(struct device *dev, struct rtc_time *t)
 
 	dev_dbg(dev, "%s: %7ph\n", "write", buf);
 
-	result = regmap_bulk_write(ds1307->regmap, ds1307->offset, buf, 7);
+	result = regmap_bulk_write(ds1307->regmap, chip->offset, buf, 7);
 	if (result) {
 		dev_err(dev, "%s error %d\n", "write", result);
 		return result;
@@ -725,14 +770,6 @@ static int rx8130_alarm_irq_enable(struct device *dev, unsigned int enabled)
 	return regmap_write(ds1307->regmap, RX8130_REG_CONTROL0, reg);
 }
 
-static const struct rtc_class_ops rx8130_rtc_ops = {
-	.read_time	= ds1307_get_time,
-	.set_time	= ds1307_set_time,
-	.read_alarm	= rx8130_read_alarm,
-	.set_alarm	= rx8130_set_alarm,
-	.alarm_irq_enable = rx8130_alarm_irq_enable,
-};
-
 /*----------------------------------------------------------------------*/
 
 /*
@@ -885,22 +922,15 @@ static int mcp794xx_alarm_irq_enable(struct device *dev, unsigned int enabled)
 				  enabled ? MCP794XX_BIT_ALM0_EN : 0);
 }
 
-static const struct rtc_class_ops mcp794xx_rtc_ops = {
-	.read_time	= ds1307_get_time,
-	.set_time	= ds1307_set_time,
-	.read_alarm	= mcp794xx_read_alarm,
-	.set_alarm	= mcp794xx_set_alarm,
-	.alarm_irq_enable = mcp794xx_alarm_irq_enable,
-};
-
 /*----------------------------------------------------------------------*/
 
 static int ds1307_nvram_read(void *priv, unsigned int offset, void *val,
 			     size_t bytes)
 {
 	struct ds1307 *ds1307 = priv;
+	const struct chip_desc *chip = &chips[ds1307->type];
 
-	return regmap_bulk_read(ds1307->regmap, ds1307->nvram_offset + offset,
+	return regmap_bulk_read(ds1307->regmap, chip->nvram_offset + offset,
 				val, bytes);
 }
 
@@ -908,8 +938,9 @@ static int ds1307_nvram_write(void *priv, unsigned int offset, void *val,
 			      size_t bytes)
 {
 	struct ds1307 *ds1307 = priv;
+	const struct chip_desc *chip = &chips[ds1307->type];
 
-	return regmap_bulk_write(ds1307->regmap, ds1307->nvram_offset + offset,
+	return regmap_bulk_write(ds1307->regmap, chip->nvram_offset + offset,
 				 val, bytes);
 }
 
@@ -939,23 +970,23 @@ static u8 do_trickle_setup_ds1339(struct ds1307 *ds1307,
 	return setup;
 }
 
-static void ds1307_trickle_init(struct ds1307 *ds1307,
-				struct chip_desc *chip)
+static u8 ds1307_trickle_init(struct ds1307 *ds1307,
+			      const struct chip_desc *chip)
 {
-	uint32_t ohms = 0;
+	uint32_t ohms;
 	bool diode = true;
 
 	if (!chip->do_trickle_setup)
-		goto out;
+		return 0;
+
 	if (device_property_read_u32(ds1307->dev, "trickle-resistor-ohms",
 				     &ohms))
-		goto out;
+		return 0;
+
 	if (device_property_read_bool(ds1307->dev, "trickle-diode-disable"))
 		diode = false;
-	chip->trickle_charger_setup = chip->do_trickle_setup(ds1307,
-							     ohms, diode);
-out:
-	return;
+
+	return chip->do_trickle_setup(ds1307, ohms, diode);
 }
 
 /*----------------------------------------------------------------------*/
@@ -1309,22 +1340,14 @@ static int ds1307_probe(struct i2c_client *client,
 	struct ds1307		*ds1307;
 	int			err = -ENODEV;
 	int			tmp, wday;
-	struct chip_desc	*chip;
-	bool			want_irq = false;
+	const struct chip_desc	*chip;
+	bool			want_irq;
 	bool			ds1307_can_wakeup_device = false;
 	unsigned char		*buf;
 	struct ds1307_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct rtc_time		tm;
 	unsigned long		timestamp;
-
-	irq_handler_t	irq_handler = ds1307_irq;
-
-	static const int	bbsqi_bitpos[] = {
-		[ds_1337] = 0,
-		[ds_1339] = DS1339_BIT_BBSQI,
-		[ds_3231] = DS3231_BIT_BBSQW,
-	};
-	const struct rtc_class_ops *rtc_ops = &ds13xx_rtc_ops;
+	u8			trickle_charger_setup = 0;
 
 	ds1307 = devm_kzalloc(&client->dev, sizeof(struct ds1307), GFP_KERNEL);
 	if (!ds1307)
@@ -1333,7 +1356,6 @@ static int ds1307_probe(struct i2c_client *client,
 	dev_set_drvdata(&client->dev, ds1307);
 	ds1307->dev = &client->dev;
 	ds1307->name = client->name;
-	ds1307->irq = client->irq;
 
 	ds1307->regmap = devm_regmap_init_i2c(client, &regmap_config);
 	if (IS_ERR(ds1307->regmap)) {
@@ -1361,19 +1383,20 @@ static int ds1307_probe(struct i2c_client *client,
 		ds1307->type = acpi_id->driver_data;
 	}
 
-	if (!pdata)
-		ds1307_trickle_init(ds1307, chip);
-	else if (pdata->trickle_charger_setup)
-		chip->trickle_charger_setup = pdata->trickle_charger_setup;
+	want_irq = client->irq > 0 && chip->alarm;
 
-	if (chip->trickle_charger_setup && chip->trickle_charger_reg) {
+	if (!pdata)
+		trickle_charger_setup = ds1307_trickle_init(ds1307, chip);
+	else if (pdata->trickle_charger_setup)
+		trickle_charger_setup = pdata->trickle_charger_setup;
+
+	if (trickle_charger_setup && chip->trickle_charger_reg) {
+		trickle_charger_setup |= DS13XX_TRICKLE_CHARGER_MAGIC;
 		dev_dbg(ds1307->dev,
 			"writing trickle charger info 0x%x to 0x%x\n",
-		    DS13XX_TRICKLE_CHARGER_MAGIC | chip->trickle_charger_setup,
-		    chip->trickle_charger_reg);
+			trickle_charger_setup, chip->trickle_charger_reg);
 		regmap_write(ds1307->regmap, chip->trickle_charger_reg,
-		    DS13XX_TRICKLE_CHARGER_MAGIC |
-		    chip->trickle_charger_setup);
+			     trickle_charger_setup);
 	}
 
 	buf = ds1307->regs;
@@ -1387,19 +1410,15 @@ static int ds1307_probe(struct i2c_client *client,
  * This will guarantee the 'wakealarm' sysfs entry is available on the device,
  * if supported by the RTC.
  */
-	if (of_property_read_bool(client->dev.of_node, "wakeup-source")) {
+	if (chip->alarm && of_property_read_bool(client->dev.of_node,
+						 "wakeup-source"))
 		ds1307_can_wakeup_device = true;
-	}
-	/* Intersil ISL12057 DT backward compatibility */
-	if (of_property_read_bool(client->dev.of_node,
-				  "isil,irq2-can-wakeup-machine")) {
-		ds1307_can_wakeup_device = true;
-	}
 #endif
 
 	switch (ds1307->type) {
 	case ds_1337:
 	case ds_1339:
+	case ds_1341:
 	case ds_3231:
 		/* get registers that the "rtc" read below won't read... */
 		err = regmap_bulk_read(ds1307->regmap, DS1337_REG_CONTROL,
@@ -1419,13 +1438,9 @@ static int ds1307_probe(struct i2c_client *client,
 		 * For some variants, be sure alarms can trigger when we're
 		 * running on Vbackup (BBSQI/BBSQW)
 		 */
-		if (chip->alarm && (ds1307->irq > 0 ||
-				    ds1307_can_wakeup_device)) {
-			ds1307->regs[0] |= DS1337_BIT_INTCN
-					| bbsqi_bitpos[ds1307->type];
+		if (want_irq || ds1307_can_wakeup_device) {
+			ds1307->regs[0] |= DS1337_BIT_INTCN | chip->bbsqi_bit;
 			ds1307->regs[0] &= ~(DS1337_BIT_A2IE | DS1337_BIT_A1IE);
-
-			want_irq = true;
 		}
 
 		regmap_write(ds1307->regmap, DS1337_REG_CONTROL,
@@ -1501,32 +1516,13 @@ static int ds1307_probe(struct i2c_client *client,
 				     DS1307_REG_HOUR << 4 | 0x08, hour);
 		}
 		break;
-	case rx_8130:
-		ds1307->offset = 0x10; /* Seconds starts at 0x10 */
-		rtc_ops = &rx8130_rtc_ops;
-		if (chip->alarm && ds1307->irq > 0) {
-			irq_handler = rx8130_irq;
-			want_irq = true;
-		}
-		break;
-	case ds_1388:
-		ds1307->offset = 1; /* Seconds starts at 1 */
-		break;
-	case mcp794xx:
-		rtc_ops = &mcp794xx_rtc_ops;
-		if (chip->alarm && (ds1307->irq > 0 ||
-				    ds1307_can_wakeup_device)) {
-			irq_handler = mcp794xx_irq;
-			want_irq = true;
-		}
-		break;
 	default:
 		break;
 	}
 
 read_rtc:
 	/* read RTC registers */
-	err = regmap_bulk_read(ds1307->regmap, ds1307->offset, buf, 8);
+	err = regmap_bulk_read(ds1307->regmap, chip->offset, buf, 8);
 	if (err) {
 		dev_dbg(ds1307->dev, "read error %d\n", err);
 		goto exit;
@@ -1627,7 +1623,7 @@ read_rtc:
 			tmp = 0;
 		if (ds1307->regs[DS1307_REG_HOUR] & DS1307_BIT_PM)
 			tmp += 12;
-		regmap_write(ds1307->regmap, ds1307->offset + DS1307_REG_HOUR,
+		regmap_write(ds1307->regmap, chip->offset + DS1307_REG_HOUR,
 			     bin2bcd(tmp));
 	}
 
@@ -1650,7 +1646,7 @@ read_rtc:
 				   MCP794XX_REG_WEEKDAY_WDAY_MASK,
 				   tm.tm_wday + 1);
 
-	if (want_irq) {
+	if (want_irq || ds1307_can_wakeup_device) {
 		device_set_wakeup_capable(ds1307->dev, true);
 		set_bit(HAS_ALARM, &ds1307->flags);
 	}
@@ -1660,9 +1656,7 @@ read_rtc:
 		return PTR_ERR(ds1307->rtc);
 	}
 
-	if (ds1307_can_wakeup_device && ds1307->irq <= 0) {
-		/* Disable request for an IRQ */
-		want_irq = false;
+	if (ds1307_can_wakeup_device && !want_irq) {
 		dev_info(ds1307->dev,
 			 "'wakeup-source' is set, request for an IRQ is disabled!\n");
 		/* We cannot support UIE mode if we do not have an IRQ line */
@@ -1670,8 +1664,8 @@ read_rtc:
 	}
 
 	if (want_irq) {
-		err = devm_request_threaded_irq(ds1307->dev,
-						ds1307->irq, NULL, irq_handler,
+		err = devm_request_threaded_irq(ds1307->dev, client->irq, NULL,
+						chip->irq_handler ?: ds1307_irq,
 						IRQF_SHARED | IRQF_ONESHOT,
 						ds1307->name, ds1307);
 		if (err) {
@@ -1691,13 +1685,12 @@ read_rtc:
 		ds1307->nvmem_cfg.reg_read = ds1307_nvram_read;
 		ds1307->nvmem_cfg.reg_write = ds1307_nvram_write;
 		ds1307->nvmem_cfg.priv = ds1307;
-		ds1307->nvram_offset = chip->nvram_offset;
 
 		ds1307->rtc->nvmem_config = &ds1307->nvmem_cfg;
 		ds1307->rtc->nvram_old_abi = true;
 	}
 
-	ds1307->rtc->ops = rtc_ops;
+	ds1307->rtc->ops = chip->rtc_ops ?: &ds13xx_rtc_ops;
 	err = rtc_register_device(ds1307->rtc);
 	if (err)
 		return err;
