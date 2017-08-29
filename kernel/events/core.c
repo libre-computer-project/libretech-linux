@@ -1249,26 +1249,31 @@ unclone_ctx(struct perf_event_context *ctx)
 	return parent_ctx;
 }
 
-static u32 perf_event_pid(struct perf_event *event, struct task_struct *p)
+static u32 perf_event_pid_type(struct perf_event *event, struct task_struct *p,
+				enum pid_type type)
 {
+	u32 nr;
 	/*
 	 * only top level events have the pid namespace they were created in
 	 */
 	if (event->parent)
 		event = event->parent;
 
-	return task_tgid_nr_ns(p, event->ns);
+	nr = __task_pid_nr_ns(p, type, event->ns);
+	/* avoid -1 if it is idle thread or runs in another ns */
+	if (!nr && !pid_alive(p))
+		nr = -1;
+	return nr;
+}
+
+static u32 perf_event_pid(struct perf_event *event, struct task_struct *p)
+{
+	return perf_event_pid_type(event, p, __PIDTYPE_TGID);
 }
 
 static u32 perf_event_tid(struct perf_event *event, struct task_struct *p)
 {
-	/*
-	 * only top level events have the pid namespace they were created in
-	 */
-	if (event->parent)
-		event = event->parent;
-
-	return task_pid_nr_ns(p, event->ns);
+	return perf_event_pid_type(event, p, PIDTYPE_PID);
 }
 
 /*
@@ -3211,6 +3216,13 @@ static void perf_event_context_sched_in(struct perf_event_context *ctx,
 		return;
 
 	perf_ctx_lock(cpuctx, ctx);
+	/*
+	 * We must check ctx->nr_events while holding ctx->lock, such
+	 * that we serialize against perf_install_in_context().
+	 */
+	if (!ctx->nr_events)
+		goto unlock;
+
 	perf_pmu_disable(ctx->pmu);
 	/*
 	 * We want to keep the following priority order:
@@ -3224,6 +3236,8 @@ static void perf_event_context_sched_in(struct perf_event_context *ctx,
 		cpu_ctx_sched_out(cpuctx, EVENT_FLEXIBLE);
 	perf_event_sched_in(cpuctx, ctx, task);
 	perf_pmu_enable(ctx->pmu);
+
+unlock:
 	perf_ctx_unlock(cpuctx, ctx);
 }
 
@@ -3656,10 +3670,7 @@ unlock:
 
 static inline u64 perf_event_count(struct perf_event *event)
 {
-	if (event->pmu->count)
-		return event->pmu->count(event);
-
-	return __perf_event_count(event);
+	return local64_read(&event->count) + atomic64_read(&event->child_count);
 }
 
 /*
@@ -3686,15 +3697,6 @@ int perf_event_read_local(struct perf_event *event, u64 *value)
 	 * all child counters from atomic context.
 	 */
 	if (event->attr.inherit) {
-		ret = -EOPNOTSUPP;
-		goto out;
-	}
-
-	/*
-	 * It must not have a pmu::count method, those are not
-	 * NMI safe.
-	 */
-	if (event->pmu->count) {
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
