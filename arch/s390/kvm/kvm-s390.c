@@ -2447,6 +2447,11 @@ int kvm_arch_vcpu_runnable(struct kvm_vcpu *vcpu)
 	return kvm_s390_vcpu_has_irq(vcpu, 0);
 }
 
+bool kvm_arch_vcpu_in_kernel(struct kvm_vcpu *vcpu)
+{
+	return !(vcpu->arch.sie_block->gpsw.mask & PSW_MASK_PSTATE);
+}
+
 void kvm_s390_vcpu_block(struct kvm_vcpu *vcpu)
 {
 	atomic_or(PROG_BLOCK_SIE, &vcpu->arch.sie_block->prog20);
