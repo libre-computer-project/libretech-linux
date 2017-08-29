@@ -326,7 +326,7 @@ static int __init fpu_disable(char *s)
 
 __setup("nofpu", fpu_disable);
 
-int mips_dsp_disabled;
+static int mips_dsp_disabled;
 
 static int __init dsp_disable(char *s)
 {
@@ -1393,24 +1393,6 @@ static inline void cpu_probe_legacy(struct cpuinfo_mips *c, unsigned int cpu)
 		c->options = R4K_OPTS | MIPS_CPU_FPU | MIPS_CPU_32FPR |
 			     MIPS_CPU_DIVEC | MIPS_CPU_LLSC;
 		c->tlbsize = 48;
-		break;
-	case PRID_IMP_R6000:
-		c->cputype = CPU_R6000;
-		__cpu_name[cpu] = "R6000";
-		set_isa(c, MIPS_CPU_ISA_II);
-		c->fpu_msk31 |= FPU_CSR_CONDX | FPU_CSR_FS;
-		c->options = MIPS_CPU_TLB | MIPS_CPU_FPU |
-			     MIPS_CPU_LLSC;
-		c->tlbsize = 32;
-		break;
-	case PRID_IMP_R6000A:
-		c->cputype = CPU_R6000A;
-		__cpu_name[cpu] = "R6000A";
-		set_isa(c, MIPS_CPU_ISA_II);
-		c->fpu_msk31 |= FPU_CSR_CONDX | FPU_CSR_FS;
-		c->options = MIPS_CPU_TLB | MIPS_CPU_FPU |
-			     MIPS_CPU_LLSC;
-		c->tlbsize = 32;
 		break;
 	case PRID_IMP_RM7000:
 		c->cputype = CPU_RM7000;

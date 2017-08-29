@@ -151,7 +151,6 @@ cflags-y += -fno-stack-check
 #
 cflags-$(CONFIG_CPU_R3000)	+= -march=r3000
 cflags-$(CONFIG_CPU_TX39XX)	+= -march=r3900
-cflags-$(CONFIG_CPU_R6000)	+= -march=r6000 -Wa,--trap
 cflags-$(CONFIG_CPU_R4300)	+= -march=r4300 -Wa,--trap
 cflags-$(CONFIG_CPU_VR41XX)	+= -march=r4100 -Wa,--trap
 cflags-$(CONFIG_CPU_R4X00)	+= -march=r4600 -Wa,--trap
@@ -291,7 +290,8 @@ KBUILD_CPPFLAGS += -DDATAOFFSET=$(if $(dataoffset-y),$(dataoffset-y),0)
 
 bootvars-y	= VMLINUX_LOAD_ADDRESS=$(load-y) \
 		  VMLINUX_ENTRY_ADDRESS=$(entry-y) \
-		  PLATFORM="$(platform-y)"
+		  PLATFORM="$(platform-y)" \
+		  ITS_INPUTS="$(its-y)"
 ifdef CONFIG_32BIT
 bootvars-y	+= ADDR_BITS=32
 endif

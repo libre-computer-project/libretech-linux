@@ -734,8 +734,7 @@ void force_fcr31_sig(unsigned long fcr31, void __user *fault_addr,
 		si.si_code = FPE_FLTUND;
 	else if (fcr31 & FPU_CSR_INE_X)
 		si.si_code = FPE_FLTRES;
-	else
-		si.si_code = __SI_FAULT;
+
 	force_sig_info(SIGFPE, &si, tsk);
 }
 
@@ -2427,21 +2426,6 @@ void __init trap_init(void)
 	set_except_vector(EXCCODE_OV, handle_ov);
 	set_except_vector(EXCCODE_TR, handle_tr);
 	set_except_vector(EXCCODE_MSAFPE, handle_msa_fpe);
-
-	if (current_cpu_type() == CPU_R6000 ||
-	    current_cpu_type() == CPU_R6000A) {
-		/*
-		 * The R6000 is the only R-series CPU that features a machine
-		 * check exception (similar to the R4000 cache error) and
-		 * unaligned ldc1/sdc1 exception.  The handlers have not been
-		 * written yet.	 Well, anyway there is no R6000 machine on the
-		 * current list of targets for Linux/MIPS.
-		 * (Duh, crap, there is someone with a triple R6k machine)
-		 */
-		//set_except_vector(14, handle_mc);
-		//set_except_vector(15, handle_ndc);
-	}
-
 
 	if (board_nmi_handler_setup)
 		board_nmi_handler_setup();
