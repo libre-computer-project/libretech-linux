@@ -36,7 +36,7 @@ ENTRY(xen_irq_enable_direct)
 1:
 	FRAME_END
 	ret
-	ENDPROC(xen_irq_enable_direct)
+ENDPROC(xen_irq_enable_direct)
 
 
 /*
@@ -62,7 +62,7 @@ ENTRY(xen_save_fl_direct)
 	setz %ah
 	addb %ah, %ah
 	ret
-	ENDPROC(xen_save_fl_direct)
+ENDPROC(xen_save_fl_direct)
 
 
 /*
@@ -93,7 +93,7 @@ ENTRY(xen_restore_fl_direct)
 1:
 	FRAME_END
 	ret
-	ENDPROC(xen_restore_fl_direct)
+ENDPROC(xen_restore_fl_direct)
 
 
 /*
