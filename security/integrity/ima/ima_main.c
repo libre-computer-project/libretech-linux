@@ -38,6 +38,12 @@ int ima_appraise;
 int ima_hash_algo = HASH_ALGO_SHA1;
 static int hash_setup_done;
 
+static bool ima_failsafe = 1;
+void set_failsafe(bool flag)
+{
+	ima_failsafe = flag;
+}
+
 static int __init hash_setup(char *str)
 {
 	struct ima_template_desc *template_desc = ima_template_desc_current();
@@ -235,11 +241,8 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	hash_algo = ima_get_hash_algo(xattr_value, xattr_len);
 
 	rc = ima_collect_measurement(iint, file, buf, size, hash_algo);
-	if (rc != 0) {
-		if (file->f_flags & O_DIRECT)
-			rc = (iint->flags & IMA_PERMIT_DIRECTIO) ? 0 : -EACCES;
+	if (rc != 0 && rc != -EBADF && rc != -EINVAL)
 		goto out_digsig;
-	}
 
 	if (!pathbuf)	/* ima_rdwr_violation possibly pre-fetched */
 		pathname = ima_d_path(&file->f_path, &pathbuf, filename);
@@ -247,7 +250,7 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	if (action & IMA_MEASURE)
 		ima_store_measurement(iint, file, pathname,
 				      xattr_value, xattr_len, pcr);
-	if (action & IMA_APPRAISE_SUBMASK)
+	if (rc == 0 && (action & IMA_APPRAISE_SUBMASK))
 		rc = ima_appraise_measurement(func, iint, file, pathname,
 					      xattr_value, xattr_len, opened);
 	if (action & IMA_AUDIT)
@@ -263,8 +266,12 @@ out_free:
 		__putname(pathbuf);
 out:
 	inode_unlock(inode);
-	if ((rc && must_appraise) && (ima_appraise & IMA_APPRAISE_ENFORCE))
+	if ((rc && must_appraise) && (ima_appraise & IMA_APPRAISE_ENFORCE)) {
+		if (!ima_failsafe && rc == -EBADF)
+			return 0;
+
 		return -EACCES;
+	}
 	return 0;
 }
 
