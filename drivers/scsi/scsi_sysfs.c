@@ -114,7 +114,7 @@ static int check_set(unsigned long long *val, char *src)
 {
 	char *last;
 
-	if (strncmp(src, "-", 20) == 0) {
+	if (strcmp(src, "-") == 0) {
 		*val = SCAN_WILD_CARD;
 	} else {
 		/*
@@ -303,6 +303,8 @@ store_host_reset(struct device *dev, struct device_attribute *attr,
 
 	if (sht->host_reset)
 		ret = sht->host_reset(shost, type);
+	else
+		ret = -EOPNOTSUPP;
 
 exit_store_host_reset:
 	if (ret == 0)
