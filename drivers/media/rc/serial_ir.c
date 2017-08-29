@@ -513,19 +513,19 @@ static int serial_ir_probe(struct platform_device *dev)
 
 	switch (type) {
 	case IR_HOMEBREW:
-		rcdev->input_name = "Serial IR type home-brew";
+		rcdev->device_name = "Serial IR type home-brew";
 		break;
 	case IR_IRDEO:
-		rcdev->input_name = "Serial IR type IRdeo";
+		rcdev->device_name = "Serial IR type IRdeo";
 		break;
 	case IR_IRDEO_REMOTE:
-		rcdev->input_name = "Serial IR type IRdeo remote";
+		rcdev->device_name = "Serial IR type IRdeo remote";
 		break;
 	case IR_ANIMAX:
-		rcdev->input_name = "Serial IR type AnimaX";
+		rcdev->device_name = "Serial IR type AnimaX";
 		break;
 	case IR_IGOR:
-		rcdev->input_name = "Serial IR type IgorPlug";
+		rcdev->device_name = "Serial IR type IgorPlug";
 		break;
 	}
 
@@ -537,7 +537,7 @@ static int serial_ir_probe(struct platform_device *dev)
 	rcdev->open = serial_ir_open;
 	rcdev->close = serial_ir_close;
 	rcdev->dev.parent = &serial_ir.pdev->dev;
-	rcdev->allowed_protocols = RC_BIT_ALL_IR_DECODER;
+	rcdev->allowed_protocols = RC_PROTO_BIT_ALL_IR_DECODER;
 	rcdev->driver_name = KBUILD_MODNAME;
 	rcdev->map_name = RC_MAP_RC6_MCE;
 	rcdev->min_timeout = 1;
