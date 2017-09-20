@@ -581,6 +581,29 @@
 	};
 };
 
+&audio {
+	clocks = <&clkc CLKID_AIU>,
+		 <&clkc CLKID_AIU_GLUE>,
+		 <&clkc CLKID_I2S_SPDIF>;
+	clock-names = "aiu_top", "aiu_glue", "audin";
+	resets = <&reset RESET_AIU>,
+		 <&reset RESET_AUDIN>;
+	reset-names = "aiu", "audin";
+};
+
+&aiu_i2s_dma {
+	clocks = <&clkc CLKID_I2S_OUT>;
+	clock-names = "fast";
+};
+
+&i2s_dai {
+	clocks = <&clkc CLKID_I2S_OUT>,
+		 <&clkc CLKID_MIXER_IFACE>,
+		 <&clkc CLKID_AOCLK_GATE>,
+		 <&clkc CLKID_CTS_AMCLK>;
+	clock-names = "fast", "iface", "bclks", "mclk";
+};
+
 &saradc {
 	compatible = "amlogic,meson-gxl-saradc", "amlogic,meson-saradc";
 	clocks = <&xtal>,
