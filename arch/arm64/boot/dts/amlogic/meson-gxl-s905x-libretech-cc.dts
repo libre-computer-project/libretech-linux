@@ -72,6 +72,31 @@
 		reg = <0x0 0x0 0x0 0x80000000>;
 	};
 
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "meson-gxl-preview";
+		status = "okay";
+
+		simple-audio-card,dai-link@0 {
+			/* HDMI Output */
+			format = "i2s";
+			mclk-fs = <256>;
+			bitclock-master =  <&i2s_dai>;
+			frame-master = <&i2s_dai>;
+			plat {
+				sound-dai = <&aiu_i2s_dma>;
+			};
+
+			cpu {
+				sound-dai = <&i2s_dai>;
+			};
+
+			codec {
+				sound-dai = <&hdmi_tx>;
+			};
+		};
+	};
+
 	vcc_3v3: regulator-vcc_3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "VCC_3V3";
@@ -106,6 +131,18 @@
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 	};
+};
+
+&audio {
+	status = "okay";
+};
+
+&aiu_i2s_dma {
+	status = "okay";
+};
+
+&i2s_dai {
+	status = "okay";
 };
 
 &cvbs_vdac_port {
