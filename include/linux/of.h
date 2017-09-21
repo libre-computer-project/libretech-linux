@@ -25,6 +25,7 @@
 #include <linux/notifier.h>
 #include <linux/property.h>
 #include <linux/list.h>
+#include <linux/rhashtable.h>
 
 #include <asm/byteorder.h>
 #include <asm/errno.h>
@@ -52,6 +53,7 @@ struct device_node {
 	phandle phandle;
 	const char *full_name;
 	struct fwnode_handle fwnode;
+	struct rhash_head ht_node;
 
 	struct	property *properties;
 	struct	property *deadprops;	/* removed properties */
@@ -380,6 +382,9 @@ extern int of_phandle_iterator_args(struct of_phandle_iterator *it,
 				    uint32_t *args,
 				    int size);
 
+extern void of_alias_create(struct property *pp,
+			    void * (*dt_alloc)(u64 size, u64 align));
+extern void of_alias_destroy(const char *name);
 extern void of_alias_scan(void * (*dt_alloc)(u64 size, u64 align));
 extern int of_alias_get_id(struct device_node *np, const char *stem);
 extern int of_alias_get_highest_id(const char *stem);
@@ -1253,6 +1258,27 @@ static inline int of_changeset_update_property(struct of_changeset *ocs,
 {
 	return of_changeset_action(ocs, OF_RECONFIG_UPDATE_PROPERTY, np, prop);
 }
+
+struct device_node *of_changeset_create_device_nodev(
+	struct of_changeset *ocs, struct device_node *parent,
+	const char *fmt, va_list vargs);
+__printf(3, 4) struct device_node *of_changeset_create_device_node(
+	struct of_changeset *ocs, struct device_node *parent,
+	const char *fmt, ...);
+int of_changeset_add_property_copy(struct of_changeset *ocs,
+	struct device_node *np, const char *name,
+	const void *value, int length);
+int of_changeset_add_property_string(struct of_changeset *ocs,
+	struct device_node *np, const char *name, const char *str);
+__printf(4, 5) int of_changeset_add_property_stringf(struct of_changeset *ocs,
+		struct device_node *np, const char *name, const char *fmt, ...);
+int of_changeset_add_property_string_list(struct of_changeset *ocs,
+	struct device_node *np, const char *name, const char **strs, int count);
+int of_changeset_add_property_u32(struct of_changeset *ocs,
+	struct device_node *np, const char *name, u32 val);
+int of_changeset_add_property_bool(struct of_changeset *ocs,
+	struct device_node *np, const char *name);
+
 #else /* CONFIG_OF_DYNAMIC */
 static inline int of_reconfig_notifier_register(struct notifier_block *nb)
 {
@@ -1269,6 +1295,59 @@ static inline int of_reconfig_notify(unsigned long action,
 }
 static inline int of_reconfig_get_state_change(unsigned long action,
 						struct of_reconfig_data *arg)
+{
+	return -EINVAL;
+}
+
+static inline int of_changeset_create_device_node(struct of_changeset *ocs,
+	struct device_node *parent, const char *fmt, ...)
+{
+	return -EINVAL;
+}
+
+static inline int of_changeset_add_property_copy(struct of_changeset *ocs,
+	struct device_node *np, const char *name,
+	const void *value, int length)
+{
+	return -EINVAL;
+}
+
+static inline int of_changeset_add_property_string(struct of_changeset *ocs,
+	struct device_node *np, const char *name, const char *str)
+{
+	return -EINVAL;
+}
+
+static inline struct device_node *of_changeset_create_device_nodev(
+	struct of_changeset *ocs, struct device_node *parent,
+	const char *fmt, va_list vargs)
+{
+	return ERR_PTR(-EINVAL);
+}
+
+static inline __printf(4, 5) struct device_node *
+	of_changeset_add_property_stringf(
+		struct of_changeset *ocs, struct device_node *np,
+		const char *name, const char *fmt, ...)
+{
+	return ERR_PTR(-EINVAL);
+}
+
+static inline int of_changeset_add_property_string_list(
+	struct of_changeset *ocs, struct device_node *np, const char *name,
+	const char **strs, int count)
+{
+	return -EINVAL;
+}
+
+static inline int of_changeset_add_property_u32(struct of_changeset *ocs,
+	struct device_node *np, const char *name, u32 val)
+{
+	return -EINVAL;
+}
+
+static inline int of_changeset_add_property_bool(struct of_changeset *ocs,
+	struct device_node *np, const char *name)
 {
 	return -EINVAL;
 }
@@ -1314,6 +1393,10 @@ int of_overlay_destroy_all(void);
 int of_overlay_notifier_register(struct notifier_block *nb);
 int of_overlay_notifier_unregister(struct notifier_block *nb);
 
+int of_overlay_create_indirect(struct device_node *tree, const char *id);
+int of_overlay_create_target_root(struct device_node *tree,
+		struct device_node *target_root);
+
 #else
 
 static inline int of_overlay_create(struct device_node *tree)
@@ -1339,6 +1422,18 @@ static inline int of_overlay_notifier_register(struct notifier_block *nb)
 static inline int of_overlay_notifier_unregister(struct notifier_block *nb)
 {
 	return 0;
+}
+
+static inline int of_overlay_create_indirect(struct device_node *tree,
+		const char *id)
+{
+	return -ENOTSUPP;
+}
+
+static inline int of_overlay_create_target_root(struct device_node *tree,
+		struct device_node *target_root)
+{
+	return -ENOTSUPP;
 }
 
 #endif

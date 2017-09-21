@@ -167,19 +167,12 @@
  * CLKID index values
  *
  * These indices are entirely contrived and do not map onto the hardware.
- * Migrate them out of this header and into the DT header file when they need
- * to be exposed to client nodes in DT: include/dt-bindings/clock/gxbb-clkc.h
+ * It has now been decided to expose everything by default in the DT header:
+ * include/dt-bindings/clock/gxbb-clkc.h. Only the clocks ids we don't want
+ * to expose, such as the internal muxes and dividers of composite clocks,
+ * will remain defined here.
  */
-#define CLKID_SYS_PLL		  0
 /* ID 1 is unused (it was used by the non-existing CLKID_CPUCLK before) */
-/* CLKID_HDMI_PLL */
-#define CLKID_FIXED_PLL		  3
-/* CLKID_FCLK_DIV2 */
-/* CLKID_FCLK_DIV3 */
-/* CLKID_FCLK_DIV4 */
-#define CLKID_FCLK_DIV5		  7
-#define CLKID_FCLK_DIV7		  8
-/* CLKID_GP0_PLL */
 #define CLKID_MPEG_SEL		  10
 #define CLKID_MPEG_DIV		  11
 /* CLKID_CLK81 */
@@ -205,7 +198,7 @@
 #define CLKID_HIU_IFACE		  32
 #define CLKID_ASSIST_MISC	  33
 /* CLKID_SPI */
-#define CLKID_I2S_SPDIF		  35
+/* CLKID_I2S_SPDIF */
 /* CLKID_ETH */
 #define CLKID_DEMUX		  37
 /* CLKID_AIU_GLUE */
@@ -270,27 +263,24 @@
 /* CLKID_SAR_ADC_CLK */
 /* CLKID_SAR_ADC_SEL */
 #define CLKID_SAR_ADC_DIV	  99
-/* CLKID_MALI_0_SEL */
-#define CLKID_MALI_0_DIV	 101
-/* CLKID_MALI_0	*/
-/* CLKID_MALI_1_SEL */
-#define CLKID_MALI_1_DIV	 104
-/* CLKID_MALI_1	*/
-/* CLKID_MALI	*/
-/* CLKID_CTS_AMCLK */
+#define CLKID_MALI_0_DIV	  101
+#define CLKID_MALI_1_DIV	  104
 #define CLKID_CTS_AMCLK_SEL	  108
 #define CLKID_CTS_AMCLK_DIV	  109
-/* CLKID_CTS_MCLK_I958 */
 #define CLKID_CTS_MCLK_I958_SEL	  111
 #define CLKID_CTS_MCLK_I958_DIV	  112
-/* CLKID_CTS_I958 */
-#define CLKID_32K_CLK		  114
 #define CLKID_32K_CLK_SEL	  115
 #define CLKID_32K_CLK_DIV	  116
+#define CLKID_SD_EMMC_A_CLK0_SEL  117
+#define CLKID_SD_EMMC_A_CLK0_DIV  118
+#define CLKID_SD_EMMC_B_CLK0_SEL  120
+#define CLKID_SD_EMMC_B_CLK0_DIV  121
+#define CLKID_SD_EMMC_C_CLK0_SEL  123
+#define CLKID_SD_EMMC_C_CLK0_DIV  124
 
-#define NR_CLKS			  117
+#define NR_CLKS			  126
 
-/* include the CLKIDs that have been made part of the stable DT binding */
+/* include the CLKIDs that have been made part of the DT binding */
 #include <dt-bindings/clock/gxbb-clkc.h>
 
 #endif /* __GXBB_H */

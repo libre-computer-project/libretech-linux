@@ -73,6 +73,8 @@
 
 		usb0: usb@c9000000 {
 			compatible = "amlogic,meson-gxbb-usb", "snps,dwc2";
+			#address-cells = <1>;
+			#size-cells = <0>;
 			reg = <0x0 0xc9000000 0x0 0x40000>;
 			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&clkc CLKID_USB0_DDR_BRIDGE>;
@@ -85,6 +87,8 @@
 
 		usb1: usb@c9100000 {
 			compatible = "amlogic,meson-gxbb-usb", "snps,dwc2";
+			#address-cells = <1>;
+			#size-cells = <0>;
 			reg = <0x0 0xc9100000 0x0 0x40000>;
 			interrupts = <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&clkc CLKID_USB1_DDR_BRIDGE>;
@@ -307,6 +311,10 @@
 	};
 };
 
+&clkc_AO {
+	compatible = "amlogic,meson-gxbb-aoclkc", "amlogic,meson-gx-aoclkc";
+};
+
 &ethmac {
 	clocks = <&clkc CLKID_ETH>,
 		 <&clkc CLKID_FCLK_DIV2>,
@@ -383,6 +391,17 @@
 			};
 		};
 
+		emmc_clk_gate_pins: emmc_clk_gate {
+			mux {
+				groups = "BOOT_8";
+				function = "gpio_periphs";
+			};
+			cfg-pull-down {
+				pins = "BOOT_8";
+				bias-pull-down;
+			};
+		};
+
 		nor_pins: nor {
 			mux {
 				groups = "nor_d",
@@ -421,6 +440,17 @@
 			};
 		};
 
+		sdcard_clk_gate_pins: sdcard_clk_gate {
+			mux {
+				groups = "CARD_2";
+				function = "gpio_periphs";
+			};
+			cfg-pull-down {
+				pins = "CARD_2";
+				bias-pull-down;
+			};
+		};
+
 		sdio_pins: sdio {
 			mux {
 				groups = "sdio_d0",
@@ -430,6 +460,17 @@
 				       "sdio_cmd",
 				       "sdio_clk";
 				function = "sdio";
+			};
+		};
+
+		sdio_clk_gate_pins: sdio_clk_gate {
+			mux {
+				groups = "GPIOX_4";
+				function = "gpio_periphs";
+			};
+			cfg-pull-down {
+				pins = "GPIOX_4";
+				bias-pull-down;
 			};
 		};
 
@@ -652,21 +693,21 @@
 
 &sd_emmc_a {
 	clocks = <&clkc CLKID_SD_EMMC_A>,
-		 <&xtal>,
+		 <&clkc CLKID_SD_EMMC_A_CLK0>,
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 };
 
 &sd_emmc_b {
 	clocks = <&clkc CLKID_SD_EMMC_B>,
-		 <&xtal>,
+		 <&clkc CLKID_SD_EMMC_B_CLK0>,
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 };
 
 &sd_emmc_c {
 	clocks = <&clkc CLKID_SD_EMMC_C>,
-		 <&xtal>,
+		 <&clkc CLKID_SD_EMMC_C_CLK0>,
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 };

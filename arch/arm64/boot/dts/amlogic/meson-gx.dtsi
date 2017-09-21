@@ -224,6 +224,28 @@
 				#reset-cells = <1>;
 			};
 
+			audio: audio@5400 {
+				compatible = "amlogic,meson-audio-core";
+				reg = <0x0 0x5400 0x0 0x2ac>,
+				      <0x0 0xa000 0x0 0x304>;
+				reg-names = "aiu", "audin";
+				status = "disabled";
+
+				aiu_i2s_dma: aiu_i2s_dma {
+					#sound-dai-cells = <0>;
+					compatible = "amlogic,meson-aiu-i2s-dma";
+					interrupts = <GIC_SPI 48 IRQ_TYPE_EDGE_RISING>;
+					status = "disabled";
+				};
+
+				i2s_dai: i2s_dai {
+					#sound-dai-cells = <0>;
+					compatible = "amlogic,meson-i2s-dai";
+					status = "disabled";
+				};
+
+			};
+
 			uart_A: serial@84c0 {
 				compatible = "amlogic,meson-uart";
 				reg = <0x0 0x84c0 0x0 0x14>;
@@ -367,11 +389,21 @@
 			#size-cells = <2>;
 			ranges = <0x0 0x0 0x0 0xc8100000 0x0 0x100000>;
 
-			clkc_AO: clock-controller@040 {
-				compatible = "amlogic,gx-aoclkc", "amlogic,gxbb-aoclkc";
-				reg = <0x0 0x00040 0x0 0x4>;
-				#clock-cells = <1>;
-				#reset-cells = <1>;
+			sysctrl_AO: sys-ctrl@0 {
+				compatible = "amlogic,meson-gx-ao-sysctrl", "syscon", "simple-mfd";
+				reg =  <0x0 0x0 0x0 0x100>;
+
+				clkc_AO: clock-controller {
+					compatible = "amlogic,meson-gx-aoclkc";
+					#clock-cells = <1>;
+					#reset-cells = <1>;
+				};
+			};
+
+			cec_AO: cec@100 {
+				compatible = "amlogic,meson-gx-ao-cec";
+				reg = <0x0 0x00100 0x0 0x14>;
+				interrupts = <GIC_SPI 199 IRQ_TYPE_EDGE_RISING>;
 			};
 
 			uart_AO: serial@4c0 {

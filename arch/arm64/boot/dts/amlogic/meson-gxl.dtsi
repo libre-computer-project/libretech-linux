@@ -43,11 +43,71 @@
 
 #include "meson-gx.dtsi"
 #include <dt-bindings/clock/gxbb-clkc.h>
+#include <dt-bindings/clock/gxbb-aoclkc.h>
 #include <dt-bindings/gpio/meson-gxl-gpio.h>
 #include <dt-bindings/reset/amlogic,meson-gxbb-reset.h>
 
 / {
 	compatible = "amlogic,meson-gxl";
+
+	soc {
+
+		usb0: usb@c9000000 {
+			compatible = "snps,dwc3";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x0 0xc9000000 0x0 0x100000>;
+			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
+			dr_mode = "host";
+			maximum-speed = "high-speed";
+			snps,dis_u2_susphy_quirk;
+			phys = <&usb3_phy0>;
+			phy-names = "usb3-phy";
+			status = "disabled";
+
+			dwc3_roothub: roothub@0 {
+				compatible = "usb1d6b,3", "usb1d6b,2";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				reg = <0>;
+
+				port@1 {
+					reg = <1>;
+					phys = <&usb2_phy0>;
+					phy-names = "usb2-phy";
+				};
+
+				port@2 {
+					reg = <2>;
+					phys = <&usb2_phy1>;
+					phy-names = "usb2-phy";
+				};
+			};
+		};
+	};
+};
+
+&apb {
+	usb2_phy0: phy@78000 {
+		compatible = "amlogic,meson-gxl-usb2-phy";
+		#phy-cells = <0>;
+		reg = <0x0 0x78000 0x0 0x20>;
+		status = "okay";
+	};
+
+	usb2_phy1: phy@78020 {
+		compatible = "amlogic,meson-gxl-usb2-phy";
+		#phy-cells = <0>;
+		reg = <0x0 0x78020 0x0 0x20>;
+		status = "okay";
+	};
+
+	usb3_phy0: phy@78080 {
+		compatible = "amlogic,meson-gxl-usb3-phy";
+		#phy-cells = <0>;
+		reg = <0x0 0x78080 0x0 0x20>;
+		status = "okay";
+	};
 };
 
 &ethmac {
@@ -207,6 +267,15 @@
 	};
 };
 
+&cec_AO {
+	clocks = <&clkc_AO CLKID_AO_CEC_32K>;
+	clock-names = "core";
+};
+
+&clkc_AO {
+	compatible = "amlogic,meson-gxl-aoclkc", "amlogic,meson-gx-aoclkc";
+};
+
 &hdmi_tx {
 	compatible = "amlogic,meson-gxl-dw-hdmi", "amlogic,meson-gx-dw-hdmi";
 	resets = <&reset RESET_HDMITX_CAPB3>,
@@ -217,6 +286,7 @@
 		 <&clkc CLKID_CLK81>,
 		 <&clkc CLKID_GCLK_VENCI_INT0>;
 	clock-names = "isfr", "iahb", "venci";
+	#sound-dai-cells = <0>;
 };
 
 &hiubus {
@@ -271,6 +341,17 @@
 			};
 		};
 
+		emmc_clk_gate_pins: emmc_clk_gate {
+			mux {
+				groups = "BOOT_8";
+				function = "gpio_periphs";
+			};
+			cfg-pull-down {
+				pins = "BOOT_8";
+				bias-pull-down;
+			};
+		};
+
 		nor_pins: nor {
 			mux {
 				groups = "nor_d",
@@ -309,6 +390,17 @@
 			};
 		};
 
+		sdcard_clk_gate_pins: sdcard_clk_gate {
+			mux {
+				groups = "CARD_2";
+				function = "gpio_periphs";
+			};
+			cfg-pull-down {
+				pins = "CARD_2";
+				bias-pull-down;
+			};
+		};
+
 		sdio_pins: sdio {
 			mux {
 				groups = "sdio_d0",
@@ -318,6 +410,17 @@
 				       "sdio_cmd",
 				       "sdio_clk";
 				function = "sdio";
+			};
+		};
+
+		sdio_clk_gate_pins: sdio_clk_gate {
+			mux {
+				groups = "GPIOX_4";
+				function = "gpio_periphs";
+			};
+			cfg-pull-down {
+				pins = "GPIOX_4";
+				bias-pull-down;
 			};
 		};
 
@@ -581,6 +684,29 @@
 	};
 };
 
+&audio {
+	clocks = <&clkc CLKID_AIU>,
+		 <&clkc CLKID_AIU_GLUE>,
+		 <&clkc CLKID_I2S_SPDIF>;
+	clock-names = "aiu_top", "aiu_glue", "audin";
+	resets = <&reset RESET_AIU>,
+		 <&reset RESET_AUDIN>;
+	reset-names = "aiu", "audin";
+};
+
+&aiu_i2s_dma {
+	clocks = <&clkc CLKID_I2S_OUT>;
+	clock-names = "fast";
+};
+
+&i2s_dai {
+	clocks = <&clkc CLKID_I2S_OUT>,
+		 <&clkc CLKID_MIXER_IFACE>,
+		 <&clkc CLKID_AOCLK_GATE>,
+		 <&clkc CLKID_CTS_AMCLK>;
+	clock-names = "fast", "iface", "bclks", "mclk";
+};
+
 &saradc {
 	compatible = "amlogic,meson-gxl-saradc", "amlogic,meson-saradc";
 	clocks = <&xtal>,
@@ -593,21 +719,21 @@
 
 &sd_emmc_a {
 	clocks = <&clkc CLKID_SD_EMMC_A>,
-		 <&xtal>,
+		 <&clkc CLKID_SD_EMMC_A_CLK0>,
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 };
 
 &sd_emmc_b {
 	clocks = <&clkc CLKID_SD_EMMC_B>,
-		 <&xtal>,
+		 <&clkc CLKID_SD_EMMC_B_CLK0>,
 		 <&clkc CLKID_FCLK_DIV2>;
        clock-names = "core", "clkin0", "clkin1";
 };
 
 &sd_emmc_c {
 	clocks = <&clkc CLKID_SD_EMMC_C>,
-		 <&xtal>,
+		 <&clkc CLKID_SD_EMMC_C_CLK0>,
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 };
