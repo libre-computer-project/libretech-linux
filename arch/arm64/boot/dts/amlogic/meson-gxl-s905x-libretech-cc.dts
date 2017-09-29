@@ -291,3 +291,7 @@
 &usb0 {
        status = "okay";
 };
+
+&secmon_reserved {
+	reg = <0x0 0x5000000 0x0 0x300000>;
+};
