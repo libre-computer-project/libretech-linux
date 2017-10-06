@@ -83,6 +83,18 @@
 		};
 	};
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* 2 MiB reserved for Hardware ROM Firmware? */
+		hwrom@0 {
+			reg = <0x0 0x200000>;
+			no-map;
+		};
+	};
+
 	scu@c4300000 {
 		compatible = "arm,cortex-a5-scu";
 		reg = <0xc4300000 0x100>;
@@ -128,6 +140,11 @@
 		compatible = "amlogic,meson8b-reset";
 		reg = <0x4404 0x20>;
 		#reset-cells = <1>;
+	};
+
+	analog_top: analog-top@81a8 {
+		compatible = "amlogic,meson8b-analog-top", "syscon";
+		reg = <0x81a8 0x14>;
 	};
 
 	pwm_ef: pwm@86c0 {
