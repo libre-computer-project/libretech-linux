@@ -958,6 +958,7 @@ static void vop_plane_atomic_update(struct drm_plane *plane,
 	int format;
 	int is_yuv = fb->format->is_yuv;
 	int i;
+	int skiplines = 0;
 
 	/*
 	 * can't update plane when vop is disabled.
@@ -976,8 +977,14 @@ static void vop_plane_atomic_update(struct drm_plane *plane,
 	obj = fb->obj[0];
 	rk_obj = to_rockchip_obj(obj);
 
+	/*
+	 * Force skip lines when image is yuv and 3840 width,
+	 * fixes a "jumping" green lines issue on RK3328.
+	 */
 	actual_w = drm_rect_width(src) >> 16;
-	actual_h = drm_rect_height(src) >> 16;
+	if (actual_w == 3840 && is_yuv)
+		skiplines = 1;
+	actual_h = drm_rect_height(src) >> (16 + skiplines);
 	act_info = (actual_h - 1) << 16 | ((actual_w - 1) & 0xffff);
 
 	dsp_info = (drm_rect_height(dest) - 1) << 16;
@@ -1019,7 +1026,7 @@ static void vop_plane_atomic_update(struct drm_plane *plane,
 
 	VOP_WIN_SET(vop, win, format, format);
 	VOP_WIN_SET(vop, win, fmt_10, is_fmt_10(fb->format->format));
-	VOP_WIN_SET(vop, win, yrgb_vir, DIV_ROUND_UP(fb->pitches[0], 4));
+	VOP_WIN_SET(vop, win, yrgb_vir, DIV_ROUND_UP(fb->pitches[0], 4 >> skiplines));
 	VOP_WIN_SET(vop, win, yrgb_mst, dma_addr);
 	VOP_WIN_YUV2YUV_SET(vop, win_yuv2yuv, y2r_en, is_yuv);
 	VOP_WIN_SET(vop, win, y_mir_en,
@@ -1043,7 +1050,7 @@ static void vop_plane_atomic_update(struct drm_plane *plane,
 		offset += (src->y1 >> 16) * fb->pitches[1] / vsub;
 
 		dma_addr = rk_uv_obj->dma_addr + offset + fb->offsets[1];
-		VOP_WIN_SET(vop, win, uv_vir, DIV_ROUND_UP(fb->pitches[1], 4));
+		VOP_WIN_SET(vop, win, uv_vir, DIV_ROUND_UP(fb->pitches[1], 4 >> skiplines));
 		VOP_WIN_SET(vop, win, uv_mst, dma_addr);
 
 		for (i = 0; i < NUM_YUV2YUV_COEFFICIENTS; i++) {
