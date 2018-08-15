@@ -15,3 +15,8 @@
 &mmc2 {
 	mmc-ddr-3_3v;
 };
+
+&reg_vdd_cpux {
+	regulator-min-microvolt = <1100000>;
+	regulator-max-microvolt = <1100000>;
+};
