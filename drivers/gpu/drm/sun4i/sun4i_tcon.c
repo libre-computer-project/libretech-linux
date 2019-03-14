@@ -239,6 +239,34 @@ void sun4i_tcon_enable_vblank(struct sun4i_tcon *tcon, bool enable)
 }
 EXPORT_SYMBOL(sun4i_tcon_enable_vblank);
 
+void sun4i_tcon_load_gamma_lut(struct sun4i_tcon *tcon,
+			       struct drm_color_lut *lut)
+{
+	int i;
+
+	for (i = 0; i < SUN4I_TCON_GAMMA_LUT_SIZE; i++) {
+		u32 r, g, b;
+
+		r = drm_color_lut_extract(lut[i].red, 8);
+		g = drm_color_lut_extract(lut[i].green, 8);
+		b = drm_color_lut_extract(lut[i].blue, 8);
+
+		regmap_write(tcon->regs, SUN4I_TCON_GAMMA_TABLE_REG + 4 * i,
+			     SUN4I_TCON_GAMMA_TABLE_R(r) |
+			     SUN4I_TCON_GAMMA_TABLE_G(g) |
+			     SUN4I_TCON_GAMMA_TABLE_B(b));
+	}
+}
+EXPORT_SYMBOL(sun4i_tcon_load_gamma_lut);
+
+void sun4i_tcon_enable_gamma(struct sun4i_tcon *tcon, bool enable)
+{
+	regmap_update_bits(tcon->regs, SUN4I_TCON_GCTL_REG,
+			   SUN4I_TCON_GCTL_GAMMA_ENABLE,
+			   enable ? SUN4I_TCON_GCTL_GAMMA_ENABLE : 0);
+}
+EXPORT_SYMBOL(sun4i_tcon_enable_gamma);
+
 /*
  * This function is a helper for TCON output muxing. The TCON output
  * muxing control register in earlier SoCs (without the TCON TOP block)
@@ -1286,6 +1314,11 @@ static int sun4i_tcon_bind(struct device *dev, struct device *master,
 	}
 
 	list_add_tail(&tcon->list, &drv->tcon_list);
+
+	drm_mode_crtc_set_gamma_size(&tcon->crtc->crtc,
+				     SUN4I_TCON_GAMMA_LUT_SIZE);
+	drm_crtc_enable_color_mgmt(&tcon->crtc->crtc, 0, false,
+				   tcon->crtc->crtc.gamma_size);
 
 	return 0;
 

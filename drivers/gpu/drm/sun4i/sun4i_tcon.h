@@ -18,6 +18,7 @@
 
 #define SUN4I_TCON_GCTL_REG			0x0
 #define SUN4I_TCON_GCTL_TCON_ENABLE			BIT(31)
+#define SUN4I_TCON_GCTL_GAMMA_ENABLE			BIT(30)
 #define SUN4I_TCON_GCTL_IOMAP_MASK			BIT(0)
 #define SUN4I_TCON_GCTL_IOMAP_TCON1			(1 << 0)
 #define SUN4I_TCON_GCTL_IOMAP_TCON0			(0 << 0)
@@ -228,7 +229,13 @@
 #define SUN4I_TCON1_FILL_BEG2_REG		0x31c
 #define SUN4I_TCON1_FILL_END2_REG		0x320
 #define SUN4I_TCON1_FILL_DATA2_REG		0x324
-#define SUN4I_TCON1_GAMMA_TABLE_REG		0x400
+
+#define SUN4I_TCON_GAMMA_TABLE_REG		0x400
+#define SUN4I_TCON_GAMMA_TABLE_B(x)		((x) & 0xff)
+#define SUN4I_TCON_GAMMA_TABLE_G(x)		(((x) & 0xff) << 8)
+#define SUN4I_TCON_GAMMA_TABLE_R(x)		(((x) & 0xff) << 16)
+
+#define SUN4I_TCON_GAMMA_LUT_SIZE		256
 
 #define SUN4I_TCON_MAX_CHANNELS		2
 
@@ -296,6 +303,9 @@ void sun4i_tcon_mode_set(struct sun4i_tcon *tcon,
 			 const struct drm_display_mode *mode);
 void sun4i_tcon_set_status(struct sun4i_tcon *crtc,
 			   const struct drm_encoder *encoder, bool enable);
+void sun4i_tcon_load_gamma_lut(struct sun4i_tcon *tcon,
+			       struct drm_color_lut *lut);
+void sun4i_tcon_enable_gamma(struct sun4i_tcon *tcon, bool enable);
 
 extern const struct of_device_id sun4i_tcon_of_table[];
 
