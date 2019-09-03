@@ -284,8 +284,13 @@ static struct drm_plane **sun8i_layers_init(struct drm_device *drm,
 
 	for (i = 0; i < mixer->cfg->ui_num; i++) {
 		struct sun8i_ui_layer *layer;
+		enum drm_plane_type type = DRM_PLANE_TYPE_OVERLAY;
+		if (i == 0)
+			type = DRM_PLANE_TYPE_PRIMARY;
+		else if (i == (mixer->cfg->ui_num - 1))
+			type = DRM_PLANE_TYPE_CURSOR;
 
-		layer = sun8i_ui_layer_init_one(drm, mixer, i);
+		layer = sun8i_ui_layer_init_one(drm, mixer, i, type);
 		if (IS_ERR(layer)) {
 			dev_err(drm->dev, "Couldn't initialize %s plane\n",
 				i ? "overlay" : "primary");
