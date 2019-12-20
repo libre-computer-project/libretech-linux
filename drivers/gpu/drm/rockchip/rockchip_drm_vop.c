@@ -341,6 +341,17 @@ static int vop_convert_afbc_format(uint32_t format)
 	return -EINVAL;
 }
 
+static bool is_yuv_output(uint32_t bus_format)
+{
+	switch (bus_format) {
+	case MEDIA_BUS_FMT_YUV8_1X24:
+	case MEDIA_BUS_FMT_YUV10_1X30:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static uint16_t scl_vop_cal_scale(enum scale_mode mode, uint32_t src,
 				  uint32_t dst, bool is_horizontal,
 				  int vsu_mode, int *vskiplines)
@@ -1412,6 +1423,7 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	u16 vact_end = vact_st + vdisplay;
 	uint32_t pin_pol, val;
 	int dither_bpc = s->output_bpc ? s->output_bpc : 10;
+	bool yuv_output = is_yuv_output(s->bus_format);
 	int ret;
 
 	if (old_state && old_state->self_refresh_active) {
@@ -1485,6 +1497,8 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	    !(vop_data->feature & VOP_FEATURE_OUTPUT_RGB10))
 		s->output_mode = ROCKCHIP_OUT_MODE_P888;
 
+	VOP_REG_SET(vop, common, dsp_data_swap, yuv_output ? 2 : 0);
+
 	if (s->output_mode == ROCKCHIP_OUT_MODE_AAAA && dither_bpc <= 8)
 		VOP_REG_SET(vop, common, pre_dither_down, 1);
 	else
@@ -1499,6 +1513,21 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	}
 
 	VOP_REG_SET(vop, common, out_mode, s->output_mode);
+
+	VOP_REG_SET(vop, common, overlay_mode, yuv_output);
+	VOP_REG_SET(vop, common, dsp_out_yuv, yuv_output);
+
+	/*
+	 * Background color is 10bit depth if vop version >= 3.5
+	 */
+	if (!yuv_output)
+		val = 0;
+	else if (VOP_MAJOR(vop_data->version) == 3 &&
+		 VOP_MINOR(vop_data->version) >= 5)
+		val = 0x20010200;
+	else
+		val = 0x801080;
+	VOP_REG_SET(vop, common, dsp_background, val);
 
 	VOP_REG_SET(vop, modeset, htotal_pw, (htotal << 16) | hsync_len);
 	val = hact_st << 16;

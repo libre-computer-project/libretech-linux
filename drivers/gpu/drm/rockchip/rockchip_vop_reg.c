@@ -705,6 +705,11 @@ static const struct vop_common rk3288_common = {
 	.dsp_blank = VOP_REG(RK3288_DSP_CTRL0, 0x3, 18),
 	.out_mode = VOP_REG(RK3288_DSP_CTRL0, 0xf, 0),
 	.cfg_done = VOP_REG_SYNC(RK3288_REG_CFG_DONE, 0x1, 0),
+
+	.overlay_mode = VOP_REG(RK3288_SYS_CTRL, 0x1, 16),
+	.dsp_data_swap = VOP_REG(RK3288_DSP_CTRL0, 0x1f, 12),
+	.dsp_out_yuv = VOP_REG(RK3288_POST_SCL_CTRL, 0x1, 2),
+	.dsp_background = VOP_REG(RK3288_DSP_BG, 0xffffffff, 0),
 };
 
 /*
@@ -1076,6 +1081,10 @@ static const struct vop_output rk3328_output = {
 
 static const struct vop_misc rk3328_misc = {
 	.global_regdone_en = VOP_REG(RK3328_SYS_CTRL, 0x1, 11),
+
+	.win_channel[0] = VOP_REG(RK3328_WIN0_CTRL2, 0xff, 0),
+	.win_channel[1] = VOP_REG(RK3328_WIN1_CTRL2, 0xff, 0),
+	.win_channel[2] = VOP_REG(RK3328_WIN2_CTRL2, 0xff, 0),
 };
 
 static const struct vop_common rk3328_common = {
@@ -1088,6 +1097,11 @@ static const struct vop_common rk3328_common = {
 	.dsp_blank = VOP_REG(RK3328_DSP_CTRL0, 0x3, 18),
 	.out_mode = VOP_REG(RK3328_DSP_CTRL0, 0xf, 0),
 	.cfg_done = VOP_REG_SYNC(RK3328_REG_CFG_DONE, 0x1, 0),
+
+	.overlay_mode = VOP_REG(RK3328_SYS_CTRL, 0x1, 16),
+	.dsp_data_swap = VOP_REG(RK3328_DSP_CTRL0, 0x1f, 12),
+	.dsp_out_yuv = VOP_REG(RK3328_POST_SCL_CTRL, 0x1, 2),
+	.dsp_background = VOP_REG(RK3328_DSP_BG, 0xffffffff, 0),
 };
 
 static const struct vop_intr rk3328_vop_intr = {

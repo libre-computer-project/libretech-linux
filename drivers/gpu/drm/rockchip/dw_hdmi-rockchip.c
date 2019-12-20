@@ -67,6 +67,7 @@ struct rockchip_hdmi_chip_data {
 	int	lcdsel_grf_reg;
 	u32	lcdsel_big;
 	u32	lcdsel_lit;
+	bool	ycbcr_444_allowed;
 };
 
 struct rockchip_hdmi {
@@ -394,10 +395,22 @@ static bool is_rgb(u32 format)
 	}
 }
 
+static bool is_yuv444(u32 format)
+{
+	switch (format) {
+	case MEDIA_BUS_FMT_YUV10_1X30:
+	case MEDIA_BUS_FMT_YUV8_1X24:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool is_10bit(u32 format)
 {
 	switch (format) {
 	case MEDIA_BUS_FMT_RGB101010_1X30:
+	case MEDIA_BUS_FMT_YUV10_1X30:
 		return true;
 	default:
 		return false;
@@ -414,12 +427,22 @@ dw_hdmi_rockchip_bridge_atomic_check(struct drm_bridge *bridge,
 	struct drm_atomic_state *state = bridge_state->base.state;
 	struct drm_crtc_state *old_crtc_state;
 	struct rockchip_crtc_state *old_state;
+	struct drm_bridge *next_bridge;
+	struct drm_bridge_state *next_bridge_state;
 	u32 format = bridge_state->output_bus_cfg.format;
 
 	s->output_mode = ROCKCHIP_OUT_MODE_AAAA;
 	s->output_type = DRM_MODE_CONNECTOR_HDMIA;
 	s->output_bpc = 10;
 	s->bus_format = format;
+
+	next_bridge = drm_bridge_get_next_bridge(bridge);
+	if (next_bridge) {
+		next_bridge_state = drm_atomic_get_new_bridge_state(state,
+								next_bridge);
+		format = next_bridge_state->output_bus_cfg.format;
+	}
+
 	s->bus_width = is_10bit(format) ? 10 : 8;
 
 	old_crtc_state = drm_atomic_get_old_crtc_state(state, conn_state->crtc);
@@ -453,7 +476,10 @@ static u32 *dw_hdmi_rockchip_get_input_bus_fmts(struct drm_bridge *bridge,
 	if (!has_10bit && is_10bit(output_fmt))
 		return NULL;
 
-	if (!is_rgb(output_fmt))
+	if (is_yuv444(output_fmt)) {
+		if (!hdmi->chip_data->ycbcr_444_allowed)
+			return NULL;
+	} else if (!is_rgb(output_fmt))
 		return NULL;
 
 	input_fmt = kzalloc(sizeof(*input_fmt), GFP_KERNEL);
@@ -603,6 +629,7 @@ static const struct dw_hdmi_phy_ops rk3328_hdmi_phy_ops = {
 
 static struct rockchip_hdmi_chip_data rk3328_chip_data = {
 	.lcdsel_grf_reg = -1,
+	.ycbcr_444_allowed = true,
 };
 
 static const struct dw_hdmi_plat_data rk3328_hdmi_drv_data = {
