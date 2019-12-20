@@ -346,6 +346,19 @@ static bool is_yuv_output(uint32_t bus_format)
 	switch (bus_format) {
 	case MEDIA_BUS_FMT_YUV8_1X24:
 	case MEDIA_BUS_FMT_YUV10_1X30:
+	case MEDIA_BUS_FMT_UYYVYY8_0_5X24:
+	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool bus_fmt_has_uv_swapped(uint32_t bus_format)
+{
+	switch (bus_format) {
+	case MEDIA_BUS_FMT_YUV8_1X24:
+	case MEDIA_BUS_FMT_YUV10_1X30:
 		return true;
 	default:
 		return false;
@@ -1497,7 +1510,7 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	    !(vop_data->feature & VOP_FEATURE_OUTPUT_RGB10))
 		s->output_mode = ROCKCHIP_OUT_MODE_P888;
 
-	VOP_REG_SET(vop, common, dsp_data_swap, yuv_output ? 2 : 0);
+	VOP_REG_SET(vop, common, dsp_data_swap, bus_fmt_has_uv_swapped(s->bus_format) ? 2 : 0);
 
 	if (s->output_mode == ROCKCHIP_OUT_MODE_AAAA && dither_bpc <= 8)
 		VOP_REG_SET(vop, common, pre_dither_down, 1);
@@ -1513,6 +1526,9 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	}
 
 	VOP_REG_SET(vop, common, out_mode, s->output_mode);
+
+	VOP_REG_SET(vop, common, dclk_ddr,
+		    s->output_mode == ROCKCHIP_OUT_MODE_YUV420 ? 1 : 0);
 
 	VOP_REG_SET(vop, common, overlay_mode, yuv_output);
 	VOP_REG_SET(vop, common, dsp_out_yuv, yuv_output);

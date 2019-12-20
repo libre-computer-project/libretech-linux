@@ -707,6 +707,7 @@ static const struct vop_common rk3288_common = {
 	.cfg_done = VOP_REG_SYNC(RK3288_REG_CFG_DONE, 0x1, 0),
 
 	.overlay_mode = VOP_REG(RK3288_SYS_CTRL, 0x1, 16),
+	.dclk_ddr = VOP_REG(RK3288_DSP_CTRL0, 0x1, 8),
 	.dsp_data_swap = VOP_REG(RK3288_DSP_CTRL0, 0x1f, 12),
 	.dsp_out_yuv = VOP_REG(RK3288_POST_SCL_CTRL, 0x1, 2),
 	.dsp_background = VOP_REG(RK3288_DSP_BG, 0xffffffff, 0),
@@ -1099,6 +1100,7 @@ static const struct vop_common rk3328_common = {
 	.cfg_done = VOP_REG_SYNC(RK3328_REG_CFG_DONE, 0x1, 0),
 
 	.overlay_mode = VOP_REG(RK3328_SYS_CTRL, 0x1, 16),
+	.dclk_ddr = VOP_REG(RK3328_DSP_CTRL0, 0x1, 8),
 	.dsp_data_swap = VOP_REG(RK3328_DSP_CTRL0, 0x1f, 12),
 	.dsp_out_yuv = VOP_REG(RK3328_POST_SCL_CTRL, 0x1, 2),
 	.dsp_background = VOP_REG(RK3328_DSP_BG, 0xffffffff, 0),

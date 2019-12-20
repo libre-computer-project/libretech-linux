@@ -406,9 +406,21 @@ static bool is_yuv444(u32 format)
 	}
 }
 
+static bool is_yuv420(u32 format)
+{
+	switch (format) {
+	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
+	case MEDIA_BUS_FMT_UYYVYY8_0_5X24:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool is_10bit(u32 format)
 {
 	switch (format) {
+	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
 	case MEDIA_BUS_FMT_RGB101010_1X30:
 	case MEDIA_BUS_FMT_YUV10_1X30:
 		return true;
@@ -445,6 +457,11 @@ dw_hdmi_rockchip_bridge_atomic_check(struct drm_bridge *bridge,
 
 	s->bus_width = is_10bit(format) ? 10 : 8;
 
+	if (is_yuv420(format)) {
+		s->output_mode = ROCKCHIP_OUT_MODE_YUV420;
+		s->bus_width /= 2;
+	}
+
 	old_crtc_state = drm_atomic_get_old_crtc_state(state, conn_state->crtc);
 	if (old_crtc_state && !crtc_state->mode_changed) {
 		old_state = to_rockchip_crtc_state(old_crtc_state);
@@ -465,6 +482,7 @@ static u32 *dw_hdmi_rockchip_get_input_bus_fmts(struct drm_bridge *bridge,
 {
 	struct rockchip_hdmi *hdmi = to_rockchip_hdmi(bridge);
 	struct drm_encoder *encoder = bridge->encoder;
+	struct drm_connector *connector = conn_state->connector;
 	u32 *input_fmt;
 	bool has_10bit = true;
 
@@ -478,6 +496,9 @@ static u32 *dw_hdmi_rockchip_get_input_bus_fmts(struct drm_bridge *bridge,
 
 	if (is_yuv444(output_fmt)) {
 		if (!hdmi->chip_data->ycbcr_444_allowed)
+			return NULL;
+	} else if (is_yuv420(output_fmt)) {
+		if (!connector->ycbcr_420_allowed)
 			return NULL;
 	} else if (!is_rgb(output_fmt))
 		return NULL;
@@ -639,6 +660,7 @@ static const struct dw_hdmi_plat_data rk3328_hdmi_drv_data = {
 	.phy_name = "inno_dw_hdmi_phy2",
 	.phy_force_vendor = true,
 	.use_drm_infoframe = true,
+	.ycbcr_420_allowed = true,
 };
 
 static struct rockchip_hdmi_chip_data rk3399_chip_data = {
