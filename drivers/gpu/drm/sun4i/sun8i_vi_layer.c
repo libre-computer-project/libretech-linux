@@ -30,13 +30,12 @@ static void sun8i_vi_layer_enable(struct sun8i_mixer *mixer, int channel,
 	DRM_DEBUG_DRIVER("%sabling VI channel %d overlay %d\n",
 			 enable ? "En" : "Dis", channel, overlay);
 
-	if (!was_enabled != !enable) {
-		val = enable ? SUN8I_MIXER_CHAN_VI_LAYER_ATTR_EN : 0;
-
-		regmap_update_bits(mixer->engine.regs,
-				   SUN8I_MIXER_CHAN_VI_LAYER_ATTR(ch_base, overlay),
-				   SUN8I_MIXER_CHAN_VI_LAYER_ATTR_EN, val);
-	}
+	/* We always update the layer enable bit, because it can clear
+	 * spontaneously for unknown reasons. */
+	val = enable ? SUN8I_MIXER_CHAN_VI_LAYER_ATTR_EN : 0;
+	regmap_update_bits(mixer->engine.regs,
+			   SUN8I_MIXER_CHAN_VI_LAYER_ATTR(ch_base, overlay),
+			   SUN8I_MIXER_CHAN_VI_LAYER_ATTR_EN, val);
 
 	/*
 	 * If this layer was enabled and is being disabled or if it is
