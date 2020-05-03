@@ -246,7 +246,7 @@ dw_hdmi_rockchip_mode_valid(struct dw_hdmi *hdmi, void *data,
 	    (info->max_tmds_clock && mode->clock > info->max_tmds_clock))
 		return MODE_CLOCK_HIGH;
 
-	return MODE_OK;
+	return drm_mode_validate_size(mode, 3840, 2160);
 }
 
 static void dw_hdmi_rockchip_encoder_disable(struct drm_encoder *encoder)
