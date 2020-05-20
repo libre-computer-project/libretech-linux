@@ -11,16 +11,23 @@
 #ifndef RKVDEC_H_
 #define RKVDEC_H_
 
+#include <linux/clk.h>
 #include <linux/platform_device.h>
+#include <linux/reset.h>
 #include <linux/videodev2.h>
 #include <linux/wait.h>
-#include <linux/clk.h>
 
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-dma-contig.h>
+
+#define RESET_NONE		0
+#define RESET_SOFT		BIT(0)
+#define RESET_HARD		BIT(1)
+
+#define RKVDEC_RESET_DELAY	5
 
 struct rkvdec_ctx;
 
@@ -96,6 +103,8 @@ struct rkvdec_dev {
 	void __iomem *regs;
 	struct mutex vdev_lock; /* serializes ioctls */
 	struct delayed_work watchdog_work;
+	struct reset_control *rstc;
+	u8 reset_mask;
 };
 
 struct rkvdec_ctx {
