@@ -48,6 +48,7 @@
 #define RKVDEC_RLC_MODE					BIT(11)
 #define RKVDEC_STRM_START_BIT(x)			(((x) & 0x7f) << 12)
 #define RKVDEC_MODE(x)					(((x) & 0x03) << 20)
+#define RKVDEC_MODE_HEVC				0
 #define RKVDEC_MODE_H264				1
 #define RKVDEC_MODE_VP9					2
 #define RKVDEC_RPS_MODE					BIT(24)
