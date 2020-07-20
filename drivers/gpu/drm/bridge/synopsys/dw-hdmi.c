@@ -137,7 +137,8 @@ struct dw_hdmi_phy_data {
 	bool has_svsret;
 	int (*configure)(struct dw_hdmi *hdmi,
 			 const struct dw_hdmi_plat_data *pdata,
-			 unsigned long mpixelclock);
+			 unsigned long mpixelclock,
+			 unsigned long mtmdsclock);
 };
 
 struct dw_hdmi {
@@ -1584,7 +1585,8 @@ static int dw_hdmi_phy_power_on(struct dw_hdmi *hdmi)
  */
 static int hdmi_phy_configure_dwc_hdmi_3d_tx(struct dw_hdmi *hdmi,
 		const struct dw_hdmi_plat_data *pdata,
-		unsigned long mpixelclock)
+		unsigned long mpixelclock,
+		unsigned long mtmdsclock)
 {
 	const struct dw_hdmi_mpll_config *mpll_config = pdata->mpll_cfg;
 	const struct dw_hdmi_curr_ctrl *curr_ctrl = pdata->cur_ctr;
@@ -1659,9 +1661,9 @@ static int hdmi_phy_configure(struct dw_hdmi *hdmi,
 
 	/* Write to the PHY as configured by the platform */
 	if (pdata->configure_phy)
-		ret = pdata->configure_phy(hdmi, pdata->priv_data, mpixelclock);
+		ret = pdata->configure_phy(hdmi, pdata->priv_data, mpixelclock, mtmdsclock);
 	else
-		ret = phy->configure(hdmi, pdata, mpixelclock);
+		ret = phy->configure(hdmi, pdata, mpixelclock, mtmdsclock);
 	if (ret) {
 		dev_err(hdmi->dev, "PHY configuration failed (clock %lu)\n",
 			mpixelclock);
