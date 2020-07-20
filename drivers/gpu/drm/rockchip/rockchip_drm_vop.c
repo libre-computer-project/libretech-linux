@@ -1238,6 +1238,9 @@ static enum drm_mode_status vop_crtc_mode_valid(struct drm_crtc *crtc,
 	if (!vop_crtc_is_tmds(crtc))
 		return MODE_OK;
 
+	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
+		return MODE_NO_INTERLACE;
+
 	rounded_rate = clk_round_rate(vop->dclk, mode->clock * 1000 + 999);
 	if (rounded_rate < 0)
 		return MODE_NOCLOCK;
