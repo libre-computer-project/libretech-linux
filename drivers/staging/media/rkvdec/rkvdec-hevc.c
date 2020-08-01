@@ -2208,13 +2208,13 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 		memset(hw_ps, 0, sizeof(*hw_ps));
 
 		for (i = 0; i <= sl_params->num_ref_idx_l0_active_minus1; i++) {
-			WRITE_RPS(!!(dpb[sl_params->ref_idx_l0[i]].rps == V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR),
+			WRITE_RPS(!!(dpb[sl_params->ref_idx_l0[i]].flags & V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE),
 				  REF_PIC_LONG_TERM_L0(i));
 			WRITE_RPS(sl_params->ref_idx_l0[i], REF_PIC_IDX_L0(i));
 		}
 
 		for (i = 0; i <= sl_params->num_ref_idx_l1_active_minus1; i++) {
-			WRITE_RPS(!!(dpb[sl_params->ref_idx_l1[i]].rps == V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR),
+			WRITE_RPS(!!(dpb[sl_params->ref_idx_l1[i]].flags & V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE),
 				  REF_PIC_LONG_TERM_L1(i));
 			WRITE_RPS(sl_params->ref_idx_l1[i], REF_PIC_IDX_L1(i));
 		}
@@ -2418,16 +2418,57 @@ static int rkvdec_hevc_adjust_fmt(struct rkvdec_ctx *ctx,
 	return 0;
 }
 
+static int rkvdec_hevc_validate_sps(struct rkvdec_ctx *ctx,
+				    const struct v4l2_ctrl_hevc_sps *sps)
+{
+	if (sps->chroma_format_idc > 1)
+		/* Only 4:0:0 and 4:2:0 are supported */
+		return -EINVAL;
+	if (sps->bit_depth_luma_minus8 != sps->bit_depth_chroma_minus8)
+		/* Luma and chroma bit depth mismatch */
+		return -EINVAL;
+	if (sps->bit_depth_luma_minus8 != 0 && sps->bit_depth_luma_minus8 != 2)
+		/* Only 8-bit and 10-bit is supported */
+		return -EINVAL;
+
+	if (sps->pic_width_in_luma_samples > ctx->coded_fmt.fmt.pix_mp.width ||
+	    sps->pic_height_in_luma_samples > ctx->coded_fmt.fmt.pix_mp.height)
+		return -EINVAL;
+
+	return 0;
+}
+
+static u32 rkvdec_hevc_valid_fmt(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+{
+	const struct v4l2_ctrl_hevc_sps *sps = ctrl->p_new.p_hevc_sps;
+
+	if (sps->bit_depth_luma_minus8 == 2)
+		return V4L2_PIX_FMT_NV15;
+	else
+		return V4L2_PIX_FMT_NV12;
+}
+
 static int rkvdec_hevc_start(struct rkvdec_ctx *ctx)
 {
 	struct rkvdec_dev *rkvdec = ctx->dev;
 	struct rkvdec_hevc_priv_tbl *priv_tbl;
 	struct rkvdec_hevc_ctx *hevc_ctx;
+	struct v4l2_ctrl *ctrl;
 	int ret;
+
+	ctrl = v4l2_ctrl_find(&ctx->ctrl_hdl,
+			      V4L2_CID_MPEG_VIDEO_HEVC_SPS);
+	if (!ctrl)
+		return -EINVAL;
+
+	ret = rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
+	if (ret)
+		return ret;
 
 	hevc_ctx = kzalloc(sizeof(*hevc_ctx), GFP_KERNEL);
 	if (!hevc_ctx)
 		return -ENOMEM;
+
 
 	priv_tbl = dma_alloc_coherent(rkvdec->dev, sizeof(*priv_tbl),
 				      &hevc_ctx->priv_tbl.dma, GFP_KERNEL);
@@ -2519,9 +2560,19 @@ static int rkvdec_hevc_run(struct rkvdec_ctx *ctx)
 	return 0;
 }
 
+static int rkvdec_hevc_try_ctrl(struct rkvdec_ctx *ctx, struct v4l2_ctrl *ctrl)
+{
+	if (ctrl->id == V4L2_CID_MPEG_VIDEO_HEVC_SPS)
+		return rkvdec_hevc_validate_sps(ctx, ctrl->p_new.p_hevc_sps);
+
+	return 0;
+}
+
 const struct rkvdec_coded_fmt_ops rkvdec_hevc_fmt_ops = {
 	.adjust_fmt = rkvdec_hevc_adjust_fmt,
 	.start = rkvdec_hevc_start,
 	.stop = rkvdec_hevc_stop,
 	.run = rkvdec_hevc_run,
+	.try_ctrl = rkvdec_hevc_try_ctrl,
+	.valid_fmt = rkvdec_hevc_valid_fmt,
 };

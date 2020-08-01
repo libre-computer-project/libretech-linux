@@ -74,7 +74,7 @@ static int rkvdec_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct rkvdec_ctx *ctx = container_of(ctrl->handler, struct rkvdec_ctx, ctrl_hdl);
 
-	if (ctrl->id == V4L2_CID_STATELESS_H264_SPS && !ctx->valid_fmt) {
+	if (!ctx->valid_fmt) {
 		ctx->valid_fmt = rkvdec_valid_fmt(ctx, ctrl);
 		if (ctx->valid_fmt) {
 			struct v4l2_pix_format_mplane *pix_mp;
@@ -143,6 +143,7 @@ static const struct rkvdec_ctrl_desc rkvdec_hevc_ctrl_descs[] = {
 	},
 	{
 		.cfg.id = V4L2_CID_MPEG_VIDEO_HEVC_SPS,
+		.cfg.ops = &rkvdec_ctrl_ops,
 	},
 	{
 		.cfg.id = V4L2_CID_MPEG_VIDEO_HEVC_PPS,
