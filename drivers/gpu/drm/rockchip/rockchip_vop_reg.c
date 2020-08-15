@@ -794,8 +794,8 @@ static const struct vop_intr rk3368_vop_intr = {
 
 static const struct vop_win_phy rk3368_win01_data = {
 	.scl = &rk3288_win_full_scl,
-	.data_formats = formats_win_full_10,
-	.nformats = ARRAY_SIZE(formats_win_full_10),
+	.data_formats = formats_win_full,
+	.nformats = ARRAY_SIZE(formats_win_full),
 	.format_modifiers = format_modifiers_win_full,
 	.enable = VOP_REG(RK3368_WIN0_CTRL0, 0x1, 0),
 	.format = VOP_REG(RK3368_WIN0_CTRL0, 0x7, 1),
