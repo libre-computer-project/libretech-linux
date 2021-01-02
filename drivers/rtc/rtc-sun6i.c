@@ -708,7 +708,6 @@ static struct nvmem_config sun6i_rtc_nvmem_cfg = {
 	.stride		= 4,
 };
 
-#ifdef CONFIG_PM_SLEEP
 /* Enable IRQ wake on suspend, to wake up from RTC. */
 static int sun6i_rtc_suspend(struct device *dev)
 {
@@ -721,7 +720,7 @@ static int sun6i_rtc_suspend(struct device *dev)
 }
 
 /* Disable IRQ wake on resume. */
-static int sun6i_rtc_resume(struct device *dev)
+static int __maybe_unused sun6i_rtc_resume(struct device *dev)
 {
 	struct sun6i_rtc_dev *chip = dev_get_drvdata(dev);
 
@@ -730,7 +729,6 @@ static int sun6i_rtc_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(sun6i_rtc_pm_ops,
 	sun6i_rtc_suspend, sun6i_rtc_resume);
@@ -851,6 +849,11 @@ static int sun6i_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static void sun6i_rtc_shutdown(struct platform_device *pdev)
+{
+	sun6i_rtc_suspend(&pdev->dev);
+}
+
 /*
  * As far as RTC functionality goes, all models are the same. The
  * datasheets claim that different models have different number of
@@ -875,6 +878,7 @@ MODULE_DEVICE_TABLE(of, sun6i_rtc_dt_ids);
 
 static struct platform_driver sun6i_rtc_driver = {
 	.probe		= sun6i_rtc_probe,
+	.shutdown	= sun6i_rtc_shutdown,
 	.driver		= {
 		.name		= "sun6i-rtc",
 		.of_match_table = sun6i_rtc_dt_ids,
