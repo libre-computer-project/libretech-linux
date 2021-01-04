@@ -325,15 +325,29 @@ dw_hdmi_rockchip_mode_valid(struct dw_hdmi *hdmi, void *data,
 			    const struct drm_display_mode *mode)
 {
 	struct dw_hdmi_plat_data *pdata = (struct dw_hdmi_plat_data *)data;
+	const struct dw_hdmi_mpll_config *mpll_cfg = pdata->mpll_cfg;
+
 	int clock = mode->clock;
+	int i = 0;
 
 	if (pdata->ycbcr_420_allowed && drm_mode_is_420(info, mode) &&
-	    (info->color_formats & DRM_COLOR_FORMAT_YCBCR420))
+	    (info->color_formats & DRM_COLOR_FORMAT_YCBCR420)) {
 		clock /= 2;
+		mpll_cfg = pdata->mpll_cfg_420;
+	}
 
-	if (clock > 340000 ||
+	if ((!mpll_cfg && clock > 340000) ||
 	    (info->max_tmds_clock && clock > info->max_tmds_clock))
 		return MODE_CLOCK_HIGH;
+
+	if (mpll_cfg) {
+		while ((clock * 1000) < mpll_cfg[i].mpixelclock &&
+		       mpll_cfg[i].mpixelclock != (~0UL))
+		       i++;
+
+		if (mpll_cfg[i].mpixelclock == (~0UL))
+			return MODE_CLOCK_HIGH;
+	}
 
 	return drm_mode_validate_size(mode, 3840, 2160);
 }
