@@ -1191,10 +1191,18 @@ static const struct rkvdec_variant rk3399_rkvdec_variant = {
 			   RKVDEC_CAPABILITY_VP9
 };
 
+static const struct rkvdec_variant rk3288_hevc_variant = {
+        .capabilities   = RKVDEC_CAPABILITY_HEVC
+};
+
 static const struct of_device_id of_rkvdec_match[] = {
 	{
 		.compatible = "rockchip,rk3399-vdec",
 		.data = &rk3399_rkvdec_variant,
+	},
+	{
+		.compatible = "rockchip,rk3288-hevc",
+		.data = &rk3288_hevc_variant,
 	},
 	{ /* sentinel */ }
 };
