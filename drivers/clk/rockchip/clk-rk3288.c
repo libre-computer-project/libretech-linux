@@ -122,7 +122,7 @@ static struct rockchip_pll_rate_table rk3288_pll_rates[] = {
 };
 
 static struct rockchip_pll_rate_table rk3288_npll_rates[] = {
-	RK3066_PLL_RATE_NB(594000000, 1, 99, 4, 32),
+	RK3066_PLL_RATE_NB(594000000, 1, 198, 8, 1),
 	RK3066_PLL_RATE_NB(585000000, 6, 585, 4, 32),
 	RK3066_PLL_RATE_NB(432000000, 3, 216, 4, 32),
 	RK3066_PLL_RATE_NB(426000000, 3, 213, 4, 32),
