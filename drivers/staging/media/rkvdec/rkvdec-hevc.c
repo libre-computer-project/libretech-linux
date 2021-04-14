@@ -2196,8 +2196,8 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 #define REF_PIC_IDX_L1(i)			PS_FIELD((i < 4 ? 76 : 128) + (i * 5), 4)
 
 #define LOWDELAY				PS_FIELD(182, 1)
-#define SHORT_TERM_REF_PIC_SET_SIZE		PS_FIELD(183, 10)
-#define LONG_TERM_REF_PIC_SET_SIZE		PS_FIELD(193, 9)
+#define LONG_TERM_RPS_BIT_OFFSET		PS_FIELD(183, 10)
+#define SHORT_TERM_RPS_BIT_OFFSET		PS_FIELD(193, 9)
 #define NUM_RPS_POC				PS_FIELD(202, 4)
 
 	for (j = 0; j < run->num_slices; j++) {
@@ -2224,11 +2224,11 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 		// TODO: lowdelay
 		WRITE_RPS(0, LOWDELAY);
 
-		// NOTE: these two differs from mpp
+		WRITE_RPS(sl_params->long_term_ref_pic_set_size +
+			  sl_params->short_term_ref_pic_set_size,
+			  LONG_TERM_RPS_BIT_OFFSET);
 		WRITE_RPS(sl_params->short_term_ref_pic_set_size,
-			  SHORT_TERM_REF_PIC_SET_SIZE);
-		WRITE_RPS(sl_params->long_term_ref_pic_set_size,
-			  LONG_TERM_REF_PIC_SET_SIZE);
+			  SHORT_TERM_RPS_BIT_OFFSET);
 
 		WRITE_RPS(decode_params->num_poc_st_curr_before +
 			  decode_params->num_poc_st_curr_after +
