@@ -151,6 +151,9 @@ static const struct rkvdec_ctrl_desc rkvdec_hevc_ctrl_descs[] = {
 		.cfg.id = V4L2_CID_MPEG_VIDEO_HEVC_SCALING_MATRIX,
 	},
 	{
+		.cfg.id = V4L2_CID_MPEG_VIDEO_HEVC_DECODE_PARAMS,
+	},
+	{
 		.cfg.id = V4L2_CID_MPEG_VIDEO_HEVC_DECODE_MODE,
 		.cfg.min = V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_FRAME_BASED,
 		.cfg.max = V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_FRAME_BASED,

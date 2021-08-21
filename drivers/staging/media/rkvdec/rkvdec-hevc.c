@@ -116,6 +116,7 @@ struct rkvdec_hevc_priv_tbl {
 struct rkvdec_hevc_run {
 	struct rkvdec_run base;
 	const struct v4l2_ctrl_hevc_slice_params *slices_params;
+	const struct v4l2_ctrl_hevc_decode_params *decode_params;
 	const struct v4l2_ctrl_hevc_sps *sps;
 	const struct v4l2_ctrl_hevc_pps *pps;
 	const struct v4l2_ctrl_hevc_scaling_matrix *scaling_matrix;
@@ -2179,6 +2180,7 @@ static void assemble_hw_pps(struct rkvdec_ctx *ctx,
 static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 			    struct rkvdec_hevc_run *run)
 {
+	const struct v4l2_ctrl_hevc_decode_params *decode_params = run->decode_params;
 	const struct v4l2_ctrl_hevc_slice_params *sl_params;
 	const struct v4l2_hevc_dpb_entry *dpb;
 	struct rkvdec_hevc_ctx *hevc_ctx = ctx->priv;
@@ -2200,7 +2202,7 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 
 	for (j = 0; j < run->num_slices; j++) {
 		sl_params = &run->slices_params[j];
-		dpb = sl_params->dpb;
+		dpb = decode_params->dpb;
 
 		hw_ps = &priv_tbl->rps[j];
 		memset(hw_ps, 0, sizeof(*hw_ps));
@@ -2228,9 +2230,9 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 		WRITE_RPS(sl_params->long_term_ref_pic_set_size,
 			  LONG_TERM_REF_PIC_SET_SIZE);
 
-		WRITE_RPS(sl_params->num_rps_poc_st_curr_before +
-			  sl_params->num_rps_poc_st_curr_after +
-			  sl_params->num_rps_poc_lt_curr,
+		WRITE_RPS(decode_params->num_poc_st_curr_before +
+			  decode_params->num_poc_st_curr_after +
+			  decode_params->num_poc_lt_curr,
 			  NUM_RPS_POC);
 
 		//WRITE_RPS(0x3ffff, PS_FIELD(206, 18));
@@ -2280,12 +2282,12 @@ get_ref_buf(struct rkvdec_ctx *ctx, struct rkvdec_hevc_run *run,
 	    unsigned int dpb_idx)
 {
 	struct v4l2_m2m_ctx *m2m_ctx = ctx->fh.m2m_ctx;
-	const struct v4l2_ctrl_hevc_slice_params *sl_params = &run->slices_params[0];
-	const struct v4l2_hevc_dpb_entry *dpb = sl_params->dpb;
+	const struct v4l2_ctrl_hevc_decode_params *decode_params = run->decode_params;
+	const struct v4l2_hevc_dpb_entry *dpb = decode_params->dpb;
 	struct vb2_queue *cap_q = &m2m_ctx->cap_q_ctx.q;
 	int buf_idx = -1;
 
-	if (dpb_idx < sl_params->num_active_dpb_entries)
+	if (dpb_idx < decode_params->num_active_dpb_entries)
 		buf_idx = vb2_find_timestamp(cap_q,
 					     dpb[dpb_idx].timestamp, 0);
 
@@ -2303,8 +2305,9 @@ static void config_registers(struct rkvdec_ctx *ctx,
 			     struct rkvdec_hevc_run *run)
 {
 	struct rkvdec_dev *rkvdec = ctx->dev;
+	const struct v4l2_ctrl_hevc_decode_params *decode_params = run->decode_params;
 	const struct v4l2_ctrl_hevc_slice_params *sl_params = &run->slices_params[0];
-	const struct v4l2_hevc_dpb_entry *dpb = sl_params->dpb;
+	const struct v4l2_hevc_dpb_entry *dpb = decode_params->dpb;
 	struct rkvdec_hevc_ctx *hevc_ctx = ctx->priv;
 	dma_addr_t priv_start_addr = hevc_ctx->priv_tbl.dma;
 	const struct v4l2_pix_format_mplane *dst_fmt;
@@ -2366,8 +2369,8 @@ static void config_registers(struct rkvdec_ctx *ctx,
 	for (i = 0; i < 15; i++) {
 		struct vb2_buffer *vb_buf = get_ref_buf(ctx, run, i);
 
-		if (i < 4 && sl_params->num_active_dpb_entries) {
-			reg = GENMASK(sl_params->num_active_dpb_entries - 1, 0);
+		if (i < 4 && decode_params->num_active_dpb_entries) {
+			reg = GENMASK(decode_params->num_active_dpb_entries - 1, 0);
 			reg = (reg >> (i * 4)) & 0xf;
 		} else
 			reg = 0;
@@ -2376,7 +2379,7 @@ static void config_registers(struct rkvdec_ctx *ctx,
 		writel_relaxed(refer_addr | reg,
 			       rkvdec->regs + RKVDEC_REG_H264_BASE_REFER(i));
 
-		reg = RKVDEC_POC_REFER(i < sl_params->num_active_dpb_entries ? dpb[i].pic_order_cnt[0] : 0);
+		reg = RKVDEC_POC_REFER(i < decode_params->num_active_dpb_entries ? dpb[i].pic_order_cnt[0] : 0);
 		writel_relaxed(reg,
 			       rkvdec->regs + RKVDEC_REG_H264_POC_REFER0(i));
 	}
@@ -2461,7 +2464,9 @@ static void rkvdec_hevc_run_preamble(struct rkvdec_ctx *ctx,
 				     struct rkvdec_hevc_run *run)
 {
 	struct v4l2_ctrl *ctrl;
-
+	ctrl = v4l2_ctrl_find(&ctx->ctrl_hdl,
+			      V4L2_CID_MPEG_VIDEO_HEVC_DECODE_PARAMS);
+	run->decode_params = ctrl ? ctrl->p_cur.p : NULL;
 	ctrl = v4l2_ctrl_find(&ctx->ctrl_hdl,
 			      V4L2_CID_MPEG_VIDEO_HEVC_SLICE_PARAMS);
 	run->slices_params = ctrl ? ctrl->p_cur.p : NULL;
