@@ -2048,7 +2048,7 @@ static void assemble_hw_pps(struct rkvdec_ctx *ctx,
 	/* write sps */
 	WRITE_PPS(sps->video_parameter_set_id, VIDEO_PARAMETER_SET_ID);
 	WRITE_PPS(sps->seq_parameter_set_id, SEQ_PARAMETER_SET_ID);
-	WRITE_PPS(1, CHROMA_FORMAT_IDC);
+	WRITE_PPS(sps->chroma_format_idc, CHROMA_FORMAT_IDC);
 	WRITE_PPS(sps->pic_width_in_luma_samples, PIC_WIDTH_IN_LUMA_SAMPLES);
 	WRITE_PPS(sps->pic_height_in_luma_samples, PIC_HEIGHT_IN_LUMA_SAMPLES);
 	WRITE_PPS(sps->bit_depth_luma_minus8 + 8, BIT_DEPTH_LUMA);
