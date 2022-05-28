@@ -85,7 +85,7 @@ static struct ccu_div r_apb2_clk = {
 static SUNXI_CCU_GATE(r_apb1_timer_clk,	"r-apb1-timer",	"r-apb1",
 		      0x11c, BIT(0), 0);
 static SUNXI_CCU_GATE(r_apb1_twd_clk,	"r-apb1-twd",	"r-apb1",
-		      0x12c, BIT(0), 0);
+		      0x12c, BIT(0), CLK_IS_CRITICAL);
 static SUNXI_CCU_GATE(r_apb1_pwm_clk,	"r-apb1-pwm",	"r-apb1",
 		      0x13c, BIT(0), 0);
 static SUNXI_CCU_GATE(r_apb2_uart_clk,	"r-apb2-uart",	"r-apb2",

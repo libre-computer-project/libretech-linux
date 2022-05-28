@@ -91,7 +91,7 @@ static SUNXI_CCU_GATE_DATA(r_apb1_timer_clk, "r-apb1-timer", clk_parent_r_apb1,
 			   0x11c, BIT(0), 0);
 
 static SUNXI_CCU_GATE_DATA(r_apb1_twd_clk, "r-apb1-twd", clk_parent_r_apb1,
-			   0x12c, BIT(0), 0);
+			   0x12c, BIT(0), CLK_IS_CRITICAL);
 
 static const char * const r_apb1_pwm_clk_parents[] = { "dcxo24M", "osc32k",
 						       "iosc" };
