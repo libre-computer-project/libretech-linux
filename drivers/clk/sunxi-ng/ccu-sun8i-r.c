@@ -73,7 +73,7 @@ static SUNXI_CCU_GATE_HWS(apb0_uart_clk,	"apb0-uart",
 static SUNXI_CCU_GATE_HWS(apb0_i2c_clk,		"apb0-i2c",
 			  apb0_gate_parent, 0x28, BIT(6), 0);
 static SUNXI_CCU_GATE_HWS(apb0_twd_clk,		"apb0-twd",
-			  apb0_gate_parent, 0x28, BIT(7), 0);
+			  apb0_gate_parent, 0x28, BIT(7), CLK_IS_CRITICAL);
 
 static const char * const r_mod0_default_parents[] = { "osc32k", "osc24M" };
 static SUNXI_CCU_MP_WITH_MUX_GATE(ir_clk, "ir",
