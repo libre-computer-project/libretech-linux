@@ -674,6 +674,11 @@
 		assigned-clocks = <&cru ACLK_RKVDEC>, <&cru SCLK_VDEC_CABAC>,
 				  <&cru SCLK_VDEC_CORE>;
 		assigned-clock-rates = <400000000>, <400000000>, <300000000>;
+		resets = <&cru SRST_VDEC_H>, <&cru SRST_VDEC_A>,
+			 <&cru SRST_VDEC_CORE>, <&cru SRST_VDEC_CABAC>,
+			 <&cru SRST_VDEC_NIU_A>, <&cru SRST_VDEC_NIU_H>;
+		reset-names = "video_h", "video_a", "video_core", "video_cabac",
+			       "niu_a", "niu_h";
 		iommus = <&vdec_mmu>;
 		power-domains = <&power RK3328_PD_VIDEO>;
 	};
