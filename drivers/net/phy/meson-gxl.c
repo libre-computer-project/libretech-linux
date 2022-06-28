@@ -13,6 +13,7 @@
 #include <linux/phy.h>
 #include <linux/netdevice.h>
 #include <linux/bitfield.h>
+#include <linux/delay.h>
 
 #define TSTCNTL		20
 #define  TSTCNTL_READ		BIT(15)
@@ -39,6 +40,11 @@
 #define BANK_ANALOG_DSP		0
 #define BANK_WOL		1
 #define BANK_BIST		3
+
+#define A3_CONFIG	0x14
+#define A6_CONFIG	0x17
+#define A7_CONFIG	0x18
+#define A8_CONFIG	0x1a
 
 /* WOL Registers */
 #define LPI_STATUS	0xc
@@ -121,9 +127,59 @@ out:
 	return ret;
 }
 
+static int meson_g12_analog_init(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A7_CONFIG, 0x3);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static void meson_g12_link_change_notify(struct phy_device *phydev)
+{
+	if (phydev->state == PHY_RUNNING && phydev->speed == SPEED_100) {
+		int ret = meson_g12_analog_init(phydev);
+
+		if (ret)
+			phydev_err(phydev, "Analog init failed\n");
+	}
+}
+
+static int meson_gxl_analog_init(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A3_CONFIG, 0xa900);
+	if (ret)
+		return ret;
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A7_CONFIG, 0xc);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static void meson_gxl_link_change_notify(struct phy_device *phydev)
+{
+	if (phydev->state == PHY_RUNNING && phydev->speed == SPEED_100) {
+		int ret = meson_gxl_analog_init(phydev);
+
+		if (ret)
+			phydev_err(phydev, "Analog init failed\n");
+	}
+}
+
 static int meson_gxl_config_init(struct phy_device *phydev)
 {
 	int ret;
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A6_CONFIG, 0x8E0D);
+	if (ret)
+		return ret;
 
 	/* Enable fractional PLL */
 	ret = meson_gxl_write_reg(phydev, BANK_BIST, FR_PLL_CONTROL, 0x5);
@@ -135,8 +191,23 @@ static int meson_gxl_config_init(struct phy_device *phydev)
 	if (ret)
 		return ret;
 
-	/* Program fraction FR_PLL_DIV1 */
+	/* Program fraction FR_PLL_DIV0 */
 	ret = meson_gxl_write_reg(phydev, BANK_BIST, FR_PLL_DIV0, 0xaaaa);
+	if (ret)
+		return ret;
+
+	/* Let the PLL stabilize */
+	mdelay(10);
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A7_CONFIG, 0xc);
+	if (ret)
+		return ret;
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A6_CONFIG, 0x1A0C);
+	if (ret)
+		return ret;
+
+	ret = meson_gxl_write_reg(phydev, BANK_ANALOG_DSP, A8_CONFIG, 0x6400);
 	if (ret)
 		return ret;
 
@@ -261,16 +332,19 @@ static struct phy_driver meson_gxl_phy[] = {
 		.handle_interrupt = meson_gxl_handle_interrupt,
 		.suspend        = genphy_suspend,
 		.resume         = genphy_resume,
+		.link_change_notify	= meson_gxl_link_change_notify,
 	}, {
 		PHY_ID_MATCH_EXACT(0x01803301),
 		.name		= "Meson G12A Internal PHY",
 		/* PHY_BASIC_FEATURES */
 		.flags		= PHY_IS_INTERNAL,
+		.config_init	= meson_g12_analog_init,
 		.soft_reset     = genphy_soft_reset,
 		.config_intr	= meson_gxl_config_intr,
 		.handle_interrupt = meson_gxl_handle_interrupt,
 		.suspend        = genphy_suspend,
 		.resume         = genphy_resume,
+		.link_change_notify	= meson_g12_link_change_notify,
 	},
 };
 
