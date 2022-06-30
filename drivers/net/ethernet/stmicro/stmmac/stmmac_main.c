@@ -1072,7 +1072,6 @@ static void stmmac_mac_link_up(struct phylink_config *config,
 
 	writel(ctrl, priv->ioaddr + MAC_CTRL_REG);
 
-	stmmac_mac_set(priv, priv->ioaddr, true);
 	if (phy && priv->dma_cap.eee) {
 		priv->eee_active = phy_init_eee(phy, 1) >= 0;
 		priv->eee_enabled = stmmac_eee_init(priv);
