@@ -105,6 +105,7 @@ debarch=
 set_debarch
 
 email=${DEBEMAIL-$EMAIL}
+lc_ktype=${LC_KTYPE}
 
 # use email string directly if it contains <email>
 if echo $email | grep -q '<.*>'; then
@@ -181,7 +182,7 @@ Homepage: https://www.kernel.org/
 Package: $packagename-$version
 Section: kernel
 Priority: optional
-Provides: linux-image-lc, wireguard-modules
+Provides: linux-image-$lc_ktype, wireguard-modules
 Architecture: $debarch
 Description: Linux kernel, version $version
  This package contains the Linux kernel, modules and corresponding other
@@ -202,7 +203,7 @@ cat <<EOF >> debian/control
 Package: linux-headers-$version
 Section: kernel
 Priority: optional
-Provides: linux-headers-lc
+Provides: linux-headers-$lc_ktype
 Architecture: $debarch
 Description: Linux kernel headers for $version on $debarch
  This package provides kernel header files for $version on $debarch
