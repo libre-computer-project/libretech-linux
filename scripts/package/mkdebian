@@ -179,14 +179,16 @@ Build-Depends: bc, rsync, kmod, cpio, bison, flex | flex:native $extra_build_dep
 Homepage: https://www.kernel.org/
 
 Package: $packagename-$version
+Section: kernel
+Priority: optional
+Provides: linux-image-lc, wireguard-modules
 Architecture: $debarch
 Description: Linux kernel, version $version
  This package contains the Linux kernel, modules and corresponding other
  files, version: $version.
 
-Package: linux-libc-dev
+Package: linux-libc-dev-$version
 Section: devel
-Provides: linux-kernel-headers
 Architecture: $debarch
 Description: Linux support headers for userspace development
  This package provides userspaces headers from the Linux kernel.  These headers
@@ -198,6 +200,9 @@ if is_enabled CONFIG_MODULES; then
 cat <<EOF >> debian/control
 
 Package: linux-headers-$version
+Section: kernel
+Priority: optional
+Provides: linux-headers-lc
 Architecture: $debarch
 Description: Linux kernel headers for $version on $debarch
  This package provides kernel header files for $version on $debarch
