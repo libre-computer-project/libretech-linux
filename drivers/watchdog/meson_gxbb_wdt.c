@@ -156,6 +156,7 @@ static int meson_gxbb_wdt_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct meson_gxbb_wdt *data;
 	int ret;
+	u32 regval;
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -189,6 +190,8 @@ static int meson_gxbb_wdt_probe(struct platform_device *pdev)
 	watchdog_set_nowayout(&data->wdt_dev, nowayout);
 	watchdog_set_drvdata(&data->wdt_dev, data);
 
+	regval = readl(data->reg_base + GXBB_WDT_CTRL_REG);
+
 	/* Setup with 1ms timebase */
 	writel(((clk_get_rate(data->clk) / 1000) & GXBB_WDT_CTRL_DIV_MASK) |
 		GXBB_WDT_CTRL_EE_RESET |
@@ -197,6 +200,13 @@ static int meson_gxbb_wdt_probe(struct platform_device *pdev)
 		data->reg_base + GXBB_WDT_CTRL_REG);
 
 	meson_gxbb_wdt_set_timeout(&data->wdt_dev, data->wdt_dev.timeout);
+	
+	if ((regval & GXBB_WDT_CTRL_EN) != 0) {
+		ret = meson_gxbb_wdt_start(&data->wdt_dev);
+		if (ret)
+			return ret;
+		set_bit(WDOG_HW_RUNNING, &data->wdt_dev.status);
+	}
 
 	return devm_watchdog_register_device(dev, &data->wdt_dev);
 }
