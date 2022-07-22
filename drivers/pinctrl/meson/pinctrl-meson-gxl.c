@@ -409,8 +409,6 @@ static struct meson_pmx_group meson_gxl_periphs_groups[] = {
 	GPIO_GROUP(GPIOCLK_0),
 	GPIO_GROUP(GPIOCLK_1),
 
-	GPIO_GROUP(GPIO_TEST_N),
-
 	/* Bank X */
 	GROUP(sdio_d0,		5,	31),
 	GROUP(sdio_d1,		5,	30),
@@ -539,6 +537,8 @@ static struct meson_pmx_group meson_gxl_aobus_groups[] = {
 	GPIO_GROUP(GPIOAO_7),
 	GPIO_GROUP(GPIOAO_8),
 	GPIO_GROUP(GPIOAO_9),
+
+	GPIO_GROUP(GPIO_TEST_N),
 
 	/* bank AO */
 	GROUP(uart_tx_ao_b_0,	0,	26),
