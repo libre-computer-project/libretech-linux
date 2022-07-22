@@ -52,6 +52,7 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
+#include <linux/firmware/meson/meson_sm.h>
 
 #include "../core.h"
 #include "../pinctrl-utils.h"
@@ -101,9 +102,15 @@ static void meson_calc_reg_and_bit(struct meson_bank *bank, unsigned int pin,
 {
 	struct meson_reg_desc *desc = &bank->regs[reg_type];
 
-	*bit = (desc->bit + pin - bank->first) * meson_bit_strides[reg_type];
-	*reg = (desc->reg + (*bit / 32)) * 4;
-	*bit &= 0x1f;
+	/* TEST_N pin direction needs to be set using a Secure Monitor call */
+	if (reg_type == MESON_REG_DIR && bank->smc) {
+		*reg = desc->reg;
+		*bit = desc->bit;
+	} else {
+		*bit = (desc->bit + pin - bank->first) * meson_bit_strides[reg_type];
+		*reg = (desc->reg + (*bit / 32)) * 4;
+		*bit &= 0x1f;
+	}
 }
 
 static int meson_get_groups_count(struct pinctrl_dev *pcdev)
@@ -191,6 +198,11 @@ static int meson_pinconf_set_gpio_bit(struct meson_pinctrl *pc,
 		return ret;
 
 	meson_calc_reg_and_bit(bank, pin, reg_type, &reg, &bit);
+	/* TEST_N pin direction needs to be set using a Secure Monitor call */
+	if (reg_type == MESON_REG_DIR && bank->smc) {
+		u32 smc_ret = 0;
+		return meson_sm_call(pc->fw, SM_TEST_N_DIR, &smc_ret, arg ? 0 : bit, 0, 0, 0, 0);
+	}
 	return regmap_update_bits(pc->reg_gpio, reg, BIT(bit),
 				  arg ? BIT(bit) : 0);
 }
@@ -737,12 +749,25 @@ EXPORT_SYMBOL_GPL(meson_a1_parse_dt_extra);
 int meson_pinctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct meson_sm_firmware *fw;
+	struct device_node *sm_np;
 	struct meson_pinctrl *pc;
 	int ret;
+
+	sm_np = of_find_compatible_node(NULL, NULL, "amlogic,meson-gxbb-sm");
+	if (!sm_np) {
+		dev_err(&pdev->dev, "no secure-monitor node\n");
+		return -ENODEV;
+	}
 
 	pc = devm_kzalloc(dev, sizeof(struct meson_pinctrl), GFP_KERNEL);
 	if (!pc)
 		return -ENOMEM;
+
+	pc->fw = meson_sm_get(sm_np);
+	of_node_put(sm_np);
+	if (!pc->fw)
+		return -EPROBE_DEFER;
 
 	pc->dev = dev;
 	pc->data = (struct meson_pinctrl_data *) of_device_get_match_data(dev);

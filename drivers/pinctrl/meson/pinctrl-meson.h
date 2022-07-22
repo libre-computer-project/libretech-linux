@@ -100,6 +100,7 @@ struct meson_bank {
 	const char *name;
 	unsigned int first;
 	unsigned int last;
+	bool smc; /* Direction needs to use a Secure Monitor call */
 	int irq_first;
 	int irq_last;
 	struct meson_reg_desc regs[MESON_NUM_REG];
@@ -132,6 +133,7 @@ struct meson_pinctrl {
 	struct regmap *reg_ds;
 	struct gpio_chip chip;
 	struct device_node *of_node;
+	struct meson_sm_firmware *fw;
 };
 
 #define FUNCTION(fn)							\
@@ -141,12 +143,13 @@ struct meson_pinctrl {
 		.num_groups = ARRAY_SIZE(fn ## _groups),		\
 	}
 
-#define BANK_DS(n, f, l, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib,     \
+#define __BANK(n, f, l, sm, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib,     \
 		dsr, dsb)                                                      \
 	{								\
 		.name		= n,					\
 		.first		= f,					\
 		.last		= l,					\
+		.smc		= sm,					\
 		.irq_first	= fi,					\
 		.irq_last	= li,					\
 		.regs = {						\
@@ -160,7 +163,13 @@ struct meson_pinctrl {
 	 }
 
 #define BANK(n, f, l, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib) \
-	BANK_DS(n, f, l, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib, 0, 0)
+	__BANK(n, f, l, false, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib, 0, 0)
+
+#define BANK_DS(n, f, l, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib, dsr, dsb) \
+	__BANK(n, f, l, false, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib, dsr, dsb)
+
+#define BANK_SMC(n, f, l, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib) \
+	__BANK(n, f, l, true, fi, li, per, peb, pr, pb, dr, db, or, ob, ir, ib, 0, 0)
 
 #define MESON_PIN(x) PINCTRL_PIN(x, #x)
 
