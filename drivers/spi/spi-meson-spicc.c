@@ -752,7 +752,7 @@ static int meson_spicc_probe(struct platform_device *pdev)
 	ret = meson_spicc_clk_init(spicc);
 	if (ret) {
 		dev_err(&pdev->dev, "clock registration failed\n");
-		goto out_clk;
+		goto out_master;
 	}
 
 	ret = devm_spi_register_master(&pdev->dev, master);
