@@ -94,6 +94,7 @@ else
 	packageversion=$version-$revision
 fi
 sourcename=$KDEB_SOURCENAME
+metapackagesuffix=${sourcename#linux-}
 
 if [ "$ARCH" = "um" ] ; then
 	packagename=user-mode-linux
@@ -105,7 +106,6 @@ debarch=
 set_debarch
 
 email=${DEBEMAIL-$EMAIL}
-lc_ktype=${LC_KTYPE}
 
 # use email string directly if it contains <email>
 if echo $email | grep -q '<.*>'; then
@@ -179,17 +179,25 @@ Rules-Requires-Root: no
 Build-Depends: bc, rsync, kmod, cpio, bison, flex | flex:native $extra_build_depends
 Homepage: https://www.kernel.org/
 
+Package: $packagename-$metapackagesuffix
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Provides: linux-image-generic, wireguard-modules
+Description: Libre Computer Linux $branch $debarch (meta-package)
+ This package tracks Libre Computer mainline kernel.
+
 Package: $packagename-$version
 Section: kernel
 Priority: optional
-Provides: linux-image-$lc_ktype, wireguard-modules
 Architecture: $debarch
 Description: Linux kernel, version $version
  This package contains the Linux kernel, modules and corresponding other
  files, version: $version.
 
-Package: linux-libc-dev-$version
+Package: linux-libc-dev
 Section: devel
+Provides: linux-kernel-headers
 Architecture: $debarch
 Description: Linux support headers for userspace development
  This package provides userspaces headers from the Linux kernel.  These headers
@@ -203,7 +211,6 @@ cat <<EOF >> debian/control
 Package: linux-headers-$version
 Section: kernel
 Priority: optional
-Provides: linux-headers-$lc_ktype
 Architecture: $debarch
 Description: Linux kernel headers for $version on $debarch
  This package provides kernel header files for $version on $debarch
