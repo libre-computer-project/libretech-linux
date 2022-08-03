@@ -214,8 +214,8 @@ if [ "$ARCH" != "um" ]; then
 		create_package linux-headers-$version debian/linux-headers
 	fi
 
-	deploy_libc_headers debian/linux-libc-dev
-	create_package linux-libc-dev-$version debian/linux-libc-dev
+	#deploy_libc_headers debian/linux-libc-dev
+	#create_package linux-libc-dev-$version debian/linux-libc-dev
 fi
 
 create_package "$packagename" "$tmpdir"
