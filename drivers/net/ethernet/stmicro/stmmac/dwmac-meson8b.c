@@ -78,6 +78,9 @@
  */
 #define PRG_ETH1_CFG_RXCLK_DLY		GENMASK(19, 16)
 
+#define PRG_ETH2			0x18
+#define PRG_ETH2_CFG			GENMASK(31,0)
+
 struct meson8b_dwmac;
 
 struct meson8b_dwmac_data {
@@ -226,6 +229,8 @@ static int meson8b_set_phy_mode(struct meson8b_dwmac *dwmac)
 		/* disable RGMII mode -> enables RMII mode */
 		meson8b_dwmac_mask_bits(dwmac, PRG_ETH0,
 					PRG_ETH0_RGMII_MODE, 0);
+		meson8b_dwmac_mask_bits(dwmac, PRG_ETH2,
+					PRG_ETH2_CFG, 0x10110181);
 		break;
 	default:
 		dev_err(dwmac->dev, "fail to set phy-mode %s\n",
