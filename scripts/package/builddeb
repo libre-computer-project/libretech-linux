@@ -111,6 +111,8 @@ tmpdir=debian/linux-image
 dbg_dir=debian/linux-image-dbg
 packagename=linux-image-$version
 dbg_packagename=$packagename-dbg
+sourcename=$KDEB_SOURCENAME
+metapackagesuffix=${sourcename#linux-}
 
 if [ "$ARCH" = "um" ] ; then
 	packagename=user-mode-linux-$version
@@ -213,12 +215,14 @@ if [ "$ARCH" != "um" ]; then
 		deploy_kernel_headers debian/linux-headers
 		create_package linux-headers-$version debian/linux-headers
 	fi
-
+	create_package linux-headers-$metapackagesuffix debian/linux-headers-meta
+	
 	#deploy_libc_headers debian/linux-libc-dev
 	#create_package linux-libc-dev-$version debian/linux-libc-dev
 fi
 
 create_package "$packagename" "$tmpdir"
+create_package linux-image-$metapackagesuffix debian/linux-images-meta
 
 if [ -n "$BUILD_DEBUG" ] ; then
 	# Build debug package
