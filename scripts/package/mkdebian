@@ -184,6 +184,7 @@ Section: kernel
 Priority: optional
 Architecture: $debarch
 Provides: linux-image-generic, wireguard-modules
+Depends: $packagename-$version
 Description: Libre Computer Linux $branch $debarch (meta-package)
  This package tracks Libre Computer mainline kernel.
 
@@ -208,13 +209,21 @@ EOF
 if is_enabled CONFIG_MODULES; then
 cat <<EOF >> debian/control
 
+Package: linux-headers-$metapackagesuffix
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Provides: linux-headers-generic
+Depends: linux-headers-$version
+Description: Linux kernel headers for branch $debarch (meta-package)
+ This package tracks Libre Computer mainline kernel.
+
 Package: linux-headers-$version
 Section: kernel
 Priority: optional
 Architecture: $debarch
 Description: Linux kernel headers for $version on $debarch
- This package provides kernel header files for $version on $debarch
- .
+ This package provides kernel header files for $version on $debarch.
  This is useful for people who need to build external modules
 EOF
 fi
