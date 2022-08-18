@@ -797,8 +797,7 @@ static int hdmi_codec_pcm_new(struct snd_soc_pcm_runtime *rtd,
 		if (!kctl)
 			return -ENOMEM;
 
-		if (!rtd->pcm->internal)
-			kctl->id.device = rtd->pcm->device;
+		kctl->id.device = rtd->pcm->device;
 		ret = snd_ctl_add(rtd->card->snd_card, kctl);
 		if (ret < 0)
 			return ret;
