@@ -2214,7 +2214,7 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 				  REF_PIC_LONG_TERM_L0(i));
 			WRITE_RPS(sl_params->ref_idx_l0[i], REF_PIC_IDX_L0(i));
 
-			if (dpb[sl_params->ref_idx_l0[i]].pic_order_cnt[0] > sl_params->slice_pic_order_cnt)
+			if (dpb[sl_params->ref_idx_l0[i]].pic_order_cnt_val > sl_params->slice_pic_order_cnt)
 				lowdelay = 0;
 
 		}
@@ -2224,7 +2224,7 @@ static void assemble_hw_rps(struct rkvdec_ctx *ctx,
 				  REF_PIC_LONG_TERM_L1(i));
 			WRITE_RPS(sl_params->ref_idx_l1[i], REF_PIC_IDX_L1(i));
 
-			if (dpb[sl_params->ref_idx_l1[i]].pic_order_cnt[0] > sl_params->slice_pic_order_cnt)
+			if (dpb[sl_params->ref_idx_l1[i]].pic_order_cnt_val > sl_params->slice_pic_order_cnt)
 				lowdelay = 0;
 		}
 
@@ -2387,7 +2387,7 @@ static void config_registers(struct rkvdec_ctx *ctx,
 		writel_relaxed(refer_addr | reg,
 			       rkvdec->regs + RKVDEC_REG_H264_BASE_REFER(i));
 
-		reg = RKVDEC_POC_REFER(i < decode_params->num_active_dpb_entries ? dpb[i].pic_order_cnt[0] : 0);
+		reg = RKVDEC_POC_REFER(i < decode_params->num_active_dpb_entries ? dpb[i].pic_order_cnt_val : 0);
 		writel_relaxed(reg,
 			       rkvdec->regs + RKVDEC_REG_H264_POC_REFER0(i));
 	}
