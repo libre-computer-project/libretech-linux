@@ -867,10 +867,10 @@ meson_venc_hdmi_supported_mode(const struct drm_display_mode *mode)
 		return MODE_BAD;
 
 	/* support higher resolution than 1920x1080 */
-	if (mode->hdisplay < 640 || mode->hdisplay > 2560)
+	if (mode->hdisplay < 320 || mode->hdisplay > 3840)
 		return MODE_BAD_HVALUE;
 
-	if (mode->vdisplay < 480 || mode->vdisplay > 1600)
+	if (mode->vdisplay < 320 || mode->vdisplay > 3840)
 		return MODE_BAD_VVALUE;
 
 	return MODE_OK;
