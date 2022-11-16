@@ -291,6 +291,10 @@ static inline void meson_spicc_setup_burst(struct meson_spicc_device *spicc)
 static irqreturn_t meson_spicc_irq(int irq, void *data)
 {
 	struct meson_spicc_device *spicc = (void *) data;
+	struct spi_device *spi_dev;
+
+	spi_dev = spicc->message->spi;
+	gpiod_set_value(spi_dev->cs_gpiod, 0);
 
 	writel_bits_relaxed(SPICC_TC, SPICC_TC, spicc->base + SPICC_STATREG);
 
@@ -308,6 +312,8 @@ static irqreturn_t meson_spicc_irq(int irq, void *data)
 
 	/* Setup burst */
 	meson_spicc_setup_burst(spicc);
+
+	gpiod_set_value(spi_dev->cs_gpiod, 1);
 
 	/* Start burst */
 	writel_bits_relaxed(SPICC_XCH, SPICC_XCH, spicc->base + SPICC_CONREG);
