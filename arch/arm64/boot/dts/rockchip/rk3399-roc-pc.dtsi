@@ -529,13 +529,12 @@
 	status = "okay";
 
 	fusb1: usb-typec@22 {
-		compatible = "fcs,fusb302";
+		compatible = "fairchild,fusb302";
 		reg = <0x22>;
-		interrupt-parent = <&gpio1>;
-		interrupts = <1 IRQ_TYPE_LEVEL_LOW>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&fusb1_int>;
-		vbus-supply = <&vcc_vbus_typec1>;
+		pinctrl-0 = <&fusb1_int &vcc_vbus_typec1_en>;
+		int-n-gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
+		vbus-5v-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};
 };
@@ -775,7 +774,6 @@
 	status = "okay";
 
 	u2phy1_otg: otg-port {
-		phy-supply = <&vcc_vbus_typec1>;
 		status = "okay";
 	};
 
