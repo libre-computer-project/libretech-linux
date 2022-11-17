@@ -12,8 +12,8 @@
 };
 
 &cdn_dp {
-	extcon = <&fusb0 >;
-	phys = <&tcphy0_dp >;
+	extcon = <&fusb0 &fusb1 >;
+	phys = <&tcphy0_dp &tcphy1_dp>;
 	status = "okay";
 };
 
@@ -28,4 +28,16 @@
 
 &usbdrd_dwc3_0 {
 	extcon = <&fusb0>;
+};
+
+&usbdrd3_1 {
+	extcon = <&fusb1>;
+};
+
+&tcphy1 {
+	extcon = <&fusb1>;
+};
+
+&u2phy1 {
+	extcon = <&fusb1>;
 };
