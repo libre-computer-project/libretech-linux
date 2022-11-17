@@ -10,3 +10,22 @@
 	model = "Firefly ROC-RK3399-PC Board";
 	compatible = "firefly,roc-rk3399-pc", "rockchip,rk3399";
 };
+
+&cdn_dp {
+	extcon = <&fusb0 >;
+	phys = <&tcphy0_dp >;
+	status = "okay";
+};
+
+
+&tcphy0 {
+	extcon = <&fusb0>;
+};
+
+&u2phy0 {
+	extcon = <&fusb0>;
+};
+
+&usbdrd_dwc3_0 {
+	extcon = <&fusb0>;
+};
