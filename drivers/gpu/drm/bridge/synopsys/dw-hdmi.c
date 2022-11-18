@@ -2749,7 +2749,7 @@ static u32 *dw_hdmi_bridge_atomic_get_output_bus_fmts(struct drm_bridge *bridge,
 
 		output_fmts[i++] = MEDIA_BUS_FMT_RGB101010_1X30;
 	}
-
+	
 	if (info->color_formats & DRM_COLOR_FORMAT_YCBCR422)
 		output_fmts[i++] = MEDIA_BUS_FMT_UYVY8_1X16;
 
