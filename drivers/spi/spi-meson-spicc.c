@@ -339,9 +339,9 @@ static void meson_spicc_auto_io_delay(struct meson_spicc_device *spicc)
 
 	if (hz >= 100000000)
 		cap_delay = SPICC_CAP_DELAY_1_CYCLE;
-	else if (hz >= 83333333)
+	else if (hz >= 80000000)
 		cap_delay = SPICC_CAP_NO_DELAY;
-	else if (hz >= 41666667)
+	else if (hz >= 40000000)
 		cap_delay = SPICC_CAP_AHEAD_1_CYCLE;
 	else if (div >= 16)
 		mi_delay = SPICC_MI_DELAY_3_CYCLE;
@@ -926,13 +926,13 @@ static int meson_spicc_remove(struct platform_device *pdev)
 }
 
 static const struct meson_spicc_data meson_spicc_gx_data = {
-	.max_speed_hz		= 41666667,
+	.max_speed_hz		= 30000000,
 	.min_speed_hz		= 325000,
 	.fifo_size		= 16,
 };
 
 static const struct meson_spicc_data meson_spicc_axg_data = {
-	.max_speed_hz		= 83333333,
+	.max_speed_hz		= 80000000,
 	.min_speed_hz		= 325000,
 	.fifo_size		= 16,
 	.has_oen		= true,
@@ -940,7 +940,7 @@ static const struct meson_spicc_data meson_spicc_axg_data = {
 };
 
 static const struct meson_spicc_data meson_spicc_g12a_data = {
-	.max_speed_hz		= 166666667,
+	.max_speed_hz		= 166666666,
 	.min_speed_hz		= 50000,
 	.fifo_size		= 15,
 	.has_oen		= true,
