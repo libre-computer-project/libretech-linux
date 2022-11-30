@@ -749,7 +749,6 @@ EXPORT_SYMBOL_GPL(meson_a1_parse_dt_extra);
 int meson_pinctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct meson_sm_firmware *fw;
 	struct device_node *sm_np;
 	struct meson_pinctrl *pc;
 	int ret;
