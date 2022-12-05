@@ -14,6 +14,7 @@
 
 #include <video/mipi_display.h>
 
+#include <drm/drm_aperture.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_helper.h>
@@ -236,6 +237,10 @@ static int ili9486_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
+	ret = drm_aperture_remove_framebuffers(false, &ili9486_driver);
+	if (ret)
+		goto free_drm;
+
 	drm_mode_config_reset(drm);
 
 	ret = drm_dev_register(drm, 0);
@@ -247,6 +252,10 @@ static int ili9486_probe(struct spi_device *spi)
 	drm_fbdev_generic_setup(drm, 0);
 
 	return 0;
+
+free_drm:
+	drm_dev_put(drm);
+	return ret;
 }
 
 static void ili9486_remove(struct spi_device *spi)
