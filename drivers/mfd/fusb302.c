@@ -3558,7 +3558,7 @@ IRQ_ERR:
 	return ret;
 }
 
-static void fusb30x_remove(struct i2c_client *client)
+static int fusb30x_remove(struct i2c_client *client)
 {
 	struct fusb30x_chip *chip = i2c_get_clientdata(client);
 
