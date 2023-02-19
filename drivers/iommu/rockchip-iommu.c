@@ -111,6 +111,7 @@ struct rk_iommu {
 	struct clk_bulk_data *clocks;
 	int num_clocks;
 	bool reset_disabled;
+	bool dlr_disable; /* avoid access iommu when runtime ops called */
 	struct iommu_device iommu;
 	struct list_head node; /* entry in rk_iommu_domain.iommus */
 	struct iommu_domain *domain; /* domain to which iommu is attached */
@@ -1251,6 +1252,8 @@ static int rk_iommu_probe(struct platform_device *pdev)
 
 	iommu->reset_disabled = device_property_read_bool(dev,
 					"rockchip,disable-mmu-reset");
+	iommu->dlr_disable = device_property_read_bool(dev,
+					"rockchip,disable-device-link-resume");
 
 	iommu->num_clocks = ARRAY_SIZE(rk_iommu_clocks);
 	iommu->clocks = devm_kcalloc(iommu->dev, iommu->num_clocks,
@@ -1349,6 +1352,9 @@ static int __maybe_unused rk_iommu_suspend(struct device *dev)
 	if (!iommu->domain)
 		return 0;
 
+	if (iommu->dlr_disable)
+		return 0;
+
 	rk_iommu_disable(iommu);
 	return 0;
 }
@@ -1358,6 +1364,9 @@ static int __maybe_unused rk_iommu_resume(struct device *dev)
 	struct rk_iommu *iommu = dev_get_drvdata(dev);
 
 	if (!iommu->domain)
+		return 0;
+
+	if (iommu->dlr_disable)
 		return 0;
 
 	return rk_iommu_enable(iommu);
