@@ -28,7 +28,7 @@
 #include <drm/drm_rect.h>
 #include <video/mipi_display.h>
 
-#define MIPI_DBI_MAX_SPI_READ_SPEED 2000000 /* 2MHz */
+#define MIPI_DBI_MAX_SPI_READ_SPEED 256000000 /* 256MHz */
 
 #define DCS_POWER_MODE_DISPLAY			BIT(2)
 #define DCS_POWER_MODE_DISPLAY_NORMAL_MODE	BIT(3)
@@ -727,7 +727,7 @@ u32 mipi_dbi_spi_cmd_max_speed(struct spi_device *spi, size_t len)
 	if (len > 64)
 		return 0; /* use default */
 
-	return min_t(u32, 10000000, spi->max_speed_hz);
+	return min_t(u32, 256000000, spi->max_speed_hz);
 }
 EXPORT_SYMBOL(mipi_dbi_spi_cmd_max_speed);
 
