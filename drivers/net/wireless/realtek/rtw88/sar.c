@@ -2,6 +2,8 @@
 /* Copyright(c) 2018-2021  Realtek Corporation
  */
 
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 #include "sar.h"
 #include "phy.h"
 #include "debug.h"
@@ -62,8 +64,6 @@ static const struct cfg80211_sar_freq_ranges rtw_common_sar_freq_ranges[] = {
 	[RTW_SAR_BAND_4] = { .start_freq = 5745, .end_freq = 5825, },
 };
 
-static_assert(ARRAY_SIZE(rtw_common_sar_freq_ranges) == RTW_SAR_BAND_NR);
-
 const struct cfg80211_sar_capa rtw_sar_capa = {
 	.type = NL80211_SAR_TYPE_POWER,
 	.num_freq_ranges = RTW_SAR_BAND_NR,
@@ -112,3 +112,5 @@ int rtw_set_sar_specs(struct rtw_dev *rtwdev,
 
 	return rtw_apply_sar(rtwdev, &new);
 }
+#endif
+
