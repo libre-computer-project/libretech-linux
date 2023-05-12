@@ -156,6 +156,15 @@ void rtw_rx_fill_rx_status(struct rtw_dev *rtwdev,
 	u8 path;
 
 	memset(rx_status, 0, sizeof(*rx_status));
+	if (!hw) {
+		rtw_warn(rtwdev, "hw NULL in %s\n", __func__);
+		return;
+	}
+	if (!hw->conf.chandef.chan) {
+		rtw_warn(rtwdev, "hw->conf.chandef.chan NULL in %s\n", __func__);
+		return;
+	}
+
 	rx_status->freq = hw->conf.chandef.chan->center_freq;
 	rx_status->band = hw->conf.chandef.chan->band;
 	if (rtw_fw_feature_check(&rtwdev->fw, FW_FEATURE_SCAN_OFFLOAD) &&
@@ -167,9 +176,17 @@ void rtw_rx_fill_rx_status(struct rtw_dev *rtwdev,
 		rx_status->flag |= RX_FLAG_DECRYPTED;
 
 	if (pkt_stat->rate >= DESC_RATEVHT1SS_MCS0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
 		rx_status->encoding = RX_ENC_VHT;
+#else
+		rx_status->flag |= RX_FLAG_VHT;
+#endif
 	else if (pkt_stat->rate >= DESC_RATEMCS0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
 		rx_status->encoding = RX_ENC_HT;
+#else
+		rx_status->flag |= RX_FLAG_VHT;
+#endif
 
 	if (rx_status->band == NL80211_BAND_5GHZ &&
 	    pkt_stat->rate >= DESC_RATE6M &&
@@ -188,11 +205,23 @@ void rtw_rx_fill_rx_status(struct rtw_dev *rtwdev,
 	rx_status->mactime = pkt_stat->tsf_low;
 
 	if (pkt_stat->bw == RTW_CHANNEL_WIDTH_80)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
 		rx_status->bw = RATE_INFO_BW_80;
+#else
+		rx_status->vht_flag |= RX_VHT_FLAG_80MHZ;
+#endif
 	else if (pkt_stat->bw == RTW_CHANNEL_WIDTH_40)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
 		rx_status->bw = RATE_INFO_BW_40;
+#else
+		rx_status->flag |= RX_FLAG_40MHZ;
+#endif
 	else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
 		rx_status->bw = RATE_INFO_BW_20;
+#else
+		/* What goes here? */
+#endif
 
 	rx_status->signal = pkt_stat->signal_power;
 	for (path = 0; path < rtwdev->hal.rf_path_num; path++) {
