@@ -24,6 +24,7 @@ enum rtw_debug_mask {
 	RTW_DBG_ADAPTIVITY	= 0x00008000,
 	RTW_DBG_HW_SCAN		= 0x00010000,
 	RTW_DBG_STATE		= 0x00020000,
+	RTW_DBG_SDIO		= 0x00040000,
 
 	RTW_DBG_ALL		= 0xffffffff
 };
@@ -56,6 +57,7 @@ static inline void rtw_dbg(struct rtw_dev *rtwdev, enum rtw_debug_mask mask,
 
 #define rtw_info(rtwdev, a...) dev_info(rtwdev->dev, ##a)
 #define rtw_warn(rtwdev, a...) dev_warn(rtwdev->dev, ##a)
+#define rtw_warn_once(rtwdev, a...) dev_warn_once(rtwdev->dev, ##a)
 #define rtw_err(rtwdev, a...) dev_err(rtwdev->dev, ##a)
 
 #endif

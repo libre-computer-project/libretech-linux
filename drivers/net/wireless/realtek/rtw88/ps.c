@@ -61,7 +61,7 @@ int rtw_leave_ips(struct rtw_dev *rtwdev)
 		return ret;
 	}
 
-	rtw_iterate_vifs_atomic(rtwdev, rtw_restore_port_cfg_iter, rtwdev);
+	rtw_iterate_vifs(rtwdev, rtw_restore_port_cfg_iter, rtwdev);
 
 	rtw_coex_ips_notify(rtwdev, COEX_IPS_LEAVE);
 
@@ -335,10 +335,12 @@ void rtw_recalc_lps(struct rtw_dev *rtwdev, struct ieee80211_vif *new_vif)
 		__rtw_vif_recalc_lps(&data, new_vif);
 	rtw_iterate_vifs(rtwdev, rtw_vif_recalc_lps_iter, &data);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
 	if (data.count == 1 && data.found_vif->cfg.ps) {
 		rtwdev->ps_enabled = true;
 	} else {
 		rtwdev->ps_enabled = false;
 		rtw_leave_lps(rtwdev);
 	}
+#endif
 }
