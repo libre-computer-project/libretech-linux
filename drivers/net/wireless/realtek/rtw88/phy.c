@@ -10,7 +10,9 @@
 #include "phy.h"
 #include "debug.h"
 #include "regd.h"
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 #include "sar.h"
+#endif
 
 struct phy_cfg_pair {
 	u32 addr;
@@ -300,7 +302,7 @@ static void rtw_phy_stat_rssi(struct rtw_dev *rtwdev)
 
 	data.rtwdev = rtwdev;
 	data.min_rssi = U8_MAX;
-	rtw_iterate_stas_atomic(rtwdev, rtw_phy_stat_rssi_iter, &data);
+	rtw_iterate_stas(rtwdev, rtw_phy_stat_rssi_iter, &data);
 
 	dm_info->pre_min_rssi = dm_info->min_rssi;
 	dm_info->min_rssi = data.min_rssi;
@@ -544,7 +546,7 @@ static void rtw_phy_ra_info_update(struct rtw_dev *rtwdev)
 	if (rtwdev->watch_dog_cnt & 0x3)
 		return;
 
-	rtw_iterate_stas_atomic(rtwdev, rtw_phy_ra_info_update_iter, rtwdev);
+	rtw_iterate_stas(rtwdev, rtw_phy_ra_info_update_iter, rtwdev);
 }
 
 static u32 rtw_phy_get_rrsr_mask(struct rtw_dev *rtwdev, u8 rate_idx)
@@ -597,7 +599,7 @@ static void rtw_phy_rrsr_update(struct rtw_dev *rtwdev)
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 
 	dm_info->rrsr_mask_min = RRSR_RATE_ORDER_MAX;
-	rtw_iterate_stas_atomic(rtwdev, rtw_phy_rrsr_mask_min_iter, rtwdev);
+	rtw_iterate_stas(rtwdev, rtw_phy_rrsr_mask_min_iter, rtwdev);
 	rtw_write32(rtwdev, REG_RRSR, dm_info->rrsr_val_init & dm_info->rrsr_mask_min);
 }
 
@@ -2068,6 +2070,7 @@ err:
 	return (s8)rtwdev->chip->max_power_index;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 static s8 rtw_phy_get_tx_power_sar(struct rtw_dev *rtwdev, u8 sar_band,
 				   u8 rf_path, u8 rate)
 {
@@ -2088,6 +2091,7 @@ err:
 	     sar_band, rf_path, rate);
 	return (s8)rtwdev->chip->max_power_index;
 }
+#endif
 
 void rtw_get_tx_power_params(struct rtw_dev *rtwdev, u8 path, u8 rate, u8 bw,
 			     u8 ch, u8 regd, struct rtw_power_params *pwr_param)
@@ -2100,7 +2104,9 @@ void rtw_get_tx_power_params(struct rtw_dev *rtwdev, u8 path, u8 rate, u8 bw,
 	s8 *offset = &pwr_param->pwr_offset;
 	s8 *limit = &pwr_param->pwr_limit;
 	s8 *remnant = &pwr_param->pwr_remnant;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 	s8 *sar = &pwr_param->pwr_sar;
+#endif
 
 	pwr_idx = &rtwdev->efuse.txpwr_idx_table[path];
 	group = rtw_get_channel_group(ch, rate);
@@ -2124,7 +2130,9 @@ void rtw_get_tx_power_params(struct rtw_dev *rtwdev, u8 path, u8 rate, u8 bw,
 					    rate, ch, regd);
 	*remnant = (rate <= DESC_RATE11M ? dm_info->txagc_remnant_cck :
 		    dm_info->txagc_remnant_ofdm);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 	*sar = rtw_phy_get_tx_power_sar(rtwdev, hal->sar_band, path, rate);
+#endif
 }
 
 u8

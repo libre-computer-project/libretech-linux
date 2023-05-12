@@ -76,7 +76,11 @@ EXPORT_SYMBOL(rtw_tx_fill_tx_desc);
 
 static u8 get_tx_ampdu_factor(struct ieee80211_sta *sta)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 	u8 exp = sta->deflink.ht_cap.ampdu_factor;
+#else
+	u8 exp = sta->ht_cap.ampdu_factor;
+#endif
 
 	/* the least ampdu factor is 8K, and the value in the tx desc is the
 	 * max aggregation num, which represents val * 2 packets can be
@@ -87,7 +91,11 @@ static u8 get_tx_ampdu_factor(struct ieee80211_sta *sta)
 
 static u8 get_tx_ampdu_density(struct ieee80211_sta *sta)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 	return sta->deflink.ht_cap.ampdu_density;
+#else
+	return sta->ht_cap.ampdu_density;
+#endif
 }
 
 static u8 get_highest_ht_tx_rate(struct rtw_dev *rtwdev,
@@ -95,7 +103,11 @@ static u8 get_highest_ht_tx_rate(struct rtw_dev *rtwdev,
 {
 	u8 rate;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 	if (rtwdev->hal.rf_type == RF_2T2R && sta->deflink.ht_cap.mcs.rx_mask[1] != 0)
+#else
+	if (rtwdev->hal.rf_type == RF_2T2R && sta->ht_cap.mcs.rx_mask[1] != 0)
+#endif
 		rate = DESC_RATEMCS15;
 	else
 		rate = DESC_RATEMCS7;
@@ -110,7 +122,11 @@ static u8 get_highest_vht_tx_rate(struct rtw_dev *rtwdev,
 	u8 rate;
 	u16 tx_mcs_map;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 	tx_mcs_map = le16_to_cpu(sta->deflink.vht_cap.vht_mcs.tx_mcs_map);
+#else
+	tx_mcs_map = le16_to_cpu(sta->vht_cap.vht_mcs.tx_mcs_map);
+#endif
 	if (efuse->hw_cap.nss == 1) {
 		switch (tx_mcs_map & 0x3) {
 		case IEEE80211_VHT_MCS_SUPPORT_0_7:
@@ -157,9 +173,17 @@ static void rtw_tx_report_enable(struct rtw_dev *rtwdev,
 	pkt_info->report = true;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 void rtw_tx_report_purge_timer(struct timer_list *t)
+#else
+void rtw_tx_report_purge_timer(void *cntx)
+#endif
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	struct rtw_dev *rtwdev = from_timer(rtwdev, t, tx_report.purge_timer);
+#else
+	struct rtw_dev *rtwdev = (struct rtw_dev *)cntx;
+#endif
 	struct rtw_tx_report *tx_report = &rtwdev->tx_report;
 	unsigned long flags;
 
@@ -344,6 +368,7 @@ static void rtw_tx_data_pkt_info_update(struct rtw_dev *rtwdev,
 	if (info->control.use_rts || skb->len > hw->wiphy->rts_threshold)
 		pkt_info->rts = true;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 	if (sta->deflink.vht_cap.vht_supported)
 		rate = get_highest_vht_tx_rate(rtwdev, sta);
 	else if (sta->deflink.ht_cap.ht_supported)
@@ -352,6 +377,16 @@ static void rtw_tx_data_pkt_info_update(struct rtw_dev *rtwdev,
 		rate = DESC_RATE11M;
 	else
 		rate = DESC_RATE54M;
+#else
+	if (sta->vht_cap.vht_supported)
+		rate = get_highest_vht_tx_rate(rtwdev, sta);
+	else if (sta->ht_cap.ht_supported)
+		rate = get_highest_ht_tx_rate(rtwdev, sta);
+	else if (sta->supp_rates[0] <= 0xf)
+		rate = DESC_RATE11M;
+	else
+		rate = DESC_RATE54M;
+#endif
 
 	si = (struct rtw_sta_info *)sta->drv_priv;
 
@@ -682,3 +717,44 @@ void rtw_txq_cleanup(struct rtw_dev *rtwdev, struct ieee80211_txq *txq)
 		list_del_init(&rtwtxq->list);
 	spin_unlock_bh(&rtwdev->txq_lock);
 }
+
+static const enum rtw_tx_queue_type ac_to_hwq[] = {
+	[IEEE80211_AC_VO] = RTW_TX_QUEUE_VO,
+	[IEEE80211_AC_VI] = RTW_TX_QUEUE_VI,
+	[IEEE80211_AC_BE] = RTW_TX_QUEUE_BE,
+	[IEEE80211_AC_BK] = RTW_TX_QUEUE_BK,
+};
+
+static_assert(ARRAY_SIZE(ac_to_hwq) == IEEE80211_NUM_ACS);
+
+enum rtw_tx_queue_type rtw_tx_ac_to_hwq(enum ieee80211_ac_numbers ac)
+{
+	if (WARN_ON(unlikely(ac >= IEEE80211_NUM_ACS)))
+		return RTW_TX_QUEUE_BE;
+
+	return ac_to_hwq[ac];
+}
+EXPORT_SYMBOL(rtw_tx_ac_to_hwq);
+
+enum rtw_tx_queue_type rtw_tx_queue_mapping(struct sk_buff *skb)
+{
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	__le16 fc = hdr->frame_control;
+	u8 q_mapping = skb_get_queue_mapping(skb);
+	enum rtw_tx_queue_type queue;
+
+	if (unlikely(ieee80211_is_beacon(fc)))
+		queue = RTW_TX_QUEUE_BCN;
+	else if (unlikely(ieee80211_is_mgmt(fc) || ieee80211_is_ctl(fc)))
+		queue = RTW_TX_QUEUE_MGMT;
+	else if (is_broadcast_ether_addr(hdr->addr1) ||
+		 is_multicast_ether_addr(hdr->addr1))
+		queue = RTW_TX_QUEUE_HI0;
+	else if (WARN_ON_ONCE(q_mapping >= ARRAY_SIZE(ac_to_hwq)))
+		queue = ac_to_hwq[IEEE80211_AC_BE];
+	else
+		queue = ac_to_hwq[q_mapping];
+
+	return queue;
+}
+EXPORT_SYMBOL(rtw_tx_queue_mapping);
