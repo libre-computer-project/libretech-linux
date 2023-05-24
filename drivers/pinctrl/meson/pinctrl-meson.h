@@ -135,6 +135,7 @@ struct meson_pinctrl {
 	struct regmap *reg_ds;
 	struct gpio_chip chip;
 	struct fwnode_handle *fwnode;
+	struct device_node *of_irq;
 	struct meson_sm_firmware *fw;
 };
 
