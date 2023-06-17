@@ -1700,62 +1700,6 @@
 		status = "disabled";
 	};
 
-	vopl: vop@ff8f0000 {
-		compatible = "rockchip,rk3399-vop-lit";
-		reg = <0x0 0xff8f0000 0x0 0x2000>, <0x0 0xff8f2000 0x0 0x400>;
-		interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH 0>;
-		assigned-clocks = <&cru ACLK_VOP1>, <&cru HCLK_VOP1>;
-		assigned-clock-rates = <400000000>, <100000000>;
-		clocks = <&cru ACLK_VOP1>, <&cru DCLK_VOP1>, <&cru HCLK_VOP1>;
-		clock-names = "aclk_vop", "dclk_vop", "hclk_vop";
-		iommus = <&vopl_mmu>;
-		power-domains = <&power RK3399_PD_VOPL>;
-		resets = <&cru SRST_A_VOP1>, <&cru SRST_H_VOP1>, <&cru SRST_D_VOP1>;
-		reset-names = "axi", "ahb", "dclk";
-		status = "disabled";
-
-		vopl_out: port {
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			vopl_out_mipi: endpoint@0 {
-				reg = <0>;
-				remote-endpoint = <&mipi_in_vopl>;
-			};
-
-			vopl_out_edp: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&edp_in_vopl>;
-			};
-
-			vopl_out_hdmi: endpoint@2 {
-				reg = <2>;
-				remote-endpoint = <&hdmi_in_vopl>;
-			};
-
-			vopl_out_mipi1: endpoint@3 {
-				reg = <3>;
-				remote-endpoint = <&mipi1_in_vopl>;
-			};
-
-			vopl_out_dp: endpoint@4 {
-				reg = <4>;
-				remote-endpoint = <&dp_in_vopl>;
-			};
-		};
-	};
-
-	vopl_mmu: iommu@ff8f3f00 {
-		compatible = "rockchip,iommu";
-		reg = <0x0 0xff8f3f00 0x0 0x100>;
-		interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH 0>;
-		clocks = <&cru ACLK_VOP1>, <&cru HCLK_VOP1>;
-		clock-names = "aclk", "iface";
-		power-domains = <&power RK3399_PD_VOPL>;
-		#iommu-cells = <0>;
-		status = "disabled";
-	};
-
 	vopb: vop@ff900000 {
 		compatible = "rockchip,rk3399-vop-big";
 		reg = <0x0 0xff900000 0x0 0x2000>, <0x0 0xff902000 0x0 0x1000>;
@@ -1808,6 +1752,62 @@
 		clocks = <&cru ACLK_VOP0>, <&cru HCLK_VOP0>;
 		clock-names = "aclk", "iface";
 		power-domains = <&power RK3399_PD_VOPB>;
+		#iommu-cells = <0>;
+		status = "disabled";
+	};
+
+	vopl: vop@ff8f0000 {
+		compatible = "rockchip,rk3399-vop-lit";
+		reg = <0x0 0xff8f0000 0x0 0x2000>, <0x0 0xff8f2000 0x0 0x400>;
+		interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH 0>;
+		assigned-clocks = <&cru ACLK_VOP1>, <&cru HCLK_VOP1>;
+		assigned-clock-rates = <400000000>, <100000000>;
+		clocks = <&cru ACLK_VOP1>, <&cru DCLK_VOP1>, <&cru HCLK_VOP1>;
+		clock-names = "aclk_vop", "dclk_vop", "hclk_vop";
+		iommus = <&vopl_mmu>;
+		power-domains = <&power RK3399_PD_VOPL>;
+		resets = <&cru SRST_A_VOP1>, <&cru SRST_H_VOP1>, <&cru SRST_D_VOP1>;
+		reset-names = "axi", "ahb", "dclk";
+		status = "disabled";
+
+		vopl_out: port {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			vopl_out_mipi: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&mipi_in_vopl>;
+			};
+
+			vopl_out_edp: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&edp_in_vopl>;
+			};
+
+			vopl_out_hdmi: endpoint@2 {
+				reg = <2>;
+				remote-endpoint = <&hdmi_in_vopl>;
+			};
+
+			vopl_out_mipi1: endpoint@3 {
+				reg = <3>;
+				remote-endpoint = <&mipi1_in_vopl>;
+			};
+
+			vopl_out_dp: endpoint@4 {
+				reg = <4>;
+				remote-endpoint = <&dp_in_vopl>;
+			};
+		};
+	};
+
+	vopl_mmu: iommu@ff8f3f00 {
+		compatible = "rockchip,iommu";
+		reg = <0x0 0xff8f3f00 0x0 0x100>;
+		interrupts = <GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&cru ACLK_VOP1>, <&cru HCLK_VOP1>;
+		clock-names = "aclk", "iface";
+		power-domains = <&power RK3399_PD_VOPL>;
 		#iommu-cells = <0>;
 		status = "disabled";
 	};
