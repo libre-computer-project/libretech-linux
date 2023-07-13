@@ -248,6 +248,14 @@ static irqreturn_t meson_gxl_handle_interrupt(struct phy_device *phydev)
 	return IRQ_HANDLED;
 }
 
+static int gxl_phy_resume(struct phy_device *phydev)
+{
+	phy_clear_bits(phydev, MII_BMCR, BMCR_PDOWN);
+	meson_gxl_config_init(phydev);
+
+	return 0;
+}
+
 static struct phy_driver meson_gxl_phy[] = {
 	{
 		PHY_ID_MATCH_EXACT(0x01814400),
@@ -260,7 +268,7 @@ static struct phy_driver meson_gxl_phy[] = {
 		.config_intr	= meson_gxl_config_intr,
 		.handle_interrupt = meson_gxl_handle_interrupt,
 		.suspend        = genphy_suspend,
-		.resume         = genphy_resume,
+		.resume         = gxl_phy_resume,
 		.read_mmd	= genphy_read_mmd_unsupported,
 		.write_mmd	= genphy_write_mmd_unsupported,
 	}, {
