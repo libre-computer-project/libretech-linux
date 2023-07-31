@@ -423,6 +423,10 @@ enum dwc2_ep0_state {
  *                      0 - No
  *                      1 - Yes
  *
+ * @hcd_skip_phy_initialization: Shadow value of HCD skip_phy_initialization
+ *				 flag.
+ *				 See include/linux/usb/hcd.h for documentation.
+ *
  * The following parameters may be specified when starting the module. These
  * parameters define how the DWC_otg controller should be configured. A
  * value of -1 (or any other out of range value) for any parameter means
@@ -499,6 +503,8 @@ struct dwc2_core_params {
 	u32 g_tx_fifo_size[MAX_EPS_CHANNELS];
 
 	bool change_speed_quirk;
+
+	unsigned hcd_skip_phy_initialization:1;
 };
 
 /**
