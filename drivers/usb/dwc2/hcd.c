@@ -5315,6 +5315,8 @@ int dwc2_hcd_init(struct dwc2_hsotg *hsotg)
 	if (!IS_ERR_OR_NULL(hsotg->uphy))
 		otg_set_host(hsotg->uphy->otg, &hcd->self);
 
+	hcd->skip_phy_initialization = hsotg->params.hcd_skip_phy_initialization;
+
 	/*
 	 * Finish generic HCD initialization and start the HCD. This function
 	 * allocates the DMA buffer pool, registers the USB bus, requests the
