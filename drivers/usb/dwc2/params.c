@@ -190,6 +190,7 @@ static void dwc2_set_amlogic_g12a_params(struct dwc2_hsotg *hsotg)
 	p->lpm_clock_gating = false;
 	p->besl = false;
 	p->hird_threshold_en = false;
+	p->hcd_skip_phy_initialization = 1;
 }
 
 static void dwc2_set_amlogic_a1_params(struct dwc2_hsotg *hsotg)
