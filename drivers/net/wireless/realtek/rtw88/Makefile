@@ -14,6 +14,7 @@ rtw88_core-y += main.o \
 	   fw.o \
 	   ps.o \
 	   sec.o \
+	   wow.o \
 	   bf.o \
 	   sar.o \
 	   regd.o
