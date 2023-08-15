@@ -121,6 +121,43 @@ out:
 	return ret;
 }
 
+static void meson_gxl_phy_disable_link(struct phy_device *phydev)
+{
+	int value;
+
+	/* Disable link interrupt */
+	value = phy_read(phydev, 0x1E);
+	phy_write(phydev, 0x1E, value & ~0x50);
+}
+
+static void meson_gxl_phy_enable_wol(struct phy_device *phydev)
+{
+	const unsigned char *mac_addr;
+	int val;
+
+	mac_addr = phydev->attached_dev->dev_addr;
+
+	/* Chose wol register banki, write data */
+	val = (phy_read(phydev, 0x14) | 0x800) & ~0x1000;;
+	phy_write(phydev, 0x14, val);
+
+	/* Write mac address */
+	phy_write(phydev, TSTWRITE, mac_addr[5] | mac_addr[4] << 8);
+	phy_write(phydev, 0x14, 0x4800 | 0x00);
+	phy_write(phydev, TSTWRITE, mac_addr[3] | mac_addr[2] << 8);
+	phy_write(phydev, 0x14, 0x4800 | 0x01);
+	phy_write(phydev, TSTWRITE, mac_addr[1] | mac_addr[0] << 8);
+	phy_write(phydev, 0x14, 0x4800 | 0x02);
+
+	/* Enable wol */
+	phy_write(phydev, TSTWRITE, 0x9);
+	phy_write(phydev, 0x14, 0x4800 | 0x03);
+
+	/* Enable interrupt */
+	val = phy_read(phydev, 0x1E);
+	phy_write(phydev, 0x1E, val | 0xe00);
+}
+
 static int meson_gxl_config_init(struct phy_device *phydev)
 {
 	int ret;
@@ -143,6 +180,14 @@ static int meson_gxl_config_init(struct phy_device *phydev)
 	return 0;
 }
 
+static int meson_gxl_phy_suspend(struct phy_device *phydev)
+{
+	meson_gxl_phy_disable_link(phydev);
+	meson_gxl_phy_enable_wol(phydev);
+
+	return 0;
+}
+
 static int meson_gxl_phy_resume(struct phy_device *phydev)
 {
 	int ret;
@@ -151,7 +196,7 @@ static int meson_gxl_phy_resume(struct phy_device *phydev)
 	if (ret)
 		return ret;
 
-	ret = meson_gxl_config_init(phydev);
+	ret = phy_init_hw(phydev);
 	if (ret)
 		return ret;
 
@@ -274,7 +319,7 @@ static struct phy_driver meson_gxl_phy[] = {
 		.read_status	= meson_gxl_read_status,
 		.config_intr	= meson_gxl_config_intr,
 		.handle_interrupt = meson_gxl_handle_interrupt,
-		.suspend        = genphy_suspend,
+		.suspend        = meson_gxl_phy_suspend,
 		.resume         = meson_gxl_phy_resume,
 		.read_mmd	= genphy_read_mmd_unsupported,
 		.write_mmd	= genphy_write_mmd_unsupported,
