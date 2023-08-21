@@ -2378,7 +2378,7 @@ static void initialize_hdmi_ih_mutes(struct dw_hdmi *hdmi)
 	hdmi_writeb(hdmi, ih_mute, HDMI_IH_MUTE);
 }
 
-static void dw_hdmi_poweron(struct dw_hdmi *hdmi)
+void dw_hdmi_poweron(struct dw_hdmi *hdmi)
 {
 	hdmi->bridge_is_on = true;
 
@@ -2388,8 +2388,9 @@ static void dw_hdmi_poweron(struct dw_hdmi *hdmi)
 	 */
 	dw_hdmi_setup(hdmi, hdmi->curr_conn, &hdmi->previous_mode);
 }
+EXPORT_SYMBOL_GPL(dw_hdmi_poweron);
 
-static void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
+void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
 {
 	if (hdmi->phy.enabled) {
 		hdmi->phy.ops->disable(hdmi, hdmi->phy.data);
@@ -2398,6 +2399,7 @@ static void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
 
 	hdmi->bridge_is_on = false;
 }
+EXPORT_SYMBOL_GPL(dw_hdmi_poweroff);
 
 static void dw_hdmi_update_power(struct dw_hdmi *hdmi)
 {
