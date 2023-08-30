@@ -239,7 +239,7 @@ static int ili9486_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	ret = drm_aperture_remove_framebuffers(false, &ili9486_driver);
+	ret = drm_aperture_remove_framebuffers(&ili9486_driver);
 	if (ret)
 		goto free_drm;
 
