@@ -5224,6 +5224,10 @@ static void run_state_machine(struct tcpm_port *port)
 		tcpm_ams_start(port, HARD_RESET);
 		break;
 	case HARD_RESET_START:
+		if (port->prev_state == SNK_NEGOTIATE_CAPABILITIES){
+			usb_power_delivery_unregister_capabilities(port->partner_source_caps);
+			port->partner_source_caps = NULL;
+		}
 		port->sink_cap_done = false;
 		if (port->tcpc->enable_frs)
 			port->tcpc->enable_frs(port->tcpc, false);
