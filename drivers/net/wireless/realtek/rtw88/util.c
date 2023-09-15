@@ -10,11 +10,11 @@ bool check_hw_ready(struct rtw_dev *rtwdev, u32 addr, u32 mask, u32 target)
 {
 	u32 cnt;
 
-	for (cnt = 0; cnt < 1000; cnt++) {
+	for (cnt = 0; cnt < 5000; cnt++) {
 		if (rtw_read32_mask(rtwdev, addr, mask) == target)
 			return true;
 
-		udelay(10);
+		udelay(50);
 	}
 
 	return false;
