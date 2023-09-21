@@ -1546,9 +1546,55 @@ static irqreturn_t irq_handler(int irq, void *data)
 	return ret;
 }
 
+#define MAX_NANOQ_FREQ        800000000
+
+#define AO_RTI_BASE           0xff800000
+#define AO_RTI_GEN_PWR_SLEEP0 (AO_RTI_BASE + (0x3a<<2))
+#define AO_RTI_GEN_PWR_ISO0   (AO_RTI_BASE + (0x3b<<2))
+#define HHI_NANOQ_MEM_PD_REG0 0xff63c10c
+#define HHI_NANOQ_MEM_PD_REG1 0xff63c110
+#define RESET_LEVEL2 0xffd01088
+
 static int etnaviv_gpu_clk_enable(struct etnaviv_gpu *gpu)
 {
 	int ret;
+
+	unsigned val;
+	void __iomem *addr;
+
+	/* HACK: Move this power sequence to the power domain. See Getpower_88() in gc_hal_kernel_platform_amlogic.c */
+	addr = ioremap(AO_RTI_GEN_PWR_SLEEP0, 0x4);
+	val = readl(addr);
+	val = (val & 0xfffcffff);
+	writel(val, addr);
+	iounmap(addr);
+
+	addr = ioremap(HHI_NANOQ_MEM_PD_REG0, 0x4);
+	writel(0x0, addr);
+	iounmap(addr);
+
+	addr = ioremap(HHI_NANOQ_MEM_PD_REG1, 0x4);
+	writel(0x0, addr);
+	iounmap(addr);
+
+	addr = ioremap(RESET_LEVEL2, 0x4);
+	val = readl(addr);
+	val = (val & 0xffffefff);
+	writel(val, addr);
+	iounmap(addr);
+
+	addr = ioremap(AO_RTI_GEN_PWR_ISO0, 0x4);
+	val = readl(addr);
+	val = (val & 0xfffcffff);
+	writel(val, addr);
+	iounmap(addr);
+
+	addr = ioremap(RESET_LEVEL2, 0x4);
+	val = readl(addr);
+	val = (val | (0x1<<12));
+	writel(val, addr);
+	iounmap(addr);
+
 
 	ret = clk_prepare_enable(gpu->clk_reg);
 	if (ret)
@@ -1565,6 +1611,10 @@ static int etnaviv_gpu_clk_enable(struct etnaviv_gpu *gpu)
 	ret = clk_prepare_enable(gpu->clk_shader);
 	if (ret)
 		goto disable_clk_core;
+
+	clk_set_rate(gpu->clk_bus, MAX_NANOQ_FREQ);
+	clk_set_rate(gpu->clk_core, MAX_NANOQ_FREQ);
+	udelay(5000);
 
 	return 0;
 
