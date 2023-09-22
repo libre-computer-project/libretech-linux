@@ -56,6 +56,7 @@
 	S(SNK_DISCOVERY),			\
 	S(SNK_DISCOVERY_DEBOUNCE),		\
 	S(SNK_DISCOVERY_DEBOUNCE_DONE),		\
+	S(SNK_GET_SRC_CAPABILITIES),		\
 	S(SNK_WAIT_CAPABILITIES),		\
 	S(SNK_WAIT_CAPABILITIES_TIMEOUT),	\
 	S(SNK_NEGOTIATE_CAPABILITIES),		\
@@ -3112,7 +3113,8 @@ static void tcpm_pd_data_request(struct tcpm_port *port,
 						   PD_MSG_CTRL_NOT_SUPP,
 						   NONE_AMS);
 		} else if (port->state == SNK_WAIT_CAPABILITIES ||
-			   port->state == SNK_WAIT_CAPABILITIES_TIMEOUT) {
+			   port->state == SNK_WAIT_CAPABILITIES_TIMEOUT ||
+			   port->state == SNK_GET_SRC_CAPABILITIES) {
 		/*
 		 * This message may be received even if VBUS is not
 		 * present. This is quite unexpected; see USB PD
@@ -5027,6 +5029,11 @@ static void run_state_machine(struct tcpm_port *port)
 		}
 		tcpm_set_state(port, unattached_state(port), 0);
 		break;
+	case SNK_GET_SRC_CAPABILITIES:
+		tcpm_pd_send_control(port, PD_CTRL_GET_SOURCE_CAP, TCPC_TX_SOP);
+		tcpm_set_state(port, SNK_SOFT_RESET,
+			       PD_T_SINK_WAIT_CAP);
+		break;
 	case SNK_WAIT_CAPABILITIES:
 		ret = port->tcpc->set_pd_rx(port->tcpc, true);
 		if (ret < 0) {
@@ -5041,7 +5048,7 @@ static void run_state_machine(struct tcpm_port *port)
 		 */
 		if (port->vbus_never_low) {
 			port->vbus_never_low = false;
-			tcpm_set_state(port, SNK_SOFT_RESET,
+			tcpm_set_state(port, SNK_GET_SRC_CAPABILITIES,
 				       PD_T_SINK_WAIT_CAP);
 		} else {
 			if (!port->self_powered)
