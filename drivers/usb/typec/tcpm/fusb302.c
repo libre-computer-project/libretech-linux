@@ -408,7 +408,7 @@ static int tcpm_init(struct tcpc_dev *dev)
 	ret = fusb302_set_power_mode(chip, FUSB_REG_POWER_PWR_ALL);
 	if (ret < 0)
 		return ret;
-	udelay(100);
+	udelay(200);
 	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS0, &data);
 	if (ret < 0)
 		return ret;
