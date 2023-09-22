@@ -848,10 +848,16 @@ static int tcpm_set_pd_rx(struct tcpc_dev *dev, bool on)
 		goto done;
 	}
 
+	fusb302_log(chip, "RX FLUSH INIT");
 	ret = fusb302_pd_rx_flush(chip);
 	if (ret < 0) {
 		fusb302_log(chip, "cannot flush pd rx buffer, ret=%d", ret);
 		goto done;
+		ret = fusb302_pd_rx_flush(chip);
+		if (ret < 0) {
+			fusb302_log(chip, "cannot flush pd rx buffer, ret=%d", ret);
+			goto done;
+		}
 	}
 	ret = fusb302_pd_tx_flush(chip);
 	if (ret < 0) {
