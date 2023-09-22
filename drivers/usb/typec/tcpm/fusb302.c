@@ -1566,7 +1566,7 @@ static int fusb302_pd_read_message(struct fusb302_chip *chip,
 	 */
 	if ((!len) && (pd_header_type_le(msg->header) == PD_CTRL_GOOD_CRC))
 		tcpm_pd_transmit_complete(chip->tcpm_port, TCPC_TX_SUCCESS);
-	else
+	else if (pd_header_type_le(msg->header) != 0)
 		tcpm_pd_receive(chip->tcpm_port, msg);
 
 	return ret;
