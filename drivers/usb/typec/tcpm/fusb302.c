@@ -842,10 +842,14 @@ static int tcpm_set_pd_rx(struct tcpc_dev *dev, bool on)
 	int ret = 0;
 
 	mutex_lock(&chip->lock);
-	ret = fusb302_pd_rx_flush(chip);
-	if (ret < 0) {
-		fusb302_log(chip, "cannot flush pd rx buffer, ret=%d", ret);
-		goto done;
+
+	if (!on){
+		fusb302_log(chip, "RX FLUSH INIT");
+		ret = fusb302_pd_rx_flush(chip);
+		if (ret < 0) {
+			fusb302_log(chip, "cannot flush pd rx buffer, ret=%d", ret);
+			goto done;
+		}
 	}
 	ret = fusb302_pd_tx_flush(chip);
 	if (ret < 0) {
