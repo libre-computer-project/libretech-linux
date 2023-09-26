@@ -188,10 +188,17 @@ static const struct of_device_id meson_irq_gpio_matches[] __maybe_unused = {
 	{ }
 };
 
+struct meson_gpio_irq_info {
+	bool is_both_edge;
+	u8   current_state;
+};
+
 struct meson_gpio_irq_controller {
 	const struct meson_gpio_irq_params *params;
 	void __iomem *base;
+	struct meson_gpio_irq_info irq_info[MAX_NUM_CHANNEL];
 	u32 channel_irqs[MAX_NUM_CHANNEL];
+	u32 channel_type[MAX_NUM_CHANNEL];
 	DECLARE_BITMAP(channel_map, MAX_NUM_CHANNEL);
 	spinlock_t lock;
 };
@@ -268,7 +275,7 @@ static void meson_a1_gpio_irq_init(struct meson_gpio_irq_controller *ctl)
 
 static int
 meson_gpio_irq_request_channel(struct meson_gpio_irq_controller *ctl,
-			       unsigned long  hwirq,
+			       unsigned long  hwirq, unsigned int type,
 			       u32 **channel_hwirq)
 {
 	unsigned long flags;
@@ -302,6 +309,7 @@ meson_gpio_irq_request_channel(struct meson_gpio_irq_controller *ctl,
 	 * it, using the table base.
 	 */
 	*channel_hwirq = &(ctl->channel_irqs[idx]);
+	ctl->channel_type[idx] = type & (IRQ_TYPE_TRIG_FALLING | IRQ_TYPE_TRIG_RISING);
 
 	pr_debug("hwirq %lu assigned to channel %d - irq %u\n",
 		 hwirq, idx, **channel_hwirq);
@@ -371,19 +379,33 @@ static int meson8_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
 void meson_gxl_gpio_irq_mask(struct meson_gpio_irq_controller *ctl,
 			 u32 *channel_hwirq)
 {
-	return;
+	const struct meson_gpio_irq_params *params;
+	struct meson_gpio_irq_info *irq;
+	unsigned int idx;
+
+	params = ctl->params;
+	idx = meson_gpio_irq_get_channel_idx(ctl, channel_hwirq);
+	irq = &ctl->irq_info[idx];
+
+	if (irq->is_both_edge) {
+		irq->current_state ^= REG_EDGE_POL_LOW(params, idx);
+		meson_gpio_irq_update_bits(ctl, REG_EDGE_POL,
+					   REG_EDGE_POL_MASK(params, idx),
+					   irq->current_state);
+	}
 }
 
 static int meson_gxl_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
 				    unsigned int type, u32 *channel_hwirq)
 {
 	u32 val = 0;
-	unsigned int idx;
+	unsigned int idx, trig;
+	struct meson_gpio_irq_info *irq;
 	const struct meson_gpio_irq_params *params;
 
 	params = ctl->params;
 	idx = meson_gpio_irq_get_channel_idx(ctl, channel_hwirq);
-
+	irq = &ctl->irq_info[idx];
 	/*
 	 * The controller has a filter block to operate in either LEVEL or
 	 * EDGE mode, then signal is sent to the GIC. To enable LEVEL_LOW and
@@ -398,11 +420,22 @@ static int meson_gxl_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
 	 * precedence over the other edge/polarity settings
 	 */
 	if (type == IRQ_TYPE_EDGE_BOTH) {
-		if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_EDGE_FALLING))
-			val |= REG_EDGE_POL_LOW(params, idx);
+		irq->is_both_edge = true;
+		trig = ctl->channel_type[idx];
 
-		val |= REG_BOTH_EDGE(params, idx);
+		/* need to know trigger type */
+		WARN_ON(!(trig & (IRQ_TYPE_TRIG_FALLING | IRQ_TYPE_TRIG_RISING)));
+
+		if (trig & IRQ_TYPE_TRIG_FALLING)
+			val |= REG_EDGE_POL_LOW(params, idx);
+		else if (trig & IRQ_TYPE_TRIG_RISING)
+			val &= ~REG_EDGE_POL_LOW(params, idx);
+
+		irq->current_state = REG_EDGE_POL_LOW(params, idx);
+
+		val |= REG_EDGE_POL_EDGE(params, idx);
 	} else {
+		irq->is_both_edge = false;
 		if (type & (IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING))
 			val |= REG_EDGE_POL_EDGE(params, idx);
 
@@ -577,7 +610,7 @@ static int meson_gpio_irq_domain_alloc(struct irq_domain *domain,
 	if (ret)
 		return ret;
 
-	ret = meson_gpio_irq_request_channel(ctl, hwirq, &channel_hwirq);
+	ret = meson_gpio_irq_request_channel(ctl, hwirq, type, &channel_hwirq);
 	if (ret)
 		return ret;
 
