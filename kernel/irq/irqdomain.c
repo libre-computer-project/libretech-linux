@@ -836,8 +836,6 @@ unsigned int irq_create_fwspec_mapping(struct irq_fwspec *fwspec)
 	 * WARN if the irqchip returns a type with bits
 	 * outside the sense mask set and clear these bits.
 	 */
-	if (WARN_ON(type & ~IRQ_TYPE_SENSE_MASK))
-		type &= IRQ_TYPE_SENSE_MASK;
 
 	mutex_lock(&irq_domain_mutex);
 
