@@ -620,7 +620,7 @@ static int meson_gpio_to_irq(struct gpio_chip *chip, unsigned int gpio)
 	struct meson_pinctrl *pc = gpiochip_get_data(chip);
 	struct meson_bank *bank;
 	struct irq_fwspec fwspec;
-	int hwirq;
+	int hwirq, val;
 
 	if (meson_get_bank(pc, gpio, &bank))
 		return -EINVAL;
@@ -641,10 +641,19 @@ static int meson_gpio_to_irq(struct gpio_chip *chip, unsigned int gpio)
 		dev_warn(pc->dev, "no more irq for pin[%d]\n", gpio);
 		return -EINVAL;
 	}
+
+	val = meson_pinconf_get_gpio_bit(pc, gpio, MESON_REG_IN);
+
 	fwspec.fwnode = of_node_to_fwnode(pc->of_irq);
 	fwspec.param_count = 2;
 	fwspec.param[0] = hwirq;
-	fwspec.param[1] = IRQ_TYPE_NONE;
+
+	if (val)
+		fwspec.param[1] = IRQ_TYPE_NONE | IRQ_TYPE_TRIG_FALLING;
+	else
+		fwspec.param[1] = IRQ_TYPE_NONE | IRQ_TYPE_TRIG_RISING;
+
+	pr_debug("irq default %s\n", val ? "failing" : "rising");
 
 	return irq_create_fwspec_mapping(&fwspec);
 }
