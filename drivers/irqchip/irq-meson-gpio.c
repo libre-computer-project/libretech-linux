@@ -55,13 +55,23 @@ static void meson_a1_gpio_irq_sel_pin(struct meson_gpio_irq_controller *ctl,
 static void meson_a1_gpio_irq_init(struct meson_gpio_irq_controller *ctl);
 static int meson8_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
 				    unsigned int type, u32 *channel_hwirq);
+static void meson_gxl_gpio_irq_sel_pin(struct meson_gpio_irq_controller *ctl,
+				    unsigned int channel, unsigned long hwirq);
+static int meson_gxl_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
+				    unsigned int type, u32 *channel_hwirq);
 static int meson_s4_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
 				      unsigned int type, u32 *channel_hwirq);
+static void meson_gxl_gpio_irq_mask(struct meson_gpio_irq_controller *ctl,
+			 u32 *channel_hwirq);
 
 struct irq_ctl_ops {
 	void (*gpio_irq_sel_pin)(struct meson_gpio_irq_controller *ctl,
 				 unsigned int channel, unsigned long hwirq);
 	void (*gpio_irq_init)(struct meson_gpio_irq_controller *ctl);
+	void (*gpio_irq_mask)(struct meson_gpio_irq_controller *ctl,
+				 u32 *channel_hwirq);
+	void (*gpio_irq_unmask)(struct meson_gpio_irq_controller *ctl,
+				 u32 *channel_hwirq);
 	int (*gpio_irq_set_type)(struct meson_gpio_irq_controller *ctl,
 				 unsigned int type, u32 *channel_hwirq);
 };
@@ -70,6 +80,7 @@ struct meson_gpio_irq_params {
 	unsigned int nr_hwirq;
 	unsigned int nr_channels;
 	bool support_edge_both;
+	bool simulate_edge_both;
 	unsigned int edge_both_offset;
 	unsigned int edge_single_offset;
 	unsigned int pol_low_offset;
@@ -77,18 +88,32 @@ struct meson_gpio_irq_params {
 	struct irq_ctl_ops ops;
 };
 
-#define INIT_MESON_COMMON(irqs, init, sel, type)		\
+#define INIT_MESON_COMMON(irqs, init, sel, type, mask, unmask)	\
 	.nr_hwirq = irqs,					\
 	.ops = {						\
 		.gpio_irq_init = init,				\
 		.gpio_irq_sel_pin = sel,			\
 		.gpio_irq_set_type = type,			\
+		.gpio_irq_mask = mask,				\
+		.gpio_irq_unmask = unmask,			\
 	},
 
 #define INIT_MESON8_COMMON_DATA(irqs)				\
 	INIT_MESON_COMMON(irqs, meson_gpio_irq_init_dummy,	\
 			  meson8_gpio_irq_sel_pin,		\
-			  meson8_gpio_irq_set_type)		\
+			  meson8_gpio_irq_set_type, NULL, NULL)	\
+	.edge_single_offset = 0,				\
+	.pol_low_offset = 16,					\
+	.pin_sel_mask = 0xff,					\
+	.nr_channels = 8,					\
+
+#define INIT_MESON_GXL_COMMON_DATA(irqs)				\
+	INIT_MESON_COMMON(irqs, meson_gpio_irq_init_dummy,	\
+			  meson_gxl_gpio_irq_sel_pin,		\
+			  meson_gxl_gpio_irq_set_type,		\
+			  meson_gxl_gpio_irq_mask,		\
+			  NULL)					\
+	.simulate_edge_both = true,				\
 	.edge_single_offset = 0,				\
 	.pol_low_offset = 16,					\
 	.pin_sel_mask = 0xff,					\
@@ -97,7 +122,7 @@ struct meson_gpio_irq_params {
 #define INIT_MESON_A1_COMMON_DATA(irqs)				\
 	INIT_MESON_COMMON(irqs, meson_a1_gpio_irq_init,		\
 			  meson_a1_gpio_irq_sel_pin,		\
-			  meson8_gpio_irq_set_type)		\
+			  meson8_gpio_irq_set_type, NULL, NULL)	\
 	.support_edge_both = true,				\
 	.edge_both_offset = 16,					\
 	.edge_single_offset = 8,				\
@@ -108,7 +133,7 @@ struct meson_gpio_irq_params {
 #define INIT_MESON_S4_COMMON_DATA(irqs)				\
 	INIT_MESON_COMMON(irqs, meson_a1_gpio_irq_init,		\
 			  meson_a1_gpio_irq_sel_pin,		\
-			  meson_s4_gpio_irq_set_type)		\
+			  meson_s4_gpio_irq_set_type, NULL, NULL)	\
 	.support_edge_both = true,				\
 	.edge_both_offset = 0,					\
 	.edge_single_offset = 12,				\
@@ -129,7 +154,7 @@ static const struct meson_gpio_irq_params gxbb_params = {
 };
 
 static const struct meson_gpio_irq_params gxl_params = {
-	INIT_MESON8_COMMON_DATA(110)
+	INIT_MESON_GXL_COMMON_DATA(110)
 };
 
 static const struct meson_gpio_irq_params axg_params = {
@@ -204,6 +229,21 @@ static void meson8_gpio_irq_sel_pin(struct meson_gpio_irq_controller *ctl,
 				   ctl->params->pin_sel_mask << bit_offset,
 				   hwirq << bit_offset);
 }
+
+static void meson_gxl_gpio_irq_sel_pin(struct meson_gpio_irq_controller *ctl,
+				    unsigned int channel, unsigned long hwirq)
+{
+	unsigned int reg_offset;
+	unsigned int bit_offset;
+
+	reg_offset = (channel < 4) ? REG_PIN_03_SEL : REG_PIN_47_SEL;
+	bit_offset = REG_PIN_SEL_SHIFT(channel);
+
+	meson_gpio_irq_update_bits(ctl, reg_offset,
+				   ctl->params->pin_sel_mask << bit_offset,
+				   hwirq << bit_offset);
+}
+
 
 static void meson_a1_gpio_irq_sel_pin(struct meson_gpio_irq_controller *ctl,
 				      unsigned int channel,
@@ -328,6 +368,54 @@ static int meson8_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
 	return 0;
 }
 
+void meson_gxl_gpio_irq_mask(struct meson_gpio_irq_controller *ctl,
+			 u32 *channel_hwirq)
+{
+	return;
+}
+
+static int meson_gxl_gpio_irq_set_type(struct meson_gpio_irq_controller *ctl,
+				    unsigned int type, u32 *channel_hwirq)
+{
+	u32 val = 0;
+	unsigned int idx;
+	const struct meson_gpio_irq_params *params;
+
+	params = ctl->params;
+	idx = meson_gpio_irq_get_channel_idx(ctl, channel_hwirq);
+
+	/*
+	 * The controller has a filter block to operate in either LEVEL or
+	 * EDGE mode, then signal is sent to the GIC. To enable LEVEL_LOW and
+	 * EDGE_FALLING support (which the GIC does not support), the filter
+	 * block is also able to invert the input signal it gets before
+	 * providing it to the GIC.
+	 */
+	type &= IRQ_TYPE_SENSE_MASK;
+
+	/*
+	 * New controller support EDGE_BOTH trigger. This setting takes
+	 * precedence over the other edge/polarity settings
+	 */
+	if (type == IRQ_TYPE_EDGE_BOTH) {
+		if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_EDGE_FALLING))
+			val |= REG_EDGE_POL_LOW(params, idx);
+
+		val |= REG_BOTH_EDGE(params, idx);
+	} else {
+		if (type & (IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING))
+			val |= REG_EDGE_POL_EDGE(params, idx);
+
+		if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_EDGE_FALLING))
+			val |= REG_EDGE_POL_LOW(params, idx);
+	}
+
+	meson_gpio_irq_update_bits(ctl, REG_EDGE_POL,
+				   REG_EDGE_POL_MASK(params, idx), val);
+
+	return 0;
+}
+
 /*
  * gpio irq relative registers for s4
  * -PADCTRL_GPIO_IRQ_CTRL0
@@ -391,6 +479,28 @@ static unsigned int meson_gpio_irq_type_output(unsigned int type)
 	return type;
 }
 
+static void meson_gpio_irq_mask(struct irq_data *data)
+{
+	struct meson_gpio_irq_controller *ctl = data->domain->host_data;
+	u32 *channel_hwirq = irq_data_get_irq_chip_data(data);
+
+	if (ctl->params->ops.gpio_irq_mask)
+		ctl->params->ops.gpio_irq_mask(ctl, channel_hwirq);
+
+	irq_chip_mask_parent(data);
+}
+
+static void meson_gpio_irq_unmask(struct irq_data *data)
+{
+	struct meson_gpio_irq_controller *ctl = data->domain->host_data;
+	u32 *channel_hwirq = irq_data_get_irq_chip_data(data);
+
+	if (ctl->params->ops.gpio_irq_unmask)
+		ctl->params->ops.gpio_irq_unmask(ctl, channel_hwirq);
+
+	irq_chip_unmask_parent(data);
+}
+
 static int meson_gpio_irq_set_type(struct irq_data *data, unsigned int type)
 {
 	struct meson_gpio_irq_controller *ctl = data->domain->host_data;
@@ -407,8 +517,8 @@ static int meson_gpio_irq_set_type(struct irq_data *data, unsigned int type)
 
 static struct irq_chip meson_gpio_irq_chip = {
 	.name			= "meson-gpio-irqchip",
-	.irq_mask		= irq_chip_mask_parent,
-	.irq_unmask		= irq_chip_unmask_parent,
+	.irq_mask		= meson_gpio_irq_mask,
+	.irq_unmask		= meson_gpio_irq_unmask,
 	.irq_eoi		= irq_chip_eoi_parent,
 	.irq_set_type		= meson_gpio_irq_set_type,
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
