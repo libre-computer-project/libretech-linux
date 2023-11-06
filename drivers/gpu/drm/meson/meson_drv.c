@@ -30,6 +30,7 @@
 #include "meson_drv.h"
 #include "meson_overlay.h"
 #include "meson_plane.h"
+#include "meson_cursor.h"
 #include "meson_osd_afbcd.h"
 #include "meson_registers.h"
 #include "meson_encoder_cvbs.h"
@@ -249,6 +250,9 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_osd1);
 	if (ret)
 		goto free_drm;
+	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_osd2);
+	if (ret)
+		goto free_drm;
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_0);
 	if (ret) {
 		meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
@@ -335,6 +339,10 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 		if (ret)
 			goto exit_afbcd;
 	}
+
+	ret = meson_cursor_create(priv);
+	if (ret)
+		goto free_drm;
 
 	ret = meson_plane_create(priv);
 	if (ret)
