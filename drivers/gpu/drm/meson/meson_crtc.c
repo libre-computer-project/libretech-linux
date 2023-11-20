@@ -130,6 +130,7 @@ static void meson_g12a_crtc_atomic_enable(struct drm_crtc *crtc,
 			priv->io_base + _REG(VPP_OUT_H_V_SIZE));
 
 	drm_crtc_vblank_on(crtc);
+	drm_crtc_vblank_get(crtc);
 }
 
 static void meson_crtc_atomic_enable(struct drm_crtc *crtc,
@@ -158,6 +159,7 @@ static void meson_crtc_atomic_enable(struct drm_crtc *crtc,
 			    priv->io_base + _REG(VPP_MISC));
 
 	drm_crtc_vblank_on(crtc);
+	drm_crtc_vblank_get(crtc);
 }
 
 static void meson_g12a_crtc_atomic_disable(struct drm_crtc *crtc,
@@ -168,6 +170,7 @@ static void meson_g12a_crtc_atomic_disable(struct drm_crtc *crtc,
 
 	DRM_DEBUG_DRIVER("\n");
 
+	drm_crtc_vblank_put(crtc);
 	drm_crtc_vblank_off(crtc);
 
 	priv->viu.osd1_enabled = false;
@@ -196,6 +199,7 @@ static void meson_crtc_atomic_disable(struct drm_crtc *crtc,
 
 	DRM_DEBUG_DRIVER("\n");
 
+	drm_crtc_vblank_put(crtc);
 	drm_crtc_vblank_off(crtc);
 
 	priv->viu.osd1_enabled = false;
