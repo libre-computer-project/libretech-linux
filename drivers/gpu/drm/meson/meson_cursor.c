@@ -145,8 +145,10 @@ static void meson_cursor_atomic_update(struct drm_plane *plane,
 	priv->viu.osd2_blk0_cfg[2] =
 				((fixed16_to_int(new_state->src.y2) - 1) << 16) |
 				fixed16_to_int(new_state->src.y1);
-	priv->viu.osd2_blk0_cfg[3] = ((dest.x2 - 1) << 16) | dest.x1;
-	priv->viu.osd2_blk0_cfg[4] = ((dest.y2 - 1) << 16) | dest.y1;
+	priv->viu.osd2_blk0_cfg[3] = ((new_state->dst.x2 - 1) << 16) |
+				     new_state->dst.x1;
+	priv->viu.osd2_blk0_cfg[4] = ((new_state->dst.y2 - 1) << 16) |
+				     new_state->dst.y1;
 
 	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
 		priv->viu.osd_blend_din3_scope_h = ((dest.x2 - 1) << 16) | dest.x1;
