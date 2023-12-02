@@ -296,8 +296,8 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		goto free_drm;
-	drm->mode_config.max_width = 3840;
-	drm->mode_config.max_height = 2160;
+	drm->mode_config.max_width = 1920;
+	drm->mode_config.max_height = 1920;
 	drm->mode_config.funcs = &meson_mode_config_funcs;
 	drm->mode_config.helper_private	= &meson_mode_config_helpers;
 
