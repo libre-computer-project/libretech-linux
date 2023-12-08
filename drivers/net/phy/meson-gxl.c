@@ -135,6 +135,10 @@ static void meson_gxl_phy_enable_wol(struct phy_device *phydev)
 	const unsigned char *mac_addr;
 	int val;
 
+	/* skip if netdevice not attached */
+	if (!phydev->attached_dev)
+		return;
+
 	mac_addr = phydev->attached_dev->dev_addr;
 
 	/* Chose wol register banki, write data */
