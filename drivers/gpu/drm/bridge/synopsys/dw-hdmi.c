@@ -3705,6 +3705,12 @@ void dw_hdmi_resume(struct dw_hdmi *hdmi)
 }
 EXPORT_SYMBOL_GPL(dw_hdmi_resume);
 
+bool dw_hdmi_is_bridge_on(struct dw_hdmi *hdmi)
+{
+	return !hdmi->disabled;
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_is_bridge_on);
+
 MODULE_AUTHOR("Sascha Hauer <s.hauer@pengutronix.de>");
 MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com>");
 MODULE_AUTHOR("Yakir Yang <ykk@rock-chips.com>");
