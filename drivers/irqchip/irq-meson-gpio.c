@@ -280,6 +280,7 @@ static void meson_a1_gpio_irq_init(struct meson_gpio_irq_controller *ctl)
 
 static int
 meson_gpio_irq_request_channel(struct meson_gpio_irq_controller *ctl,
+			       struct irq_fwspec *fwspec,
 			       unsigned long  hwirq, unsigned int type,
 			       u32 **channel_hwirq)
 {
@@ -314,7 +315,7 @@ meson_gpio_irq_request_channel(struct meson_gpio_irq_controller *ctl,
 	 * it, using the table base.
 	 */
 	*channel_hwirq = &(ctl->channel_irqs[idx]);
-	ctl->channel_type[idx] = type & (IRQ_TYPE_TRIG_FALLING | IRQ_TYPE_TRIG_RISING);
+	ctl->channel_type[idx] = fwspec->param[2] & (IRQ_TYPE_TRIG_FALLING | IRQ_TYPE_TRIG_RISING);
 
 	pr_debug("hwirq %lu assigned to channel %d - irq %u\n",
 		 hwirq, idx, **channel_hwirq);
@@ -571,7 +572,7 @@ static int meson_gpio_irq_domain_translate(struct irq_domain *domain,
 					   unsigned long *hwirq,
 					   unsigned int *type)
 {
-	if (is_of_node(fwspec->fwnode) && fwspec->param_count == 2) {
+	if (is_of_node(fwspec->fwnode) && fwspec->param_count >= 2) {
 		*hwirq	= fwspec->param[0];
 		*type	= fwspec->param[1];
 		return 0;
@@ -615,7 +616,7 @@ static int meson_gpio_irq_domain_alloc(struct irq_domain *domain,
 	if (ret)
 		return ret;
 
-	ret = meson_gpio_irq_request_channel(ctl, hwirq, type, &channel_hwirq);
+	ret = meson_gpio_irq_request_channel(ctl, fwspec, hwirq, type, &channel_hwirq);
 	if (ret)
 		return ret;
 
