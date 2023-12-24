@@ -645,13 +645,11 @@ static int meson_gpio_to_irq(struct gpio_chip *chip, unsigned int gpio)
 	val = meson_pinconf_get_gpio_bit(pc, gpio, MESON_REG_IN);
 
 	fwspec.fwnode = of_node_to_fwnode(pc->of_irq);
-	fwspec.param_count = 2;
+	fwspec.param_count = 3;
 	fwspec.param[0] = hwirq;
 
-	if (val)
-		fwspec.param[1] = IRQ_TYPE_NONE | IRQ_TYPE_TRIG_FALLING;
-	else
-		fwspec.param[1] = IRQ_TYPE_NONE | IRQ_TYPE_TRIG_RISING;
+	fwspec.param[1] = IRQ_TYPE_NONE;
+	fwspec.param[2] = val ? IRQ_TYPE_TRIG_FALLING : IRQ_TYPE_TRIG_RISING;
 
 	pr_debug("irq default %s\n", val ? "failing" : "rising");
 
