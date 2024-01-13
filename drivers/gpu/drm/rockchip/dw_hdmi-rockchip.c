@@ -285,6 +285,53 @@ dw_hdmi_rockchip_mode_valid(struct dw_hdmi *dw_hdmi, void *data,
 	return MODE_BAD;
 }
 
+static enum drm_mode_status
+dw_hdmi_rk3328_mode_valid(struct dw_hdmi *dw_hdmi, void *data,
+			    const struct drm_display_info *info,
+			    const struct drm_display_mode *mode)
+{
+	struct rockchip_hdmi *hdmi = data;
+	const struct dw_hdmi_mpll_config *mpll_cfg = rockchip_mpll_cfg;
+	int pclk = mode->clock * 1000;
+	bool exact_match = hdmi->plat_data->phy_force_vendor;
+	int i;
+
+	if (hdmi->chip_data->max_tmds_clock &&
+	    mode->clock > hdmi->chip_data->max_tmds_clock)
+		return MODE_CLOCK_HIGH;
+
+	if (hdmi->ref_clk) {
+		int rpclk = clk_round_rate(hdmi->ref_clk, pclk);
+
+		if (abs(rpclk - pclk) > pclk / 1000)
+			return MODE_NOCLOCK;
+	}
+
+	for (i = 0; mpll_cfg[i].mpixelclock != (~0UL); i++) {
+		/*
+		 * For vendor specific phys force an exact match of the pixelclock
+		 * to preserve the original behaviour of the driver.
+		 */
+		if (exact_match && pclk == mpll_cfg[i].mpixelclock)
+			return MODE_OK;
+		/*
+		 * The Synopsys phy can work with pixelclocks up to the value given
+		 * in the corresponding mpll_cfg entry.
+		 */
+		if (!exact_match && pclk <= mpll_cfg[i].mpixelclock)
+			return MODE_OK;
+	}
+
+	/* reject resolution higher than 1920 */
+	if (mode->hdisplay < 320 || mode->hdisplay > 1920)
+		return MODE_BAD_HVALUE;
+
+	if (mode->vdisplay < 320 || mode->vdisplay > 1920)
+		return MODE_BAD_VVALUE;
+
+	return MODE_BAD;
+}
+
 static void dw_hdmi_rockchip_encoder_disable(struct drm_encoder *encoder)
 {
 }
@@ -490,7 +537,7 @@ static struct rockchip_hdmi_chip_data rk3328_chip_data = {
 };
 
 static const struct dw_hdmi_plat_data rk3328_hdmi_drv_data = {
-	.mode_valid = dw_hdmi_rockchip_mode_valid,
+	.mode_valid = dw_hdmi_rk3328_mode_valid,
 	.phy_data = &rk3328_chip_data,
 	.phy_ops = &rk3328_hdmi_phy_ops,
 	.phy_name = "inno_dw_hdmi_phy2",
