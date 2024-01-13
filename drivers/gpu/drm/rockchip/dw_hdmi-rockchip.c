@@ -260,6 +260,34 @@ dw_hdmi_rockchip_mode_valid(struct dw_hdmi *hdmi, void *data,
 	return (valid) ? MODE_OK : MODE_BAD;
 }
 
+static enum drm_mode_status
+dw_hdmi_rk3328_mode_valid(struct dw_hdmi *hdmi, void *data,
+			    const struct drm_display_info *info,
+			    const struct drm_display_mode *mode)
+{
+	const struct dw_hdmi_mpll_config *mpll_cfg = rockchip_mpll_cfg;
+	int pclk = mode->clock * 1000;
+	bool valid = false;
+	int i;
+
+	for (i = 0; mpll_cfg[i].mpixelclock != (~0UL); i++) {
+		if (pclk == mpll_cfg[i].mpixelclock) {
+			valid = true;
+			break;
+		}
+	}
+
+#define RK_LIMIT_SIZE 1920
+	/* support higher resolution than 1920x1080 */
+	if (mode->hdisplay < 320 || mode->hdisplay > RK_LIMIT_SIZE)
+		return MODE_BAD_HVALUE;
+
+	if (mode->vdisplay < 320 || mode->vdisplay > RK_LIMIT_SIZE)
+		return MODE_BAD_VVALUE;
+
+	return (valid) ? MODE_OK : MODE_BAD;
+}
+
 static void dw_hdmi_rockchip_encoder_disable(struct drm_encoder *encoder)
 {
 }
@@ -462,7 +490,7 @@ static struct rockchip_hdmi_chip_data rk3328_chip_data = {
 };
 
 static const struct dw_hdmi_plat_data rk3328_hdmi_drv_data = {
-	.mode_valid = dw_hdmi_rockchip_mode_valid,
+	.mode_valid = dw_hdmi_rk3328_mode_valid,
 	.mpll_cfg = rockchip_mpll_cfg,
 	.cur_ctr = rockchip_cur_ctr,
 	.phy_config = rockchip_phy_config,
