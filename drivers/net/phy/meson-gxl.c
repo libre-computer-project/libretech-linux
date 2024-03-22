@@ -38,6 +38,10 @@
 #define FR_PLL_DIV0	0x1c
 #define FR_PLL_DIV1	0x1d
 
+static bool enable_wol;
+module_param(enable_wol, bool, 0444);
+MODULE_PARM_DESC(enable_wol, "Enable Wake On Lan (WOL) support");
+
 static int meson_gxl_open_banks(struct phy_device *phydev)
 {
 	int ret;
@@ -176,7 +180,11 @@ static int meson_gxl_config_init(struct phy_device *phydev)
 static int meson_gxl_phy_suspend(struct phy_device *phydev)
 {
 	meson_gxl_phy_disable_link(phydev);
-	meson_gxl_phy_enable_wol(phydev);
+
+	if (enable_wol)
+		meson_gxl_phy_enable_wol(phydev);
+	else
+		genphy_suspend(phydev);
 
 	return 0;
 }
@@ -224,9 +232,11 @@ static int meson_gxl_read_status(struct phy_device *phydev)
 			goto read_status_continue;
 
 		/* Aneg is done, let's check everything is fine */
-		wol = meson_gxl_read_reg(phydev, BANK_WOL, LPI_STATUS);
-		if (wol < 0)
-			return wol;
+		if (enable_wol) {
+			wol = meson_gxl_read_reg(phydev, BANK_WOL, LPI_STATUS);
+			if (wol < 0)
+				return wol;
+		}
 
 		lpa = phy_read(phydev, MII_LPA);
 		if (lpa < 0)
@@ -236,7 +246,7 @@ static int meson_gxl_read_status(struct phy_device *phydev)
 		if (exp < 0)
 			return exp;
 
-		if (!(wol & LPI_STATUS_RSV12) ||
+		if ((enable_wol && !(wol & LPI_STATUS_RSV12)) ||
 		    ((exp & EXPANSION_NWAY) && !(lpa & LPA_LPACK))) {
 			/* Looks like aneg failed after all */
 			phydev_dbg(phydev, "LPA corruption - aneg restart\n");
