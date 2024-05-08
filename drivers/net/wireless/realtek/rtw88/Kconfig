@@ -28,11 +28,41 @@ config RTW88_8822B
 config RTW88_8822C
 	tristate
 
+config RTW88_8703B
+	tristate
+
+config RTW88_8723X
+	tristate
+
 config RTW88_8723D
 	tristate
 
 config RTW88_8821C
 	tristate
+
+config RTW88_8821A
+	tristate
+
+config RTW88_8821AE
+	tristate "Realtek 8821AE PCI wireless network adapter"
+	depends on PCI
+	select RTW88_CORE
+	select RTW88_PCI
+	select RTW88_8821A
+
+config RTW88_8821AU
+	tristate "Realtek 8821AU USB wireless network adapter"
+	depends on USB
+	select RTW88_CORE
+	select RTW88_USB
+	select RTW88_8821A
+
+config RTW88_8812AU
+	tristate "Realtek 8812AU USB wireless network adapter"
+	depends on USB
+	select RTW88_CORE
+	select RTW88_USB
+	select RTW88_8821A
 
 config RTW88_8822BE
 	tristate "Realtek 8822BE PCI wireless network adapter"
@@ -100,6 +130,13 @@ config RTW88_8822CU
 
 	  802.11ac USB wireless network adapter
 
+config RTW_88_8723CS
+	tristate "Realtek 8723CS SDIO wireless network module"
+	depends on MMC
+	select RTW88_CORE
+	select RTW88_SDIO
+	select RTW88_8723X
+
 config RTW88_8723DE
 	tristate "Realtek 8723DE PCI wireless network adapter"
 	depends on PCI
@@ -127,6 +164,7 @@ config RTW88_8723DU
 	depends on USB
 	select RTW88_CORE
 	select RTW88_USB
+	select RTW88_8723X
 	select RTW88_8723D
 	help
 	  Select this option will enable support for 8723DU chipset

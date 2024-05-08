@@ -390,8 +390,10 @@ static void rtw_ops_bss_info_changed(struct ieee80211_hw *hw,
 #endif
 			rtw_coex_connect_notify(rtwdev, COEX_ASSOCIATE_FINISH);
 
-			rtw_fw_download_rsvd_page(rtwdev);
-			rtw_send_rsvd_page_h2c(rtwdev);
+			if (rtwdev->chip->id != RTW_CHIP_TYPE_8812A) {
+				rtw_fw_download_rsvd_page(rtwdev);///TODO: this appears to kill the firmware
+				rtw_send_rsvd_page_h2c(rtwdev);
+			}
 			rtw_fw_default_port(rtwdev, rtwvif);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
 			rtw_coex_media_status_notify(rtwdev, vif->cfg.assoc);
@@ -400,6 +402,8 @@ static void rtw_ops_bss_info_changed(struct ieee80211_hw *hw,
 #endif
 			if (rtw_bf_support)
 				rtw_bf_assoc(rtwdev, vif, conf);
+
+			rtw_fw_beacon_filter_config(rtwdev, true, vif);
 		} else {
 			rtw_leave_lps(rtwdev);
 			rtw_bf_disassoc(rtwdev, vif, conf);
@@ -984,6 +988,12 @@ static void rtw_ops_sta_rc_update(struct ieee80211_hw *hw,
 }
 
 const struct ieee80211_ops rtw_ops = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
+#endif
 	.tx			= rtw_ops_tx,
 	.wake_tx_queue		= rtw_ops_wake_tx_queue,
 	.start			= rtw_ops_start,

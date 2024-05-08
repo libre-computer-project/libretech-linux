@@ -110,7 +110,9 @@ static const struct ieee80211_iface_limit rtw_iface_limits[] = {
 	},
 	{
 		.max = 1,
-		.types = BIT(NL80211_IFTYPE_AP),
+		.types = BIT(NL80211_IFTYPE_AP) |
+                        BIT(NL80211_IFTYPE_P2P_CLIENT) |
+                        BIT(NL80211_IFTYPE_P2P_GO)
 	}
 };
 
@@ -279,6 +281,8 @@ static void rtw_watch_dog_work(struct work_struct *work)
 	 * get that vif and check if device is having traffic more than the
 	 * threshold.
 	 */
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8821A || rtwdev->chip->id == RTW_CHIP_TYPE_8812A)
+		rtwdev->ps_enabled = false;///TODO: 8821au disconnects with "Reason: 7=CLASS3_FRAME_FROM_NONASSOC_STA"
 	if (rtwdev->ps_enabled && data.rtwvif && !ps_active &&
 	    !rtwdev->beacon_loss && !rtwdev->ap_active)
 		rtw_enter_lps(rtwdev, data.rtwvif->port);
@@ -1408,7 +1412,7 @@ void rtw_update_sta_info(struct rtw_dev *rtwdev, struct rtw_sta_info *si,
 #endif
 }
 
-static int rtw_wait_firmware_completion(struct rtw_dev *rtwdev)
+int rtw_wait_firmware_completion(struct rtw_dev *rtwdev)
 {
 	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_fw_state *fw;
@@ -1427,6 +1431,7 @@ static int rtw_wait_firmware_completion(struct rtw_dev *rtwdev)
 
 	return 0;
 }
+EXPORT_SYMBOL(rtw_wait_firmware_completion);
 
 static enum rtw_lps_deep_mode rtw_update_lps_deep_mode(struct rtw_dev *rtwdev,
 						       struct rtw_fw_state *fw)
@@ -1448,7 +1453,7 @@ static enum rtw_lps_deep_mode rtw_update_lps_deep_mode(struct rtw_dev *rtwdev,
 	return LPS_DEEP_MODE_NONE;
 }
 
-static int rtw_power_on(struct rtw_dev *rtwdev)
+int rtw_power_on(struct rtw_dev *rtwdev)
 {
 	const struct rtw_chip_info *chip = rtwdev->chip;
 	struct rtw_fw_state *fw = &rtwdev->fw;
@@ -1511,6 +1516,7 @@ err_off:
 err:
 	return ret;
 }
+EXPORT_SYMBOL(rtw_power_on);
 
 void rtw_core_fw_scan_notify(struct rtw_dev *rtwdev, bool start)
 {
@@ -1583,7 +1589,7 @@ int rtw_core_start(struct rtw_dev *rtwdev)
 {
 	int ret;
 
-	ret = rtw_power_on(rtwdev);
+	ret = rtwdev->chip->ops->power_on(rtwdev);
 	if (ret)
 		return ret;
 
@@ -1603,12 +1609,13 @@ int rtw_core_start(struct rtw_dev *rtwdev)
 	return 0;
 }
 
-static void rtw_power_off(struct rtw_dev *rtwdev)
+void rtw_power_off(struct rtw_dev *rtwdev)
 {
 	rtw_hci_stop(rtwdev);
 	rtw_coex_power_off_setting(rtwdev);
 	rtw_mac_power_off(rtwdev);
 }
+EXPORT_SYMBOL(rtw_power_off);
 
 void rtw_core_stop(struct rtw_dev *rtwdev)
 {
@@ -1633,7 +1640,7 @@ void rtw_core_stop(struct rtw_dev *rtwdev)
 
 	mutex_lock(&rtwdev->mutex);
 
-	rtw_power_off(rtwdev);
+	rtwdev->chip->ops->power_off(rtwdev);
 }
 
 static void rtw_init_ht_cap(struct rtw_dev *rtwdev,
@@ -1983,6 +1990,11 @@ static int rtw_chip_efuse_enable(struct rtw_dev *rtwdev)
 	struct rtw_fw_state *fw = &rtwdev->fw;
 	int ret;
 
+	/* TODO: put this in the chip ops. They don't need powering on before reading the efuse. */
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8821A ||
+	    rtwdev->chip->id == RTW_CHIP_TYPE_8812A)
+		return 0;
+
 	ret = rtw_hci_setup(rtwdev);
 	if (ret) {
 		rtw_err(rtwdev, "failed to setup hci\n");
@@ -2027,6 +2039,9 @@ static int rtw_dump_hw_feature(struct rtw_dev *rtwdev)
 	u8 bw;
 	int i;
 
+	if (!rtwdev->chip->has_hw_feature_report)
+		goto print_hw_cap;
+
 	id = rtw_read8(rtwdev, REG_C2HEVT);
 	if (id != C2H_HW_FEATURE_REPORT) {
 		rtw_err(rtwdev, "failed to read hw feature report\n");
@@ -2051,6 +2066,7 @@ static int rtw_dump_hw_feature(struct rtw_dev *rtwdev)
 	    efuse->hw_cap.nss > rtwdev->hal.rf_path_num)
 		efuse->hw_cap.nss = rtwdev->hal.rf_path_num;
 
+print_hw_cap:
 	rtw_dbg(rtwdev, RTW_DBG_EFUSE,
 		"hw cap: hci=0x%02x, bw=0x%02x, ptcl=0x%02x, ant_num=%d, nss=%d\n",
 		efuse->hw_cap.hci, efuse->hw_cap.bw, efuse->hw_cap.ptcl,
@@ -2116,7 +2132,7 @@ static int rtw_chip_efuse_info_setup(struct rtw_dev *rtwdev)
 	efuse->ext_pa_2g = efuse->pa_type_2g & BIT(4) ? 1 : 0;
 	efuse->ext_lna_2g = efuse->lna_type_2g & BIT(3) ? 1 : 0;
 	efuse->ext_pa_5g = efuse->pa_type_5g & BIT(0) ? 1 : 0;
-	efuse->ext_lna_2g = efuse->lna_type_5g & BIT(3) ? 1 : 0;
+	efuse->ext_lna_5g = efuse->lna_type_5g & BIT(3) ? 1 : 0;
 
 out_disable:
 	rtw_chip_efuse_disable(rtwdev);
@@ -2302,9 +2318,9 @@ void rtw_core_deinit(struct rtw_dev *rtwdev)
 # endif
 	spin_lock_irqsave(&rtwdev->tx_report.q_lock, flags);
 	skb_queue_purge(&rtwdev->tx_report.queue);
+	spin_unlock_irqrestore(&rtwdev->tx_report.q_lock, flags);
 	skb_queue_purge(&rtwdev->coex.queue);
 	skb_queue_purge(&rtwdev->c2h_queue);
-	spin_unlock_irqrestore(&rtwdev->tx_report.q_lock, flags);
 
 	list_for_each_entry_safe(rsvd_pkt, tmp, &rtwdev->rsvd_page_list,
 				 build_list) {
@@ -2319,6 +2335,7 @@ EXPORT_SYMBOL(rtw_core_deinit);
 
 int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 {
+	bool sta_mode_only = rtwdev->hci.type == RTW_HCI_TYPE_SDIO;
 	struct rtw_hal *hal = &rtwdev->hal;
 	int max_tx_headroom = 0;
 	int ret;
@@ -2347,10 +2364,14 @@ int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 	ieee80211_hw_set(hw, TX_AMSDU);
 	ieee80211_hw_set(hw, SINGLE_SCAN_ON_ALL_BANDS);
 
-	hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
-				     BIT(NL80211_IFTYPE_AP) |
-				     BIT(NL80211_IFTYPE_ADHOC) |
-				     BIT(NL80211_IFTYPE_MESH_POINT);
+	if (sta_mode_only)
+		hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+	else
+		hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
+					     BIT(NL80211_IFTYPE_AP) |
+					     BIT(NL80211_IFTYPE_ADHOC) |
+                                    BIT(NL80211_IFTYPE_P2P_CLIENT) |
+                                    BIT(NL80211_IFTYPE_P2P_GO);
 	hw->wiphy->available_antennas_tx = hal->antenna_tx;
 	hw->wiphy->available_antennas_rx = hal->antenna_rx;
 
@@ -2361,7 +2382,7 @@ int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 	hw->wiphy->max_scan_ssids = RTW_SCAN_MAX_SSIDS;
 	hw->wiphy->max_scan_ie_len = rtw_get_max_scan_ie_len(rtwdev);
 
-	if (rtwdev->chip->id == RTW_CHIP_TYPE_8822C) {
+	if (!sta_mode_only && rtwdev->chip->id == RTW_CHIP_TYPE_8822C) {
 		hw->wiphy->iface_combinations = rtw_iface_combs;
 		hw->wiphy->n_iface_combinations = ARRAY_SIZE(rtw_iface_combs);
 	}

@@ -729,7 +729,8 @@ static void __pci_flush_queue(struct rtw_dev *rtwdev, u8 pci_q, bool drop)
 	}
 
 	if (!drop)
-		rtw_warn(rtwdev, "timed out to flush pci tx ring[%d]\n", pci_q);
+		rtw_dbg(rtwdev, RTW_DBG_UNEXP,
+			"timed out to flush pci tx ring[%d]\n", pci_q);
 }
 
 static void __rtw_pci_flush_queues(struct rtw_dev *rtwdev, u32 pci_queues,
@@ -823,7 +824,7 @@ static int rtw_pci_tx_write_data(struct rtw_dev *rtwdev,
 	pkt_desc = skb_push(skb, chip->tx_pkt_desc_sz);
 	memset(pkt_desc, 0, tx_pkt_desc_sz);
 	pkt_info->qsel = rtw_pci_get_tx_qsel(skb, queue);
-	rtw_tx_fill_tx_desc(pkt_info, skb);
+	rtw_tx_fill_tx_desc(rtwdev, pkt_info, skb);
 	dma = dma_map_single(&rtwpci->pdev->dev, skb->data, skb->len,
 			     DMA_TO_DEVICE);
 	if (dma_mapping_error(&rtwpci->pdev->dev, dma))
@@ -1450,6 +1451,7 @@ static void rtw_pci_phy_cfg(struct rtw_dev *rtwdev)
 {
 	struct rtw_pci *rtwpci = (struct rtw_pci *)rtwdev->priv;
 	const struct rtw_chip_info *chip = rtwdev->chip;
+	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct pci_dev *pdev = rtwpci->pdev;
 	const struct rtw_intf_phy_para *para;
 	u16 cut;
@@ -1498,6 +1500,9 @@ static void rtw_pci_phy_cfg(struct rtw_dev *rtwdev)
 			rtw_err(rtwdev, "failed to set PCI cap, ret = %d\n",
 				ret);
 	}
+
+	if (chip->id == RTW_CHIP_TYPE_8822C && efuse->rfe_option == 5)
+		rtw_write32_mask(rtwdev, REG_ANAPARSW_MAC_0, BIT_CF_L_V2, 0x1);
 }
 
 static int __maybe_unused rtw_pci_suspend(struct device *dev)
@@ -1833,5 +1838,5 @@ void rtw_pci_shutdown(struct pci_dev *pdev)
 EXPORT_SYMBOL(rtw_pci_shutdown);
 
 MODULE_AUTHOR("Realtek Corporation");
-MODULE_DESCRIPTION("Realtek 802.11ac wireless PCI driver");
+MODULE_DESCRIPTION("Realtek PCI 802.11ac wireless driver");
 MODULE_LICENSE("Dual BSD/GPL");
