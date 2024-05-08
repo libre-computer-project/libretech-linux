@@ -29,6 +29,11 @@ int rtw_enter_ips(struct rtw_dev *rtwdev)
 	if (!test_bit(RTW_FLAG_POWERON, rtwdev->flags))
 		return 0;
 
+	///TODO: They don't work right if they're allowed to enter ips.
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8821A ||
+	    rtwdev->chip->id == RTW_CHIP_TYPE_8812A)
+		return 0;
+
 	rtw_coex_ips_notify(rtwdev, COEX_IPS_ENTER);
 
 	rtw_core_stop(rtwdev);
@@ -104,6 +109,7 @@ void rtw_power_mode_change(struct rtw_dev *rtwdev, bool enter)
 		 */
 		WARN(1, "firmware failed to ack driver for %s Deep Power mode\n",
 		     enter ? "entering" : "leaving");
+		rtw_fw_dump_dbg_info(rtwdev);
 	}
 }
 EXPORT_SYMBOL(rtw_power_mode_change);
@@ -163,7 +169,8 @@ static void rtw_fw_leave_lps_check(struct rtw_dev *rtwdev)
 
 	if (ret) {
 		rtw_write32_clr(rtwdev, REG_TCR, BIT_PWRMGT_HWDATA_EN);
-		rtw_warn(rtwdev, "firmware failed to leave lps state\n");
+		rtw_warn_once(rtwdev, "firmware failed to leave lps state\n");
+		rtw_fw_dump_dbg_info(rtwdev);
 	}
 }
 

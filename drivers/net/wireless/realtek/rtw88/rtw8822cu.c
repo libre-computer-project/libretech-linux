@@ -9,9 +9,9 @@
 #include "usb.h"
 
 static const struct usb_device_id rtw_8822cu_id_table[] = {
-	{ USB_DEVICE_AND_INTERFACE_INFO(RTW_USB_VENDOR_ID_REALTEK, 0xc82c, 0xff, 0xff, 0xff),
-	  .driver_info = (kernel_ulong_t)&(rtw8822c_hw_spec) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(RTW_USB_VENDOR_ID_REALTEK, 0xc812, 0xff, 0xff, 0xff),
+	  .driver_info = (kernel_ulong_t)&(rtw8822c_hw_spec) },
+	{ USB_DEVICE_AND_INTERFACE_INFO(RTW_USB_VENDOR_ID_REALTEK, 0xc82c, 0xff, 0xff, 0xff),
 	  .driver_info = (kernel_ulong_t)&(rtw8822c_hw_spec) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(RTW_USB_VENDOR_ID_REALTEK, 0xc82e, 0xff, 0xff, 0xff),
 	  .driver_info = (kernel_ulong_t)&(rtw8822c_hw_spec) },
@@ -25,7 +25,7 @@ static const struct usb_device_id rtw_8822cu_id_table[] = {
 };
 MODULE_DEVICE_TABLE(usb, rtw_8822cu_id_table);
 
-static int rtw8822bu_probe(struct usb_interface *intf,
+static int rtw8822cu_probe(struct usb_interface *intf,
 			   const struct usb_device_id *id)
 {
 	return rtw_usb_probe(intf, id);
@@ -34,7 +34,7 @@ static int rtw8822bu_probe(struct usb_interface *intf,
 static struct usb_driver rtw_8822cu_driver = {
 	.name = "rtw_8822cu",
 	.id_table = rtw_8822cu_id_table,
-	.probe = rtw8822bu_probe,
+	.probe = rtw8822cu_probe,
 	.disconnect = rtw_usb_disconnect,
 };
 module_usb_driver(rtw_8822cu_driver);

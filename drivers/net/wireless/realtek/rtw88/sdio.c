@@ -503,8 +503,8 @@ static int rtw_sdio_read_port(struct rtw_dev *rtwdev, u8 *buf, size_t count)
 	struct mmc_host *host = rtwsdio->sdio_func->card->host;
 	bool bus_claim = rtw_sdio_bus_claim_needed(rtwsdio);
 	u32 rxaddr = rtwsdio->rx_addr++;
+	int ret = 0, err;
 	size_t bytes;
-	int ret;
 
 	if (bus_claim)
 		sdio_claim_host(rtwsdio->sdio_func);
@@ -512,14 +512,23 @@ static int rtw_sdio_read_port(struct rtw_dev *rtwdev, u8 *buf, size_t count)
 	while (count > 0) {
 		bytes = min_t(size_t, host->max_req_size, count);
 
-		ret = sdio_memcpy_fromio(rtwsdio->sdio_func, buf,
+		err = sdio_memcpy_fromio(rtwsdio->sdio_func, buf,
 					 RTW_SDIO_ADDR_RX_RX0FF_GEN(rxaddr),
 					 bytes);
-		if (ret) {
+		if (err) {
 			rtw_warn(rtwdev,
-				 "Failed to read %zu byte(s) from SDIO port 0x%08x",
-				 bytes, rxaddr);
-			break;
+				 "Failed to read %zu byte(s) from SDIO port 0x%08x: %d",
+				 bytes, rxaddr, err);
+
+			 /* Signal to the caller that reading did not work and
+			  * that the data in the buffer is short/corrupted.
+			  */
+			ret = err;
+
+			/* Don't stop here - instead drain the remaining data
+			 * from the card's buffer, else the card will return
+			 * corrupt data for the next rtw_sdio_read_port() call.
+			 */
 		}
 
 		count -= bytes;
@@ -855,8 +864,7 @@ static void rtw_sdio_tx_skb_prepare(struct rtw_dev *rtwdev,
 
 	pkt_info->qsel = rtw_sdio_get_tx_qsel(rtwdev, skb, queue);
 
-	rtw_tx_fill_tx_desc(pkt_info, skb);
-	rtw_tx_fill_txdesc_checksum(rtwdev, pkt_info, pkt_desc);
+	rtw_tx_fill_tx_desc(rtwdev, pkt_info, skb);
 }
 
 static int rtw_sdio_write_data(struct rtw_dev *rtwdev,
@@ -1316,6 +1324,34 @@ int rtw_sdio_probe(struct sdio_func *sdio_func,
 	rtwdev->hci.ops = &rtw_sdio_ops;
 	rtwdev->hci.type = RTW_HCI_TYPE_SDIO;
 
+	/* Insert a sleep of 500 ms. Without the delay, the wifi part
+	 * and the UART that controls Bluetooth interfere with one
+	 * another resulting in the following being logged:
+	 *
+	 * Start of SDIO probe function.
+	 * Bluetooth: HCI UART driver ver 2.3
+	 * Bluetooth: HCI UART protocol Three-wire (H5) registered
+	 * of_dma_request_slave_channel: dma-names property of node '/serial@fe650000'
+	 *	 missing or empty
+	 * dw-apb-uart fe650000.serial: failed to request DMA
+`	 * rtw_8821cs mmc3:0001:1: Firmware version 24.8.0, H2C version 12
+	 * rtw_8821cs mmc3:0001:1: sdio read32 failed (0x11080): -110
+	 *
+	 * If the UART is finished initializing before the SDIO probe
+	 * function startw, the following is logged:
+	 *
+	 * Bluetooth: HCI UART protocol Three-wire (H5) registered
+	 * of_dma_request_slave_channel: dma-names property of node '/serial@fe650000'
+	 *	missing or empty
+	 * dw-apb-uart fe650000.serial: failed to request DMA
+	 * Start of SDIO probe function.
+	 * rtw_8821cs mmc3:0001:1: Firmware version 24.8.0, H2C version 12
+	 * Bluetooth: hci0: RTL: examining hci_ver=08 hci_rev=000c lmp_ver=08 lmp_subver=8821
+	 * SDIO wifi works correctly.
+	 *
+	 * No adverse effects are observed from the delay.
+	 */
+	msleep(500);
 	ret = rtw_core_init(rtwdev);
 	if (ret)
 		goto err_release_hw;

@@ -20,7 +20,10 @@ struct phy_cfg_pair {
 };
 
 union phy_table_tile {
-	struct rtw_phy_cond cond;
+	struct {
+		struct rtw_phy_cond cond;
+		struct rtw_phy_cond2 cond2;
+	} __packed;
 	struct phy_cfg_pair cfg;
 };
 
@@ -1044,11 +1047,14 @@ void rtw_phy_setup_phy_cond(struct rtw_dev *rtwdev, u32 pkg)
 	struct rtw_hal *hal = &rtwdev->hal;
 	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct rtw_phy_cond cond = {0};
+	struct rtw_phy_cond2 cond2 = {0};
 
 	cond.cut = hal->cut_version ? hal->cut_version : 15;
 	cond.pkg = pkg ? pkg : 15;
 	cond.plat = 0x04;
 	cond.rfe = efuse->rfe_option;
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8821C)
+		cond.rfe = efuse->rfe_option_full >> 3;
 
 	switch (rtw_hci_type(rtwdev)) {
 	case RTW_HCI_TYPE_USB:
@@ -1063,15 +1069,33 @@ void rtw_phy_setup_phy_cond(struct rtw_dev *rtwdev, u32 pkg)
 		break;
 	}
 
-	hal->phy_cond = cond;
+	if (rtwdev->chip->id == RTW_CHIP_TYPE_8812A ||
+	    rtwdev->chip->id == RTW_CHIP_TYPE_8821A) {
+		cond.rfe = 0;
+		cond.rfe |= efuse->ext_lna_2g;
+		cond.rfe |= efuse->ext_pa_2g  << 1;
+		cond.rfe |= efuse->ext_lna_5g << 2;
+		cond.rfe |= efuse->ext_pa_5g  << 3;
+		cond.rfe |= efuse->btcoex     << 4;
 
-	rtw_dbg(rtwdev, RTW_DBG_PHY, "phy cond=0x%08x\n", *((u32 *)&hal->phy_cond));
+		cond2.type_alna = efuse->alna_type;
+		cond2.type_glna = efuse->glna_type;
+		cond2.type_apa = efuse->apa_type;
+		cond2.type_gpa = efuse->gpa_type;
+	}
+
+	hal->phy_cond = cond;
+	hal->phy_cond2 = cond2;
+
+	rtw_dbg(rtwdev, RTW_DBG_PHY, "phy cond=0x%08x cond2=0x%08x\n",
+		*((u32 *)&hal->phy_cond), *((u32 *)&hal->phy_cond2));
 }
 
-static bool check_positive(struct rtw_dev *rtwdev, struct rtw_phy_cond cond)
+static bool check_positive(struct rtw_dev *rtwdev, struct rtw_phy_cond cond, struct rtw_phy_cond2 cond2)
 {
 	struct rtw_hal *hal = &rtwdev->hal;
 	struct rtw_phy_cond drv_cond = hal->phy_cond;
+	struct rtw_phy_cond2 drv_cond2 = hal->phy_cond2;
 
 	if (cond.cut && cond.cut != drv_cond.cut)
 		return false;
@@ -1085,6 +1109,20 @@ static bool check_positive(struct rtw_dev *rtwdev, struct rtw_phy_cond cond)
 	if (cond.rfe != drv_cond.rfe)
 		return false;
 
+	if (cond.rfe & 0x0f) {
+		if ((cond.rfe & BIT(0)) && cond2.type_glna != drv_cond2.type_glna)
+			return false;
+
+		if ((cond.rfe & BIT(1)) && cond2.type_gpa != drv_cond2.type_gpa)
+			return false;
+
+		if ((cond.rfe & BIT(2)) && cond2.type_alna != drv_cond2.type_alna)
+			return false;
+
+		if ((cond.rfe & BIT(3)) && cond2.type_apa != drv_cond2.type_apa)
+			return false;
+	}
+
 	return true;
 }
 
@@ -1093,6 +1131,7 @@ void rtw_parse_tbl_phy_cond(struct rtw_dev *rtwdev, const struct rtw_table *tbl)
 	const union phy_table_tile *p = tbl->data;
 	const union phy_table_tile *end = p + tbl->size / 2;
 	struct rtw_phy_cond pos_cond = {0};
+	struct rtw_phy_cond2 pos_cond2 = {0};
 	bool is_matched = true, is_skipped = false;
 
 	BUILD_BUG_ON(sizeof(union phy_table_tile) != sizeof(struct phy_cfg_pair));
@@ -1111,11 +1150,12 @@ void rtw_parse_tbl_phy_cond(struct rtw_dev *rtwdev, const struct rtw_table *tbl)
 			case BRANCH_ELIF:
 			default:
 				pos_cond = p->cond;
+				pos_cond2 = p->cond2;
 				break;
 			}
 		} else if (p->cond.neg) {
 			if (!is_skipped) {
-				if (check_positive(rtwdev, pos_cond)) {
+				if (check_positive(rtwdev, pos_cond, pos_cond2)) {
 					is_matched = true;
 					is_skipped = true;
 				} else {
@@ -1765,6 +1805,7 @@ void rtw_phy_load_tables(struct rtw_dev *rtwdev)
 {
 	const struct rtw_rfe_def *rfe_def = rtw_get_rfe_def(rtwdev);
 	const struct rtw_chip_info *chip = rtwdev->chip;
+	const struct rtw_efuse *efuse = &rtwdev->efuse;
 	u8 rf_path;
 
 	rtw_load_table(rtwdev, chip->mac_tbl);
@@ -1773,6 +1814,14 @@ void rtw_phy_load_tables(struct rtw_dev *rtwdev)
 	if (rfe_def->agc_btg_tbl)
 		rtw_load_table(rtwdev, rfe_def->agc_btg_tbl);
 	rtw_load_rfk_table(rtwdev);
+	if (chip->id == RTW_CHIP_TYPE_8821C) {
+		if (efuse->rfe_option_full <= 0x2f && efuse->rfe_option_full >= 0x28)
+			rtw_write32(rtwdev, REG_RFE_CTRL8, 0x00000073);
+		else if (efuse->rfe_option_full == 4)
+			rtw_write32(rtwdev, REG_RFE_CTRL8, 0x20000077);
+		else
+			rtw_write32(rtwdev, REG_RFE_CTRL8, 0x10000077);
+	}
 
 	for (rf_path = 0; rf_path < rtwdev->hal.rf_path_num; rf_path++) {
 		const struct rtw_table *tbl;
