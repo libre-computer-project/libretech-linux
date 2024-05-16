@@ -1136,6 +1136,23 @@ static void stmmac_check_pcs_mode(struct stmmac_priv *priv)
 	}
 }
 
+static int stmmac_try_connect_phy(struct phylink *phylink, struct fwnode_handle *fwnode)
+{
+#define WAIT_TIMES 40
+		int ret = 0, i;
+		for (i = 0; i < WAIT_TIMES; i++) {
+			ret = phylink_fwnode_phy_connect(phylink, fwnode, 0);
+			if (!ret || ret != -ENODEV)
+				break;
+			msleep_interruptible(50);
+		}
+
+		if (ret)
+			pr_err("%s: fail to wait %d times, ret = %d\n", __func__, i, ret);
+
+		return ret;
+}
+
 /**
  * stmmac_init_phy - PHY initialization
  * @dev: net device structure
@@ -1184,7 +1201,8 @@ static int stmmac_init_phy(struct net_device *dev)
 		ret = phylink_connect_phy(priv->phylink, phydev);
 	} else {
 		fwnode_handle_put(phy_fwnode);
-		ret = phylink_fwnode_phy_connect(priv->phylink, fwnode, 0);
+
+		ret = stmmac_try_connect_phy(priv->phylink, fwnode);
 	}
 
 	if (!priv->plat->pmt) {
