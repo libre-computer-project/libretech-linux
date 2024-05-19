@@ -184,7 +184,11 @@ install_libc_headers () {
 
 rm -f debian/files
 
+set -x
 packages_enabled=$(dh_listpackages)
+sourcename=${KDEB_SOURCENAME:-linux-upstream}
+metasuffix=${sourcename#linux-}
+set +x
 
 for package in ${packages_enabled}
 do
@@ -207,10 +211,14 @@ do
 	case ${package} in
 	*-dbg)
 		create_package ${package} debian/linux-image-dbg;;
+	linux-image-$metasuffix)
+		create_package ${package} debian/linux-images-meta;;
 	linux-image-*|user-mode-linux-*)
 		create_package ${package} debian/linux-image;;
 	linux-libc-dev)
 		create_package ${package} debian/linux-libc-dev;;
+	linux-headers-$metasuffix)
+		create_package ${package} debian/linux-headers-meta;;
 	linux-headers-*)
 		create_package ${package} debian/linux-headers;;
 	esac
