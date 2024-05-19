@@ -125,6 +125,8 @@ gen_source ()
 rm -rf debian
 mkdir debian
 
+set -x
+
 email=${DEBEMAIL-$EMAIL}
 
 # use email string directly if it contains <email>
@@ -153,6 +155,7 @@ else
 	packageversion=$(${srctree}/scripts/setlocalversion --no-local ${srctree})-$($srctree/init/build-version)
 fi
 sourcename=${KDEB_SOURCENAME:-linux-upstream}
+metasuffix=${sourcename#linux-}
 
 if [ "$ARCH" = "um" ] ; then
 	packagename=user-mode-linux
@@ -218,33 +221,42 @@ Rules-Requires-Root: no
 Build-Depends: bc, debhelper, rsync, kmod, cpio, bison, flex $extra_build_depends
 Homepage: https://www.kernel.org/
 
-Package: $packagename-$version
+Package: $packagename-$metasuffix
+Section: kernel
+Priority: optional
 Architecture: $debarch
-Description: Linux kernel, version $version
+Provides: linux-image-generic, wireguard-modules
+Depends: $packagename-$version
+Description: Libre Computer Linux $metasuffix (meta-package)
+
+Package: $packagename-$version
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Description: Libre Computer Linux $version for $debarch
  This package contains the Linux kernel, modules and corresponding other
- files, version: $version.
+ files, version: $metasuffix $version.
 EOF
 
 if [ "${SRCARCH}" != um ]; then
-cat <<EOF >> debian/control
-
-Package: linux-libc-dev
-Section: devel
-Provides: linux-kernel-headers
-Architecture: $debarch
-Description: Linux support headers for userspace development
- This package provides userspaces headers from the Linux kernel.  These headers
- are used by the installed headers for GNU glibc and other system libraries.
-Multi-Arch: same
-EOF
 
 if is_enabled CONFIG_MODULES; then
 cat <<EOF >> debian/control
 
-Package: linux-headers-$version
+Package: linux-headers-$metasuffix
+Section: kernel
+Priority: optional
 Architecture: $debarch
-Description: Linux kernel headers for $version on $debarch
- This package provides kernel header files for $version on $debarch
+Provides: linux-headers-generic
+Depends: linux-headers-$version
+Description: Libre Computer Linux Headers $metasuffix (meta-package)
+
+Package: linux-headers-$version
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Description: Libre Computer Linux Headers $version for $debarch
+ This package provides kernel header files for $metasuffix $version
  .
  This is useful for people who need to build external modules
 EOF
