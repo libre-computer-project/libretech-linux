@@ -185,6 +185,7 @@ Priority: optional
 Architecture: $debarch
 Provides: linux-image-generic, wireguard-modules
 Depends: $packagename-$version
+Recommends: libretech-keyring
 Description: Libre Computer Linux $branch $debarch (meta-package)
  This package tracks Libre Computer mainline kernel.
 
@@ -215,6 +216,7 @@ Priority: optional
 Architecture: $debarch
 Provides: linux-headers-generic
 Depends: linux-headers-$version
+Recommends: libretech-keyring
 Description: Linux kernel headers for branch $debarch (meta-package)
  This package tracks Libre Computer mainline kernel.
 
