@@ -227,6 +227,7 @@ Priority: optional
 Architecture: $debarch
 Provides: linux-image-generic, wireguard-modules
 Depends: $packagename-$version
+Recommends: libretech-keyring
 Description: Libre Computer Linux $metasuffix (meta-package)
 
 Package: $packagename-$version
@@ -249,6 +250,7 @@ Priority: optional
 Architecture: $debarch
 Provides: linux-headers-generic
 Depends: linux-headers-$version
+Recommends: libretech-keyring
 Description: Libre Computer Linux Headers $metasuffix (meta-package)
 
 Package: linux-headers-$version
