@@ -40,8 +40,13 @@
 #define AML_UART_TX_RST			BIT(22)
 #define AML_UART_RX_RST			BIT(23)
 #define AML_UART_CLEAR_ERR		BIT(24)
+#define AML_UART_RX_INV			BIT(25)
+#define AML_UART_TX_INV			BIT(26)
 #define AML_UART_RX_INT_EN		BIT(27)
 #define AML_UART_TX_INT_EN		BIT(28)
+#define AML_UART_CTS_INV		BIT(29)
+#define AML_UART_ERR_MASK		BIT(30)
+#define AML_UART_RTS_INV		BIT(31)
 #define AML_UART_DATA_LEN_MASK		(0x03 << 20)
 #define AML_UART_DATA_LEN_8BIT		(0x00 << 20)
 #define AML_UART_DATA_LEN_7BIT		(0x01 << 20)
@@ -93,6 +98,30 @@ static void meson_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
 static unsigned int meson_uart_get_mctrl(struct uart_port *port)
 {
 	return TIOCM_CTS;
+}
+
+static void meson_uart_set_rx_invert(struct uart_port *port, bool invert_rx)
+{
+	u32 val;
+
+	val = readl(port->membase + AML_UART_CONTROL);
+	if (invert_rx)
+		val |= AML_UART_RX_INV;
+	else
+		val &= ~AML_UART_RX_INV;
+	writel(val, port->membase + AML_UART_CONTROL);
+}
+
+static void meson_uart_set_tx_invert(struct uart_port *port, bool invert_tx)
+{
+	u32 val;
+
+	val = readl(port->membase + AML_UART_CONTROL);
+	if (invert_tx)
+		val |= AML_UART_TX_INV;
+	else
+		val &= ~AML_UART_TX_INV;
+	writel(val, port->membase + AML_UART_CONTROL);
 }
 
 static unsigned int meson_uart_tx_empty(struct uart_port *port)
@@ -702,6 +731,7 @@ static int meson_uart_probe(struct platform_device *pdev)
 	int ret = 0;
 	int irq;
 	bool has_rtscts;
+	bool invert_rx, invert_tx, invert_cts, invert_rts;
 
 	if (pdev->dev.of_node)
 		pdev->id = of_alias_get_id(pdev->dev.of_node, "serial");
@@ -730,6 +760,11 @@ static int meson_uart_probe(struct platform_device *pdev)
 
 	of_property_read_u32(pdev->dev.of_node, "fifo-size", &fifosize);
 	has_rtscts = of_property_read_bool(pdev->dev.of_node, "uart-has-rtscts");
+
+	invert_rx = of_property_read_bool(pdev->dev.of_node, "uart-invert-rx");
+	invert_tx = of_property_read_bool(pdev->dev.of_node, "uart-invert-tx");
+	invert_cts = of_property_read_bool(pdev->dev.of_node, "uart-invert-cts");
+	invert_rts = of_property_read_bool(pdev->dev.of_node, "uart-invert-rts");
 
 	if (meson_ports[pdev->id]) {
 		return dev_err_probe(&pdev->dev, -EBUSY,
@@ -783,6 +818,9 @@ static int meson_uart_probe(struct platform_device *pdev)
 	ret = uart_add_one_port(uart_driver, port);
 	if (ret)
 		meson_ports[pdev->id] = NULL;
+
+	meson_uart_set_rx_invert(port, invert_rx);
+	meson_uart_set_tx_invert(port, invert_tx);
 
 	return ret;
 }
