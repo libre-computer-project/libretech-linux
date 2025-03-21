@@ -722,6 +722,12 @@ static const struct of_device_id of_emc2305_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, of_emc2305_match_table);
 
+static const struct of_device_id of_emc2305_match_table[] = {
+	{ .compatible = "microchip,emc2305", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, of_emc2305_match_table);
+
 static struct i2c_driver emc2305_driver = {
 	.driver = {
 		.name = "emc2305",
