@@ -30,10 +30,10 @@ make-opts = ARCH=$(ARCH) KERNELRELEASE=$(KERNELRELEASE) \
 binary-targets := $(addprefix binary-, image image-dbg headers libc-dev)
 
 all-packages = $(shell dh_listpackages)
-image-package = $(filter linux-image-% user-%, $(filter-out %-dbg, $(all-packages)))
+image-package = $(filter linux-image-% user-%, $(filter-out %-dbg linux-image-$(META_SUFFIX), $(all-packages)))
 image-dbg-package = $(filter %-dbg, $(all-packages))
 libc-dev-package = $(filter linux-libc-dev, $(all-packages))
-headers-package = $(filter linux-headers-%, $(all-packages))
+headers-package = $(filter linux-headers-%, $(filter-out linux-headers-$(META_SUFFIX), $(all-packages)))
 
 mk-files = $(patsubst binary-%,debian/%.files,$1)
 package = $($(@:binary-%=%-package))
