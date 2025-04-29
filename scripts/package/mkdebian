@@ -203,28 +203,29 @@ Build-Depends-Arch: bc, bison, cpio, flex,
  kmod, libelf-dev:native,
  libssl-dev:native, libssl-dev <!pkg.${sourcename}.nokernelheaders>,
  rsync
-Homepage: https://www.kernel.org/
+Homepage: https://github.com/libre-computer-project/libretech-linux
 
 Package: $packagename-$version
+Section: kernel
+Priority: optional
 Architecture: $debarch
-Description: Linux kernel, version $version
+Provides: linux-image-generic, wireguard-modules
+Description: Libre Computer Linux $version for $debarch
  This package contains the Linux kernel, modules and corresponding other
- files, version: $version.
+ files, version: $version ($META_SUFFIX).
+
+Package: $packagename-$META_SUFFIX
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Depends: $packagename-$version
+Recommends: libretech-keyring
+Suggests: linux-headers-$META_SUFFIX, xserver-xorg-video-libretech
+Description: Libre Computer Linux $META_SUFFIX (meta-package)
 EOF
+
 
 if [ "${SRCARCH}" != um ]; then
-cat <<EOF >> debian/control
-
-Package: linux-libc-dev
-Section: devel
-Provides: linux-kernel-headers
-Architecture: $debarch
-Description: Linux support headers for userspace development
- This package provides userspaces headers from the Linux kernel.  These headers
- are used by the installed headers for GNU glibc and other system libraries.
-Multi-Arch: same
-EOF
-
 if is_enabled CONFIG_MODULES; then
 cat <<EOF >> debian/control
 
@@ -235,6 +236,15 @@ Description: Linux kernel headers for $version on $debarch
  This package provides kernel header files for $version on $debarch
  .
  This is useful for people who need to build external modules
+
+Package: linux-headers-$META_SUFFIX
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Provides: linux-headers-generic
+Depends: linux-headers-$version
+Suggests: $packagename-$META_SUFFIX
+Description: Libre Computer Linux Headers $META_SUFFIX (meta-package)
 EOF
 fi
 fi
