@@ -79,12 +79,19 @@ static int waveshare_command(struct mipi_dbi *mipi, u8 *cmd, u8 *par,
 	/*
 	 * Check whether pixel data bytes needs to be swapped or not
 	 */
-	if (*cmd == MIPI_DCS_WRITE_MEMORY_START && !mipi->swap_bytes)
-		bpw = 16;
+	if (*cmd == MIPI_DCS_WRITE_MEMORY_START){
+		pr_debug("ili9486: pixel-buffer-size: %zuB\n", num);
+		if (!mipi->swap_bytes) bpw = 16;
+	}
+
+	pr_debug("ili9486: bits-per-word: %u\n", bpw);
 
 	spi_bus_lock(spi->controller);
 	gpiod_set_value_cansleep(mipi->dc, 1);
 	speed_hz = mipi_dbi_spi_cmd_max_speed(spi, num);
+
+	pr_debug("ili9486: spi-frequency: %u\n", speed_hz);
+
 	ret = mipi_dbi_spi_transfer(spi, speed_hz, bpw, data, num);
 	spi_bus_unlock(spi->controller);
  free:
