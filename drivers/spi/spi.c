@@ -3757,7 +3757,7 @@ int spi_split_transfers_maxsize(struct spi_controller *ctlr,
 {
 	struct spi_transfer *xfer;
 	int ret;
-
+	pr_debug("spi: splitting transfer to %lu bytes\n", maxsize);
 	/*
 	 * Iterate over the transfer_list,
 	 * but note that xfer is advanced to the last transfer inserted
