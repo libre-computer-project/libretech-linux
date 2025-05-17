@@ -1360,12 +1360,16 @@ static irqreturn_t phy_interrupt(int irq, void *phy_dat)
 		if (netdev) {
 			struct device *parent = netdev->dev.parent;
 
-			if (netdev->ethtool->wol_enabled)
+			if (netdev->ethtool->wol_enabled){
+				pr_debug("%s: wol_enabled\n", __func__);
 				pm_system_wakeup();
-			else if (device_may_wakeup(&netdev->dev))
+			} else if (device_may_wakeup(&netdev->dev)){
+				pr_debug("%s: may_wakeup\n", __func__);
 				pm_wakeup_dev_event(&netdev->dev, 0, true);
-			else if (parent && device_may_wakeup(parent))
+			} else if (parent && device_may_wakeup(parent)){
+				pr_debug("%s: parent may_wakeup\n", __func__);
 				pm_wakeup_dev_event(parent, 0, true);
+			}
 		}
 
 		phydev->irq_rerun = 1;
@@ -1517,8 +1521,10 @@ static enum phy_state_work _phy_state_machine(struct phy_device *phydev)
 static void _phy_state_machine_post_work(struct phy_device *phydev,
 					 enum phy_state_work state_work)
 {
-	if (state_work == PHY_STATE_WORK_SUSPEND)
+	if (state_work == PHY_STATE_WORK_SUSPEND){
+		pr_debug("%s: state_work %d\n", __func__, state_work);
 		phy_suspend(phydev);
+	}
 }
 
 /**
