@@ -7899,8 +7899,10 @@ int stmmac_suspend(struct device *dev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	u32 chan;
 
-	if (!ndev || !netif_running(ndev))
+	if (!ndev || !netif_running(ndev)){
+		pr_debug("%s: skipping suspend", __func__);
 		return 0;
+	}
 
 	mutex_lock(&priv->lock);
 
@@ -7924,9 +7926,11 @@ int stmmac_suspend(struct device *dev)
 
 	/* Enable Power down mode by programming the PMT regs */
 	if (device_may_wakeup(priv->device) && priv->plat->pmt) {
+		pr_debug("%s: irq_wake", __func__);
 		stmmac_pmt(priv, priv->hw, priv->wolopts);
 		priv->irq_wake = 1;
 	} else {
+		pr_debug("%s: select_sleep_state", __func__);
 		stmmac_mac_set(priv, priv->ioaddr, false);
 		pinctrl_pm_select_sleep_state(priv->device);
 	}
@@ -7935,10 +7939,14 @@ int stmmac_suspend(struct device *dev)
 
 	rtnl_lock();
 	if (device_may_wakeup(priv->device) && priv->plat->pmt) {
+		pr_debug("%s: device may wake up from pmt\n", __func__);
 		phylink_suspend(priv->phylink, true);
 	} else {
-		if (device_may_wakeup(priv->device))
+		if (device_may_wakeup(priv->device)){
+			pr_debug("%s: device may wake up\n", __func__);
 			phylink_speed_down(priv->phylink, false);
+		} else
+			pr_debug("%s: device may not wake up\n", __func__);
 		phylink_suspend(priv->phylink, false);
 	}
 	rtnl_unlock();
@@ -7999,8 +8007,10 @@ int stmmac_resume(struct device *dev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)){
+		pr_debug("%s: skipping resume", __func__);
 		return 0;
+	}
 
 	/* Power Down bit, into the PM register, is cleared
 	 * automatically as soon as a magic packet or a Wake-up frame
@@ -8009,11 +8019,13 @@ int stmmac_resume(struct device *dev)
 	 * from another devices (e.g. serial console).
 	 */
 	if (device_may_wakeup(priv->device) && priv->plat->pmt) {
+		pr_debug("%s: device may wake up from pmt\n", __func__);
 		mutex_lock(&priv->lock);
 		stmmac_pmt(priv, priv->hw, 0);
 		mutex_unlock(&priv->lock);
 		priv->irq_wake = 0;
 	} else {
+		pr_debug("%s: select_sleep_state", __func__);
 		pinctrl_pm_select_default_state(priv->device);
 		/* reset the phy so that it's ready */
 		if (priv->mii)

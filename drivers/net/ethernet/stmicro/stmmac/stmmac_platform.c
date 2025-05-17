@@ -642,6 +642,8 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 		goto error_hw_init;
 	}
 
+	pr_debug("%s: %d\n", __func__, plat->pmt);
+
 	return plat;
 
 error_hw_init:
@@ -867,6 +869,7 @@ static int __maybe_unused stmmac_pltfr_suspend(struct device *dev)
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	struct platform_device *pdev = to_platform_device(dev);
+	pr_debug("%s\n", __func__);
 
 	ret = stmmac_suspend(dev);
 	stmmac_pltfr_exit(pdev, priv->plat);
@@ -887,6 +890,7 @@ static int __maybe_unused stmmac_pltfr_resume(struct device *dev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	struct platform_device *pdev = to_platform_device(dev);
 	int ret;
+	pr_debug("%s\n", __func__);
 
 	ret = stmmac_pltfr_init(pdev, priv->plat);
 	if (ret)
@@ -899,6 +903,7 @@ static int __maybe_unused stmmac_runtime_suspend(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
+	pr_debug("%s\n", __func__);
 
 	stmmac_bus_clks_config(priv, false);
 
@@ -909,6 +914,7 @@ static int __maybe_unused stmmac_runtime_resume(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
+	pr_debug("%s\n", __func__);
 
 	return stmmac_bus_clks_config(priv, true);
 }
@@ -918,14 +924,18 @@ static int __maybe_unused stmmac_pltfr_noirq_suspend(struct device *dev)
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
+	pr_debug("%s\n", __func__);
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)){
+		pr_debug("%s: not running\n", __func__);
 		return 0;
+	}
 
 	if (!device_may_wakeup(priv->device) || !priv->plat->pmt) {
 		/* Disable clock in case of PWM is off */
 		clk_disable_unprepare(priv->plat->clk_ptp_ref);
 
+		pr_debug("%s: force_suspend\n", __func__);
 		ret = pm_runtime_force_suspend(dev);
 		if (ret)
 			return ret;
@@ -939,11 +949,15 @@ static int __maybe_unused stmmac_pltfr_noirq_resume(struct device *dev)
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
+	pr_debug("%s\n", __func__);
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)){
+		pr_debug("%s: not running\n", __func__);
 		return 0;
+	}
 
 	if (!device_may_wakeup(priv->device) || !priv->plat->pmt) {
+		pr_debug("%s: force_resume\n", __func__);
 		/* enable the clk previously disabled */
 		ret = pm_runtime_force_resume(dev);
 		if (ret)
