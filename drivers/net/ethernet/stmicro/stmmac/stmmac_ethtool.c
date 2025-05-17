@@ -851,6 +851,8 @@ static int stmmac_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 	if (!device_can_wakeup(priv->device))
 		return -EOPNOTSUPP;
 
+	pr_debug("%s: pmt %d\n", __func__, priv->plat->pmt);
+
 	if (!priv->plat->pmt) {
 		int ret = phylink_ethtool_set_wol(priv->phylink, wol);
 
