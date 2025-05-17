@@ -7762,8 +7762,10 @@ int stmmac_suspend(struct device *dev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	u32 chan;
 
-	if (!ndev || !netif_running(ndev))
+	if (!ndev || !netif_running(ndev)){
+		pr_debug("%s: skipping suspend", __func__);
 		return 0;
+	}
 
 	mutex_lock(&priv->lock);
 
@@ -7787,9 +7789,11 @@ int stmmac_suspend(struct device *dev)
 
 	/* Enable Power down mode by programming the PMT regs */
 	if (stmmac_wol_enabled_mac(priv)) {
+		pr_debug("%s: irq_wake (wol_enabled_mac)\n", __func__);
 		stmmac_pmt(priv, priv->hw, priv->wolopts);
 		priv->irq_wake = 1;
 	} else {
+		pr_debug("%s: select_sleep_state\n", __func__);
 		stmmac_mac_set(priv, priv->ioaddr, false);
 		pinctrl_pm_select_sleep_state(priv->device);
 	}
@@ -7797,9 +7801,12 @@ int stmmac_suspend(struct device *dev)
 	mutex_unlock(&priv->lock);
 
 	rtnl_lock();
-	if (stmmac_wol_enabled_phy(priv))
+	if (stmmac_wol_enabled_phy(priv)) {
+		pr_debug("%s: wol_enabled_phy, speed_down\n", __func__);
 		phylink_speed_down(priv->phylink, false);
+	}
 
+	pr_debug("%s: phylink_suspend wol_enabled_mac=%d\n", __func__, stmmac_wol_enabled_mac(priv));
 	phylink_suspend(priv->phylink, stmmac_wol_enabled_mac(priv));
 	rtnl_unlock();
 
@@ -7867,8 +7874,10 @@ int stmmac_resume(struct device *dev)
 			return ret;
 	}
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)) {
+		pr_debug("%s: skipping resume\n", __func__);
 		return 0;
+	}
 
 	/* Power Down bit, into the PM register, is cleared
 	 * automatically as soon as a magic packet or a Wake-up frame
@@ -7877,11 +7886,13 @@ int stmmac_resume(struct device *dev)
 	 * from another devices (e.g. serial console).
 	 */
 	if (stmmac_wol_enabled_mac(priv)) {
+		pr_debug("%s: wol_enabled_mac, clearing pmt\n", __func__);
 		mutex_lock(&priv->lock);
 		stmmac_pmt(priv, priv->hw, 0);
 		mutex_unlock(&priv->lock);
 		priv->irq_wake = 0;
 	} else {
+		pr_debug("%s: select_default_state\n", __func__);
 		pinctrl_pm_select_default_state(priv->device);
 		/* reset the phy so that it's ready */
 		if (priv->mii)

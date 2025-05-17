@@ -667,6 +667,8 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 		goto error_hw_init;
 	}
 
+	pr_debug("%s: pmt=%d\n", __func__, plat->pmt);
+
 	return plat;
 
 error_hw_init:
@@ -947,6 +949,7 @@ static int __maybe_unused stmmac_runtime_suspend(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
+	pr_debug("%s\n", __func__);
 
 	stmmac_bus_clks_config(priv, false);
 
@@ -957,6 +960,7 @@ static int __maybe_unused stmmac_runtime_resume(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
+	pr_debug("%s\n", __func__);
 
 	return stmmac_bus_clks_config(priv, true);
 }
@@ -966,14 +970,18 @@ static int __maybe_unused stmmac_pltfr_noirq_suspend(struct device *dev)
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
+	pr_debug("%s\n", __func__);
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)) {
+		pr_debug("%s: not running\n", __func__);
 		return 0;
+	}
 
 	if (!stmmac_wol_enabled_mac(priv)) {
 		/* Disable clock in case of PWM is off */
 		clk_disable_unprepare(priv->plat->clk_ptp_ref);
 
+		pr_debug("%s: force_suspend\n", __func__);
 		ret = pm_runtime_force_suspend(dev);
 		if (ret)
 			return ret;
@@ -987,11 +995,15 @@ static int __maybe_unused stmmac_pltfr_noirq_resume(struct device *dev)
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
+	pr_debug("%s\n", __func__);
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)) {
+		pr_debug("%s: not running\n", __func__);
 		return 0;
+	}
 
 	if (!stmmac_wol_enabled_mac(priv)) {
+		pr_debug("%s: force_resume\n", __func__);
 		/* enable the clk previously disabled */
 		ret = pm_runtime_force_resume(dev);
 		if (ret)
