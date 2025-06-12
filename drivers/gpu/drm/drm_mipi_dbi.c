@@ -845,7 +845,7 @@ u32 mipi_dbi_spi_cmd_max_speed(struct spi_device *spi, size_t len)
 	if (len > 64)
 		return 0; /* use default */
 
-	return min_t(u32, 10000000, spi->max_speed_hz);
+	return spi->max_speed_hz;
 }
 EXPORT_SYMBOL(mipi_dbi_spi_cmd_max_speed);
 
