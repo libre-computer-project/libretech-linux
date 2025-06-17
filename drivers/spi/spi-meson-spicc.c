@@ -27,8 +27,8 @@
 
 /*
  * There are two modes for data transmission: PIO and DMA.
- * When bits_per_word is a multiple of 8, data is transferred using DMA.
- * When bits_per_word is less than 8 or words fewer than fifo, then IO.
+ * When bits_per_word is greater than 8, data is transferred using DMA.
+ * When bits_per_word is less than 8 or words fewer than two fifos, then IO.
  *
  * DMA achieves a transfer with one or more SPI bursts, each SPI burst is made
  * up of one or more DMA bursts. The DMA burst implementation mechanism is,
@@ -45,11 +45,15 @@
  *   split into several SPI bursts by this driver
  *
  * The IP has quirks that need to be worked around
- * - Using FIFO entry 16 causes stall on G12 and newer
+ * - Using FIFO entry 16 causes stall on G12 and newer, not sure about AXG
  * DMA quirks:
- * - Second transfers of odd bytes fail, use PIO to suppliment
+ * - Second transfers of odd bytes fail, use PIO to suppliment, restrict size
+ * - SMC occasionally fails to do TX when using FIFO entry 16 on G12 and newer
  * PIO quirks:
- * - XCH occasionally fails while firing TC
+ * - XCH occasionally fails to do TX, returns TC but fifo still loaded
+ *
+ * TODO
+ * - Interword, cs setup, cs hold, cs inactive delay configuration
 */
 
 #define SPICC_PIO_WIDTH	32
