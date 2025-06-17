@@ -27,13 +27,15 @@ make-opts = ARCH=$(ARCH) KERNELRELEASE=$(KERNELRELEASE) \
     $(addprefix KBUILD_BUILD_VERSION=,$(revision)) \
     $(addprefix CROSS_COMPILE=,$(CROSS_COMPILE))
 
-binary-targets := $(addprefix binary-, image image-dbg headers libc-dev)
+binary-targets := $(addprefix binary-, image image-dbg headers image-meta headers-meta)
 
 all-packages = $(shell dh_listpackages)
 image-package = $(filter linux-image-% user-%, $(filter-out %-dbg linux-image-$(META_SUFFIX), $(all-packages)))
 image-dbg-package = $(filter %-dbg, $(all-packages))
 libc-dev-package = $(filter linux-libc-dev, $(all-packages))
 headers-package = $(filter linux-headers-%, $(filter-out linux-headers-$(META_SUFFIX), $(all-packages)))
+image-meta-package = linux-image-$(META_SUFFIX)
+headers-meta-package = linux-headers-$(META_SUFFIX)
 
 mk-files = $(patsubst binary-%,debian/%.files,$1)
 package = $($(@:binary-%=%-package))
@@ -61,10 +63,24 @@ define binary
 	$(Q)dh_builddeb $(DH_OPTIONS) -- $(addprefix -Z,$(KDEB_COMPRESS))
 endef
 
+define binary-meta
+    $(Q)dh_testdir -p$(package)
+    $(Q)dh_testroot -p$(package)
+    $(Q)dh_prep -p$(package)
+    $(Q)mkdir -p debian/$(package)/usr
+    $(Q)dh_installdocs -p$(package)
+    $(Q)dh_installchangelogs -p$(package)
+    $(Q)dh_compress -p$(package)
+    $(Q)dh_fixperms -p$(package)
+    $(Q)dh_gencontrol -p$(package) -- -f$(call mk-files,$@)
+    $(Q)dh_md5sums -p$(package)
+    $(Q)dh_builddeb -p$(package) -- $(addprefix -Z,$(KDEB_COMPRESS))
+endef
+
 .PHONY: $(binary-targets)
 $(binary-targets): build-arch
 	$(Q)truncate -s0 $(call mk-files,$@)
-	$(if $(package),$(binary))
+	$(if $(filter binary-image-meta binary-headers-meta,$@),$(binary-meta),$(if $(package),$(binary)))
 
 .PHONY: binary binary-indep binary-arch
 binary: binary-arch binary-indep
