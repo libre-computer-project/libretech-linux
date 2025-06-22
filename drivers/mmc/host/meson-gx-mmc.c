@@ -605,6 +605,7 @@ static void meson_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	case MMC_POWER_OFF:
 		mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, 0);
 		mmc_regulator_disable_vqmmc(mmc);
+		msleep(50);
 
 		break;
 
