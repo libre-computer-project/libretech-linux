@@ -106,7 +106,12 @@
 #define RTL8211F_WOL_SETTINGS_EVENTS		16
 #define RTL8211F_WOL_EVENT_MAGIC		BIT(12)
 #define RTL8211F_WOL_SETTINGS_STATUS		17
-#define RTL8211F_WOL_STATUS_RESET		(BIT(15) | 0x1fff)
+#define RTL8211F_WOL_STATUS_RESET		BIT(15)
+#define RTL8211F_WOL_STATUS_PACKET_LEN		0x1fff
+#define RTL8211F_WOL_SETTINGS_PMEB		19
+#define RTL8211F_WOL_PMEB_PULSE			BIT(0)
+#define RTL8211F_WOL_PMEB_PULSE_WIDTH		GENMASK(2, 1)
+#define RTL8211F_WOL_PMEB_PAD_ISOLATION		BIT(15)
 
 /* RTL8211F Unique phyiscal and multicast address (WOL) */
 #define RTL8211F_PHYSICAL_ADDR_PAGE		0xd8c
@@ -421,6 +426,7 @@ static irqreturn_t rtl8211f_handle_interrupt(struct phy_device *phydev)
 	int irq_status;
 
 	irq_status = phy_read_paged(phydev, RTL8211F_INSR_PAGE, RTL8211F_INSR);
+	pr_debug("%s: irq %d\n", __func__, irq_status);
 	if (irq_status < 0) {
 		phy_error(phydev);
 		return IRQ_NONE;
@@ -437,9 +443,14 @@ static irqreturn_t rtl8211f_handle_interrupt(struct phy_device *phydev)
 static void rtl8211f_get_wol(struct phy_device *dev, struct ethtool_wolinfo *wol)
 {
 	wol->supported = WAKE_MAGIC;
+	/*
 	if (phy_read_paged(dev, RTL8211F_WOL_SETTINGS_PAGE, RTL8211F_WOL_SETTINGS_EVENTS)
 	    & RTL8211F_WOL_EVENT_MAGIC)
+	*/
+	if (phy_read_paged(dev, RTL8211F_WOL_SETTINGS_PAGE, RTL8211F_WOL_SETTINGS_PMEB)
+	    & RTL8211F_WOL_PMEB_PULSE)
 		wol->wolopts = WAKE_MAGIC;
+	pr_debug("%s: get_wol %d\n", __func__, wol->wolopts);
 }
 
 static int rtl8211f_set_wol(struct phy_device *dev, struct ethtool_wolinfo *wol)
@@ -453,28 +464,31 @@ static int rtl8211f_set_wol(struct phy_device *dev, struct ethtool_wolinfo *wol)
 
 	if (wol->wolopts & WAKE_MAGIC) {
 		/* Store the device address for the magic packet */
-		rtl821x_write_page(dev, RTL8211F_PHYSICAL_ADDR_PAGE);
+		rtl821x_write_page(dev, RTL8211F_PHYSICAL_ADDR_PAGE); //0xd8c
 		__phy_write(dev, RTL8211F_PHYSICAL_ADDR_WORD0, mac_addr[1] << 8 | (mac_addr[0]));
 		__phy_write(dev, RTL8211F_PHYSICAL_ADDR_WORD1, mac_addr[3] << 8 | (mac_addr[2]));
 		__phy_write(dev, RTL8211F_PHYSICAL_ADDR_WORD2, mac_addr[5] << 8 | (mac_addr[4]));
 
 		/* Enable magic packet matching and reset WOL status */
-		rtl821x_write_page(dev, RTL8211F_WOL_SETTINGS_PAGE);
-		__phy_write(dev, RTL8211F_WOL_SETTINGS_EVENTS, RTL8211F_WOL_EVENT_MAGIC);
-		__phy_write(dev, RTL8211F_WOL_SETTINGS_STATUS, RTL8211F_WOL_STATUS_RESET);
+		rtl821x_write_page(dev, RTL8211F_WOL_SETTINGS_PAGE); //0xd8a
+		__phy_write(dev, RTL8211F_WOL_SETTINGS_STATUS, RTL8211F_WOL_STATUS_PACKET_LEN); //17 0x9fff
+		//__phy_write(dev, RTL8211F_WOL_SETTINGS_EVENTS, RTL8211F_WOL_EVENT_MAGIC); //16 0x1000
+		__phy_set_bits(dev, RTL8211F_WOL_SETTINGS_PMEB, RTL8211F_WOL_PMEB_PULSE); //19 0x1
+		__phy_clear_bits(dev, RTL8211F_WOL_SETTINGS_PMEB, RTL8211F_WOL_PMEB_PULSE_WIDTH); //19 0x0
 
-		/* Enable the WOL interrupt */
-		rtl821x_write_page(dev, RTL8211F_INTBCR_PAGE);
-		__phy_set_bits(dev, RTL8211F_INTBCR, RTL8211F_INTBCR_INTB_PMEB);
+		pr_debug("%s: set_wol enable\n", __func__);
 	} else {
 		/* Disable the WOL interrupt */
-		rtl821x_write_page(dev, RTL8211F_INTBCR_PAGE);
-		__phy_clear_bits(dev, RTL8211F_INTBCR, RTL8211F_INTBCR_INTB_PMEB);
+		//rtl821x_write_page(dev, RTL8211F_INTBCR_PAGE);
+		//__phy_clear_bits(dev, RTL8211F_INTBCR, RTL8211F_INTBCR_INTB_PMEB);
 
 		/* Disable magic packet matching and reset WOL status */
 		rtl821x_write_page(dev, RTL8211F_WOL_SETTINGS_PAGE);
-		__phy_write(dev, RTL8211F_WOL_SETTINGS_EVENTS, 0);
-		__phy_write(dev, RTL8211F_WOL_SETTINGS_STATUS, RTL8211F_WOL_STATUS_RESET);
+		//__phy_write(dev, RTL8211F_WOL_SETTINGS_EVENTS, 0);
+		//__phy_write(dev, RTL8211F_WOL_SETTINGS_STATUS, RTL8211F_WOL_STATUS_PACKET_LEN);
+		__phy_clear_bits(dev, RTL8211F_WOL_SETTINGS_PMEB, RTL8211F_WOL_PMEB_PULSE); //19 0x0
+
+		pr_debug("%s: set_wol disable\n", __func__);
 	}
 
 err:
@@ -637,6 +651,61 @@ static int rtl821x_resume(struct phy_device *phydev)
 	msleep(20);
 
 	return 0;
+}
+
+static int rtl8211f_suspend(struct phy_device *phydev)
+{
+	if (phydev->wol_enabled){
+
+		rtl821x_write_page(phydev, RTL8211F_WOL_SETTINGS_PAGE); //0xd8a
+
+		/* WOL Reset */
+		__phy_set_bits(phydev, RTL8211F_WOL_SETTINGS_STATUS, RTL8211F_WOL_STATUS_RESET); //17 0x8000
+
+		/* Enable WOL Wake Packet */
+		__phy_write(phydev, RTL8211F_WOL_SETTINGS_EVENTS, RTL8211F_WOL_EVENT_MAGIC); //16 0x1000
+
+		/* Enable Pad Isolation */
+		__phy_set_bits(phydev, RTL8211F_WOL_SETTINGS_PMEB, RTL8211F_WOL_PMEB_PAD_ISOLATION); //19 0x8000
+
+		/* Enable PMEB */
+		rtl821x_write_page(phydev, RTL8211F_INTBCR_PAGE); //0xd40
+		__phy_set_bits(phydev, RTL8211F_INTBCR, RTL8211F_INTBCR_INTB_PMEB); //22 0x20
+
+		/* Check PMEB Status */
+		pr_debug("%s: suspend intbcr %d\n", __func__, phy_read_paged(phydev, RTL8211F_INTBCR_PAGE, RTL8211F_INTBCR));
+		return 0;
+	} else {
+		pr_debug("%s: suspend\n", __func__);
+		return rtl821x_suspend(phydev);
+	}
+}
+
+static int rtl8211f_resume(struct phy_device *phydev)
+{
+	if (phydev->wol_enabled){
+		/* Disable PMEB */
+		rtl821x_write_page(phydev, RTL8211F_INTBCR_PAGE); //0xd40
+		__phy_clear_bits(phydev, RTL8211F_INTBCR, RTL8211F_INTBCR_INTB_PMEB); //22 0x20
+
+		/* Disable WOL Wake Packet */
+		rtl821x_write_page(phydev, RTL8211F_WOL_SETTINGS_PAGE); //0xd8a
+		__phy_write(phydev, RTL8211F_WOL_SETTINGS_EVENTS, 0); //16 0x0
+
+		/* WOL Reset */
+		__phy_clear_bits(phydev, RTL8211F_WOL_SETTINGS_STATUS, RTL8211F_WOL_STATUS_RESET); //17 0x8000
+
+		/* Disable Pad Isolation */
+		__phy_clear_bits(phydev, RTL8211F_WOL_SETTINGS_PMEB, RTL8211F_WOL_PMEB_PAD_ISOLATION); //19 0x8000
+
+		/* Check PMEB Status */
+		pr_debug("%s: resume intbcr %d\n", __func__, phy_read_paged(phydev, RTL8211F_INTBCR_PAGE, RTL8211F_INTBCR));
+
+		return 0;
+	} else {
+		pr_debug("%s: resume\n", __func__);
+		return rtl821x_resume(phydev);
+	}
 }
 
 static int rtl8211x_led_hw_is_supported(struct phy_device *phydev, u8 index,
@@ -1604,8 +1673,8 @@ static struct phy_driver realtek_drvs[] = {
 		.handle_interrupt = rtl8211f_handle_interrupt,
 		.set_wol	= rtl8211f_set_wol,
 		.get_wol	= rtl8211f_get_wol,
-		.suspend	= rtl821x_suspend,
-		.resume		= rtl821x_resume,
+		.suspend	= rtl8211f_suspend,
+		.resume		= rtl8211f_resume,
 		.read_page	= rtl821x_read_page,
 		.write_page	= rtl821x_write_page,
 		.flags		= PHY_ALWAYS_CALL_SUSPEND,
