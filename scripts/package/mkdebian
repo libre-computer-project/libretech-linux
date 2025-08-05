@@ -220,7 +220,7 @@ Priority: optional
 Architecture: $debarch
 Depends: $packagename-$version
 Recommends: libretech-keyring
-Suggests: linux-headers-$META_SUFFIX, xserver-xorg-video-libretech
+Suggests: linux-headers-$META_SUFFIX, xserver-xorg-video-libretech, libretech-alsa-ucm-conf
 Description: Libre Computer Linux $META_SUFFIX (meta-package)
 EOF
 
