@@ -618,6 +618,9 @@ static int emc2305_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA))
 		return -ENODEV;
 
+	i2c_smbus_xfer(client->adapter, client->addr, 0, I2C_SMBUS_WRITE,
+                         0, I2C_SMBUS_QUICK, NULL);
+
 	vendor = i2c_smbus_read_byte_data(client, EMC2305_REG_VENDOR);
 	if (vendor != EMC2305_VENDOR)
 		return -ENODEV;
