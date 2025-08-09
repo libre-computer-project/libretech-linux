@@ -164,6 +164,13 @@ static const unsigned int sdcard_d3_c_pins[]		= { GPIOC_3 };
 static const unsigned int sdcard_clk_c_pins[]		= { GPIOC_4 };
 static const unsigned int sdcard_cmd_c_pins[]		= { GPIOC_5 };
 
+static const unsigned int sdcard_d0_x_pins[]		= { GPIOX_0 };
+static const unsigned int sdcard_d1_x_pins[]		= { GPIOX_1 };
+static const unsigned int sdcard_d2_x_pins[]		= { GPIOX_2 };
+static const unsigned int sdcard_d3_x_pins[]		= { GPIOX_3 };
+static const unsigned int sdcard_clk_x_pins[]		= { GPIOX_4 };
+static const unsigned int sdcard_cmd_x_pins[]		= { GPIOX_5 };
+
 static const unsigned int sdcard_d0_z_pins[]		= { GPIOZ_2 };
 static const unsigned int sdcard_d1_z_pins[]		= { GPIOZ_3 };
 static const unsigned int sdcard_d2_z_pins[]		= { GPIOZ_4 };
@@ -203,12 +210,16 @@ static const unsigned int i2c1_sda_h2_pins[]		= { GPIOH_2 };
 static const unsigned int i2c1_sck_h3_pins[]		= { GPIOH_3 };
 static const unsigned int i2c1_sda_h6_pins[]		= { GPIOH_6 };
 static const unsigned int i2c1_sck_h7_pins[]		= { GPIOH_7 };
+static const unsigned int i2c1_sda_z0_pins[]		= { GPIOZ_0 };
+static const unsigned int i2c1_sck_z1_pins[]		= { GPIOZ_1 };
 
 /* i2c2 */
 static const unsigned int i2c2_sda_x_pins[]		= { GPIOX_17 };
 static const unsigned int i2c2_sck_x_pins[]		= { GPIOX_18 };
 static const unsigned int i2c2_sda_z_pins[]		= { GPIOZ_14 };
 static const unsigned int i2c2_sck_z_pins[]		= { GPIOZ_15 };
+static const unsigned int i2c2_sda_z10_pins[]		= { GPIOZ_10 };
+static const unsigned int i2c2_sck_z11_pins[]		= { GPIOZ_11 };
 
 /* i2c3 */
 static const unsigned int i2c3_sda_h_pins[]		= { GPIOH_0 };
@@ -441,6 +452,7 @@ static const unsigned int tdm_c_dout0_z_pins[]		= { GPIOZ_2 };
 static const unsigned int tdm_c_dout1_z_pins[]		= { GPIOZ_3 };
 static const unsigned int tdm_c_dout2_z_pins[]		= { GPIOZ_4 };
 static const unsigned int tdm_c_dout3_z_pins[]		= { GPIOZ_5 };
+static const unsigned int tdm_c_dout4_z_pins[]		= { GPIOZ_9 };
 
 static const struct meson_pmx_group meson_g12a_periphs_groups[] = {
 	GPIO_GROUP(GPIOZ_0),
@@ -566,8 +578,18 @@ static const struct meson_pmx_group meson_g12a_periphs_groups[] = {
 	GROUP(i2c0_sck_z1,		4),
 	GROUP(i2c0_sda_z7,		7),
 	GROUP(i2c0_sck_z8,		7),
+	GROUP(i2c1_sda_z0,		5),
+	GROUP(i2c1_sck_z1,		5),
 	GROUP(i2c2_sda_z,		3),
 	GROUP(i2c2_sck_z,		3),
+	GROUP(i2c2_sda_z10,		3),
+	GROUP(i2c2_sck_z11,		3),
+	GROUP(sdcard_d0_x,		5),
+	GROUP(sdcard_d1_x,		5),
+	GROUP(sdcard_d2_x,		5),
+	GROUP(sdcard_d3_x,		5),
+	GROUP(sdcard_clk_x,		5),
+	GROUP(sdcard_cmd_x,		5),
 	GROUP(iso7816_clk_z,		3),
 	GROUP(iso7816_data_z,		3),
 	GROUP(eth_mdio,			1),
@@ -626,6 +648,7 @@ static const struct meson_pmx_group meson_g12a_periphs_groups[] = {
 	GROUP(tdm_c_dout1_z,		4),
 	GROUP(tdm_c_dout2_z,		4),
 	GROUP(tdm_c_dout3_z,		4),
+	GROUP(tdm_c_dout4_z,		3),
 	GROUP(mclk1_z,			4),
 	GROUP(pwm_f_z,			5),
 
@@ -1026,6 +1049,7 @@ static const char * const i2c1_groups[] = {
 	"i2c1_sda_x", "i2c1_sck_x",
 	"i2c1_sda_h2", "i2c1_sck_h3",
 	"i2c1_sda_h6", "i2c1_sck_h7",
+	"i2c1_sda_z0", "i2c1_sck_z1",
 };
 
 static const char * const i2c2_groups[] = {
@@ -1282,6 +1306,7 @@ static const struct meson_pmx_func meson_g12a_periphs_functions[] = {
 	FUNCTION(i2c1),
 	FUNCTION(i2c2),
 	FUNCTION(i2c3),
+	FUNCTION(sdcard),
 	FUNCTION(uart_a),
 	FUNCTION(uart_b),
 	FUNCTION(uart_c),
