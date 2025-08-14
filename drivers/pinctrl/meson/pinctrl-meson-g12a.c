@@ -454,6 +454,8 @@ static const unsigned int tdm_c_dout2_z_pins[]		= { GPIOZ_4 };
 static const unsigned int tdm_c_dout3_z_pins[]		= { GPIOZ_5 };
 static const unsigned int tdm_c_dout4_z_pins[]		= { GPIOZ_9 };
 
+static const unsigned int pcie_clkreqn_pins[]		= { GPIOC_7 };
+
 static const struct meson_pmx_group meson_g12a_periphs_groups[] = {
 	GPIO_GROUP(GPIOZ_0),
 	GPIO_GROUP(GPIOZ_1),
@@ -744,6 +746,7 @@ static const struct meson_pmx_group meson_g12a_periphs_groups[] = {
 	GROUP(pdm_din2_c,		4),
 	GROUP(pdm_din3_c,		4),
 	GROUP(pdm_dclk_c,		4),
+	GROUP(pcie_clkreqn,		1),
 
 	/* bank GPIOH */
 	GROUP(spi1_mosi,		3),
@@ -1207,6 +1210,10 @@ static const char * const tdm_c_groups[] = {
 	"tdm_c_dout2_z", "tdm_c_dout3_z",
 };
 
+static const char * const pcie_clkreqn_groups[] = {
+	"pcie_clkreqn"
+};
+
 static const char * const gpio_aobus_groups[] = {
 	"GPIOAO_0", "GPIOAO_1", "GPIOAO_2", "GPIOAO_3", "GPIOAO_4",
 	"GPIOAO_5", "GPIOAO_6", "GPIOAO_7", "GPIOAO_8", "GPIOAO_9",
@@ -1334,6 +1341,7 @@ static const struct meson_pmx_func meson_g12a_periphs_functions[] = {
 	FUNCTION(tdm_a),
 	FUNCTION(tdm_b),
 	FUNCTION(tdm_c),
+	FUNCTION(pcie_clkreqn),
 };
 
 static const struct meson_pmx_func meson_g12a_aobus_functions[] = {
