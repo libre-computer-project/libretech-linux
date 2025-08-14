@@ -37,7 +37,8 @@
 #define PCIE_CFG_STATUS17		0x44
 #define PM_CURRENT_STATE(x)		(((x) >> 7) & 0x1)
 
-#define WAIT_LINKUP_TIMEOUT		4000
+#define WAIT_LINKUP_TIMEOUT		40000
+#define WAIT_LINKUP_INTERVAL		10
 #define PORT_CLK_RATE			100000000UL
 #define MAX_PAYLOAD_SIZE		256
 #define MAX_READ_REQ_SIZE		256
@@ -365,9 +366,9 @@ static int meson_pcie_link_up(struct dw_pcie *pci)
 		if (smlh_up && rdlh_up && ltssm_up && speed_okay)
 			return 1;
 
-		cnt++;
+		cnt += WAIT_LINKUP_INTERVAL;
 
-		udelay(10);
+		udelay(WAIT_LINKUP_INTERVAL);
 	} while (cnt < WAIT_LINKUP_TIMEOUT);
 
 	dev_err(dev, "error: wait linkup timeout\n");
