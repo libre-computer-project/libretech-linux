@@ -22,7 +22,7 @@
 #include "panfrost_mmu.h"
 #include "panfrost_dump.h"
 
-#define JOB_TIMEOUT_MS 500
+#define JOB_TIMEOUT_MS 10000
 
 #define job_write(dev, reg, data) writel(data, dev->iomem + (reg))
 #define job_read(dev, reg) readl(dev->iomem + (reg))
