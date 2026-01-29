@@ -165,6 +165,7 @@ else
 	packageversion=${upstream_version}-${debian_revision}
 fi
 sourcename=${KDEB_SOURCENAME:-linux-upstream}
+version=$KERNELRELEASE
 
 if [ "$ARCH" = "um" ] ; then
 	packagename=user-mode-linux
