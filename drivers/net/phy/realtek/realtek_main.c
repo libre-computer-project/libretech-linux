@@ -118,6 +118,11 @@
 #define RTL8211F_WOL_PMEB_PULSE_WIDTH		GENMASK(2, 1)
 #define RTL8211F_WOL_PMEB_PAD_ISOLATION		BIT(15)
 
+/* RTL8211F Interrupt B Control Register (INTBCR) for PME output */
+#define RTL8211F_INTBCR_PAGE			0xa42
+#define RTL8211F_INTBCR				0x18
+#define RTL8211F_INTBCR_INTB_PMEB		BIT(1)
+
 /* RTL8211F Unique phyiscal and multicast address (WOL) */
 #define RTL8211F_PHYSICAL_ADDR_PAGE		0xd8c
 #define RTL8211F_PHYSICAL_ADDR_WORD0		16
@@ -467,8 +472,6 @@ static irqreturn_t rtl8211f_handle_interrupt(struct phy_device *phydev)
 
 static void rtl8211f_get_wol(struct phy_device *dev, struct ethtool_wolinfo *wol)
 {
-	int wol_events;
-
 	/* If the PHY is not capable of waking the system, then WoL can not
 	 * be supported.
 	 */
@@ -711,52 +714,6 @@ static int rtl821x_suspend(struct phy_device *phydev)
 		clk_disable_unprepare(priv->clk);
 	}
 
-	return ret;
-}
-
-static int rtl8211f_suspend(struct phy_device *phydev)
-{
-	u16 wol_rst;
-	int ret;
-
-	ret = rtl821x_suspend(phydev);
-	if (ret < 0)
-		return ret;
-
-	/* If a PME event is enabled, then configure the interrupt for
-	 * PME events only, disabling link interrupt. We avoid switching
-	 * to PMEB mode as we don't have a status bit for that.
-	 */
-	if (device_may_wakeup(&phydev->mdio.dev)) {
-		ret = phy_write_paged(phydev, 0xa42, RTL821x_INER,
-				      RTL8211F_INER_PME);
-		if (ret < 0)
-			goto err;
-
-		/* Read the INSR to clear any pending interrupt */
-		phy_read_paged(phydev, RTL8211F_INSR_PAGE, RTL8211F_INSR);
-
-		/* Reset the WoL to ensure that an event is picked up.
-		 * Unless we do this, even if we receive another packet,
-		 * we may not have a PME interrupt raised.
-		 */
-		ret = phy_read_paged(phydev, RTL8211F_WOL_PAGE,
-				     RTL8211F_WOL_RST_RMSQ);
-		if (ret < 0)
-			goto err;
-
-		wol_rst = ret & ~RTL8211F_WOL_RG_RSTB;
-		ret = phy_write_paged(phydev, RTL8211F_WOL_PAGE,
-				      RTL8211F_WOL_RST_RMSQ, wol_rst);
-		if (ret < 0)
-			goto err;
-
-		wol_rst |= RTL8211F_WOL_RG_RSTB;
-		ret = phy_write_paged(phydev, RTL8211F_WOL_PAGE,
-				      RTL8211F_WOL_RST_RMSQ, wol_rst);
-	}
-
-err:
 	return ret;
 }
 
