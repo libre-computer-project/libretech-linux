@@ -421,8 +421,18 @@ static int dw_hdmi_i2c_xfer(struct i2c_adapter *adap,
 {
 	struct dw_hdmi *hdmi = i2c_get_adapdata(adap);
 	struct dw_hdmi_i2c *i2c = hdmi->i2c;
-	u8 addr = msgs[0].addr;
+	u8 addr;
 	int i, ret = 0;
+
+	/*
+	 * Extract the slave address for the I2CM from the first non-segment
+	 * message. For E-DDC (extended) reads, msg[0] is the segment pointer
+	 * write to address 0x30, but the I2CM_SLAVE register must be set to
+	 * the DDC data address (0x50), not the segment pointer address.
+	 */
+	addr = msgs[0].addr;
+	if (addr == DDC_SEGMENT_ADDR && num >= 3)
+		addr = msgs[1].addr;
 
 	if (addr == DDC_CI_ADDR)
 		/*
@@ -449,7 +459,7 @@ static int dw_hdmi_i2c_xfer(struct i2c_adapter *adap,
 	/* Unmute DONE and ERROR interrupts */
 	hdmi_writeb(hdmi, 0x00, HDMI_IH_MUTE_I2CM_STAT0);
 
-	/* Set slave device address taken from the first I2C message */
+	/* Set slave device address for DDC data transfers */
 	hdmi_writeb(hdmi, addr, HDMI_I2CM_SLAVE);
 
 	/* Set slave device register address on transfer */
