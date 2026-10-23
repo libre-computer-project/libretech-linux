@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MEDIATEK_VCODEC_MT8167
+	tristate "Mediatek Video Codec driver for MT8365/MT8167 SoC (vendor, Genio 350)"
+	depends on MTK_IOMMU || COMPILE_TEST
+	depends on VIDEO_DEV
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on VIDEO_MEDIATEK_VCU_MT8365
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	default n
+	help
+	    Vendor MT8365/MT8167 (Genio 350) video codec driver ported from
+	    the mtk-v5.10 BSP. Provides HW encode/decode of a range of video
+	    formats via the proprietary userspace (vpud) path; relies on the
+	    VCU (CONFIG_VIDEO_MEDIATEK_VCU_MT8365) to talk to the codec engine.
+
+	    This depends on the vendor VCU rather than mainline's
+	    CONFIG_VIDEO_MEDIATEK_VPU. The original BSP "depends on
+	    !VIDEO_MEDIATEK_VCODEC" guard is dropped: the vendor modules use a
+	    distinct module name (mtk-vcodec-mt8167-dec/-enc/-common) and do
+	    not bind the same DT compatibles as mainline's mtk-vcodec.
+
+	    To compile this driver as modules, choose M here: the modules will
+	    be called mtk-vcodec-mt8167-dec, mtk-vcodec-mt8167-enc and
+	    mtk-vcodec-mt8167-common.

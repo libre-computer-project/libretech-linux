@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config TENSTORRENT
+	tristate "Tenstorrent AI accelerator (Grayskull/Wormhole/Blackhole)"
+	depends on PCI
+	help
+	  Kernel driver for Tenstorrent PCIe AI accelerators (Grayskull,
+	  Wormhole, Blackhole). Provides /dev/tenstorrent/N char devices,
+	  DMA-buf, TLB/BAR mapping, ARC mailbox messaging, and the default
+	  idle power policy (gates Tensix/GDDR/L2CPU on last close).
+	  Built in-tree so it always matches the running kernel.
+	  To compile as a module choose M; the module is called tenstorrent.

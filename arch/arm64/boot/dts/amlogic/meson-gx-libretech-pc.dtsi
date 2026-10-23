@@ -9,6 +9,7 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-libretech-ramoops.dtsi"
 
 / {
 	adc-keys {
@@ -104,19 +105,24 @@
 	leds {
 		compatible = "gpio-leds";
 
+		/* ready: on once the bootloader has loaded; the OS heartbeat */
 		led-green {
+			label = "libre-computer:green";
 			color = <LED_COLOR_ID_GREEN>;
-			function = LED_FUNCTION_DISK_ACTIVITY;
+			function = LED_FUNCTION_STATUS;
 			gpios = <&gpio_ao GPIOAO_9 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "disk-activity";
+			linux,default-trigger = "heartbeat";
+			default-state = "on";
+			panic-indicator;
 		};
 
+		/* load: activity */
 		led-blue {
+			label = "libre-computer:blue";
 			color = <LED_COLOR_ID_BLUE>;
-			function = LED_FUNCTION_STATUS;
+			function = LED_FUNCTION_ACTIVITY;
 			gpios = <&gpio GPIODV_28 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "heartbeat";
-			panic-indicator;
+			linux,default-trigger = "activity";
 		};
 	};
 
@@ -377,7 +383,7 @@
 	sd-uhs-sdr25;
 	sd-uhs-sdr50;
 	sd-uhs-ddr50;
-	max-frequency = <200000000>;
+	max-frequency = <166666667>;
 	disable-wp;
 
 	cd-gpios = <&gpio CARD_6 GPIO_ACTIVE_LOW>;
@@ -418,7 +424,7 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 		reg = <0>;
-		spi-max-frequency = <12000000>;
+		spi-max-frequency = <83333333>;
 	};
 };
 

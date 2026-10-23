@@ -15,6 +15,7 @@
 #include <linux/bitfield.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
+#include <linux/firmware/meson/meson_sm.h>
 
 #define AO_SEC_SD_CFG8		0xe0
 #define AO_SEC_SOCINFO_OFFSET	AO_SEC_SD_CFG8
@@ -137,6 +138,31 @@ static const char *socinfo_to_soc_id(u32 socinfo)
 	return "Unknown";
 }
 
+/*
+ * soc0's serial_number: the chip id the secure monitor returns (12 bytes,
+ * lowercase hex), or NULL when it cannot (no secure monitor, a monitor built
+ * as a module and not yet loaded, or firmware without the call).
+ */
+static char *meson_gx_socinfo_serial(void)
+{
+	u8 serial[MESON_SM_SERIAL_SIZE];
+	struct meson_sm_firmware *fw;
+	struct device_node *np;
+
+	if (!IS_REACHABLE(CONFIG_MESON_SM))
+		return NULL;
+
+	np = of_find_compatible_node(NULL, NULL, "amlogic,meson-gxbb-sm");
+	if (!np)
+		return NULL;
+	fw = meson_sm_get(np);
+	of_node_put(np);
+	if (!fw || meson_sm_get_serial(fw, serial))
+		return NULL;
+
+	return kasprintf(GFP_KERNEL, "%*phN", MESON_SM_SERIAL_SIZE, serial);
+}
+
 static int __init meson_gx_socinfo_init(void)
 {
 	struct soc_device_attribute *soc_dev_attr;
@@ -194,9 +220,11 @@ static int __init meson_gx_socinfo_init(void)
 	soc_dev_attr->soc_id = kasprintf(GFP_KERNEL, "%s (%s)",
 					 socinfo_to_soc_id(socinfo),
 					 socinfo_to_package_id(socinfo));
+	soc_dev_attr->serial_number = meson_gx_socinfo_serial();
 
 	soc_dev = soc_device_register(soc_dev_attr);
 	if (IS_ERR(soc_dev)) {
+		kfree(soc_dev_attr->serial_number);
 		kfree(soc_dev_attr->revision);
 		kfree_const(soc_dev_attr->soc_id);
 		kfree(soc_dev_attr);

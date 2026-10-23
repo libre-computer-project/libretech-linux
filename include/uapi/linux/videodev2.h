@@ -770,6 +770,7 @@ struct v4l2_pix_format {
 #define V4L2_PIX_FMT_VP9      v4l2_fourcc('V', 'P', '9', '0') /* VP9 */
 #define V4L2_PIX_FMT_VP9_FRAME v4l2_fourcc('V', 'P', '9', 'F') /* VP9 parsed frame */
 #define V4L2_PIX_FMT_HEVC     v4l2_fourcc('H', 'E', 'V', 'C') /* HEVC aka H.265 */
+#define V4L2_PIX_FMT_AVS      v4l2_fourcc('A', 'V', 'S', '1') /* AVS Jizhun (GB/T 20090.2) */
 #define V4L2_PIX_FMT_FWHT     v4l2_fourcc('F', 'W', 'H', 'T') /* Fast Walsh Hadamard Transform (vicodec) */
 #define V4L2_PIX_FMT_FWHT_STATELESS     v4l2_fourcc('S', 'F', 'W', 'H') /* Stateless FWHT (vicodec) */
 #define V4L2_PIX_FMT_H264_SLICE v4l2_fourcc('S', '2', '6', '4') /* H264 parsed slices */
@@ -821,6 +822,43 @@ struct v4l2_pix_format {
 #define V4L2_PIX_FMT_QC10C    v4l2_fourcc('Q', '1', '0', 'C') /* Qualcomm 10-bit compressed */
 #define V4L2_PIX_FMT_AJPG     v4l2_fourcc('A', 'J', 'P', 'G') /* Aspeed JPEG */
 #define V4L2_PIX_FMT_HEXTILE  v4l2_fourcc('H', 'X', 'T', 'L') /* Hextile compressed */
+/* Amlogic MESON GE2D deep-color vendor-specific formats (G12A+ only) */
+#define V4L2_PIX_FMT_MESON_Y10P444 v4l2_fourcc('A', 'M', '4', 'A') /* 3 B/px {Cb,Cr,Y} top-8-of-10-bit YUV444 */
+#define V4L2_PIX_FMT_MESON_Y10P422 v4l2_fourcc('A', 'M', '2', 'A') /* 2 B/px top-8-of-10-bit YUV422 */
+#define V4L2_PIX_FMT_MESON_Y12P422 v4l2_fourcc('A', 'M', '2', 'C') /* 2 B/px top-8-of-12-bit YUV422 */
+#define V4L2_PIX_FMT_MESON_R10P    v4l2_fourcc('A', 'M', 'R', 'A') /* 3 B/px {R,G,B} top-8-of-10-bit RGB */
+
+/*
+ * Amlogic HEVC/VP9 FBC (scatter layout, NOT ARM AFBC).  Compressed
+ * decoder-output format produced by the HEVC engine compressed-write
+ * path on GXL / G12A / G12B / SM1.  Consumable only by the VPU VD1
+ * overlay (direct scanout) and VDIN writeback (HW decompress to
+ * memory).  Not sampleable by Mali GPU or GE2D.  Exported instead of
+ * the SAO double-write NV12 so 8K decode fits in default CMA (FBC
+ * body ~14 MB/buf at 8K vs NV12 ~50 MB/buf).
+ *
+ * Fourcc layout (AM<L><D>):
+ *   AM = Amlogic vendor prefix, matching our existing MESON_Y10P*
+ *        fourccs (e.g. V4L2_PIX_FMT_MESON_Y10P444 = 'AM4A').  Chosen
+ *        to avoid visual collision with ARM AFBC ('AFB*').
+ *   L  = layout: 'S' = SCATTER (MMU page-table addressed).  Future
+ *        BASIC layout (contiguous body+header, GXBB BSP only) would
+ *        get 'B' -> 'AMB8' / 'AMBA' as V4L2_PIX_FMT_AMLOGIC_FBC08_BASIC /
+ *        FBC10_BASIC.
+ *   D  = bit depth: '8' = 8-bit, 'A' = 10-bit (hex).
+ *
+ * MEM_SAVING option is implicit in bit depth: 8-bit always uses
+ * MEM_SAVING (3200 B/block) and 10-bit never does (4096 B/block).
+ * That coupling is a platform artifact; if a future SoC makes it
+ * per-session negotiable, add a V4L2 control rather than a new
+ * fourcc.
+ *
+ * Equivalent DRM modifiers:
+ *   AMLOGIC_FBC08_SCATTER = DRM_FORMAT_MOD_AMLOGIC_FBC(SCATTER, MEM_SAVING)
+ *   AMLOGIC_FBC10_SCATTER = DRM_FORMAT_MOD_AMLOGIC_FBC(SCATTER, 0)
+ */
+#define V4L2_PIX_FMT_MESON_FBC08_SCATTER v4l2_fourcc('A', 'M', 'S', '8') /* 8-bit FBC scatter + MEM_SAVING */
+#define V4L2_PIX_FMT_MESON_FBC10_SCATTER v4l2_fourcc('A', 'M', 'S', 'A') /* 10-bit FBC scatter */
 
 /* 10bit raw packed, 32 bytes for every 25 pixels, last LSB 6 bits unused */
 #define V4L2_PIX_FMT_IPU3_SBGGR10	v4l2_fourcc('i', 'p', '3', 'b') /* IPU3 packed 10-bit BGGR bayer */

@@ -37,10 +37,17 @@
  * supported at the moment by the driver.
  */
 
+#include <linux/bitmap.h>
 #include <linux/device.h>
 #include <linux/gpio/driver.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/irqchip/irq-meson-gpio.h>
+#include <linux/irqdomain.h>
+#include <linux/module.h>
+#include <linux/rculist.h>
+#include <linux/spinlock.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pinctrl/pinconf-generic.h>
@@ -51,6 +58,8 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
+#include <linux/of_irq.h>
+#include <linux/firmware/meson/meson_sm.h>
 
 #include "../core.h"
 #include "../pinctrl-utils.h"
@@ -101,9 +110,15 @@ static void meson_calc_reg_and_bit(const struct meson_bank *bank,
 {
 	const struct meson_reg_desc *desc = &bank->regs[reg_type];
 
-	*bit = (desc->bit + pin - bank->first) * meson_bit_strides[reg_type];
-	*reg = (desc->reg + (*bit / 32)) * 4;
-	*bit &= 0x1f;
+	/* TEST_N pin direction needs to be set using a Secure Monitor call */
+	if (reg_type == MESON_REG_DIR && bank->smc) {
+		*reg = desc->reg;
+		*bit = desc->bit;
+	} else {
+		*bit = (desc->bit + pin - bank->first) * meson_bit_strides[reg_type];
+		*reg = (desc->reg + (*bit / 32)) * 4;
+		*bit &= 0x1f;
+	}
 }
 
 static int meson_get_groups_count(struct pinctrl_dev *pcdev)
@@ -191,6 +206,11 @@ static int meson_pinconf_set_gpio_bit(struct meson_pinctrl *pc,
 		return ret;
 
 	meson_calc_reg_and_bit(bank, pin, reg_type, &reg, &bit);
+	/* TEST_N pin direction needs to be set using a Secure Monitor call */
+	if (reg_type == MESON_REG_DIR && bank->smc) {
+		u32 smc_ret = 0;
+		return meson_sm_call(pc->fw, SM_TEST_N_DIR, &smc_ret, arg ? 0 : bit, 0, 0, 0, 0);
+	}
 	return regmap_update_bits(pc->reg_gpio, reg, BIT(bit),
 				  arg ? BIT(bit) : 0);
 }
@@ -252,11 +272,23 @@ static int meson_pinconf_set_output_drive(struct meson_pinctrl *pc,
 {
 	int ret;
 
-	ret = meson_pinconf_set_output(pc, pin, true);
+	/*
+	 * DIR and OUT are separate. The driver samples the latch at the
+	 * moment it is enabled, so the latch is written while the driver
+	 * is still off and the driver is enabled after that.
+	 *
+	 * Enabling first drives the old latch, and the value write then
+	 * drives the requested level. Those are two edges when the pad is
+	 * already at the requested level and the latch is the opposite:
+	 * the enable takes the pad away and the write brings it back. A
+	 * both-edge interrupt reports both. This order is one edge when
+	 * the pad has to change, and none when it does not.
+	 */
+	ret = meson_pinconf_set_drive(pc, pin, high);
 	if (ret)
 		return ret;
 
-	return meson_pinconf_set_drive(pc, pin, high);
+	return meson_pinconf_set_output(pc, pin, true);
 }
 
 static int meson_pinconf_disable_bias(struct meson_pinctrl *pc,
@@ -602,21 +634,226 @@ static int meson_gpio_get(struct gpio_chip *chip, unsigned gpio)
 	return !!(val & BIT(bit));
 }
 
+static int meson_gpio_to_irq(struct gpio_chip *chip, unsigned int gpio)
+{
+	struct meson_pinctrl *pc = gpiochip_get_data(chip);
+	const struct meson_bank *bank;
+	struct irq_fwspec fwspec;
+	unsigned int virq;
+	int hwirq;
+
+	if (meson_get_bank(pc, gpio, &bank))
+		return -EINVAL;
+
+	if (bank->irq_first < 0) {
+		dev_warn(pc->dev, "no support irq for pin[%d]\n", gpio);
+		return -EINVAL;
+	}
+	if (!pc->of_irq) {
+		dev_err(pc->dev, "invalid device node of gpio INTC\n");
+		return -EINVAL;
+	}
+
+	hwirq = gpio - bank->first + bank->irq_first;
+
+	if (hwirq > bank->irq_last){
+		dev_warn(pc->dev, "no more irq for pin[%d]\n", gpio);
+		return -EINVAL;
+	}
+
+	fwspec.fwnode = of_node_to_fwnode(pc->of_irq);
+	fwspec.param_count = 3;
+	fwspec.param[0] = hwirq;
+
+	fwspec.param[1] = IRQ_TYPE_NONE;
+	fwspec.param[2] = meson_pinconf_get_gpio_bit(pc, gpio, MESON_REG_IN); // initial IRQ type
+
+	pr_debug("%s: hwirq %d irqfirst %d irqlast %d gpio %d trig %d\n", __func__, hwirq, bank->irq_first, bank->irq_last, gpio, fwspec.param[2]);
+
+	/* a mapping somebody else made (an "interrupts" property) is theirs */
+	virq = irq_find_fwspec_mapping(&fwspec);
+	if (virq)
+		return virq;
+	virq = irq_create_fwspec_mapping(&fwspec);
+	if (virq)
+		set_bit(gpio, pc->irq_mapped);
+	return virq;
+}
+
+/*
+ * A line's gpiod_to_irq() mapping holds a channel of the GPIO interrupt mux
+ * (8 on most SoCs) until it is disposed of, and nothing else disposes of it:
+ * when the line is released and no handler is installed on its interrupt,
+ * give the channel back -- unless a device tree node holds the mapping too.
+ */
+static void meson_gpio_free(struct gpio_chip *chip, unsigned int gpio)
+{
+	struct meson_pinctrl *pc = gpiochip_get_data(chip);
+	const struct meson_bank *bank;
+	struct irq_fwspec fwspec = {};
+	unsigned int virq;
+
+	/* still in use: keep the claim, the next release of the line retries */
+	if (test_bit(gpio, pc->irq_mapped) &&
+	    !meson_get_bank(pc, gpio, &bank)) {
+		fwspec.fwnode = of_node_to_fwnode(pc->of_irq);
+		fwspec.param_count = 2;
+		fwspec.param[0] = gpio - bank->first + bank->irq_first;
+		fwspec.param[1] = IRQ_TYPE_NONE;
+		virq = irq_find_fwspec_mapping(&fwspec);
+		if (!virq) {
+			clear_bit(gpio, pc->irq_mapped);
+		} else if (!irq_has_action(virq) &&
+			   !of_irq_mapping_owned(virq)) {
+			irq_dispose_mapping(virq);
+			clear_bit(gpio, pc->irq_mapped);
+		}
+	}
+
+	gpiochip_generic_free(chip, gpio);
+}
+
+/*
+ * A both-edge set_type runs with the irq desc raw lock held. regmap's
+ * default lock is a spinlock_t, which must not be taken there, so the
+ * reader uses the same MMIO window directly. Both pinctrl instances
+ * (EE and AO) share one irq domain; the hwirq ranges do not overlap.
+ *
+ * The irqchip is a separate module. A builtin pinctrl cannot call into
+ * an irqchip that was built as a module, and then the fwspec snapshot
+ * remains the arming fallback.
+ */
+#if IS_BUILTIN(CONFIG_MESON_IRQ_GPIO) || \
+	(IS_MODULE(CONFIG_MESON_IRQ_GPIO) && IS_MODULE(CONFIG_PINCTRL_MESON))
+#define MESON_GPIO_LEVEL_LINK 1
+#endif
+
+static LIST_HEAD(meson_pinctrls);
+static DEFINE_SPINLOCK(meson_pinctrl_lock);
+static bool meson_pinctrl_level_bound;
+
+#ifdef MESON_GPIO_LEVEL_LINK
+static int meson_gpio_hwirq_level(unsigned int hwirq, bool *high)
+{
+	struct meson_pinctrl *pc;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(pc, &meson_pinctrls, node) {
+		unsigned int i;
+
+		if (!pc->gpio_base || !pc->data)
+			continue;
+
+		for (i = 0; i < pc->data->num_banks; i++) {
+			const struct meson_bank *bank = &pc->data->banks[i];
+			unsigned int pin, reg, bit;
+			u32 val;
+
+			if (bank->irq_first < 0 ||
+			    hwirq < (unsigned int)bank->irq_first ||
+			    hwirq > (unsigned int)bank->irq_last)
+				continue;
+
+			pin = bank->first + (hwirq - bank->irq_first);
+			if (pin > bank->last)
+				continue;
+
+			meson_calc_reg_and_bit(bank, pin, MESON_REG_IN,
+					       &reg, &bit);
+			val = readl(pc->gpio_base + reg);
+			*high = !!(val & BIT(bit));
+			rcu_read_unlock();
+			return 0;
+		}
+	}
+	rcu_read_unlock();
+
+	return -ENOENT;
+}
+#endif
+
+static int meson_pinctrl_publish_level(void)
+{
+#ifdef MESON_GPIO_LEVEL_LINK
+	return meson_gpio_irq_set_pad_level(meson_gpio_hwirq_level);
+#else
+	return -ENODEV;
+#endif
+}
+
+static void meson_pinctrl_level_add(struct meson_pinctrl *pc)
+{
+	bool publish = false;
+
+	spin_lock(&meson_pinctrl_lock);
+	list_add_rcu(&pc->node, &meson_pinctrls);
+	if (!meson_pinctrl_level_bound) {
+		meson_pinctrl_level_bound = true;
+		publish = true;
+	}
+	spin_unlock(&meson_pinctrl_lock);
+
+	if (!publish)
+		return;
+
+	if (!try_module_get(THIS_MODULE))
+		goto unbind;
+
+	if (!meson_pinctrl_publish_level())
+		return;
+
+	module_put(THIS_MODULE);
+unbind:
+	spin_lock(&meson_pinctrl_lock);
+	meson_pinctrl_level_bound = false;
+	spin_unlock(&meson_pinctrl_lock);
+}
+
+static void meson_pinctrl_level_del(struct meson_pinctrl *pc)
+{
+	spin_lock(&meson_pinctrl_lock);
+	list_del_rcu(&pc->node);
+	spin_unlock(&meson_pinctrl_lock);
+	synchronize_rcu();
+}
+
+static void meson_pinctrl_level_drop(void *data)
+{
+	meson_pinctrl_level_del(data);
+}
+
 static int meson_gpiolib_register(struct meson_pinctrl *pc)
 {
 	int ret;
+
+	pc->irq_mapped = devm_bitmap_zalloc(pc->dev, pc->data->num_pins,
+					    GFP_KERNEL);
+	if (!pc->irq_mapped)
+		return -ENOMEM;
+
+	/*
+	 * Before the chip is published: a hog can set_type during add.
+	 * The drop is registered after the gpio MMIO mapping, so on unbind
+	 * it runs first and the reader has left this controller before that
+	 * mapping goes away.
+	 */
+	meson_pinctrl_level_add(pc);
+	ret = devm_add_action_or_reset(pc->dev, meson_pinctrl_level_drop, pc);
+	if (ret)
+		return ret;
 
 	pc->chip.label = pc->data->name;
 	pc->chip.parent = pc->dev;
 	pc->chip.fwnode = pc->fwnode;
 	pc->chip.request = gpiochip_generic_request;
-	pc->chip.free = gpiochip_generic_free;
+	pc->chip.free = meson_gpio_free;
 	pc->chip.set_config = gpiochip_generic_config;
 	pc->chip.get_direction = meson_gpio_get_direction;
 	pc->chip.direction_input = meson_gpio_direction_input;
 	pc->chip.direction_output = meson_gpio_direction_output;
 	pc->chip.get = meson_gpio_get;
 	pc->chip.set = meson_gpio_set;
+	pc->chip.to_irq = meson_gpio_to_irq;
 	pc->chip.base = -1;
 	pc->chip.ngpio = pc->data->num_pins;
 	pc->chip.can_sleep = false;
@@ -638,11 +875,15 @@ static struct regmap_config meson_regmap_config = {
 };
 
 static struct regmap *meson_map_resource(struct meson_pinctrl *pc,
-					 struct device_node *node, char *name)
+					 struct device_node *node, char *name,
+					 void __iomem **base_out)
 {
 	struct resource res;
 	void __iomem *base;
 	int i;
+
+	if (base_out)
+		*base_out = NULL;
 
 	i = of_property_match_string(node, "reg-names", name);
 	if (of_address_to_resource(node, i, &res))
@@ -651,6 +892,9 @@ static struct regmap *meson_map_resource(struct meson_pinctrl *pc,
 	base = devm_ioremap_resource(pc->dev, &res);
 	if (IS_ERR(base))
 		return ERR_CAST(base);
+
+	if (base_out)
+		*base_out = base;
 
 	meson_regmap_config.max_register = resource_size(&res) - 4;
 	meson_regmap_config.name = devm_kasprintf(pc->dev, GFP_KERNEL,
@@ -680,27 +924,30 @@ static int meson_pinctrl_parse_dt(struct meson_pinctrl *pc)
 	pc->fwnode = gpiochip_node_get_first(pc->dev);
 	gpio_np = to_of_node(pc->fwnode);
 
-	pc->reg_mux = meson_map_resource(pc, gpio_np, "mux");
+	pc->of_irq = of_find_compatible_node(NULL,
+		NULL, "amlogic,meson-gpio-intc");
+
+	pc->reg_mux = meson_map_resource(pc, gpio_np, "mux", NULL);
 	if (IS_ERR_OR_NULL(pc->reg_mux)) {
 		dev_err(pc->dev, "mux registers not found\n");
 		return pc->reg_mux ? PTR_ERR(pc->reg_mux) : -ENOENT;
 	}
 
-	pc->reg_gpio = meson_map_resource(pc, gpio_np, "gpio");
+	pc->reg_gpio = meson_map_resource(pc, gpio_np, "gpio", &pc->gpio_base);
 	if (IS_ERR_OR_NULL(pc->reg_gpio)) {
 		dev_err(pc->dev, "gpio registers not found\n");
 		return pc->reg_gpio ? PTR_ERR(pc->reg_gpio) : -ENOENT;
 	}
 
-	pc->reg_pull = meson_map_resource(pc, gpio_np, "pull");
+	pc->reg_pull = meson_map_resource(pc, gpio_np, "pull", NULL);
 	if (IS_ERR(pc->reg_pull))
 		pc->reg_pull = NULL;
 
-	pc->reg_pullen = meson_map_resource(pc, gpio_np, "pull-enable");
+	pc->reg_pullen = meson_map_resource(pc, gpio_np, "pull-enable", NULL);
 	if (IS_ERR(pc->reg_pullen))
 		pc->reg_pullen = NULL;
 
-	pc->reg_ds = meson_map_resource(pc, gpio_np, "ds");
+	pc->reg_ds = meson_map_resource(pc, gpio_np, "ds", NULL);
 	if (IS_ERR(pc->reg_ds)) {
 		dev_dbg(pc->dev, "ds registers not found - skipping\n");
 		pc->reg_ds = NULL;
@@ -736,12 +983,24 @@ EXPORT_SYMBOL_GPL(meson_a1_parse_dt_extra);
 int meson_pinctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *sm_np;
 	struct meson_pinctrl *pc;
 	int ret;
+
+	sm_np = of_find_compatible_node(NULL, NULL, "amlogic,meson-gxbb-sm");
+	if (!sm_np) {
+		dev_err(&pdev->dev, "no secure-monitor node\n");
+		return -ENODEV;
+	}
 
 	pc = devm_kzalloc(dev, sizeof(struct meson_pinctrl), GFP_KERNEL);
 	if (!pc)
 		return -ENOMEM;
+
+	pc->fw = meson_sm_get(sm_np);
+	of_node_put(sm_np);
+	if (!pc->fw)
+		return -EPROBE_DEFER;
 
 	pc->dev = dev;
 	pc->data = (struct meson_pinctrl_data *) of_device_get_match_data(dev);

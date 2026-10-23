@@ -59,6 +59,19 @@ static const struct hantro_fmt rockchip_vpu_enc_fmts[] = {
 			.step_height = MB_DIM,
 		},
 	},
+	{
+		.fourcc = V4L2_PIX_FMT_H264,
+		.codec_mode = HANTRO_MODE_H264_ENC,
+		.max_depth = 2,
+		.frmsize = {
+			.min_width = 96,
+			.max_width = FMT_FHD_WIDTH,
+			.step_width = MB_DIM,
+			.min_height = 96,
+			.max_height = FMT_FHD_HEIGHT,
+			.step_height = MB_DIM,
+		},
+	},
 };
 
 static const struct hantro_fmt rockchip_vpu1_postproc_fmts[] = {
@@ -577,6 +590,14 @@ static const struct hantro_codec_ops rk3399_vpu_codec_ops[] = {
 		.reset = rockchip_vpu2_enc_reset,
 		.done = rockchip_vpu2_jpeg_enc_done,
 	},
+	[HANTRO_MODE_H264_ENC] = {
+		.run = rockchip_vpu2_h264_enc_run,
+		.reset = rockchip_vpu2_enc_reset,
+		.done = rockchip_vpu2_h264_enc_done,
+		.init = rockchip_vpu2_h264_enc_init,
+		.exit = rockchip_vpu2_h264_enc_exit,
+		.reset_state = rockchip_vpu2_h264_enc_reset_state,
+	},
 	[HANTRO_MODE_H264_DEC] = {
 		.run = rockchip_vpu2_h264_dec_run,
 		.reset = rockchip_vpu2_dec_reset,
@@ -748,8 +769,8 @@ const struct hantro_variant rk3399_vpu_variant = {
 	.dec_offset = 0x400,
 	.dec_fmts = rk3399_vpu_dec_fmts,
 	.num_dec_fmts = ARRAY_SIZE(rk3399_vpu_dec_fmts),
-	.codec = HANTRO_JPEG_ENCODER | HANTRO_MPEG2_DECODER |
-		 HANTRO_VP8_DECODER,
+	.codec = HANTRO_JPEG_ENCODER | HANTRO_H264_ENCODER |
+		 HANTRO_MPEG2_DECODER | HANTRO_VP8_DECODER,
 	.codec_ops = rk3399_vpu_codec_ops,
 	.irqs = rockchip_vpu2_irqs,
 	.num_irqs = ARRAY_SIZE(rockchip_vpu2_irqs),

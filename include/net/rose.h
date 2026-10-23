@@ -160,6 +160,26 @@ static inline void rose_neigh_hold(struct rose_neigh *rose_neigh)
 static inline void rose_neigh_put(struct rose_neigh *rose_neigh)
 {
 	if (refcount_dec_and_test(&rose_neigh->use)) {
+		/* We are dropping the last reference, so we are about to free the
+		 * neighbour.  t0timer is self-rearming: rose_t0timer_expiry() calls
+		 * rose_start_t0timer() at its own tail, so a plain timer_delete_sync()
+		 * is not enough here.  It only guarantees that the callback is not
+		 * running *at the moment it returns* -- it does nothing to stop the
+		 * very invocation we just waited out from re-arming the timer on its
+		 * way out, which races the kfree() below (syzbot: use-after-free read
+		 * in ax25_find_cb(), reached via rose_t0timer_expiry() ->
+		 * rose_transmit_restart_request() -> rose_send_frame() ->
+		 * ax25_send_frame(), dereferencing the freed neigh->digipeat).
+		 * timer_shutdown_sync() closes that hole: once it returns, any
+		 * further add_timer()/mod_timer() on this timer is silently ignored,
+		 * so a self-rearm racing the free can no longer bring the timer back
+		 * to life on freed memory.  ftimer's handler is a no-op and never
+		 * re-arms, but it is shut down the same way here for consistency --
+		 * this is final teardown, neither timer has any business firing
+		 * again.
+		 */
+		timer_shutdown_sync(&rose_neigh->ftimer);
+		timer_shutdown_sync(&rose_neigh->t0timer);
 		if (rose_neigh->ax25)
 			ax25_cb_put(rose_neigh->ax25);
 		kfree(rose_neigh->digipeat);

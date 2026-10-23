@@ -1016,11 +1016,14 @@ static bool mlxbf_tmfifo_virtio_notify(struct virtqueue *vq)
 }
 
 /* Get the array of feature bits for this device. */
-static u64 mlxbf_tmfifo_virtio_get_features(struct virtio_device *vdev)
+static int mlxbf_tmfifo_virtio_get_features(struct virtio_device *vdev,
+					    u64 *features)
 {
 	struct mlxbf_tmfifo_vdev *tm_vdev = mlxbf_vdev_to_tmfifo(vdev);
 
-	return tm_vdev->features;
+	*features = tm_vdev->features;
+
+	return 0;
 }
 
 /* Confirm device features to use. */

@@ -47,50 +47,61 @@ enum mt8183_mdp_comp_id {
 };
 
 enum mt8188_mdp_comp_id {
-	/* MT8188 Comp id */
+	/*
+	 * MT8188 Comp id -- the "inner_id" the SCP/VPU emits in its computed
+	 * img_config component list AND the value mdp_cfg_get_id_public() reverse-
+	 * maps back to a public MDP_COMP_*. The mt8188 MDP3 shares the mt8195 SCP
+	 * component-id space (the mt8188 scp.img computes configs using the mt8195
+	 * numbering), so every id here MUST equal its mt8195_mdp_comp_id twin. The
+	 * original upstream compact 0..39 numbering did NOT match what the SCP
+	 * emits, so every SCP-computed pair (the ones not served by a kernel-direct
+	 * path) failed mdp_cfg_get_id_public() -> "Invalid component id -1" ->
+	 * mdp_path_ctx_init -> "CMDQ send failed: -22" (492/702 of the format
+	 * matrix). Pinning these to the mt8195 values fixes the reverse-map.
+	 */
 	/* ISP */
 	MT8188_MDP_COMP_WPEI = 0,
-	MT8188_MDP_COMP_WPEO,           /* 1 */
+	MT8188_MDP_COMP_WPEO = 1,
 
 	/* MDP */
-	MT8188_MDP_COMP_CAMIN,          /* 2 */
-	MT8188_MDP_COMP_RDMA0,          /* 3 */
-	MT8188_MDP_COMP_RDMA2,          /* 4 */
-	MT8188_MDP_COMP_RDMA3,          /* 5 */
-	MT8188_MDP_COMP_FG0,            /* 6 */
-	MT8188_MDP_COMP_FG2,            /* 7 */
-	MT8188_MDP_COMP_FG3,            /* 8 */
-	MT8188_MDP_COMP_TO_SVPP2MOUT,   /* 9 */
-	MT8188_MDP_COMP_TO_SVPP3MOUT,   /* 10 */
-	MT8188_MDP_COMP_TO_WARP0MOUT,   /* 11 */
-	MT8188_MDP_COMP_VPP0_SOUT,      /* 12 */
-	MT8188_MDP_COMP_VPP1_SOUT,      /* 13 */
-	MT8188_MDP_COMP_PQ0_SOUT,       /* 14 */
-	MT8188_MDP_COMP_HDR0,           /* 15 */
-	MT8188_MDP_COMP_HDR2,           /* 16 */
-	MT8188_MDP_COMP_HDR3,           /* 17 */
-	MT8188_MDP_COMP_AAL0,           /* 18 */
-	MT8188_MDP_COMP_AAL2,           /* 19 */
-	MT8188_MDP_COMP_AAL3,           /* 20 */
-	MT8188_MDP_COMP_RSZ0,           /* 21 */
-	MT8188_MDP_COMP_RSZ2,           /* 22 */
-	MT8188_MDP_COMP_RSZ3,           /* 23 */
-	MT8188_MDP_COMP_TDSHP0,         /* 24 */
-	MT8188_MDP_COMP_TDSHP2,         /* 25 */
-	MT8188_MDP_COMP_TDSHP3,         /* 26 */
-	MT8188_MDP_COMP_COLOR0,         /* 27 */
-	MT8188_MDP_COMP_COLOR2,         /* 28 */
-	MT8188_MDP_COMP_COLOR3,         /* 29 */
-	MT8188_MDP_COMP_OVL0,           /* 30 */
-	MT8188_MDP_COMP_PAD0,           /* 31 */
-	MT8188_MDP_COMP_PAD2,           /* 32 */
-	MT8188_MDP_COMP_PAD3,           /* 33 */
-	MT8188_MDP_COMP_TCC0,           /* 34 */
-	MT8188_MDP_COMP_WROT0,          /* 35 */
-	MT8188_MDP_COMP_WROT2,          /* 36 */
-	MT8188_MDP_COMP_WROT3,          /* 37 */
-	MT8188_MDP_COMP_MERGE2,         /* 38 */
-	MT8188_MDP_COMP_MERGE3,         /* 39 */
+	MT8188_MDP_COMP_CAMIN = 4,
+	MT8188_MDP_COMP_RDMA0 = 8,
+	MT8188_MDP_COMP_RDMA2 = 10,
+	MT8188_MDP_COMP_RDMA3 = 11,
+	MT8188_MDP_COMP_FG0 = 13,
+	MT8188_MDP_COMP_FG2 = 15,
+	MT8188_MDP_COMP_FG3 = 16,
+	MT8188_MDP_COMP_TO_SVPP2MOUT = 17,
+	MT8188_MDP_COMP_TO_SVPP3MOUT = 18,
+	MT8188_MDP_COMP_TO_WARP0MOUT = 19,
+	MT8188_MDP_COMP_VPP0_SOUT = 21,
+	MT8188_MDP_COMP_VPP1_SOUT = 22,
+	MT8188_MDP_COMP_PQ0_SOUT = 23,
+	MT8188_MDP_COMP_HDR0 = 25,
+	MT8188_MDP_COMP_HDR2 = 27,
+	MT8188_MDP_COMP_HDR3 = 28,
+	MT8188_MDP_COMP_AAL0 = 29,
+	MT8188_MDP_COMP_AAL2 = 31,
+	MT8188_MDP_COMP_AAL3 = 32,
+	MT8188_MDP_COMP_RSZ0 = 33,
+	MT8188_MDP_COMP_RSZ2 = 35,
+	MT8188_MDP_COMP_RSZ3 = 36,
+	MT8188_MDP_COMP_TDSHP0 = 37,
+	MT8188_MDP_COMP_TDSHP2 = 39,
+	MT8188_MDP_COMP_TDSHP3 = 40,
+	MT8188_MDP_COMP_COLOR0 = 41,
+	MT8188_MDP_COMP_COLOR2 = 43,
+	MT8188_MDP_COMP_COLOR3 = 44,
+	MT8188_MDP_COMP_OVL0 = 45,
+	MT8188_MDP_COMP_PAD0 = 47,
+	MT8188_MDP_COMP_PAD2 = 49,
+	MT8188_MDP_COMP_PAD3 = 50,
+	MT8188_MDP_COMP_TCC0 = 51,
+	MT8188_MDP_COMP_WROT0 = 53,
+	MT8188_MDP_COMP_WROT2 = 55,
+	MT8188_MDP_COMP_WROT3 = 56,
+	MT8188_MDP_COMP_MERGE2 = 57,
+	MT8188_MDP_COMP_MERGE3 = 58,
 };
 
 enum mt8195_mdp_comp_id {
@@ -831,7 +842,23 @@ static const struct mdp_format mt8183_formats[] = {
 		.depth		= { 16 },
 		.row_depth	= { 16 },
 		.num_planes	= 1,
-		.flags		= MDP_FMT_FLAG_OUTPUT | MDP_FMT_FLAG_CAPTURE,
+		/*
+		 * CAPTURE-only on mt8183: RGB565X (big-endian 5-6-5) is a valid
+		 * WROT *destination* (the WROT control carries a byte-swap bit,
+		 * 0xa0005100 -- commit 4a92289) but NOT a valid RDMA *source*.
+		 * The mt8183 RDMA SRC_CON has no 16-bit byte-swap facility (only
+		 * sourceSwap[14] = the R/B *channel* swap), so a BE-565 source
+		 * read is byte-scrambled -- HW-confirmed 17.7% exact via the
+		 * mdp_kd_rgbr_src un-gate probe (mtk-mdp3-vpu.c). With the mt8183
+		 * SCP dead (KI-006), the kernel-direct path is the only path, so
+		 * there is no way to read this format as a source; advertising
+		 * MDP_FMT_FLAG_OUTPUT produced 23 zero-output "phantom" S->* fails
+		 * (v4l2-ctl rc=0, out_bytes=0). Drop OUTPUT so it is not
+		 * enumerated in --list-formats-out. (mt8195/mt8188 use the
+		 * separate mt8195_formats[] and keep OUTPUT -- their RDMA/SCP
+		 * path reads RGB565X sources correctly.)
+		 */
+		.flags		= MDP_FMT_FLAG_CAPTURE,
 	}, {
 		.pixelformat	= V4L2_PIX_FMT_RGB565,
 		.mdp_color	= MDP_COLOR_RGB565,
@@ -942,7 +969,10 @@ static const struct mdp_format mt8183_formats[] = {
 		.row_depth	= { 8 },
 		.num_planes	= 1,
 		.walign		= 1,
-		.flags		= MDP_FMT_FLAG_OUTPUT,
+		/* CAPTURE: mt8183 kernel-direct NV12->NV16 fmtconv (2-plane 4:2:2,
+		 * interleaved chroma -- the clean NV21 write class + the YUYV
+		 * 4:2:0->4:2:2 uv_ysel=2 upsample; mdp_config_compute_8183_fmtconv). */
+		.flags		= MDP_FMT_FLAG_OUTPUT | MDP_FMT_FLAG_CAPTURE,
 	}, {
 		.pixelformat	= V4L2_PIX_FMT_NV61,
 		.mdp_color	= MDP_COLOR_NV61,
@@ -950,7 +980,7 @@ static const struct mdp_format mt8183_formats[] = {
 		.row_depth	= { 8 },
 		.num_planes	= 1,
 		.walign		= 1,
-		.flags		= MDP_FMT_FLAG_OUTPUT,
+		.flags		= MDP_FMT_FLAG_OUTPUT | MDP_FMT_FLAG_CAPTURE,
 	}, {
 		.pixelformat	= V4L2_PIX_FMT_NV24,
 		.mdp_color	= MDP_COLOR_NV24,
@@ -1008,7 +1038,7 @@ static const struct mdp_format mt8183_formats[] = {
 		.row_depth	= { 8, 8 },
 		.num_planes	= 2,
 		.walign		= 1,
-		.flags		= MDP_FMT_FLAG_OUTPUT,
+		.flags		= MDP_FMT_FLAG_OUTPUT | MDP_FMT_FLAG_CAPTURE,
 	}, {
 		.pixelformat	= V4L2_PIX_FMT_NV61M,
 		.mdp_color	= MDP_COLOR_NV61,
@@ -1016,7 +1046,7 @@ static const struct mdp_format mt8183_formats[] = {
 		.row_depth	= { 8, 8 },
 		.num_planes	= 2,
 		.walign		= 1,
-		.flags		= MDP_FMT_FLAG_OUTPUT,
+		.flags		= MDP_FMT_FLAG_OUTPUT | MDP_FMT_FLAG_CAPTURE,
 	}, {
 		.pixelformat	= V4L2_PIX_FMT_YUV420M,
 		.mdp_color	= MDP_COLOR_I420,
@@ -1251,6 +1281,33 @@ static const struct mdp_format mt8195_formats[] = {
 		.walign		= 1,
 		.halign		= 1,
 		.flags		= MDP_FMT_FLAG_OUTPUT | MDP_FMT_FLAG_CAPTURE,
+	}, {
+		/*
+		 * CAPTURE-only 4:4:4 via the HW+CPU hybrid (mdp_kd_444hybrid): the
+		 * WROT cannot write 4:4:4 (mapColorFormat has an I444 case but the
+		 * 1:1 datapath never delivers full-H chroma -> SCP watchdog / WROT
+		 * GCE hang, see mdp-walls-mt8195.md). Instead the HW produces 4:2:2
+		 * (NV12->I422, a proven op: vertical chroma upsample) and the CPU
+		 * horizontal-upsamples the chroma 2x to 4:4:4 in mdp_m2m_device_run.
+		 * OUTPUT side is intentionally absent (we only ever PRODUCE 4:4:4).
+		 */
+		.pixelformat	= V4L2_PIX_FMT_YUV444M,
+		.mdp_color	= MDP_COLOR_I444,
+		.depth		= { 8, 8, 8 },
+		.row_depth	= { 8, 8, 8 },
+		.num_planes	= 3,
+		.walign		= 1,
+		.halign		= 1,
+		.flags		= MDP_FMT_FLAG_CAPTURE,
+	}, {
+		.pixelformat	= V4L2_PIX_FMT_YVU444M,
+		.mdp_color	= MDP_COLOR_YV24,
+		.depth		= { 8, 8, 8 },
+		.row_depth	= { 8, 8, 8 },
+		.num_planes	= 3,
+		.walign		= 1,
+		.halign		= 1,
+		.flags		= MDP_FMT_FLAG_CAPTURE,
 	}
 };
 
@@ -1360,6 +1417,8 @@ const struct mtk_mdp_driver_data mt8188_mdp_driver_data = {
 	.pipe_info_len = ARRAY_SIZE(mt8188_pipe_info),
 	.pp_criteria = &mt8195_mdp_pp_criteria,
 	.pp_used = MDP_PP_USED_2,
+	/* The mt8188 geralt scp.img emits the OLD compact comp numbering. */
+	.scp_comp_id_compact = true,
 };
 
 const struct mtk_mdp_driver_data mt8195_mdp_driver_data = {

@@ -198,6 +198,17 @@ Description:
 		   USB 2.0 specification, instead of the 50 ms that are normally
 		   used to help make enumeration work better on some high speed
 		   devices.
+		 - Bit 2 suppresses the VBUS power cycle that enumeration
+		   retry performs halfway through its attempt count. Set it
+		   on ports whose VBUS is the attached device's own power
+		   rail (e.g. a single-board computer fed from the hub
+		   slot), where that bounce resets the device instead of
+		   recovering it. The port still makes every enumeration
+		   attempt; only the power cycle between them is skipped,
+		   so a device that would have recovered from the bounce
+		   will instead stay unenumerated until it is power-cycled
+		   by other means. Default is off (bit clear), which is
+		   the unmodified behaviour.
 
 What:		/sys/bus/usb/devices/.../<hub_interface>/port<X>/over_current_count
 Date:		February 2018

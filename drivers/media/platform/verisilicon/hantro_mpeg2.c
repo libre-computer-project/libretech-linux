@@ -35,10 +35,55 @@ void hantro_mpeg2_dec_copy_qtable(u8 *qtable,
 	}
 }
 
+/*
+ * Tell the first field of a frame from the second by decode order.
+ *
+ * ISO/IEC 13818-2 6.3.10 fixes top_field_first at 0 in a field picture, so
+ * V4L2_MPEG2_PIC_FLAG_TOP_FIELD_FIRST carries no field order there and the
+ * V4L2 stateless MPEG-2 API has no other field-order information. The two
+ * fields of a frame are decoded into the same CAPTURE buffer (the first one
+ * held), one after the other and with opposite parity, so the second field
+ * is the field picture that follows a first field of the other parity into
+ * the same buffer. A frame picture, or a first field with no second, resets
+ * the pairing. The vendor stack (rkmpp m2vd_parser.c) likewise discards the
+ * bitstream flag for field pictures and synthesizes one from decode order,
+ * feeding it to both the reference selection and TOPFIELDFIRST_E.
+ */
+void hantro_mpeg2_dec_field_order(struct hantro_ctx *ctx,
+				  const struct v4l2_ctrl_mpeg2_picture *pic,
+				  const struct vb2_buffer *dst_buf,
+				  struct hantro_mpeg2_field_order *order)
+{
+	struct hantro_mpeg2_dec_hw_ctx *mpeg2 = &ctx->mpeg2_dec;
+	u32 structure = pic->picture_structure;
+
+	order->second_field = false;
+	order->top_field_first = !!(pic->flags & V4L2_MPEG2_PIC_FLAG_TOP_FIELD_FIRST);
+
+	if (structure == V4L2_MPEG2_PIC_FRAME) {
+		mpeg2->first_field = 0;
+		return;
+	}
+
+	if (mpeg2->first_field && mpeg2->first_field != structure &&
+	    mpeg2->first_field_buf == dst_buf->index) {
+		order->second_field = true;
+		order->top_field_first =
+			mpeg2->first_field == V4L2_MPEG2_PIC_TOP_FIELD;
+		mpeg2->first_field = 0;
+		return;
+	}
+
+	order->top_field_first = structure == V4L2_MPEG2_PIC_TOP_FIELD;
+	mpeg2->first_field = structure;
+	mpeg2->first_field_buf = dst_buf->index;
+}
+
 int hantro_mpeg2_dec_init(struct hantro_ctx *ctx)
 {
 	struct hantro_dev *vpu = ctx->dev;
 
+	ctx->mpeg2_dec.first_field = 0;
 	ctx->mpeg2_dec.qtable.size = ARRAY_SIZE(zigzag) * 4;
 	ctx->mpeg2_dec.qtable.cpu =
 		dma_alloc_coherent(vpu->dev,

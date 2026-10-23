@@ -10,6 +10,7 @@
 #include <linux/firmware.h>
 #include <linux/mfd/syscon.h>
 #include <linux/phy/phy.h>
+#include <linux/phy/rockchip-typec-phy.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
 
@@ -156,6 +157,18 @@ static int cdn_dp_get_port_lanes(struct cdn_dp_port *port)
 	int dptx;
 	u8 lanes;
 
+	/* typec API path: get lane info from PHY */
+	if (!edev) {
+		struct rockchip_typec_phy_dp_state dp_state;
+		int ret;
+
+		ret = rockchip_typec_phy_get_dp_state(port->phy, &dp_state);
+		if (ret)
+			return 0;
+
+		return dp_state.dp_connected ? dp_state.lanes : 0;
+	}
+
 	dptx = extcon_get_state(edev, EXTCON_DISP_DP);
 	if (dptx > 0) {
 		extcon_get_property(edev, EXTCON_DISP_DP,
@@ -219,7 +232,8 @@ static bool cdn_dp_check_sink_connection(struct cdn_dp_device *dp)
 	 * some docks need more time to power up.
 	 */
 	while (time_before(jiffies, timeout)) {
-		if (!extcon_get_state(port->extcon, EXTCON_DISP_DP))
+		if (port->extcon &&
+		    !extcon_get_state(port->extcon, EXTCON_DISP_DP))
 			return false;
 
 		if (!cdn_dp_get_sink_count(dp, &sink_count))
@@ -257,6 +271,40 @@ cdn_dp_bridge_edid_read(struct drm_bridge *bridge, struct drm_connector *connect
 	mutex_unlock(&dp->lock);
 
 	return drm_edid;
+}
+
+static void cdn_dp_bridge_hpd_notify(struct drm_bridge *bridge,
+				     struct drm_connector *connector,
+				     enum drm_connector_status status)
+{
+	struct cdn_dp_device *dp = bridge_to_dp(bridge);
+	const struct drm_edid *drm_edid;
+	bool plugged = false;
+
+	if (status == connector_status_connected) {
+		/*
+		 * hpd_notify runs before the connector's get_modes() has
+		 * parsed the EDID, so connector->eld is still empty here and
+		 * hdmi-codec would latch an empty ELD. Read the EDID and
+		 * update the connector (fills the ELD) before notifying.
+		 */
+		drm_edid = cdn_dp_bridge_edid_read(bridge, connector);
+		if (drm_edid) {
+			drm_edid_connector_update(connector, drm_edid);
+			drm_edid_free(drm_edid);
+			plugged = connector->display_info.has_audio;
+		}
+	}
+
+	mutex_lock(&dp->lock);
+	if (dp->audio_plugged == plugged) {
+		mutex_unlock(&dp->lock);
+		return;
+	}
+	dp->audio_plugged = plugged;
+	mutex_unlock(&dp->lock);
+
+	drm_connector_hdmi_audio_plugged_notify(connector, plugged);
 }
 
 static enum drm_mode_status
@@ -359,6 +407,8 @@ static int cdn_dp_get_sink_capability(struct cdn_dp_device *dp)
 static int cdn_dp_enable_phy(struct cdn_dp_device *dp, struct cdn_dp_port *port)
 {
 	union extcon_property_value property;
+	struct rockchip_typec_phy_dp_state dp_state;
+	bool flip = false;
 	int ret;
 
 	if (!port->phy_enabled) {
@@ -385,15 +435,28 @@ static int cdn_dp_enable_phy(struct cdn_dp_device *dp, struct cdn_dp_port *port)
 		goto err_power_on;
 	}
 
-	ret = extcon_get_property(port->extcon, EXTCON_DISP_DP,
-				  EXTCON_PROP_USB_TYPEC_POLARITY, &property);
-	if (ret) {
-		DRM_DEV_ERROR(dp->dev, "get property failed\n");
-		goto err_power_on;
+	/* Get polarity: from extcon or from PHY typec state */
+	if (port->extcon) {
+		ret = extcon_get_property(port->extcon, EXTCON_DISP_DP,
+					  EXTCON_PROP_USB_TYPEC_POLARITY,
+					  &property);
+		if (ret) {
+			DRM_DEV_ERROR(dp->dev, "get property failed\n");
+			goto err_power_on;
+		}
+		flip = property.intval;
+	} else {
+		ret = rockchip_typec_phy_get_dp_state(port->phy, &dp_state);
+		if (ret) {
+			DRM_DEV_ERROR(dp->dev,
+				      "get PHY DP state failed: %d\n", ret);
+			goto err_power_on;
+		}
+		flip = dp_state.flip;
 	}
 
 	port->lanes = cdn_dp_get_port_lanes(port);
-	ret = cdn_dp_set_host_cap(dp, port->lanes, property.intval);
+	ret = cdn_dp_set_host_cap(dp, port->lanes, flip);
 	if (ret) {
 		DRM_DEV_ERROR(dp->dev, "set host capabilities failed: %d\n",
 			      ret);
@@ -827,6 +890,7 @@ static const struct drm_bridge_funcs cdn_dp_bridge_funcs = {
 	.atomic_reset = drm_atomic_helper_bridge_reset,
 	.detect = cdn_dp_bridge_detect,
 	.edid_read = cdn_dp_bridge_edid_read,
+	.hpd_notify = cdn_dp_bridge_hpd_notify,
 	.atomic_enable = cdn_dp_bridge_atomic_enable,
 	.atomic_disable = cdn_dp_bridge_atomic_disable,
 	.mode_valid = cdn_dp_bridge_mode_valid,
@@ -960,6 +1024,18 @@ static int cdn_dp_pd_event(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
+static int cdn_dp_phy_hpd_event(struct notifier_block *nb,
+				unsigned long event, void *priv)
+{
+	struct cdn_dp_port *port = container_of(nb, struct cdn_dp_port,
+						phy_hpd_nb);
+	struct cdn_dp_device *dp = port->dp;
+
+	schedule_work(&dp->event_work);
+
+	return NOTIFY_DONE;
+}
+
 static int cdn_dp_bind(struct device *dev, struct device *master, void *data)
 {
 	struct cdn_dp_device *dp = dev_get_drvdata(dev);
@@ -1028,14 +1104,30 @@ static int cdn_dp_bind(struct device *dev, struct device *master, void *data)
 	for (i = 0; i < dp->ports; i++) {
 		port = dp->port[i];
 
-		port->event_nb.notifier_call = cdn_dp_pd_event;
-		ret = devm_extcon_register_notifier(dp->dev, port->extcon,
-						    EXTCON_DISP_DP,
-						    &port->event_nb);
-		if (ret) {
-			DRM_DEV_ERROR(dev,
-				      "register EXTCON_DISP_DP notifier err\n");
-			return ret;
+		if (port->extcon) {
+			/* extcon path: register for EXTCON_DISP_DP events */
+			port->event_nb.notifier_call = cdn_dp_pd_event;
+			ret = devm_extcon_register_notifier(dp->dev,
+							    port->extcon,
+							    EXTCON_DISP_DP,
+							    &port->event_nb);
+			if (ret) {
+				DRM_DEV_ERROR(dev,
+					      "register EXTCON_DISP_DP notifier err\n");
+				return ret;
+			}
+		} else {
+			/* typec API path: register for PHY HPD events */
+			port->phy_hpd_nb.notifier_call = cdn_dp_phy_hpd_event;
+			ret = rockchip_typec_phy_register_notify(
+							port->phy,
+							&port->phy_hpd_nb);
+			if (ret && ret != -EOPNOTSUPP) {
+				DRM_DEV_ERROR(dev,
+					      "register PHY HPD notifier err: %d\n",
+					      ret);
+				return ret;
+			}
 		}
 	}
 
@@ -1050,8 +1142,19 @@ static void cdn_dp_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct cdn_dp_device *dp = dev_get_drvdata(dev);
 	struct drm_encoder *encoder = &dp->encoder.encoder;
+	int i;
 
 	cancel_work_sync(&dp->event_work);
+
+	/* Unregister PHY HPD notifiers for typec API ports */
+	for (i = 0; i < dp->ports; i++) {
+		struct cdn_dp_port *port = dp->port[i];
+
+		if (!port->extcon)
+			rockchip_typec_phy_unregister_notify(port->phy,
+							     &port->phy_hpd_nb);
+	}
+
 	encoder->funcs->destroy(encoder);
 
 	pm_runtime_disable(dev);
@@ -1120,14 +1223,15 @@ static int cdn_dp_probe(struct platform_device *pdev)
 		    PTR_ERR(phy) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
 
-		if (IS_ERR(extcon) || IS_ERR(phy))
+		/* PHY is mandatory; extcon is optional (typec API fallback) */
+		if (IS_ERR(phy))
 			continue;
 
 		port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
 		if (!port)
 			return -ENOMEM;
 
-		port->extcon = extcon;
+		port->extcon = IS_ERR(extcon) ? NULL : extcon;
 		port->phy = phy;
 		port->dp = dp;
 		port->id = i;
@@ -1135,7 +1239,7 @@ static int cdn_dp_probe(struct platform_device *pdev)
 	}
 
 	if (!dp->ports) {
-		DRM_DEV_ERROR(dev, "missing extcon or phy\n");
+		DRM_DEV_ERROR(dev, "missing phy\n");
 		return -EINVAL;
 	}
 

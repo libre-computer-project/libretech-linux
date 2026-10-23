@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2023 BayLibre, SAS.
+ * Author: Jerome Brunet <jbrunet@baylibre.com>
+ *
+ * AML-A311D-CC board body, shared by the two firmware layouts this board
+ * boots: meson-g12b-a311d-libretech-cc.dts (vendor chain) and
+ * meson-g12b-a311d-libretech-cc-libre.dts (libre chain). The firmware
+ * reservations are the leaf's, never this file's.
+ */
+
+#include <dt-bindings/clock/g12a-clkc.h>
+#include "meson-g12b-a311d.dtsi"
+#include "meson-libretech-cottonwood.dtsi"
+
+/ {
+	compatible = "libretech,aml-a311d-cc", "amlogic,a311d", "amlogic,g12b";
+	model = "Libre Computer AML-A311D-CC Alta";
+
+	vddcpu_a: regulator-vddcpu-a {
+		compatible = "pwm-regulator";
+		regulator-name = "VDDCPU_A";
+		regulator-min-microvolt = <730000>;
+		regulator-max-microvolt = <1011000>;
+		regulator-boot-on;
+		regulator-always-on;
+		pwm-supply = <&dc_in>;
+		pwms = <&pwm_ab 0 1250 0>;
+		pwm-dutycycle-range = <100 0>;
+	};
+
+	sound {
+		model = "LC-ALTA";
+		audio-routing = "TDMOUT_A IN 0", "FRDDR_A OUT 0",
+				"TDMOUT_A IN 1", "FRDDR_B OUT 0",
+				"TDMOUT_A IN 2", "FRDDR_C OUT 0",
+				"TDM_A Playback", "TDMOUT_A OUT",
+				"TDMOUT_B IN 0", "FRDDR_A OUT 1",
+				"TDMOUT_B IN 1", "FRDDR_B OUT 1",
+				"TDMOUT_B IN 2", "FRDDR_C OUT 1",
+				"TDM_B Playback", "TDMOUT_B OUT",
+				"TDMOUT_C IN 0", "FRDDR_A OUT 2",
+				"TDMOUT_C IN 1", "FRDDR_B OUT 2",
+				"TDMOUT_C IN 2", "FRDDR_C OUT 2",
+				"TDM_C Playback", "TDMOUT_C OUT",
+				"TDMIN_A IN 0", "TDM_A Capture",
+				"TDMIN_B IN 0", "TDM_A Capture",
+				"TDMIN_C IN 0", "TDM_A Capture",
+				"TDMIN_A IN 3", "TDM_A Loopback",
+				"TDMIN_B IN 3", "TDM_A Loopback",
+				"TDMIN_C IN 3", "TDM_A Loopback",
+				"TDMIN_A IN 1", "TDM_B Capture",
+				"TDMIN_B IN 1", "TDM_B Capture",
+				"TDMIN_C IN 1", "TDM_B Capture",
+				"TDMIN_A IN 4", "TDM_B Loopback",
+				"TDMIN_B IN 4", "TDM_B Loopback",
+				"TDMIN_C IN 4", "TDM_B Loopback",
+				"TDMIN_A IN 2", "TDM_C Capture",
+				"TDMIN_B IN 2", "TDM_C Capture",
+				"TDMIN_C IN 2", "TDM_C Capture",
+				"TDMIN_A IN 5", "TDM_C Loopback",
+				"TDMIN_B IN 5", "TDM_C Loopback",
+				"TDMIN_C IN 5", "TDM_C Loopback",
+				"TODDR_A IN 0", "TDMIN_A OUT",
+				"TODDR_B IN 0", "TDMIN_A OUT",
+				"TODDR_C IN 0", "TDMIN_A OUT",
+				"TODDR_A IN 1", "TDMIN_B OUT",
+				"TODDR_B IN 1", "TDMIN_B OUT",
+				"TODDR_C IN 1", "TDMIN_B OUT",
+				"TODDR_A IN 2", "TDMIN_C OUT",
+				"TODDR_B IN 2", "TDMIN_C OUT",
+				"TODDR_C IN 2", "TDMIN_C OUT",
+				"Lineout", "ACODEC LOLP",
+				"Lineout", "ACODEC LORP";
+	};
+};
+
+&cpu0 {
+	cpu-supply = <&vddcpu_b>;
+	operating-points-v2 = <&cpu_opp_table_0>;
+	clocks = <&clkc CLKID_CPU_CLK>;
+};
+
+&cpu1 {
+	cpu-supply = <&vddcpu_b>;
+	operating-points-v2 = <&cpu_opp_table_0>;
+	clocks = <&clkc CLKID_CPU_CLK>;
+};
+
+&cpu100 {
+	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+};
+
+&cpu101 {
+	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+};
+
+&cpu102 {
+	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+};
+
+&cpu103 {
+	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+};
+
+
+/*
+ * PWM_A (GPIOE_2) is the VDDCPU_A supply for the A73 cluster -- NOT an LED.
+ * Do not disable: cpufreq-dt walks every present CPU before registering, so
+ * losing this rail disables cpufreq on BOTH clusters.
+ *
+ * Channel 1 (pwm_b_x7_pins, GPIOX_7) is deliberately NOT muxed here: unlike
+ * upstream, this board drives the blue activity LED as a gpio-led on that
+ * pin (meson-libretech-cottonwood.dtsi). meson pinctrl does not set
+ * pinmux_ops.strict, so claiming GPIOX_7 for pwm_b as well would silently
+ * race gpio-leds for the mux.
+ */
+&pwm_ab {
+	status = "okay";
+	pinctrl-0 = <&pwm_a_e_pins>;
+	pinctrl-names = "default";
+};
+
+/*
+ * Raise the NNA (NPU) port's DDR arbitration priority from the firmware
+ * default 0 to 4. At 0, four or more CPU DDR writers with the A73 cluster
+ * above 1 GHz starve the NPU: every job times out and completes nothing.
+ * From 2 it completes, and the job time is flat from 4 (values 1 / 2 / 4 /
+ * 6 / 7 measured one boot each on this board; 7 buys nothing over 4). The
+ * CPU's own channel pays 12-15 % of its DDR rate only while the NPU runs.
+ * Board-scoped: measured on the A311D only; the S905D3 has no vendor
+ * priority table.
+ */
+&dmc_qos {
+	status = "okay";
+	amlogic,port-priority = <10 4>;	/* NNA */
+};
+
+/*
+ * GPIOA_14/15 are I2C_EE_M3. On the V1 sheet they go to the CSI and DSI
+ * connectors (8J1/8J2 pins 21/20) and not to the 40-pin header. The V1
+ * header I2C is I2C_EE_M2. V01 leaves this disabled: those balls are
+ * header pins 27 and 28.
+ */
+&i2c3 {
+	status = "okay";
+	pinctrl-0 = <&i2c3_sda_a_pins>, <&i2c3_sck_a_pins>;
+	pinctrl-names = "default";
+};
+
+&sd_emmc_b {
+	/*
+	 * Opt this board's SD card slot into SD UHS DDR200 / DDR208 (200 MHz
+	 * DDR) via the generic sd-uhs-ddr200 host opt-in, matching AML-S905D3-CC
+	 * (same meson V3 SD controller family). DDR200 reuses the SDR104 (1.8 V)
+	 * signalling already enabled in meson-libretech-cottonwood.dtsi and only
+	 * engages for a card that advertises it and accepts the group-2
+	 * function-14 activation; the core falls back to SDR104 if tuning fails.
+	 * Board-scoped because it needs a 400 MHz module clock and clean slot
+	 * signal integrity.
+	 */
+	sd-uhs-ddr200;
+};
+
+/ {
+	reserved-memory {
+		linux,cma {
+			/*
+			 * AML-A311D-CC comes in up to 4 GiB RAM variants.
+			 * U-Boot's meson_fixup_cma_size() writes min(this
+			 * value, 7/32 of detected RAM) here and forces
+			 * alloc-ranges to the first 1 GiB, so this value is the
+			 * binding clamp whenever it is the smaller term.
+			 *
+			 * 768 MiB, not the 896 MiB the 7/32 formula yields at
+			 * 4 GiB: the sub-1 GiB window is not 1 GiB wide.
+			 * secmon, ramoops and the kernel image leave ~820 MiB
+			 * of largest free run below 0x40000000, and 896 MiB was
+			 * measured failing on both A311D and S905D3. A failed
+			 * reservation costs the whole pool -- one pr_err, then
+			 * CONFIG_CMA_SIZE_MBYTES=128 -- so over-asking loses
+			 * 640 MiB rather than gaining 128.
+			 */
+			size = <0x0 0x30000000>;
+		};
+	};
+};

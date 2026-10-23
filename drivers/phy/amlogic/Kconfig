@@ -94,6 +94,27 @@ config PHY_MESON_AXG_MIPI_PCIE_ANALOG
 	  found in Meson AXG SoCs.
 	  If unsure, say N.
 
+config PHY_MESON_G12A_MIPI_CSI_DPHY_ANALOG
+	tristate "Meson G12A MIPI CSI Analog D-PHY driver"
+	depends on OF && (ARCH_MESON || COMPILE_TEST)
+	select GENERIC_PHY_MIPI_DPHY
+	select MFD_SYSCON
+	help
+	  Enable this to support the Meson G12A MIPI CSI analog D-PHY
+	  found in G12A, G12B, SM1, and A311D SoCs.
+	  If unsure, say N.
+
+config PHY_MESON_G12A_MIPI_CSI_DPHY
+	tristate "Meson G12A MIPI CSI D-PHY driver"
+	depends on OF && (ARCH_MESON || COMPILE_TEST)
+	select GENERIC_PHY
+	select GENERIC_PHY_MIPI_DPHY
+	select REGMAP_MMIO
+	help
+	  Enable this to support the Meson G12A MIPI CSI D-PHY found in
+	  G12A, G12B, SM1, and A311D SoCs.
+	  If unsure, say N.
+
 config PHY_MESON_AXG_MIPI_DPHY
 	tristate "Meson AXG MIPI DPHY driver"
 	default ARCH_MESON

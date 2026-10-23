@@ -28,6 +28,8 @@ enum drm_mode_status
 meson_vclk_vic_supported_freq(struct meson_drm *priv,
 			      unsigned long long phy_freq,
 			      unsigned long long vclk_freq);
+bool meson_vclk_pll_freq_synthesizable(struct meson_drm *priv,
+				       unsigned long long phy_freq);
 
 void meson_vclk_setup(struct meson_drm *priv, unsigned int target,
 		      unsigned long long phy_freq, unsigned long long vclk_freq,

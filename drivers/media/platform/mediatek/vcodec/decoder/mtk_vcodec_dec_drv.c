@@ -6,6 +6,8 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/dma-mapping.h>
+#include <linux/iommu.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -25,6 +27,176 @@
 #include "mtk_vcodec_dec_hw.h"
 #include "mtk_vcodec_dec_pm.h"
 #include "../common/mtk_vcodec_intr.h"
+
+/*
+ * VDEC core interrupt accounting.
+ *
+ * The decoder IRQ is requested with flags 0 -- it is NOT IRQF_SHARED -- so
+ * every interrupt delivered here is ours, and a return that leaves MISC+0xa4
+ * uncleared leaves the level line asserted. It then re-fires until
+ * mtk_vcodec_dec_disable_hardware() masks it, and is delivered again at the
+ * next decode's enable_irq(), which runs BEFORE the context is published (see
+ * the curr_ctx test below).
+ *
+ * The four counters below partition every vector -- total == noctx +
+ * inactive + nosucc + done -- and are advanced unconditionally, so the
+ * frequency of each path is a measurement rather than an inference.
+ */
+static int vdec_irq_total;
+module_param(vdec_irq_total, int, 0644);
+MODULE_PARM_DESC(vdec_irq_total,
+		 "VDEC core interrupts delivered (denominator for the per-path counters)");
+
+static int vdec_irq_nosucc;
+module_param(vdec_irq_nosucc, int, 0644);
+MODULE_PARM_DESC(vdec_irq_nosucc,
+		 "interrupts seen with DEC_SUCCESS clear -- acknowledged and dropped without a wake");
+
+static int vdec_irq_inactive;
+module_param(vdec_irq_inactive, int, 0644);
+MODULE_PARM_DESC(vdec_irq_inactive,
+		 "interrupts seen with the HW-active gate reading inactive (NOT acknowledged -- the block is gated)");
+
+static int vdec_irq_done;
+module_param(vdec_irq_done, int, 0644);
+MODULE_PARM_DESC(vdec_irq_done,
+		 "interrupts taking the DEC_SUCCESS path (acknowledged, context woken)");
+
+static int vdec_irq_noctx;
+module_param(vdec_irq_noctx, int, 0644);
+MODULE_PARM_DESC(vdec_irq_noctx,
+		 "interrupts delivered with no decode in flight (curr_ctx == NULL), acknowledged and dropped");
+
+/*
+ * N45 (2026-08-20) -- bitstream visibility for the four MT8365 direct-register
+ * backends, and the audit that makes its exposure observable.
+ *
+ * Those backends used to open their decode with
+ *
+ *	dma_sync_single_for_device(&ctx->dev->plat_dev->dev,
+ *				   bs->dma_addr, bs->size, DMA_TO_DEVICE);
+ *
+ * on the theory that the client's write might still be sitting in the CPU
+ * cache. That call is an ILLEGAL use of the STREAMING DMA API on this handle,
+ * and on an IOMMU-backed SoC it is a crash rather than a nuisance:
+ *
+ *  - bs->dma_addr is an IOVA minted by vb2-dma-contig. MMAP planes come from
+ *    dma_alloc_attrs() -> iommu_dma_alloc() -> iommu_dma_alloc_remap(), i.e. a
+ *    set of PHYSICALLY SCATTERED pages that are contiguous only in IOVA space
+ *    (and vmap()ed for the CPU). DMABUF/USERPTR planes are an imported
+ *    scatterlist. Neither is a dma_map_single()/dma_map_page() mapping.
+ *  - iommu_dma_sync_single_for_device() translates the FIRST byte only
+ *    (iommu_iova_to_phys()) and hands (phys, size) to
+ *    arch_sync_dma_for_device(), which cleans `size` bytes of PHYSICALLY
+ *    CONTIGUOUS memory starting there. Past the first page that is not the
+ *    buffer -- it is whatever else happens to live at those physical
+ *    addresses.
+ *  - On med-mt8365-pumpkin, 2026-08-20, one such walk ran off the end of the
+ *    first System RAM block (40000000-42ffffff) into the no-map secmon
+ *    carve-out at 43000000 and took a level-3 translation fault in
+ *    dcache_clean_poc(), killing the vdec workqueue. Once in 415 armed HEVC
+ *    decodes: the HEVC conformance clip submits ~216 kB (53 pages) per access
+ *    unit, so it reaches a hole far more often than the ~2-page H.264 / VP8 /
+ *    VP9 submissions do -- but the defect was identical in all four backends.
+ *
+ * No CPU-side cache maintenance belongs here at all; vb2 owns the plane's
+ * cache state and already does it correctly:
+ *
+ *  - coherent MMAP planes are mapped uncached by dma_pgprot() on this
+ *    non-coherent device, which is exactly why vb2_dc_prepare() is a no-op for
+ *    them;
+ *  - non-coherent MMAP planes (V4L2_MEMORY_FLAG_NON_COHERENT, permitted here
+ *    because both queues set allow_cache_hints) are flushed by
+ *    vb2_dc_prepare() -> dma_sync_sgtable_for_device(), which IS scatter-aware,
+ *    before ->decode() is ever entered;
+ *  - DMABUF planes are the exporter's business.
+ *
+ * The removed sync was also never load-bearing: for every page but the first it
+ * was cleaning unrelated memory, and the H.264 / VP8 / VP9 conformance scores
+ * on record were obtained with it doing precisely that.
+ *
+ * What replaces it is an unconditional AUDIT of the same address and length, so
+ * the denominator is observable from userspace and any future fault on this
+ * path is attributable instead of mysterious. It performs no cache maintenance
+ * and issues no sync; dma_wmb() is the whole of the CPU's obligation before the
+ * engine is kicked.
+ */
+static int mt8365_bs_total;
+module_param(mt8365_bs_total, int, 0444);
+MODULE_PARM_DESC(mt8365_bs_total,
+		 "MT8365 N45: bitstream submissions audited (the denominator)");
+
+static int mt8365_bs_multipage;
+module_param(mt8365_bs_multipage, int, 0444);
+MODULE_PARM_DESC(mt8365_bs_multipage,
+		 "MT8365 N45: submissions spanning more than one page -- the ones the removed dma_sync_single_for_device() mis-handled");
+
+static int mt8365_bs_scattered;
+module_param(mt8365_bs_scattered, int, 0444);
+MODULE_PARM_DESC(mt8365_bs_scattered,
+		 "MT8365 N45: submissions whose IOVA range is NOT physically contiguous -- the removed sync would have cleaned foreign memory");
+
+static int mt8365_bs_untranslated;
+module_param(mt8365_bs_untranslated, int, 0444);
+MODULE_PARM_DESC(mt8365_bs_untranslated,
+		 "MT8365 N45: submissions whose IOVA did not translate at all (stale or unmapped handle)");
+
+static int mt8365_bs_foreign_pages;
+module_param(mt8365_bs_foreign_pages, int, 0444);
+MODULE_PARM_DESC(mt8365_bs_foreign_pages,
+		 "MT8365 N45: cumulative pages of FOREIGN cache maintenance the removed sync would have performed");
+
+void mtk_vcodec_mt8365_bs_audit(struct mtk_vcodec_dec_ctx *ctx,
+				dma_addr_t dma_addr, size_t len)
+{
+	struct device *dev = &ctx->dev->plat_dev->dev;
+	unsigned long first, last;
+	struct iommu_domain *dom;
+
+	mt8365_bs_total++;
+
+	if (!len)
+		goto out;
+
+	first = (unsigned long)(dma_addr >> PAGE_SHIFT);
+	last = (unsigned long)((dma_addr + len - 1) >> PAGE_SHIFT);
+	if (last != first) {
+		mt8365_bs_multipage++;
+		mt8365_bs_foreign_pages += last - first;
+	}
+
+	/*
+	 * The check the removed sync never made: does [dma_addr, +len) map to
+	 * ONE physically contiguous run? Only then would the streaming helper
+	 * have been operating on the buffer at all.
+	 */
+	dom = iommu_get_domain_for_dev(dev);
+	if (dom) {
+		phys_addr_t p0 = iommu_iova_to_phys(dom, dma_addr);
+		phys_addr_t pn = iommu_iova_to_phys(dom, dma_addr + len - 1);
+
+		if (!p0 || !pn) {
+			mt8365_bs_untranslated++;
+			mtk_v4l2_vdec_err(ctx,
+					  "mt8365 N45: bitstream IOVA %pad+%zx does not translate (p0=%pa pn=%pa)",
+					  &dma_addr, len, &p0, &pn);
+		} else if (pn - p0 != len - 1) {
+			mt8365_bs_scattered++;
+			if (mt8365_bs_scattered <= 2)
+				mtk_v4l2_vdec_err(ctx,
+						  "mt8365 N45: bitstream IOVA %pad+%zx is physically SCATTERED (p0=%pa pn=%pa) -- no streaming sync is legal on it",
+						  &dma_addr, len, &p0, &pn);
+		}
+	}
+
+out:
+	/*
+	 * Order the CPU's writes to the (uncached) plane ahead of the register
+	 * writes that arm and kick the engine. This is a barrier, NOT cache
+	 * maintenance -- see the block comment above.
+	 */
+	dma_wmb();
+}
 
 static int mtk_vcodec_get_hw_count(struct mtk_vcodec_dec_ctx *ctx, struct mtk_vcodec_dec_dev *dev)
 {
@@ -59,9 +231,46 @@ static irqreturn_t mtk_vcodec_dec_irq_handler(int irq, void *priv)
 	void __iomem *vdec_misc_addr = dev->reg_base[VDEC_MISC] +
 					VDEC_IRQ_CFG_REG;
 
-	ctx = mtk_vcodec_get_curr_ctx(dev, MTK_VDEC_CORE);
+	vdec_irq_total++;
 
+	ctx = mtk_vcodec_get_curr_ctx(dev, MTK_VDEC_CORE);
+	if (!ctx) {
+		/*
+		 * No decode owns this interrupt.
+		 *
+		 * vdec_if_decode() clears curr_ctx when a decode returns, and
+		 * the IRQ line is IRQ_NOAUTOEN: it is re-enabled per decode by
+		 * mtk_vcodec_dec_enable_hardware() -> enable_irq(), which runs
+		 * BEFORE mtk_vcodec_set_curr_ctx() publishes the next context.
+		 * An interrupt a previous decode left latched (the handler has
+		 * two paths that return without acknowledging) is therefore
+		 * delivered inside that enable_irq() with curr_ctx == NULL.
+		 * Without this test the very next statement writes through the
+		 * NULL ctx at offsetof(irq_status) == 0x200 and, being in
+		 * interrupt context, panics the machine.
+		 *
+		 * Acknowledge and drop it: it belongs to no context, and waking
+		 * the next one with it would be a false decode-done.
+		 */
+		vdec_irq_noctx++;
+		writel((readl(vdec_misc_addr) | VDEC_IRQ_CFG),
+		       dev->reg_base[VDEC_MISC] + VDEC_IRQ_CFG_REG);
+		writel((readl(vdec_misc_addr) & ~VDEC_IRQ_CLR),
+		       dev->reg_base[VDEC_MISC] + VDEC_IRQ_CFG_REG);
+		return IRQ_HANDLED;
+	}
+
+	/*
+	 * Do NOT acknowledge here. The gate reports the VDEC block clock-gated
+	 * (VDEC_SYS+0x0 bit4), and the acknowledge is a read-modify-write of
+	 * VDEC_MISC+0xa4 -- programming a gated block, which on this SoC is how
+	 * bus aborts and hard resets are produced. There is nothing this
+	 * handler can safely do with the interrupt, so returning without an
+	 * acknowledge is correct; it is the one early return here that is not a
+	 * missing acknowledge.
+	 */
 	if (!mtk_vcodec_is_hw_active(dev)) {
+		vdec_irq_inactive++;
 		mtk_v4l2_vdec_err(ctx, "DEC ISR, VDEC active is not 0x0");
 		return IRQ_HANDLED;
 	}
@@ -69,8 +278,29 @@ static irqreturn_t mtk_vcodec_dec_irq_handler(int irq, void *priv)
 	dec_done_status = readl(vdec_misc_addr);
 	ctx->irq_status = dec_done_status;
 	if ((dec_done_status & MTK_VDEC_IRQ_STATUS_DEC_SUCCESS) !=
-		MTK_VDEC_IRQ_STATUS_DEC_SUCCESS)
+		MTK_VDEC_IRQ_STATUS_DEC_SUCCESS) {
+		/*
+		 * The block is active and its status register read back, so
+		 * this interrupt is ours and the hardware raised it for
+		 * something other than a completed picture. Returning without
+		 * clearing MISC+0xa4 leaves the level line asserted: it
+		 * re-fires until disable_hardware() masks it, and is then
+		 * delivered at the next decode's enable_irq() with curr_ctx
+		 * still NULL -- the exact precondition of the NULL-ctx panic.
+		 *
+		 * Acknowledge it with the success path's own clear sequence
+		 * and wake nobody: ctx->irq_status already carries the status
+		 * for the waiter, and this is not a decode-done.
+		 */
+		vdec_irq_nosucc++;
+		writel((readl(vdec_misc_addr) | VDEC_IRQ_CFG),
+		       dev->reg_base[VDEC_MISC] + VDEC_IRQ_CFG_REG);
+		writel((readl(vdec_misc_addr) & ~VDEC_IRQ_CLR),
+		       dev->reg_base[VDEC_MISC] + VDEC_IRQ_CFG_REG);
 		return IRQ_HANDLED;
+	}
+
+	vdec_irq_done++;
 
 	/* clear interrupt */
 	writel((readl(vdec_misc_addr) | VDEC_IRQ_CFG),
@@ -198,6 +428,7 @@ static int fops_vcodec_open(struct file *file)
 	struct mtk_vcodec_dec_ctx *ctx = NULL;
 	int ret = 0, i, hw_count;
 	struct vb2_queue *src_vq;
+	unsigned long flags;
 
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -246,30 +477,42 @@ static int fops_vcodec_open(struct file *file)
 	mtk_vcodec_dec_set_default_params(ctx);
 
 	if (v4l2_fh_is_singular(&ctx->fh)) {
-		/*
-		 * Does nothing if firmware was already loaded.
-		 */
-		ret = mtk_vcodec_fw_load_firmware(dev->fw_handler);
-		if (ret < 0) {
+		if (dev->vdec_pdata->no_firmware) {
 			/*
-			 * Return 0 if downloading firmware successfully,
-			 * otherwise it is failed
+			 * MT8365: no SCP/codec firmware -- the capability is not
+			 * firmware-reported, set it statically (H.264 decode, MM21
+			 * output) for the direct-register backend.
 			 */
-			mtk_v4l2_vdec_err(ctx, "failed to load firmware!");
-			goto err_load_fw;
+			dev->dec_capability =
+				MTK_VDEC_FORMAT_H264_SLICE |
+				MTK_VDEC_FORMAT_VP8_FRAME |
+				MTK_VDEC_FORMAT_MM21;
+		} else {
+			/*
+			 * Does nothing if firmware was already loaded.
+			 */
+			ret = mtk_vcodec_fw_load_firmware(dev->fw_handler);
+			if (ret < 0) {
+				/*
+				 * Return 0 if downloading firmware successfully,
+				 * otherwise it is failed
+				 */
+				mtk_v4l2_vdec_err(ctx, "failed to load firmware!");
+				goto err_load_fw;
+			}
+
+			dev->dec_capability =
+				mtk_vcodec_fw_get_vdec_capa(dev->fw_handler);
+
+			mtk_v4l2_vdec_dbg(0, ctx, "decoder capability %x", dev->dec_capability);
 		}
-
-		dev->dec_capability =
-			mtk_vcodec_fw_get_vdec_capa(dev->fw_handler);
-
-		mtk_v4l2_vdec_dbg(0, ctx, "decoder capability %x", dev->dec_capability);
 	}
 
 	ctx->dev->vdec_pdata->init_vdec_params(ctx);
 
-	mutex_lock(&dev->dev_ctx_lock);
+	spin_lock_irqsave(&dev->dev_ctx_lock, flags);
 	list_add(&ctx->list, &dev->ctx_list);
-	mutex_unlock(&dev->dev_ctx_lock);
+	spin_unlock_irqrestore(&dev->dev_ctx_lock, flags);
 	mtk_vcodec_dbgfs_create(ctx);
 
 	mutex_unlock(&dev->dev_mutex);
@@ -294,6 +537,7 @@ static int fops_vcodec_release(struct file *file)
 {
 	struct mtk_vcodec_dec_dev *dev = video_drvdata(file);
 	struct mtk_vcodec_dec_ctx *ctx = file_to_dec_ctx(file);
+	unsigned long flags;
 
 	mtk_v4l2_vdec_dbg(0, ctx, "[%d] decoder", ctx->id);
 	mutex_lock(&dev->dev_mutex);
@@ -312,9 +556,9 @@ static int fops_vcodec_release(struct file *file)
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
 
 	mtk_vcodec_dbgfs_remove(dev, ctx->id);
-	mutex_lock(&dev->dev_ctx_lock);
+	spin_lock_irqsave(&dev->dev_ctx_lock, flags);
 	list_del_init(&ctx->list);
-	mutex_unlock(&dev->dev_ctx_lock);
+	spin_unlock_irqrestore(&dev->dev_ctx_lock, flags);
 	kfree(ctx);
 	mutex_unlock(&dev->dev_mutex);
 	return 0;
@@ -345,8 +589,37 @@ static void mtk_vcodec_dec_get_chip_name(struct mtk_vcodec_dec_dev *vdec_dev)
 		vdec_dev->chip_name = MTK_VDEC_MT8186;
 	else if (of_device_is_compatible(dev->of_node, "mediatek,mt8188-vcodec-dec"))
 		vdec_dev->chip_name = MTK_VDEC_MT8188;
+	else if (of_device_is_compatible(dev->of_node, "mediatek,mt8365-vcodec-dec"))
+		vdec_dev->chip_name = MTK_VDEC_MT8365;
 	else
 		vdec_dev->chip_name = MTK_VDEC_INVAL;
+}
+
+/*
+ * A file handle outlives the driver binding, so `struct mtk_vcodec_dec_dev` and
+ * the objects it owns cannot be freed by remove(). They are freed here instead,
+ * from the v4l2_device kref, which the video_device holds a reference on for as
+ * long as any fd is open.
+ *
+ * Everything torn down here used to be torn down in remove() while an open
+ * context still pointed at it: v4l2_m2m_ctx_release() from fops_vcodec_release()
+ * dereferences m2m_ctx->m2m_dev, and vdec_if_deinit() dereferences ctx->dev.
+ */
+static void mtk_vcodec_dec_dev_release(struct v4l2_device *v4l2_dev)
+{
+	struct mtk_vcodec_dec_dev *dev =
+		container_of(v4l2_dev, struct mtk_vcodec_dec_dev, v4l2_dev);
+
+	if (dev->m2m_dev_dec)
+		v4l2_m2m_release(dev->m2m_dev_dec);
+	if (dev->decode_workqueue)
+		destroy_workqueue(dev->decode_workqueue);
+	if (dev->core_workqueue)
+		destroy_workqueue(dev->core_workqueue);
+	if (dev->mdev_dec.dev)
+		media_device_cleanup(&dev->mdev_dec);
+	mtk_vcodec_fw_release(dev->fw_handler);
+	kfree(dev);
 }
 
 static int mtk_vcodec_probe(struct platform_device *pdev)
@@ -357,7 +630,7 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	enum mtk_vcodec_fw_type fw_type;
 	int i, ret;
 
-	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 
@@ -367,25 +640,40 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	mtk_vcodec_dec_get_chip_name(dev);
 	if (dev->chip_name == MTK_VDEC_INVAL) {
 		dev_err(&pdev->dev, "Failed to get decoder chip name");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_free_dev;
 	}
 
 	dev->vdec_pdata = of_device_get_match_data(&pdev->dev);
-	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,vpu",
-				  &rproc_phandle)) {
-		fw_type = VPU;
-	} else if (!of_property_read_u32(pdev->dev.of_node, "mediatek,scp",
-					 &rproc_phandle)) {
-		fw_type = SCP;
+	if (dev->vdec_pdata->no_firmware) {
+		/*
+		 * MT8365: no SCP/VPU codec coprocessor -- the decode is driven by
+		 * direct register programming, so there is no firmware handler
+		 * and no mediatek,vpu/mediatek,scp phandle.
+		 */
+		dev->fw_handler = NULL;
+		dma_set_max_seg_size(&pdev->dev, UINT_MAX);
 	} else {
-		dev_dbg(&pdev->dev, "Could not get vdec IPI device");
-		return -ENODEV;
-	}
-	dma_set_max_seg_size(&pdev->dev, UINT_MAX);
+		if (!of_property_read_u32(pdev->dev.of_node, "mediatek,vpu",
+					  &rproc_phandle)) {
+			fw_type = VPU;
+		} else if (!of_property_read_u32(pdev->dev.of_node, "mediatek,scp",
+						 &rproc_phandle)) {
+			fw_type = SCP;
+		} else {
+			dev_dbg(&pdev->dev, "Could not get vdec IPI device");
+			ret = -ENODEV;
+			goto err_free_dev;
+		}
+		dma_set_max_seg_size(&pdev->dev, UINT_MAX);
 
-	dev->fw_handler = mtk_vcodec_fw_select(dev, fw_type, DECODER);
-	if (IS_ERR(dev->fw_handler))
-		return PTR_ERR(dev->fw_handler);
+		dev->fw_handler = mtk_vcodec_fw_select(dev, fw_type, DECODER);
+		if (IS_ERR(dev->fw_handler)) {
+			ret = PTR_ERR(dev->fw_handler);
+			dev->fw_handler = NULL;
+			goto err_free_dev;
+		}
+	}
 
 	ret = mtk_vcodec_init_dec_resources(dev);
 	if (ret) {
@@ -407,11 +695,17 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	for (i = 0; i < MTK_VDEC_HW_MAX; i++)
 		mutex_init(&dev->dec_mutex[i]);
 	mutex_init(&dev->dev_mutex);
-	mutex_init(&dev->dev_ctx_lock);
+	spin_lock_init(&dev->dev_ctx_lock);
 	spin_lock_init(&dev->irqlock);
 
 	snprintf(dev->v4l2_dev.name, sizeof(dev->v4l2_dev.name), "%s",
 		"[/MTK_V4L2_VDEC]");
+	/*
+	 * From here on the device is refcounted: video_register_device() takes a
+	 * reference and the video_device's own release drops it, so `dev` is
+	 * freed only once the last file handle is gone.
+	 */
+	dev->v4l2_dev.release = mtk_vcodec_dec_dev_release;
 
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
 	if (ret) {
@@ -471,10 +765,19 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 	memset(dev->vdec_racing_info, 0, sizeof(dev->vdec_racing_info));
 	mutex_init(&dev->dec_racing_info_mutex);
 
+	/*
+	 * BEFORE video_register_device(), not after: registering the node makes
+	 * it openable immediately, and fops_vcodec_open() -> mtk_vcodec_dbgfs_create()
+	 * does list_add_tail() onto dev->dbgfs.dbgfs_head. Initialising that head
+	 * afterwards leaves a window in which an open() adds to a zeroed list head
+	 * -- "list_add corruption. prev is NULL." with the driver still probing.
+	 */
+	mtk_vcodec_dbgfs_init(dev, false);
+
 	ret = video_register_device(vfd_dec, VFL_TYPE_VIDEO, -1);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register video device");
-		goto err_reg_cont;
+		goto err_dbgfs;
 	}
 
 	if (dev->vdec_pdata->uses_stateless_api) {
@@ -505,7 +808,6 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "media registered as /dev/media%d", vfd_dec->minor);
 	}
 
-	mtk_vcodec_dbgfs_init(dev, false);
 	dev_dbg(&pdev->dev, "decoder registered as /dev/video%d", vfd_dec->minor);
 
 	return 0;
@@ -514,14 +816,21 @@ err_media_reg:
 	v4l2_m2m_unregister_media_controller(dev->m2m_dev_dec);
 err_dec_mem_init:
 	video_unregister_device(vfd_dec);
+err_dbgfs:
+	mtk_vcodec_dbgfs_deinit(&dev->dbgfs);
 err_reg_cont:
-	if (dev->vdec_pdata->uses_stateless_api)
-		media_device_cleanup(&dev->mdev_dec);
-	destroy_workqueue(dev->decode_workqueue);
 err_event_workq:
-	v4l2_m2m_release(dev->m2m_dev_dec);
 err_dec_alloc:
+	/*
+	 * The v4l2_device is registered, so the workqueues, the m2m device, the
+	 * media device and `dev` itself are all released by
+	 * mtk_vcodec_dec_dev_release() -- do not free them here as well.
+	 */
+	if (!dev->vdec_pdata->is_subdev_supported)
+		pm_runtime_disable(dev->pm.dev);
 	v4l2_device_unregister(&dev->v4l2_dev);
+	v4l2_device_put(&dev->v4l2_dev);
+	return ret;
 err_core_workq:
 	if (IS_VDEC_LAT_ARCH(dev->vdec_pdata->hw_arch))
 		destroy_workqueue(dev->core_workqueue);
@@ -530,6 +839,8 @@ err_res:
 		pm_runtime_disable(dev->pm.dev);
 err_dec_pm:
 	mtk_vcodec_fw_release(dev->fw_handler);
+err_free_dev:
+	kfree(dev);
 	return ret;
 }
 
@@ -541,6 +852,10 @@ static const struct of_device_id mtk_vcodec_match[] = {
 	{
 		.compatible = "mediatek,mt8183-vcodec-dec",
 		.data = &mtk_vdec_8183_pdata,
+	},
+	{
+		.compatible = "mediatek,mt8365-vcodec-dec",
+		.data = &mtk_vdec_mt8365_pdata,
 	},
 	{
 		.compatible = "mediatek,mt8192-vcodec-dec",
@@ -567,25 +882,38 @@ static void mtk_vcodec_dec_remove(struct platform_device *pdev)
 {
 	struct mtk_vcodec_dec_dev *dev = platform_get_drvdata(pdev);
 
-	destroy_workqueue(dev->decode_workqueue);
+	/*
+	 * Fence the file operations FIRST, and record the unbind in the device
+	 * BEFORE anything is released.
+	 *
+	 * video_unregister_device() stops new open()s and new ioctls, but it
+	 * waits for nothing: the release() of an fd that is already open still
+	 * runs -- whenever userspace gets round to closing it -- and an ioctl
+	 * that was already inside still finishes. Both used to run against a
+	 * `struct mtk_vcodec_dec_dev` that devres had freed, register windows
+	 * devres had unmapped, and an IRQ and clocks devres had released. That
+	 * is a plain use-after-free and it needs no hardware fault to reach:
+	 * opening the node, doing one S_FMT and closing the fd after an unbind
+	 * hits it every time.
+	 *
+	 * ->unplugged tells the stragglers to touch no hardware, and the device
+	 * itself now lives on the v4l2_device kref, so the memory they still
+	 * walk stays valid until the last handle is gone.
+	 */
+	if (dev->vfd_dec)
+		video_unregister_device(dev->vfd_dec);
+	WRITE_ONCE(dev->unplugged, true);
 
 	if (media_devnode_is_registered(dev->mdev_dec.devnode)) {
 		media_device_unregister(&dev->mdev_dec);
 		v4l2_m2m_unregister_media_controller(dev->m2m_dev_dec);
-		media_device_cleanup(&dev->mdev_dec);
 	}
 
-	if (dev->m2m_dev_dec)
-		v4l2_m2m_release(dev->m2m_dev_dec);
-
-	if (dev->vfd_dec)
-		video_unregister_device(dev->vfd_dec);
-
 	mtk_vcodec_dbgfs_deinit(&dev->dbgfs);
-	v4l2_device_unregister(&dev->v4l2_dev);
 	if (!dev->vdec_pdata->is_subdev_supported)
 		pm_runtime_disable(dev->pm.dev);
-	mtk_vcodec_fw_release(dev->fw_handler);
+	v4l2_device_unregister(&dev->v4l2_dev);
+	v4l2_device_put(&dev->v4l2_dev);
 }
 
 static struct platform_driver mtk_vcodec_dec_driver = {

@@ -1,0 +1,450 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Device Tree for the HamGeek XC7Z100 + ADRV9009 carrier ("RIGUKE XC7Z100").
+ *
+ *   Xilinx Zynq-7100 (XC7Z100, dual Cortex-A9, armhf) + ADI ADRV9009 RF.
+ *
+ * PS-ONLY, BY DESIGN. This file brings up the processor system so a generic
+ * armhf EFI Debian boots off the SD -- 1 GiB DDR, UART0 console (ttyPS0),
+ * QSPI (W25Q256), SD (sdhci0), GEM0 RGMII ethernet to a PHY at MDIO addr 0,
+ * USB0 OTG (ULPI), and PS SPI0 (the bus the radio's AD9528 + ADRV9009 sit
+ * on).
+ *
+ * THIS FILE MUST STAY PROPERTY-IDENTICAL to U-Boot's
+ * arch/arm/dts/zynq-adrv9009.dts (v2026.07/lc-master), because U-Boot hands
+ * its built-in control FDT to the kernel through the EFI configuration table
+ * -- the tree Linux actually runs on is U-Boot's, not this one. This file is
+ * the source of truth and the reference copy; if one changes, change the
+ * other.
+ *
+ * The legitimate differences are EXACTLY these, and this list is EXHAUSTIVE
+ * -- it is the mirror of the identically-exhaustive list in U-Boot's copy,
+ * and the two must be kept in step. Everything not named here must match
+ * property for property (node ORDER may differ; it has no semantic effect):
+ *   - bootph-all markers on the PS boot essentials (memory@0, &uart0, &clkc,
+ *     &gpio0, &qspi + flash@0, &sdhci0), so fdtgrep keeps them in the
+ *     trimmed SPL DTB. &gpio0 exists in U-Boot's copy ONLY to carry that
+ *     marker, which is why this tree has no &gpio0 node at all;
+ *   - an absolute chosen/stdout-path there ("/axi/serial@e0000000:115200n8")
+ *     vs the serial0: alias here, because the fdtgrep-built SPL DTB may drop
+ *     /aliases;
+ *   - &adc #thermal-sensor-cells and the &devcfg clock override, which exist
+ *     there only because U-Boot's zynq-7000.dtsi is kept upstream-clean
+ *     while the kernel's carries the equivalent (this tree gets
+ *     #thermal-sensor-cells from zynq-7000.dtsi, commit 4bbee7b8de705);
+ *   - the efuse@f800d000 node, inert upstream .dtsi content U-Boot inherited
+ *     and binds no driver to.
+ *
+ * Two things that are NOT differences, and must not be reintroduced as such:
+ * the /reserved-memory/linux,cma pool below is MIRRORED into U-Boot's copy
+ * (7a43d5581a3) and the two are identical property for property; and the QSPI
+ * flash node declares NO partition map in EITHER tree -- see the comment on
+ * flash@0 for the measurement that removed it.
+ *
+ * The whole RF datapath is PL-DEPENDENT and lives in the userspace PL overlay
+ * (rfsim/tools/adrv9009/adrv9009-pl.dts in the soft8021x repo), applied by
+ * /usr/local/bin/adrv9009-fpga-up: the fpga-axi JESD204B subsystem (3x
+ * axi-jesd204, 3x axi-adxcvr, 3x axi-clkgen, the adrv9009 rx/tx/obs cores, 3x
+ * axi-dmac) AND the two spi0 device nodes. The SPI devices go there too, not
+ * here, because the ADRV9009 phy's device clocks (jesd_rx_clk / jesd_tx_clk /
+ * jesd_rx_os_clk) are outputs of the PL JESD204B link cores and the AD9528's
+ * reset line is an EMIO GPIO -- both are PL. This board boots with a DARK PL
+ * (nothing programs it in the bootloader), and describing PL IP in the base
+ * DTB is exactly what wedges it (see the plan doc's matched-pair note).
+ *
+ * PS wiring ground-truthed against the board's stock DTB (decompiled ADI
+ * tree): serial0 = serial@e0000000 (UART0, ttyPS0); mmc@e0100000 okay with a
+ * working card-detect (no broken-cd); gem0 @e000b000 rgmii-id, PHY@0 c22;
+ * qspi @e000d000 W25Q256; clkc fclk-enable = 0xf -- the one place we
+ * DELIBERATELY diverge from stock, see the &clkc comment below. Node labels from
+ * arch/arm/boot/dts/xilinx/zynq-7000.dtsi. The reduced Zynq armhf config is
+ * the shared arch/arm/configs/zynq_e310_defconfig (ARCH_ZYNQ, EFI_STUB, the
+ * ttyPS/GEM/SDHCI/QSPI essentials), same as the ANTSDR E310.
+ */
+/dts-v1/;
+#include "zynq-7000.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "HamGeek XC7Z100 ADRV9009 (RIGUKE)";
+	compatible = "hamgeek,xc7z100-adrv9009", "xlnx,zynq-7000";
+
+	aliases {
+		ethernet0 = &gem0;
+		serial0 = &uart0;
+		spi0 = &qspi;
+		mmc0 = &sdhci0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		/* 1 GiB -- matches stock + the recovered ps7_init DDR config */
+		reg = <0x0 0x40000000>;
+	};
+
+	/*
+	 * CMA pool, SIZED FOR THIS RADIO -- not inherited.
+	 *
+	 * Zynq-7000 has NO IOMMU, so every AXI-DMAC buffer in the JESD204B
+	 * datapath must be a single PHYSICALLY CONTIGUOUS region, and on this
+	 * kernel that means CMA. Without this node the board silently takes the
+	 * shared armhf default (CONFIG_CMA_SIZE_MBYTES=64 -- measured on the
+	 * running board as "cma: Reserved 64 MiB at 0x39800000", CmaTotal
+	 * 65536 kB), which policy treats as a FALLBACK for platforms that have
+	 * no DMA sizing decision to make. This board does.
+	 *
+	 * The 96 MiB is derived from the peak CONCURRENT demand actually
+	 * measured on this carrier, not chosen for roundness:
+	 *
+	 *   32 MiB  RX IIO buffer at the largest buffer/length accepted on
+	 *           silicon -- 4194304 scans x 8 B/scan (RX1+RX2 I/Q, le:S16/16),
+	 *           swept by adrv9009-rx-ratecheck.sh with the readback equal to
+	 *           the request at every step and CMA consumption proportional.
+	 *           iio_dma_buffer_request_update() splits it into exactly TWO
+	 *           blocks (size = DIV_ROUND_UP(bytes_per_datum * length, 2)), so
+	 *           the LARGEST SINGLE contiguous allocation is 16 MiB.
+	 *    2 MiB  TX IIO buffer armed at the same time by the end-to-end
+	 *           loopback (buffer/length = 262144 scans -> two 1 MiB blocks).
+	 *    8 MiB  the cyclic-TX dma-buf. Ungapped playback goes through the IIO
+	 *           DMABUF enqueue ioctl, whose exporter here is the CMA dma-buf
+	 *           heap (CONFIG_DMABUF_HEAPS_CMA), and the cyclic prep rejects
+	 *           nents != 1 -- so it is one contiguous region, sized to the
+	 *           8 MiB write the TX datapath was validated with (277 ms,
+	 *           TRANSFER_DONE = 0xF).
+	 *   ------
+	 *   42 MiB  peak concurrent, in units of up to 16 MiB.
+	 *
+	 * 42 MiB in a 64 MiB pool is 66 % occupancy at 16 MiB granularity, which
+	 * leaves no room to place a second max-size block after any churn.
+	 * Doubling the peak set and rounding up to a multiple of the largest
+	 * single allocation gives 42 x 2 = 84 -> 96 MiB, i.e. 9.4 % of the 1 GiB
+	 * on this board. No CMA allocation failure has been OBSERVED at 64 MiB;
+	 * this is a sizing decision, not a bug fix.
+	 *
+	 * NO alloc-ranges, deliberately. All three axi-dmac masters are 32-bit
+	 * AXI and the whole 1 GiB (0x0-0x3fffffff) is within their reach, so
+	 * unlike Amlogic (whose VDEC must be pinned to the first 1 GB) there is
+	 * no address restriction to express -- let the kernel place the pool.
+	 * alignment matches CONFIG_CMA_ALIGNMENT=8, i.e. 2^8 pages = 1 MiB.
+	 *
+	 * linux,cma-default is what makes dma_contiguous_reserve() skip the
+	 * Kconfig size: it only applies it "if (selected_size &&
+	 * !dma_contiguous_default_area)".
+	 *
+	 * MUST BE MIRRORED INTO U-BOOT's arch/arm/dts/zynq-adrv9009.dts -- see
+	 * the property-identical mandate in this file's header. U-Boot hands its
+	 * own control FDT to Linux through the EFI configuration table, so the
+	 * tree the kernel actually parses is U-Boot's; a reserved-memory node
+	 * that exists only here has NO runtime effect.
+	 */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		linux_cma: linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			linux,cma-default;
+			size = <0x6000000>;	/* 96 MiB */
+			alignment = <0x100000>;	/* 1 MiB */
+		};
+	};
+
+	/*
+	 * The 12.288 MHz board oscillator that feeds the AD9528's REFA input.
+	 * PL-independent (a discrete XO on the carrier), so it lives here.
+	 * Stock declares it identically at /clocks/clock@0 and, like stock,
+	 * nothing references it by phandle -- the AD9528 takes REFA as a
+	 * physical input and is told about it through adi,refa-* properties.
+	 * Kept for fidelity with the stock design and as documentation of the
+	 * reference frequency the AD9528 PLL1 parameters were computed for.
+	 */
+	adrv9009_ext_refclk: clock-adrv9009-ext-refclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <12288000>;
+		clock-output-names = "adrv9009_ext_refclk";
+	};
+
+	/*
+	 * The USB0 ULPI transceiver, as a "nop" USB PHY.
+	 *
+	 * THIS NODE IS WHAT MAKES ci_hdrc BIND -- it is not decoration.
+	 * drivers/usb/chipidea/core.c ci_hdrc_probe() ends its PHY search with
+	 *
+	 *   if (!ci->phy && !ci->usb_phy) { ret = -ENXIO; goto ulpi_exit; }
+	 *
+	 * so with no USB PHY registered anywhere the ChipIdea CORE fails probe
+	 * -- silently, with no dev_err on that path. Measured on this board
+	 * before this node existed: /sys/bus/platform/devices/ci_hdrc.0 present
+	 * (the chipidea-usb2 glue had bound usb@e0002000 and created the child)
+	 * but with NO driver symlink, an EMPTY /sys/kernel/debug/devices_deferred
+	 * (so it was a hard failure, not a deferral), no /sys/class/usb_phy/ at
+	 * all, and zero ci_hdrc/ulpi lines in dmesg.
+	 *
+	 * The bind path is the LAST-RESORT lookup in core.c,
+	 * devm_usb_get_phy(dev->parent, USB_PHY_TYPE_USB2), which walks the
+	 * global usb_phy list -- phy-generic.c registers this node's PHY there
+	 * with .type = USB_PHY_TYPE_USB2. The usb-phy phandle below is the
+	 * documented binding and matches every mainline Zynq board
+	 * (zynq-zc702/zed/cc108/zc770-xm011), though note that ChipIdea itself
+	 * consumes "phys", not "usb-phy", for its by-phandle lookup.
+	 *
+	 * NO reset-gpios, DELIBERATELY -- and this is the one non-obvious part.
+	 * The PHY reset IS wired, to MIO46 (that is what xlnx,phy-reset-gpio on
+	 * &usb0 records), and the stock FSBL ps7_init pulses it high->low->high
+	 * (DIRM_1/OEN_1 bit 14, then MASK_DATA_1_LSW 0xBFFF4000 -> 0xBFFF0000 ->
+	 * 0xBFFF4000), i.e. the line is ACTIVE LOW and is left DEASSERTED by the
+	 * bootloader. Handing it to phy-generic would be a regression risk, not
+	 * a gain: usb_phy_gen_create_phy() does gpiod_direction_output(reset, 1)
+	 * -- it ASSERTS reset at ITS OWN probe -- while ci_hdrc_probe() calls
+	 * ci_ulpi_init() (which reads the ULPI vendor/product ID through the
+	 * controller's ULPI viewport, and whose failure IS fatal:
+	 * ulpi_register() propagates ulpi_read_id()'s error) BEFORE it ever
+	 * looks up, let alone initialises, the PHY. Device probe order between
+	 * this root node and /axi/usb@e0002000 is not guaranteed, so a
+	 * driver-owned reset could hold the transceiver down across that ID
+	 * read. Mainline's Zynq boards carry a bare usb-nop-xceiv for the same
+	 * reason; the reset stays with ps7_init, which already does it right.
+	 */
+	usb_phy0: phy0 {
+		compatible = "usb-nop-xceiv";
+		#phy-cells = <0>;
+	};
+
+	/*
+	 * XC7Z100 die temperature, from the PS XADC (adc@f8007100).
+	 *
+	 * THIS IS A SHUTDOWN INTERLOCK, NOT A COOLING POLICY. This carrier has
+	 * NO FAN and no fan controller, and Zynq-7000 has frequency scaling
+	 * only -- no voltage scaling -- so capping cpufreq at idle was measured
+	 * to be worth nothing (+0.28 degC, inside the 1.43 degC noise floor of
+	 * this instrument). A passive trip would have essentially nothing to
+	 * act on, so none is declared. The one thing this zone genuinely buys
+	 * is the CRITICAL trip: an orderly emergency shutdown instead of
+	 * running the die past its rated junction temperature.
+	 *
+	 * 85 degC is the maximum junction temperature of the RECOMMENDED
+	 * OPERATING RANGE for a commercial temperature-grade part, from Xilinx
+	 * DS191 (v1.17, 2015-11-24), "Zynq-7000 All Programmable SoC (Z-7030,
+	 * Z-7035, Z-7045, and Z-7100): DC and AC Switching Characteristics",
+	 * Table 2 "Recommended Operating Conditions":
+	 *
+	 *   Tj  Junction temperature operating range for commercial (C)
+	 *       temperature devices                       0 -- 85 degC
+	 *   (extended (E) 0--100, industrial (I) -40--100,
+	 *    expanded (Q) -40--125)
+	 *
+	 * The temperature grade of the part fitted to this carrier is not
+	 * readable in software, so the COMMERCIAL number is used: it is the
+	 * lowest of the four and therefore safe whichever grade is installed.
+	 * DS191 Table 1 "Absolute Maximum Ratings" gives "Tj Maximum junction
+	 * temperature ... +125 degC", but that is a stress/damage rating --
+	 * "Stresses beyond those listed under Absolute Maximum Ratings might
+	 * cause permanent damage to the device" -- not an operating limit, so
+	 * it is deliberately NOT the trip.
+	 *
+	 * Measured envelope on this board for context: 43-47 degC with the PL
+	 * dark, 56-61 degC with the radio and its JESD204B links running.
+	 */
+	thermal-zones {
+		soc-thermal {
+			polling-delay-passive = <1000>;
+			polling-delay = <5000>;
+			thermal-sensors = <&adc>;
+
+			trips {
+				soc_crit: soc-crit {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+		};
+	};
+};
+
+/*
+ * PS SPI0 -- the bus the AD9528 clock chip (CS0) and the ADRV9009 phy (CS1)
+ * hang off. The CONTROLLER is a PS peripheral and is enabled here so it is
+ * probed at boot; the two SPI DEVICE nodes are PL-dependent and are added by
+ * the userspace PL overlay (rfsim/tools/adrv9009/adrv9009-pl.dts) after the
+ * bitstream is programmed -- spi.c's of_spi_notify() creates an spi_device for
+ * a child added to a live controller, which is why the controller cannot wait.
+ */
+&spi0 {
+	status = "okay";
+};
+
+&gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";
+	phy-handle = <&ethernet_phy>;
+
+	ethernet_phy: ethernet-phy@0 {
+		reg = <0>;
+		compatible = "ethernet-phy-ieee802.3-c22";
+	};
+};
+
+&sdhci0 {
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&qspi {
+	status = "okay";
+	is-dual = <1>;
+	num-cs = <1>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	flash@0 {
+		compatible = "winbond,w25q256", "jedec,spi-nor";
+		reg = <0>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <4>;
+		spi-max-frequency = <50000000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/*
+		 * BRICK GUARD, do not remove. The W25Q256 is 32 MiB, so 4-byte
+		 * addressing is in play by construction. spi_nor_restore() only
+		 * issues the EX4B (0xE9) exit-4-byte-mode command when the part is
+		 * flagged SNOR_F_BROKEN_RESET, i.e. when this property is present.
+		 * Without it, a kernel that has entered 4-byte mode leaves the
+		 * flash in 4-byte mode across a warm reset -- and the Zynq BootROM
+		 * issues only 3-byte reads, so it cannot fetch the FSBL and the
+		 * board is dead until a cold power cycle. That exact failure
+		 * bricked the sibling E310 on 2026-07-26.
+		 *
+		 * We have been spared so far only by luck: 1c1b349fa1d8a reverted
+		 * 4-byte addressing in zynq-qspi, and on this board spi-nor does
+		 * not even probe (spi0.0 -EINVAL). Both are things that can change
+		 * under us; the property is inert if unused.
+		 */
+		broken-flash-reset;
+
+		/*
+		 * NO PARTITION MAP -- deliberately, and this is a REMOVAL, not
+		 * an omission. The five stock Xilinx partitions transcribed here
+		 * until 2026-07-30 (boot 0x0+0x500000, bootenv 0x500000, config
+		 * 0x520000, image 0x540000, spare 0xfc0000) described nothing
+		 * that is in the flash.
+		 *
+		 * Measured byte-for-byte against the vendor BOOT.BIN: ONE
+		 * CONTIGUOUS 17 416 352 B PL bitstream occupies
+		 * 0x300000-0x139C0A0 -- SHA-256 0b030190...d58e5, byte-identical
+		 * to BOOT.BIN partition 1 at BOOT.BIN offset 0x19740. That span
+		 * swallows the declared "bootenv" and "config" partitions
+		 * ENTIRELY, all of "image", and the first ~4 MiB of "spare". So
+		 * an mtd (or DFU) write aimed at what the tree called bootenv or
+		 * config would have landed in the middle of the bitstream and
+		 * destroyed it, with the DT itself as the thing that made the
+		 * write look legitimate.
+		 *
+		 * Declaring no map is safer than declaring a wrong one -- the
+		 * sibling zynq_e310 declares none either. The real layout is
+		 * expressed where it is actually acted on, in U-Boot: the DFU
+		 * alternate-setting map in
+		 * board/xilinx/zynq/zynq-adrv9009/board.c and
+		 * CONFIG_NOR_CONFIG_SECTOR_OFFSET in the defconfig, both derived
+		 * from that same measurement.
+		 *
+		 * Removed from U-Boot's copy of this tree first (v2026.07/lc-master
+		 * 5d5977cba70); removed here so the two trees agree, per this
+		 * file's property-identical mandate.
+		 *
+		 * Consequence, already visible on silicon: Linux exposes no
+		 * mtd0..mtd4, just "mtd0: 02000000 00001000 \"spi0.0\"" -- the
+		 * whole device as one mtd, which is what it always physically
+		 * was.
+		 */
+	};
+};
+
+/*
+ * PL fabric clocks -- FCLK0/FCLK1 only. Stock (and zynq-7000.dtsi's own
+ * default is <0>, so this property is a deliberate override) sets 0xf, force-
+ * enabling all four: clkc.c passes each set bit into zynq_clk_register_fclk()
+ * as `enable`, which clk_prepare_enable()s that FCLK for the lifetime of the
+ * system, so clk_disable_unused() can never gate it however few consumers it
+ * has.
+ *
+ * Only FCLK0 and FCLK1 are consumed by this board's design. The runtime PL
+ * overlay takes
+ * <&clkc 15> (FCLK0) as s_axi_aclk on all three axi-jesd204, all three
+ * axi-adxcvr and all three axi-clkgen cores, and <&clkc 16> (FCLK1) for the
+ * three axi-dmac cores. NOTHING references <&clkc 17> (FCLK2) or <&clkc 18>
+ * (FCLK3) -- not our overlay, and not the stock vendor DT either, whose only
+ * reference to those two is devcfg@f8007000 listing all four so the VENDOR
+ * xdevcfg driver could gate them around PL programming. Mainline's devcfg node
+ * declares only <&clkc 12> (pcap ref_clk) and zynq-fpga.c does
+ * devm_clk_get(dev, "ref_clk") and nothing else, so that consumer does not
+ * exist for us.
+ *
+ * Confirmed on silicon (/sys/kernel/debug/clk/, with the radio
+ * up and all three JESD204 links in DATA), under the old 0xf:
+ *
+ *	clock	rate (Hz)	enable_count
+ *	fclk0	 99 999 999	7
+ *	fclk1	199 999 998	4
+ *	fclk2	249 999 998	1	<- clkc's own hold, no consumer
+ *	fclk3	 41 666 667	1	<- clkc's own hold, no consumer
+ *
+ * enable_count=1 on FCLK2/FCLK3 is exactly the driver's force-enable and
+ * nothing downstream; FCLK2 is the fastest of the four, so 0xf was clocking a
+ * 250 MHz PL clock tree with no destination.
+ *
+ * This is a correctness/hygiene change and NO thermal benefit is claimed for
+ * it; do not assume one.
+ *
+ * REMINDER: this property must stay identical in U-Boot's
+ * arch/arm/dts/zynq-adrv9009.dts -- U-Boot's control FDT is the tree Linux
+ * actually parses, so editing only this file changes NOTHING on the board.
+ */
+&clkc {
+	fclk-enable = <0x3>;	/* FCLK0 + FCLK1; FCLK2/FCLK3 have no consumers */
+};
+
+/*
+ * USB0 (usb@e0002000) -- the Zynq-7000 ChipIdea controller wired to the
+ * board's USB-OTG port through a ULPI PHY (phy_type = "ulpi" is inherited
+ * from zynq-7000.dtsi). The port physically exists and is PS-side, so it
+ * belongs in this PS-only tree; it was wrongly left disabled here.
+ *
+ * dr_mode = "otg", not stock's "host". This is a genuinely dual-role port
+ * and both consumers need it: U-Boot runs the ChipIdea GADGET on it
+ * (`ums 0 mmc 0` / dfu / fastboot), which is the board's ONLY working
+ * deploy path while GEM0 is RX-dead, and Linux drives it as a host. "host"
+ * would cost the deploy path; "otg" satisfies both. U-Boot's copy of this
+ * board tree carries the identical node -- and since U-Boot hands Linux its
+ * control FDT (fdtcontroladdr, via the EFI configuration table) this node is
+ * already what the running kernel sees, proven booting with 0 oopses.
+ *
+ * xlnx,phy-reset-gpio matches the stock DTB (gpio0 pin 46, active high);
+ * mainline Linux ignores it, but it documents the wiring and keeps the two
+ * trees property-identical. The stock FSBL's own pulse on that pin is
+ * high->low->high, so the line is electrically ACTIVE LOW and is already
+ * deasserted by the time Linux runs -- see the usb_phy0 node's comment for
+ * why no reset-gpios is handed to the PHY driver.
+ *
+ * usb-phy is what gives the ChipIdea CORE (ci_hdrc.0) a transceiver to bind
+ * against; without a registered USB PHY ci_hdrc_probe() returns -ENXIO and
+ * only the glue device appears. See usb_phy0 above.
+ */
+&usb0 {
+	status = "okay";
+	dr_mode = "otg";
+	usb-phy = <&usb_phy0>;
+	xlnx,phy-reset-gpio = <&gpio0 46 GPIO_ACTIVE_HIGH>;
+};

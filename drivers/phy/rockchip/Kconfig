@@ -119,11 +119,15 @@ config PHY_ROCKCHIP_SNPS_PCIE3
 config PHY_ROCKCHIP_TYPEC
 	tristate "Rockchip TYPEC PHY Driver"
 	depends on OF && (ARCH_ROCKCHIP || COMPILE_TEST)
+	depends on TYPEC || !TYPEC
 	select EXTCON
 	select GENERIC_PHY
 	select RESET_CONTROLLER
 	help
 	  Enable this to support the Rockchip USB TYPEC PHY.
+	  When CONFIG_TYPEC is enabled, this driver also supports
+	  DP alt-mode via the typec_mux/typec_switch API (used by
+	  FUSB302 and other TCPM controllers).
 
 config PHY_ROCKCHIP_USB
 	tristate "Rockchip USB2 PHY Driver"

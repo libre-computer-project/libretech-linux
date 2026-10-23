@@ -12,6 +12,33 @@
 	clocks = <&clkc CLKID_CLK81>, <&clkc CLKID_MALI>;
 	clock-names = "bus", "core";
 
-	assigned-clocks = <&clkc CLKID_GP0_PLL>;
-	assigned-clock-rates = <744000000>;
+	/*
+	 * Two-entry assigned-clocks: entry 0 programs GP0_PLL to 792 MHz;
+	 * entry 1 asks the mali synth to land at 792 MHz. The clk-mali
+	 * driver's smart parent selection (drivers/clk/meson/clk-mali.c
+	 * meson_mali_set_rate) picks GP0_PLL with div=1 because that gives
+	 * an exact match for the 792 MHz target, then writes the dual-path
+	 * mux glitch-free. GP0_PLL is already locked at 792 MHz by entry 0
+	 * when entry 1's set_rate runs, so the mux switch points at a
+	 * stable PLL.
+	 *
+	 * NO `assigned-clock-parents` here. OF clk-conf.c runs
+	 * __set_clk_parents BEFORE __set_clk_rates; an entry that
+	 * retargets the mali synth to GP0_PLL at the parents pass would
+	 * fire while GP0_PLL is still at its U-Boot default rate (0 Hz on
+	 * this SoC), flipping the mali mux to an unlocked PLL, and the
+	 * subsequent lima_pmu_init's PMU register read would trap with
+	 * 0x96000210 SError.
+	 *
+	 * Without entry 1, mali stays on its U-Boot default parent
+	 * (typically xtal at 24 MHz). lima_devfreq_init then takes the
+	 * "old DTB" bailout (clk_get_rate(clk_gpu) * 2 < cur_freq fires
+	 * because 48 < 125), pins mali at the highest fclk-derived rate,
+	 * and never registers devfreq -- no DVFS, no thermal binding.
+	 * Adding entry 1 here lets clk-mali drive mali to GP0_PLL/1 = 792
+	 * MHz at probe so the bailout doesn't fire. Applies to all GXL
+	 * boards that include this dtsi: S805X, S905X, S905D.
+	 */
+	assigned-clocks      = <&clkc CLKID_GP0_PLL>, <&clkc CLKID_MALI>;
+	assigned-clock-rates = <792000000>, <792000000>;
 };

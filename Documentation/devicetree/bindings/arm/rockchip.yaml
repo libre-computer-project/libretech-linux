@@ -748,6 +748,19 @@ properties:
           - const: lckfb,tspi-rk3566
           - const: rockchip,rk3566
 
+      - description: Libre Computer ROC-RK3399-PC
+        items:
+          - const: libre-computer,roc-rk3399-pc
+          - const: firefly,roc-rk3399-pc
+          - const: rockchip,rk3399
+
+      - description: Libre Computer ROC-RK3399-PC V1.2
+        items:
+          - const: libre-computer,roc-rk3399-pc-v1.2
+          - const: libre-computer,roc-rk3399-pc
+          - const: firefly,roc-rk3399-pc
+          - const: rockchip,rk3399
+
       - description: Luckfox Core3576 Module based boards
         items:
           - enum:

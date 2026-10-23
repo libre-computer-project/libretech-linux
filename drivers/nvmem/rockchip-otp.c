@@ -258,6 +258,8 @@ static struct nvmem_config otp_config = {
 	.add_legacy_fixed_of_cells = true,
 	.type = NVMEM_TYPE_OTP,
 	.read_only = true,
+	/* the dump carries the chip id: it identifies the board */
+	.root_only = true,
 	.stride = 1,
 	.word_size = 1,
 	.reg_read = rockchip_otp_read,

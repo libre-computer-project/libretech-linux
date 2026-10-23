@@ -1,5 +1,4 @@
 Draft IETF CIPSO IP Security
 ----------------------------
 
- .. include:: draft-ietf-cipso-ipsecurity-01.txt
-    :literal:
+https://tools.ietf.org/html/draft-ietf-cipso-ipsecurity-01

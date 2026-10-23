@@ -837,6 +837,37 @@ static struct meson_hdmi_venc_vic_mode {
 	{ 34, &meson_hdmi_encp_mode_1080p30 },
 	{ 31, &meson_hdmi_encp_mode_1080p50 },
 	{ 16, &meson_hdmi_encp_mode_1080p60 },
+	/*
+	 * High-refresh 1080p. Each refresh rate has an ASPECT-RATIO TWIN PAIR of
+	 * VICs with BYTE-IDENTICAL timings, differing only in
+	 * picture_aspect_ratio: 63 (16:9) / 78 (64:27) for 1080p120, and
+	 * 64 (16:9) / 77 (64:27) for 1080p100. BOTH members of each pair must be
+	 * listed here, because drm_match_cea_mode() scans VICs ASCENDING and
+	 * returns the FIRST timing match, and it only adds
+	 * DRM_MODE_MATCH_ASPECT_RATIO when the mode carries a non-zero
+	 * picture_aspect_ratio. A mode with aspect NONE (the common case) or 16:9
+	 * therefore resolves to the LOWER VIC of its pair -- 63 for 120 Hz, 64 for
+	 * 100 Hz -- while only an explicit 64:27 mode reaches 78 / 77. Listing just
+	 * one member leaves the other resolvable-but-unsupported:
+	 * meson_venc_hdmi_supported_vic() returns false, meson_encoder_hdmi
+	 * mode_valid returns MODE_BAD, and the atomic commit fails with -EINVAL.
+	 *
+	 * Spatially both pairs reuse the existing native structs: 63/78 share
+	 * 1080p60's 2200x1125 (max_pxcnt 2199, max_lncnt 1124) and 64/77 share
+	 * 1080p50's 2640x1125 (max_pxcnt 2639, max_lncnt 1124). Only the pixel
+	 * clock differs (297 MHz = 2x 148.5 MHz), and that is derived from
+	 * mode->clock in meson_encoder_hdmi_mode_valid / meson_vclk_setup, NOT
+	 * from the timing struct. None of the four is in
+	 * meson_venc_hdmi_venc_repeat() (they run native at 297 MHz, no pixel
+	 * doubling). 297 MHz pixel = 2970 MHz PHY, the S905X ceiling (same load as
+	 * 4K60-420, which already works) and still HDMI-1.4b char rate
+	 * (297 < 340 MHz, no SCDC). 8-bit only: 10-bit would need 3712 MHz PHY and
+	 * is walled to 8-bit by the deep-color gate.
+	 */
+	{ 63, &meson_hdmi_encp_mode_1080p60 }, /* 1080p120 16:9  */
+	{ 78, &meson_hdmi_encp_mode_1080p60 }, /* 1080p120 64:27 */
+	{ 64, &meson_hdmi_encp_mode_1080p50 }, /* 1080p100 16:9  */
+	{ 77, &meson_hdmi_encp_mode_1080p50 }, /* 1080p100 64:27 */
 	{ 93, &meson_hdmi_encp_mode_2160p24 },
 	{ 94, &meson_hdmi_encp_mode_2160p25 },
 	{ 95, &meson_hdmi_encp_mode_2160p30 },
@@ -868,10 +899,10 @@ meson_venc_hdmi_supported_mode(const struct drm_display_mode *mode)
 			    DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NVSYNC))
 		return MODE_BAD;
 
-	if (mode->hdisplay < 400 || mode->hdisplay > 1920)
+	if (mode->hdisplay < 320 || mode->hdisplay > 4096)
 		return MODE_BAD_HVALUE;
 
-	if (mode->vdisplay < 480 || mode->vdisplay > 1920)
+	if (mode->vdisplay < 320 || mode->vdisplay > 4096)
 		return MODE_BAD_VVALUE;
 
 	return MODE_OK;
@@ -949,7 +980,7 @@ EXPORT_SYMBOL_GPL(meson_venc_hdmi_venc_repeat);
 
 void meson_venc_hdmi_mode_set(struct meson_drm *priv, int vic,
 			      unsigned int ycrcb_map,
-			      bool yuv420_mode,
+			      bool yuv420_mode, bool yuv422_mode,
 			      const struct drm_display_mode *mode)
 {
 	union meson_hdmi_venc_mode *vmode = NULL;
@@ -1537,9 +1568,19 @@ void meson_venc_hdmi_mode_set(struct meson_drm *priv, int vic,
 
 	/*
 	 * Write rate to the async FIFO between VENC and HDMI.
-	 * One write every 2 wr_clk.
+	 * One write every 2 wr_clk -- de-doubles the venc-repeat (480/576/720p)
+	 * pixel doubling so 1x pixels reach the HDMI-TX.
+	 *
+	 * DC-001: but NOT for YUV422 output. 4:2:2 already carries two pixels in
+	 * one Cb/Y0/Cr/Y1 sample (half the per-pixel data rate), which itself
+	 * cancels the venc-repeat doubling; applying WR_RATE(2) on top over-halves
+	 * the stream and mis-aligns the Y/C samples -- on the bench (720p60 422,
+	 * 8- AND 10-bit) low-luma colors corrupt (red->green, blue->magenta) while
+	 * white/green survive. 1080p60 422 (no venc_repeat) was always correct.
+	 * Skipping WR_RATE(2) for 422 restores correct color. 4:2:0 keeps it (its
+	 * pixel clock is halved separately and it still needs the de-double).
 	 */
-	if (venc_repeat || yuv420_mode)
+	if ((venc_repeat || yuv420_mode) && !yuv422_mode)
 		reg |= VPU_HDMI_WR_RATE(2);
 
 	/*

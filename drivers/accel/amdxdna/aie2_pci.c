@@ -17,6 +17,7 @@
 #include <linux/iopoll.h>
 #include <linux/pci.h>
 #include <linux/xarray.h>
+#include <asm/hypervisor.h>
 
 #include "aie2_msg_priv.h"
 #include "aie2_pci.h"
@@ -25,6 +26,7 @@
 #include "amdxdna_gem.h"
 #include "amdxdna_mailbox.h"
 #include "amdxdna_pci_drv.h"
+#include "amdxdna_pm.h"
 
 static int aie2_max_col = XRS_MAX_COL;
 module_param(aie2_max_col, uint, 0600);
@@ -223,15 +225,6 @@ static int aie2_mgmt_fw_init(struct amdxdna_dev_hdl *ndev)
 		return ret;
 	}
 
-	if (!ndev->async_events)
-		return 0;
-
-	ret = aie2_error_async_events_send(ndev);
-	if (ret) {
-		XDNA_ERR(ndev->xdna, "Send async events failed");
-		return ret;
-	}
-
 	return 0;
 }
 
@@ -256,6 +249,8 @@ static int aie2_mgmt_fw_query(struct amdxdna_dev_hdl *ndev)
 		XDNA_ERR(ndev->xdna, "Query AIE metadata failed");
 		return ret;
 	}
+
+	ndev->total_col = min(aie2_max_col, ndev->metadata.cols);
 
 	return 0;
 }
@@ -311,7 +306,7 @@ static int aie2_xrs_set_dft_dpm_level(struct drm_device *ddev, u32 dpm_level)
 	if (ndev->pw_mode != POWER_MODE_DEFAULT || ndev->dpm_level == dpm_level)
 		return 0;
 
-	return ndev->priv->hw_ops.set_dpm(ndev, dpm_level);
+	return aie2_pm_set_dpm(ndev, dpm_level);
 }
 
 static struct xrs_action_ops aie2_xrs_actions = {
@@ -331,13 +326,12 @@ static void aie2_hw_stop(struct amdxdna_dev *xdna)
 	}
 
 	aie2_mgmt_fw_fini(ndev);
-	xdna_mailbox_stop_channel(ndev->mgmt_chann);
-	xdna_mailbox_destroy_channel(ndev->mgmt_chann);
-	ndev->mgmt_chann = NULL;
+	aie2_destroy_mgmt_chann(ndev);
 	drmm_kfree(&xdna->ddev, ndev->mbox);
 	ndev->mbox = NULL;
 	aie2_psp_stop(ndev->psp_hdl);
 	aie2_smu_fini(ndev);
+	aie2_error_async_events_free(ndev);
 	pci_disable_device(pdev);
 
 	ndev->dev_status = AIE2_DEV_INIT;
@@ -424,13 +418,24 @@ static int aie2_hw_start(struct amdxdna_dev *xdna)
 		goto destroy_mgmt_chann;
 	}
 
+	ret = aie2_mgmt_fw_query(ndev);
+	if (ret) {
+		XDNA_ERR(xdna, "failed to query fw, ret %d", ret);
+		goto destroy_mgmt_chann;
+	}
+
+	ret = aie2_error_async_events_alloc(ndev);
+	if (ret) {
+		XDNA_ERR(xdna, "Allocate async events failed, ret %d", ret);
+		goto destroy_mgmt_chann;
+	}
+
 	ndev->dev_status = AIE2_DEV_START;
 
 	return 0;
 
 destroy_mgmt_chann:
-	xdna_mailbox_stop_channel(ndev->mgmt_chann);
-	xdna_mailbox_destroy_channel(ndev->mgmt_chann);
+	aie2_destroy_mgmt_chann(ndev);
 stop_psp:
 	aie2_psp_stop(ndev->psp_hdl);
 fini_smu:
@@ -459,7 +464,6 @@ static int aie2_hw_resume(struct amdxdna_dev *xdna)
 	struct amdxdna_client *client;
 	int ret;
 
-	guard(mutex)(&xdna->dev_lock);
 	ret = aie2_hw_start(xdna);
 	if (ret) {
 		XDNA_ERR(xdna, "Start hardware failed, %d", ret);
@@ -485,6 +489,11 @@ static int aie2_init(struct amdxdna_dev *xdna)
 	const struct firmware *fw;
 	unsigned long bars = 0;
 	int i, nvec, ret;
+
+	if (!hypervisor_is_type(X86_HYPER_NATIVE)) {
+		XDNA_ERR(xdna, "Running under hypervisor not supported");
+		return -EINVAL;
+	}
 
 	ndev = drmm_kzalloc(&xdna->ddev, sizeof(*ndev), GFP_KERNEL);
 	if (!ndev)
@@ -565,13 +574,6 @@ static int aie2_init(struct amdxdna_dev *xdna)
 		goto release_fw;
 	}
 
-	ret = aie2_mgmt_fw_query(ndev);
-	if (ret) {
-		XDNA_ERR(xdna, "Query firmware failed, ret %d", ret);
-		goto stop_hw;
-	}
-	ndev->total_col = min(aie2_max_col, ndev->metadata.cols);
-
 	xrs_cfg.clk_list.num_levels = ndev->max_dpm_level + 1;
 	for (i = 0; i < xrs_cfg.clk_list.num_levels; i++)
 		xrs_cfg.clk_list.cu_clk_list[i] = ndev->priv->dpm_clk_tbl[i].hclk;
@@ -587,30 +589,10 @@ static int aie2_init(struct amdxdna_dev *xdna)
 		goto stop_hw;
 	}
 
-	ret = aie2_error_async_events_alloc(ndev);
-	if (ret) {
-		XDNA_ERR(xdna, "Allocate async events failed, ret %d", ret);
-		goto stop_hw;
-	}
-
-	ret = aie2_error_async_events_send(ndev);
-	if (ret) {
-		XDNA_ERR(xdna, "Send async events failed, ret %d", ret);
-		goto async_event_free;
-	}
-
-	/* Issue a command to make sure firmware handled async events */
-	ret = aie2_query_firmware_version(ndev, &ndev->xdna->fw_ver);
-	if (ret) {
-		XDNA_ERR(xdna, "Re-query firmware version failed");
-		goto async_event_free;
-	}
-
 	release_firmware(fw);
+	amdxdna_pm_init(xdna);
 	return 0;
 
-async_event_free:
-	aie2_error_async_events_free(ndev);
 stop_hw:
 	aie2_hw_stop(xdna);
 release_fw:
@@ -621,10 +603,8 @@ release_fw:
 
 static void aie2_fini(struct amdxdna_dev *xdna)
 {
-	struct amdxdna_dev_hdl *ndev = xdna->dev_handle;
-
+	amdxdna_pm_fini(xdna);
 	aie2_hw_stop(xdna);
-	aie2_error_async_events_free(ndev);
 }
 
 static int aie2_get_aie_status(struct amdxdna_client *client,
@@ -845,7 +825,7 @@ static int aie2_get_hwctx_status(struct amdxdna_client *client,
 	}
 
 	args->buffer_size -= (u32)(array_args.buffer - args->buffer);
-	return ret;
+	return 0;
 }
 
 static int aie2_get_info(struct amdxdna_client *client, struct amdxdna_drm_get_info *args)
@@ -855,6 +835,10 @@ static int aie2_get_info(struct amdxdna_client *client, struct amdxdna_drm_get_i
 
 	if (!drm_dev_enter(&xdna->ddev, &idx))
 		return -ENODEV;
+
+	ret = amdxdna_pm_resume_get(xdna);
+	if (ret)
+		goto dev_exit;
 
 	switch (args->param) {
 	case DRM_AMDXDNA_QUERY_AIE_STATUS:
@@ -882,8 +866,11 @@ static int aie2_get_info(struct amdxdna_client *client, struct amdxdna_drm_get_i
 		XDNA_ERR(xdna, "Not supported request parameter %u", args->param);
 		ret = -EOPNOTSUPP;
 	}
+
+	amdxdna_pm_suspend_put(xdna);
 	XDNA_DBG(xdna, "Got param %d", args->param);
 
+dev_exit:
 	drm_dev_exit(idx);
 	return ret;
 }
@@ -897,6 +884,12 @@ static int aie2_query_ctx_status_array(struct amdxdna_client *client,
 	int ret;
 
 	drm_WARN_ON(&xdna->ddev, !mutex_is_locked(&xdna->dev_lock));
+
+	if (args->element_size > SZ_4K || args->num_element > SZ_1K) {
+		XDNA_DBG(xdna, "Invalid element size %d or number of element %d",
+			 args->element_size, args->num_element);
+		return -EINVAL;
+	}
 
 	array_args.element_size = min(args->element_size,
 				      sizeof(struct amdxdna_drm_hwctx_entry));
@@ -914,7 +907,7 @@ static int aie2_query_ctx_status_array(struct amdxdna_client *client,
 	args->num_element = (u32)((array_args.buffer - args->buffer) /
 				  args->element_size);
 
-	return ret;
+	return 0;
 }
 
 static int aie2_get_array(struct amdxdna_client *client,
@@ -926,6 +919,10 @@ static int aie2_get_array(struct amdxdna_client *client,
 	if (!drm_dev_enter(&xdna->ddev, &idx))
 		return -ENODEV;
 
+	ret = amdxdna_pm_resume_get(xdna);
+	if (ret)
+		goto dev_exit;
+
 	switch (args->param) {
 	case DRM_AMDXDNA_HW_CONTEXT_ALL:
 		ret = aie2_query_ctx_status_array(client, args);
@@ -934,8 +931,11 @@ static int aie2_get_array(struct amdxdna_client *client,
 		XDNA_ERR(xdna, "Not supported request parameter %u", args->param);
 		ret = -EOPNOTSUPP;
 	}
+
+	amdxdna_pm_suspend_put(xdna);
 	XDNA_DBG(xdna, "Got param %d", args->param);
 
+dev_exit:
 	drm_dev_exit(idx);
 	return ret;
 }
@@ -974,6 +974,10 @@ static int aie2_set_state(struct amdxdna_client *client,
 	if (!drm_dev_enter(&xdna->ddev, &idx))
 		return -ENODEV;
 
+	ret = amdxdna_pm_resume_get(xdna);
+	if (ret)
+		goto dev_exit;
+
 	switch (args->param) {
 	case DRM_AMDXDNA_SET_POWER_MODE:
 		ret = aie2_set_power_mode(client, args);
@@ -984,6 +988,8 @@ static int aie2_set_state(struct amdxdna_client *client,
 		break;
 	}
 
+	amdxdna_pm_suspend_put(xdna);
+dev_exit:
 	drm_dev_exit(idx);
 	return ret;
 }

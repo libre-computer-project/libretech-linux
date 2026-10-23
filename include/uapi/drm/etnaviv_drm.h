@@ -77,6 +77,20 @@ struct drm_etnaviv_timespec {
 #define ETNAVIV_PARAM_GPU_PRODUCT_ID                0x1c
 #define ETNAVIV_PARAM_GPU_CUSTOMER_ID               0x1d
 #define ETNAVIV_PARAM_GPU_ECO_ID                    0x1e
+#define ETNAVIV_PARAM_GPU_NN_CORE_COUNT             0x1f
+#define ETNAVIV_PARAM_GPU_NN_MAD_PER_CORE           0x20
+#define ETNAVIV_PARAM_GPU_TP_CORE_COUNT             0x21
+#define ETNAVIV_PARAM_GPU_ON_CHIP_SRAM_SIZE         0x22
+#define ETNAVIV_PARAM_GPU_AXI_SRAM_SIZE             0x23
+
+/*
+ * GPU virtual address where the kernel flat-mapped the AXI SRAM
+ * coherent DDR allocation for this NPU. 0 if the chip has no AXI SRAM
+ * or the kernel alloc failed; userspace MUST skip OCB_REMAP
+ * programming in that case. Non-zero VA is stable across contexts
+ * (kernel flat-maps every MMUv2 context at the same VA).
+ */
+#define ETNAVIV_PARAM_GPU_AXI_SRAM_START            0x24
 
 #define ETNA_MAX_PIPES 4
 
@@ -187,10 +201,21 @@ struct drm_etnaviv_gem_submit_pmr {
 #define ETNA_SUBMIT_FENCE_FD_IN         0x0002
 #define ETNA_SUBMIT_FENCE_FD_OUT        0x0004
 #define ETNA_SUBMIT_SOFTPIN             0x0008
+/*
+ * ETNA_SUBMIT_NO_DRAIN: skip the A311D (customer_id 0x88) post-NN-AXI
+ * udelay drain for this submit's GL_EVENT. The drain (npu_drain_udelay)
+ * only exists to settle NN-AXI writes before a CPU output READ; a submit
+ * whose output is a throwaway (never read back) -- e.g. the mesa per-invoke
+ * NN-priming prefix -- does not need it. Userspace sets this ONLY on such
+ * throwaway submits; the ISR then skips udelay for that event. No effect on
+ * S905D3 (0x99), which uses the npu_poll deferral path, not the udelay.
+ */
+#define ETNA_SUBMIT_NO_DRAIN            0x0010
 #define ETNA_SUBMIT_FLAGS		(ETNA_SUBMIT_NO_IMPLICIT | \
 					 ETNA_SUBMIT_FENCE_FD_IN | \
 					 ETNA_SUBMIT_FENCE_FD_OUT| \
-					 ETNA_SUBMIT_SOFTPIN)
+					 ETNA_SUBMIT_SOFTPIN | \
+					 ETNA_SUBMIT_NO_DRAIN)
 #define ETNA_PIPE_3D      0x00
 #define ETNA_PIPE_2D      0x01
 #define ETNA_PIPE_VG      0x02
@@ -208,7 +233,16 @@ struct drm_etnaviv_gem_submit {
 	__s32 fence_fd;       /* in/out, fence fd (see ETNA_SUBMIT_FENCE_FD_x) */
 	__u64 pmrs;           /* in, ptr to array of submit_pmr's */
 	__u32 nr_pmrs;        /* in, number of submit_pmr's */
-	__u32 pad;
+	/*
+	 * N9 (A311D 0x88): final-op output byte count of this submit, used by
+	 * the kernel to scale the post-NN-AXI drain (drain grows ~linearly
+	 * with output bytes; a fixed drain corrupts large-output convs). This
+	 * repurposes the former __u32 pad slot -- backward compatible: old
+	 * userspace zero-inits it, and 0 floors the drain to npu_drain_udelay
+	 * (the legacy fixed value). Set by mesa on NN/TP submits; ignored on
+	 * S905D3 (0x99), which uses the npu_poll deferral path, not the udelay.
+	 */
+	__u32 npu_output_bytes;
 };
 
 /* The normal way to synchronize with the GPU is just to CPU_PREP on

@@ -87,6 +87,8 @@
 #define HHI_VDEC2_CLK_CNTL		0x1e4
 #define HHI_VDEC3_CLK_CNTL		0x1e8
 #define HHI_VDEC4_CLK_CNTL		0x1ec
+#define HHI_WAVE420L_CLK_CNTL		0x268 /* word 0x9A */
+#define HHI_WAVE420L_CLK_CNTL2		0x26c /* word 0x9B */
 #define HHI_HDCP22_CLK_CNTL		0x1f0
 #define HHI_VAPBCLK_CNTL		0x1f4
 #define HHI_SYS_CPUB_CLK_CNTL1		0x200
@@ -128,6 +130,8 @@
 #define HHI_HDMI_PLL_CNTL4		0x330
 #define HHI_HDMI_PLL_CNTL5		0x334
 #define HHI_HDMI_PLL_CNTL6		0x338
+#define HHI_MIPI_CSI_PHY_CLK_CNTL	0x340
+#define HHI_CSI2_ADAPT_CLK_CNTL		0x3c0
 #define HHI_SPICC_CLK_CNTL		0x3dc
 #define HHI_SYS1_PLL_CNTL0		0x380
 #define HHI_SYS1_PLL_CNTL1		0x384
@@ -777,12 +781,23 @@ static struct clk_regmap g12a_hdmi_pll_dco = {
 	},
 };
 
+/*
+ * G12/SM1 hdmi OD dividers are POWER_OF_TWO dividers but limited to /4.
+ * A divider value of 3 should map to /8 but instead map /4 so ignore it.
+ */
+static const struct clk_div_table g12a_hdmi_pll_od_div_table[] = {
+	{ .val = 0, .div = 1 },
+	{ .val = 1, .div = 2 },
+	{ .val = 2, .div = 4 },
+	{ /* sentinel */ }
+};
+
 static struct clk_regmap g12a_hdmi_pll_od = {
 	.data = &(struct clk_regmap_div_data){
 		.offset = HHI_HDMI_PLL_CNTL0,
 		.shift = 16,
 		.width = 2,
-		.flags = CLK_DIVIDER_POWER_OF_TWO,
+		.table = g12a_hdmi_pll_od_div_table,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "hdmi_pll_od",
@@ -800,7 +815,7 @@ static struct clk_regmap g12a_hdmi_pll_od2 = {
 		.offset = HHI_HDMI_PLL_CNTL0,
 		.shift = 18,
 		.width = 2,
-		.flags = CLK_DIVIDER_POWER_OF_TWO,
+		.table = g12a_hdmi_pll_od_div_table,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "hdmi_pll_od2",
@@ -818,7 +833,7 @@ static struct clk_regmap g12a_hdmi_pll = {
 		.offset = HHI_HDMI_PLL_CNTL0,
 		.shift = 20,
 		.width = 2,
-		.flags = CLK_DIVIDER_POWER_OF_TWO,
+		.table = g12a_hdmi_pll_od_div_table,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "hdmi_pll",
@@ -2939,7 +2954,12 @@ static struct clk_regmap g12a_vdec_1_sel = {
 		.ops = &clk_regmap_mux_ops,
 		.parent_hws = g12a_vdec_parents,
 		.num_parents = ARRAY_SIZE(g12a_vdec_parents),
-		.flags = CLK_SET_RATE_PARENT,
+		/* No CLK_SET_RATE_PARENT: mux includes hifi_pll/gp0_pll
+		 * (shared with VPU/VCLK/GPU/NNA).  Rate propagation would
+		 * reprogram the shared PLL.  Parent set via DT or
+		 * clk_set_parent(); rate set on divider only.
+		 */
+		.flags = 0,
 	},
 };
 
@@ -2977,6 +2997,56 @@ static struct clk_regmap g12a_vdec_1 = {
 	},
 };
 
+static struct clk_regmap g12a_vdec_hcodec_sel = {
+	.data = &(struct clk_regmap_mux_data){
+		.offset = HHI_VDEC_CLK_CNTL,
+		.mask = 0x7,
+		.shift = 25,
+		.flags = CLK_MUX_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "vdec_hcodec_sel",
+		.ops = &clk_regmap_mux_ops,
+		.parent_hws = g12a_vdec_parents,
+		.num_parents = ARRAY_SIZE(g12a_vdec_parents),
+		.flags = 0,
+	},
+};
+
+static struct clk_regmap g12a_vdec_hcodec_div = {
+	.data = &(struct clk_regmap_div_data){
+		.offset = HHI_VDEC_CLK_CNTL,
+		.shift = 16,
+		.width = 7,
+		.flags = CLK_DIVIDER_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "vdec_hcodec_div",
+		.ops = &clk_regmap_divider_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_vdec_hcodec_sel.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12a_vdec_hcodec = {
+	.data = &(struct clk_regmap_gate_data){
+		.offset = HHI_VDEC_CLK_CNTL,
+		.bit_idx = 24,
+	},
+	.hw.init = &(struct clk_init_data) {
+		.name = "vdec_hcodec",
+		.ops = &clk_regmap_gate_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_vdec_hcodec_div.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
 static struct clk_regmap g12a_vdec_hevcf_sel = {
 	.data = &(struct clk_regmap_mux_data){
 		.offset = HHI_VDEC2_CLK_CNTL,
@@ -2989,7 +3059,7 @@ static struct clk_regmap g12a_vdec_hevcf_sel = {
 		.ops = &clk_regmap_mux_ops,
 		.parent_hws = g12a_vdec_parents,
 		.num_parents = ARRAY_SIZE(g12a_vdec_parents),
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = 0,
 	},
 };
 
@@ -3039,7 +3109,7 @@ static struct clk_regmap g12a_vdec_hevc_sel = {
 		.ops = &clk_regmap_mux_ops,
 		.parent_hws = g12a_vdec_parents,
 		.num_parents = ARRAY_SIZE(g12a_vdec_parents),
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = 0,
 	},
 };
 
@@ -3077,6 +3147,173 @@ static struct clk_regmap g12a_vdec_hevc = {
 	},
 };
 
+
+/* Wave420L encoder clocks (HHI_WAVE420L_CLK_CNTL / CNTL2).
+ * Layout matches other dual-domain media clocks: low half = domain A,
+ * high half = domain B; CNTL2 holds domain C (low half only).
+ * Parent index 2 is fclk_div3 so the legacy WAVE420L_CLK_L6 mux field
+ * (sel=2, div=0) yields 667 MHz on both A and B.
+ */
+static const struct clk_hw *g12a_wave420l_parents[] = {
+	&g12a_fclk_div4.hw,
+	&g12a_fclk_div5.hw,
+	&g12a_fclk_div3.hw,
+	&g12a_fclk_div7.hw,
+	&g12a_fclk_div2p5.hw,
+	&g12a_hifi_pll.hw,
+	&g12a_gp0_pll.hw,
+};
+
+static struct clk_regmap g12a_wave420l_a_sel = {
+	.data = &(struct clk_regmap_mux_data){
+		.offset = HHI_WAVE420L_CLK_CNTL,
+		.mask = 0x7,
+		.shift = 9,
+		.flags = CLK_MUX_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "wave420l_a_sel",
+		.ops = &clk_regmap_mux_ops,
+		.parent_hws = g12a_wave420l_parents,
+		.num_parents = ARRAY_SIZE(g12a_wave420l_parents),
+		.flags = 0,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_a_div = {
+	.data = &(struct clk_regmap_div_data){
+		.offset = HHI_WAVE420L_CLK_CNTL,
+		.shift = 0,
+		.width = 7,
+		.flags = CLK_DIVIDER_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "wave420l_a_div",
+		.ops = &clk_regmap_divider_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_wave420l_a_sel.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_a = {
+	.data = &(struct clk_regmap_gate_data){
+		.offset = HHI_WAVE420L_CLK_CNTL,
+		.bit_idx = 8,
+	},
+	.hw.init = &(struct clk_init_data) {
+		.name = "wave420l_a",
+		.ops = &clk_regmap_gate_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_wave420l_a_div.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_b_sel = {
+	.data = &(struct clk_regmap_mux_data){
+		.offset = HHI_WAVE420L_CLK_CNTL,
+		.mask = 0x7,
+		.shift = 25,
+		.flags = CLK_MUX_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "wave420l_b_sel",
+		.ops = &clk_regmap_mux_ops,
+		.parent_hws = g12a_wave420l_parents,
+		.num_parents = ARRAY_SIZE(g12a_wave420l_parents),
+		.flags = 0,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_b_div = {
+	.data = &(struct clk_regmap_div_data){
+		.offset = HHI_WAVE420L_CLK_CNTL,
+		.shift = 16,
+		.width = 7,
+		.flags = CLK_DIVIDER_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "wave420l_b_div",
+		.ops = &clk_regmap_divider_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_wave420l_b_sel.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_b = {
+	.data = &(struct clk_regmap_gate_data){
+		.offset = HHI_WAVE420L_CLK_CNTL,
+		.bit_idx = 24,
+	},
+	.hw.init = &(struct clk_init_data) {
+		.name = "wave420l_b",
+		.ops = &clk_regmap_gate_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_wave420l_b_div.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_c_sel = {
+	.data = &(struct clk_regmap_mux_data){
+		.offset = HHI_WAVE420L_CLK_CNTL2,
+		.mask = 0x7,
+		.shift = 9,
+		.flags = CLK_MUX_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "wave420l_c_sel",
+		.ops = &clk_regmap_mux_ops,
+		.parent_hws = g12a_wave420l_parents,
+		.num_parents = ARRAY_SIZE(g12a_wave420l_parents),
+		.flags = 0,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_c_div = {
+	.data = &(struct clk_regmap_div_data){
+		.offset = HHI_WAVE420L_CLK_CNTL2,
+		.shift = 0,
+		.width = 7,
+		.flags = CLK_DIVIDER_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "wave420l_c_div",
+		.ops = &clk_regmap_divider_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_wave420l_c_sel.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12a_wave420l_c = {
+	.data = &(struct clk_regmap_gate_data){
+		.offset = HHI_WAVE420L_CLK_CNTL2,
+		.bit_idx = 8,
+	},
+	.hw.init = &(struct clk_init_data) {
+		.name = "wave420l_c",
+		.ops = &clk_regmap_gate_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12a_wave420l_c_div.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
 /* VAPB Clock */
 
 static const struct clk_hw *g12a_vapb_parents[] = {
@@ -3101,7 +3338,7 @@ static struct clk_regmap g12a_vapb_0_sel = {
 		.ops = &clk_regmap_mux_ops,
 		.parent_hws = g12a_vapb_parents,
 		.num_parents = ARRAY_SIZE(g12a_vapb_parents),
-		.flags = CLK_SET_RATE_NO_REPARENT,
+		.flags = 0,
 	},
 };
 
@@ -3149,7 +3386,7 @@ static struct clk_regmap g12a_vapb_1_sel = {
 		.ops = &clk_regmap_mux_ops,
 		.parent_hws = g12a_vapb_parents,
 		.num_parents = ARRAY_SIZE(g12a_vapb_parents),
-		.flags = CLK_SET_RATE_NO_REPARENT,
+		.flags = 0,
 	},
 };
 
@@ -3204,7 +3441,7 @@ static struct clk_regmap g12a_vapb_sel = {
 			&g12a_vapb_1.hw,
 		},
 		.num_parents = 2,
-		.flags = CLK_SET_RATE_NO_REPARENT,
+		.flags = CLK_SET_RATE_PARENT,
 	},
 };
 
@@ -3333,7 +3570,7 @@ static struct clk_regmap g12a_vclk2_div = {
 			&g12a_vclk2_input.hw
 		},
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_GATE,
+		.flags = CLK_SET_RATE_GATE | CLK_IGNORE_UNUSED,
 	},
 };
 
@@ -3369,7 +3606,7 @@ static struct clk_regmap g12a_vclk2 = {
 		.ops = &meson_vclk_gate_ops,
 		.parent_hws = (const struct clk_hw *[]) { &g12a_vclk2_div.hw },
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
 	},
 };
 
@@ -3453,7 +3690,7 @@ static struct clk_regmap g12a_vclk2_div1 = {
 		.ops = &clk_regmap_gate_ops,
 		.parent_hws = (const struct clk_hw *[]) { &g12a_vclk2.hw },
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
 	},
 };
 
@@ -3467,7 +3704,7 @@ static struct clk_regmap g12a_vclk2_div2_en = {
 		.ops = &clk_regmap_gate_ops,
 		.parent_hws = (const struct clk_hw *[]) { &g12a_vclk2.hw },
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
 	},
 };
 
@@ -3481,7 +3718,7 @@ static struct clk_regmap g12a_vclk2_div4_en = {
 		.ops = &clk_regmap_gate_ops,
 		.parent_hws = (const struct clk_hw *[]) { &g12a_vclk2.hw },
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
 	},
 };
 
@@ -3495,7 +3732,7 @@ static struct clk_regmap g12a_vclk2_div6_en = {
 		.ops = &clk_regmap_gate_ops,
 		.parent_hws = (const struct clk_hw *[]) { &g12a_vclk2.hw },
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
 	},
 };
 
@@ -4480,6 +4717,60 @@ static G12A_PCLK_RO(g12a_rom_boot,		HHI_GCLK_OTHER2, 2, 0);
 static G12A_PCLK_RO(g12a_reset_sec,		HHI_GCLK_OTHER2, 3, 0);
 static G12A_PCLK_RO(g12a_sec_ahb_apb3,		HHI_GCLK_OTHER2, 4, 0);
 
+static G12A_PCLK(sm1_csi2_adapt,		HHI_CSI2_ADAPT_CLK_CNTL, 8, CLK_IGNORE_UNUSED);
+
+/*
+ * CSI PHY functional clock (HHI_MIPI_CSI_PHY_CLK_CNTL)
+ * Feeds the D-PHY block at 0xFF650000. Without this clock enabled,
+ * MMIO to the D-PHY registers causes a bus error.
+ */
+static struct clk_regmap g12b_mipi_csi_phy_clk0_sel = {
+	.data = &(struct clk_regmap_mux_data){
+		.offset = HHI_MIPI_CSI_PHY_CLK_CNTL,
+		.mask = 7,
+		.shift = 12,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "mipi_csi_phy_clk0_sel",
+		.ops = &clk_regmap_mux_ops,
+		.parent_data = g12b_mipi_isp_parents,
+		.num_parents = ARRAY_SIZE(g12b_mipi_isp_parents),
+	},
+};
+
+static struct clk_regmap g12b_mipi_csi_phy_clk0_div = {
+	.data = &(struct clk_regmap_div_data){
+		.offset = HHI_MIPI_CSI_PHY_CLK_CNTL,
+		.shift = 0,
+		.width = 7,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "mipi_csi_phy_clk0_div",
+		.ops = &clk_regmap_divider_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12b_mipi_csi_phy_clk0_sel.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap g12b_mipi_csi_phy_clk0 = {
+	.data = &(struct clk_regmap_gate_data){
+		.offset = HHI_MIPI_CSI_PHY_CLK_CNTL,
+		.bit_idx = 8,
+	},
+	.hw.init = &(struct clk_init_data) {
+		.name = "mipi_csi_phy_clk0",
+		.ops = &clk_regmap_gate_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&g12b_mipi_csi_phy_clk0_div.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
 /* Array of all clocks provided by this provider */
 static struct clk_hw *g12a_hw_clks[] = {
 	[CLKID_SYS_PLL]			= &g12a_sys_pll.hw,
@@ -4695,6 +4986,18 @@ static struct clk_hw *g12a_hw_clks[] = {
 	[CLKID_VDEC_HEVCF_SEL]		= &g12a_vdec_hevcf_sel.hw,
 	[CLKID_VDEC_HEVCF_DIV]		= &g12a_vdec_hevcf_div.hw,
 	[CLKID_VDEC_HEVCF]		= &g12a_vdec_hevcf.hw,
+	[CLKID_VDEC_HCODEC_SEL]	= &g12a_vdec_hcodec_sel.hw,
+	[CLKID_VDEC_HCODEC_DIV]	= &g12a_vdec_hcodec_div.hw,
+	[CLKID_VDEC_HCODEC]		= &g12a_vdec_hcodec.hw,
+	[CLKID_WAVE420L_A_SEL]		= &g12a_wave420l_a_sel.hw,
+	[CLKID_WAVE420L_A_DIV]		= &g12a_wave420l_a_div.hw,
+	[CLKID_WAVE420L_A]		= &g12a_wave420l_a.hw,
+	[CLKID_WAVE420L_B_SEL]		= &g12a_wave420l_b_sel.hw,
+	[CLKID_WAVE420L_B_DIV]		= &g12a_wave420l_b_div.hw,
+	[CLKID_WAVE420L_B]		= &g12a_wave420l_b.hw,
+	[CLKID_WAVE420L_C_SEL]		= &g12a_wave420l_c_sel.hw,
+	[CLKID_WAVE420L_C_DIV]		= &g12a_wave420l_c_div.hw,
+	[CLKID_WAVE420L_C]		= &g12a_wave420l_c.hw,
 	[CLKID_TS_DIV]			= &g12a_ts_div.hw,
 	[CLKID_TS]			= &g12a_ts.hw,
 	[CLKID_SPICC0_SCLK_SEL]		= &g12a_spicc0_sclk_sel.hw,
@@ -4922,6 +5225,18 @@ static struct clk_hw *g12b_hw_clks[] = {
 	[CLKID_VDEC_HEVCF_SEL]		= &g12a_vdec_hevcf_sel.hw,
 	[CLKID_VDEC_HEVCF_DIV]		= &g12a_vdec_hevcf_div.hw,
 	[CLKID_VDEC_HEVCF]		= &g12a_vdec_hevcf.hw,
+	[CLKID_VDEC_HCODEC_SEL]	= &g12a_vdec_hcodec_sel.hw,
+	[CLKID_VDEC_HCODEC_DIV]	= &g12a_vdec_hcodec_div.hw,
+	[CLKID_VDEC_HCODEC]		= &g12a_vdec_hcodec.hw,
+	[CLKID_WAVE420L_A_SEL]		= &g12a_wave420l_a_sel.hw,
+	[CLKID_WAVE420L_A_DIV]		= &g12a_wave420l_a_div.hw,
+	[CLKID_WAVE420L_A]		= &g12a_wave420l_a.hw,
+	[CLKID_WAVE420L_B_SEL]		= &g12a_wave420l_b_sel.hw,
+	[CLKID_WAVE420L_B_DIV]		= &g12a_wave420l_b_div.hw,
+	[CLKID_WAVE420L_B]		= &g12a_wave420l_b.hw,
+	[CLKID_WAVE420L_C_SEL]		= &g12a_wave420l_c_sel.hw,
+	[CLKID_WAVE420L_C_DIV]		= &g12a_wave420l_c_div.hw,
+	[CLKID_WAVE420L_C]		= &g12a_wave420l_c.hw,
 	[CLKID_TS_DIV]			= &g12a_ts_div.hw,
 	[CLKID_TS]			= &g12a_ts.hw,
 	[CLKID_SYS1_PLL_DCO]		= &g12b_sys1_pll_dco.hw,
@@ -4974,6 +5289,9 @@ static struct clk_hw *g12b_hw_clks[] = {
 	[CLKID_MIPI_ISP_GATE]		= &g12b_mipi_isp_gate.hw,
 	[CLKID_MIPI_ISP_CSI_PHY0]	= &g12b_csi_phy0.hw,
 	[CLKID_MIPI_ISP_CSI_PHY1]	= &g12b_csi_phy1.hw,
+	[CLKID_MIPI_CSI_PHY_CLK0_SEL]	= &g12b_mipi_csi_phy_clk0_sel.hw,
+	[CLKID_MIPI_CSI_PHY_CLK0_DIV]	= &g12b_mipi_csi_phy_clk0_div.hw,
+	[CLKID_MIPI_CSI_PHY_CLK0]	= &g12b_mipi_csi_phy_clk0.hw,
 };
 
 static struct clk_hw *sm1_hw_clks[] = {
@@ -5190,6 +5508,18 @@ static struct clk_hw *sm1_hw_clks[] = {
 	[CLKID_VDEC_HEVCF_SEL]		= &g12a_vdec_hevcf_sel.hw,
 	[CLKID_VDEC_HEVCF_DIV]		= &g12a_vdec_hevcf_div.hw,
 	[CLKID_VDEC_HEVCF]		= &g12a_vdec_hevcf.hw,
+	[CLKID_VDEC_HCODEC_SEL]	= &g12a_vdec_hcodec_sel.hw,
+	[CLKID_VDEC_HCODEC_DIV]	= &g12a_vdec_hcodec_div.hw,
+	[CLKID_VDEC_HCODEC]		= &g12a_vdec_hcodec.hw,
+	[CLKID_WAVE420L_A_SEL]		= &g12a_wave420l_a_sel.hw,
+	[CLKID_WAVE420L_A_DIV]		= &g12a_wave420l_a_div.hw,
+	[CLKID_WAVE420L_A]		= &g12a_wave420l_a.hw,
+	[CLKID_WAVE420L_B_SEL]		= &g12a_wave420l_b_sel.hw,
+	[CLKID_WAVE420L_B_DIV]		= &g12a_wave420l_b_div.hw,
+	[CLKID_WAVE420L_B]		= &g12a_wave420l_b.hw,
+	[CLKID_WAVE420L_C_SEL]		= &g12a_wave420l_c_sel.hw,
+	[CLKID_WAVE420L_C_DIV]		= &g12a_wave420l_c_div.hw,
+	[CLKID_WAVE420L_C]		= &g12a_wave420l_c.hw,
 	[CLKID_TS_DIV]			= &g12a_ts_div.hw,
 	[CLKID_TS]			= &g12a_ts.hw,
 	[CLKID_GP1_PLL_DCO]		= &sm1_gp1_pll_dco.hw,
@@ -5221,6 +5551,15 @@ static struct clk_hw *sm1_hw_clks[] = {
 	[CLKID_MIPI_DSI_PXCLK_SEL]	= &g12a_mipi_dsi_pxclk_sel.hw,
 	[CLKID_MIPI_DSI_PXCLK_DIV]	= &g12a_mipi_dsi_pxclk_div.hw,
 	[CLKID_MIPI_DSI_PXCLK]		= &g12a_mipi_dsi_pxclk.hw,
+	[CLKID_MIPI_ISP_CSI_PHY0]	= &g12b_csi_phy0.hw,
+	[CLKID_MIPI_ISP_SEL]		= &g12b_mipi_isp_sel.hw,
+	[CLKID_MIPI_ISP_DIV]		= &g12b_mipi_isp_div.hw,
+	[CLKID_MIPI_ISP]		= &g12b_mipi_isp.hw,
+	[CLKID_MIPI_ISP_GATE]		= &g12b_mipi_isp_gate.hw,
+	[CLKID_CSI2_ADAPT]		= &sm1_csi2_adapt.hw,
+	[CLKID_MIPI_CSI_PHY_CLK0_SEL]	= &g12b_mipi_csi_phy_clk0_sel.hw,
+	[CLKID_MIPI_CSI_PHY_CLK0_DIV]	= &g12b_mipi_csi_phy_clk0_div.hw,
+	[CLKID_MIPI_CSI_PHY_CLK0]	= &g12b_mipi_csi_phy_clk0.hw,
 };
 
 static const struct reg_sequence g12a_init_regs[] = {

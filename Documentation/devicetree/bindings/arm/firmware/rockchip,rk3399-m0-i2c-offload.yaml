@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/arm/firmware/rockchip,rk3399-m0-i2c-offload.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Rockchip RK3399 M0 I2C offload service
+
+description: |
+  The Cortex-M0 SCMI server hosted by the board's BL31 firmware can
+  offload single PMIC register accesses to Linux instead of owning a PMIC
+  I2C bus itself. One request at a time is posted to the shared page
+  mapped by this node and delivered by the referenced mailbox channel;
+  the service driver answers in the same page and rings the channel
+  back. Page layout is documented in
+  drivers/soc/rockchip/rockchip-m0-i2c-offload.c.
+
+properties:
+  compatible:
+    const: rockchip,rk3399-m0-i2c-offload
+
+  reg:
+    maxItems: 1
+    description:
+      Shared request/response page, 64 bytes, in the firmware-reserved
+      region below the kernel's first memory bank.
+
+  mboxes:
+    maxItems: 1
+    description:
+      Doorbell channel used for both the request ring (firmware to
+      kernel) and the completion ring (kernel to firmware).
+
+  rockchip,pwrctrl:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      I2C PMIC node the firmware is allowed to touch through this
+      service. Requests for any other device address are rejected.
+
+required:
+  - compatible
+  - reg
+  - mboxes
+  - rockchip,pwrctrl
+
+additionalProperties: false
+
+examples:
+  - |
+    m0-i2c-offload@101000 {
+        compatible = "rockchip,rk3399-m0-i2c-offload";
+        reg = <0x0 0x00101000 0x0 0x40>;
+        mboxes = <&mbox1 1>;
+        rockchip,pwrctrl = <&rk808>;
+    };

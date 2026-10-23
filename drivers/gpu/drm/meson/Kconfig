@@ -12,6 +12,7 @@ config DRM_MESON
 	select VIDEOMODE_HELPERS
 	select REGMAP_MMIO
 	select MESON_CANVAS
+	select MESON_GE2D_API
 	select CEC_CORE if CEC_NOTIFIER
 
 config DRM_MESON_DW_HDMI

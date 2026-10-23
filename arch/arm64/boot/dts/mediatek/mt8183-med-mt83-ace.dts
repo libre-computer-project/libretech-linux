@@ -1,0 +1,1395 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Libre Computer MED-MT83-ACE (MT8385 / Genio 500, MT8183 die).
+ *
+ * 🔴 NOT DT-SYNCED with the u-boot copy any more, and this header said it was.
+ *
+ * The claim was true when the pair landed (u-boot 68c622a576d) and the only
+ * delta was the cpu/cci proc-supply block listed at the bottom of this comment.
+ * It stopped being true as this bring-up added board content here and nowhere
+ * else. Measured 2026-09-14 against
+ * libretech-builder-simple/u-boot v2026.07/lc-master
+ * dts/upstream/src/arm64/mediatek/mt8183-med-mt83-ace.dts: 1207 diff lines, 221
+ * of them property or node lines with comments stripped, and **34 node overlays
+ * present here that do not exist there at all** -- &pmic, &scp, &gpu, &mfg,
+ * &mfg_async, six &i2c*, &dpi0, &dpi_out, &auxadc, &pwm1, &spi0, &spi1, &uart1,
+ * &cci, &cpu0..7, &mt6358codec and the six &mt6358_*_reg constraint nodes. The
+ * u-boot copy is a strict SUBSET; it has gained nothing and lost nothing.
+ *
+ * That is doc-debt, deliberately not repaired in the round that found it: the
+ * repair is a u-boot DTS change plus a u-boot build and a board boot to prove
+ * it, which is a different question from the one this file's round was
+ * answering. It does not break the DRAM-boot flow -- the kernel's DTB comes
+ * from the FIT built out of THIS file, and u-boot uses its own built-in copy --
+ * but /device-tree-sync's "both trees produce identical DTBs" is currently
+ * UNMET for this board, and a reader must not infer from this header that the
+ * u-boot copy carries any of the content below.
+ *
+ * Board content, each item read off the board's V1.0 schematic:
+ *
+ *   - MT6358 PMIC                        (schematic "MT8385 to MT6358 I/F")
+ *   - MSDC0 eMMC, 8-bit + DSL + RSTB     (MSDC0_DAT0..7 / CMD / CLK / DSL / RSTB)
+ *   - MSDC1 WiFi SDIO to the M.2 KEY E   (sheet 15 "MSDC1 as WiFi I/F")
+ *   - UART0 to the debug + 40-pin header (URXD0 / UTXD0, "To Debug or Rasperry Pi")
+ *   - SSUSB Type-C DRD, USB 2.0 only in practice (SSUSB_TXP/TXN/RXP/RXN are
+ *     routed to CN1, but AVDD09_SSUSB is grounded -- see the &ssusb node)
+ *
+ * DRAM is Micron MT53B512M32D2NP-062 AAT, LPDDR4X, 2 GiB. A 4 GiB variant
+ * exists; this DT is the 2 GiB build.
+ *
+ * NO VALUE IS DELIBERATELY ABSENT ANY MORE. Three once were:
+ *   1. mediatek,u3p-dis-msk -- withheld on the reading that "ACE routes a real
+ *      USB 3.0 PHY, so asserting no-U3 would contradict the schematic". That
+ *      reading is RETRACTED: the pairs are routed, but AVDD09_SSUSB is tied to
+ *      ground and the VA09 supply that would feed it is unpopulated, so the U3
+ *      MAC can never leave reset. Routing is not power. The property is now set
+ *      and the derivation is on the &ssusb node.
+ *   2. &pmic interrupts-extended -- filled in, see the &pmic node.
+ *   3. "microSD cd-gpios" -- CLOSED BY DELETION rather than by a value: there is
+ *      no microSD slot on this board at all, MSDC1 is the M.2 WiFi SDIO bus.
+ *      See the &mmc1 node.
+ *
+ * The standing rule that produced them still holds: do not fill a value in from
+ * a sibling board, because a guess here becomes a hardware claim. Each of the
+ * three above was closed from THIS board's schematic, not from the i500's.
+ *
+ * The it66121 HDMI bridge + DPI + hdmi-connector are shared with
+ * mt8183-pumpkin.dts. They are NOT copied from it: every ACE value below is
+ * read off this board's own schematic and the MT8385 pin table, and where the
+ * two boards differ they differ (i2c6 vs the ACE analysis doc's claim of i2c0,
+ * a GPIO6 reset net the i500 does not have, Type-A vs Type-D connector).
+ *
+ * Deliberately NOT carried over from mt8183-pumpkin.dts (all i500-board parts,
+ * none of them on ACE): the keyboard matrix, mt7668 SDIO WiFi/BT + wifi_3v3,
+ * the LAN9512 hub reset and force-vbus, the hd3ss3220 CC role switch, the
+ * thermistor, the LEDs, and the i500-only mediatek,dma-max-burst read-storm
+ * mitigation.
+ *
+ * Intentional deltas vs the u-boot copy, with reasons:
+ *   - cpu0..7 / &cci proc-supply: MT8183 cpufreq needs them and u-boot has no
+ *     DVFS. These are the MT8183+MT6358 pairing (little cluster on VPROC12, big
+ *     cluster on VPROC11), identical in every in-tree MT8183 board file, not an
+ *     ACE-specific routing claim.
+ * Everything else is byte-for-byte the same board description.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include "mt8183.dtsi"
+#include "mt6358.dtsi"
+
+/ {
+	model = "Libre Computer MED-MT83-ACE";
+	compatible = "librecomputer,med-mt83-ace", "mediatek,mt8183";
+
+	aliases {
+		serial0 = &uart0;
+		mmc0 = &mmc0;
+		mmc1 = &mmc1;
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* HDMI Type-A connector behind the IT66121FN (schematic sheet 14:
+	 * "HDMI Type-A (CMA_TYPE-A J86A-91RT-13SL)", TMDS CH0/1/2 + CLK through
+	 * common-mode chokes, CEC pin 13, HPD pin 18/19, TX_DDCSCL/TX_DDCSDA).
+	 * Type "d" is what the i500 declares; the ACE connector is a full-size
+	 * Type-A, so "a". */
+	hdmi-connector {
+		compatible = "hdmi-connector";
+		label = "hdmi";
+		type = "a";
+
+		port {
+			hdmi_connector_in: endpoint {
+				remote-endpoint = <&hdmi_connector_out>;
+			};
+		};
+	};
+
+	/*
+	 * EXT_3V3_ENABLE -- ONE SoC GPIO, TWO loads. Model it once, shared.
+	 *
+	 * 🔴 This is deliberately NOT a private mmc1 regulator, and that is the
+	 * whole point of putting it at board level: GPIO166 gates BOTH the M.2
+	 * WiFi 3.3 V (U4) AND the 40-pin header's 3V3 (U1). The annotation on the
+	 * net says so in as many words -- "To WiFi 3V3 and Raspberry PWR EN". A DT
+	 * that hangs this GPIO off mmc1 as a reset or an mmc1-owned supply would
+	 * switch the header's rail as a side effect of an SDIO decision.
+	 *
+	 * ⚠️ SOURCED FROM THE RIGHT REVISION. An earlier draft of this node took
+	 * its reference designators from med-mt83-ace-emcp-20250616 (U4000 / R4003 /
+	 * R4002 / R4025 / R4027 / R4035 / L4000). That is the eMCP variant and it is
+	 * also the OLDER document -- its title block reads 19 June 2025 against
+	 * 04 September 2025 for the file below -- while this bench unit is the
+	 * DISCRETE LPDDR4X build (its DRAM part MT53B512M32D2NP-062 appears in the
+	 * g500 text and zero times in the eMCP one). Every designator below is
+	 * re-read from g500_mt8385_schematic_v10_final_full.txt. The NET names are
+	 * the same in both revisions, so only the designators moved.
+	 *
+	 *   sheet 5  PERI_EN     "To WiFi 3V3 and Raspberry PWR EN"
+	 *                        EXT_3V3_ENABLE = PERIPHERAL_EN9
+	 *   sheet 1  POWER_3V3   VSYS -> R9 (0R) -> POWER_3V3_VIN -> U1 (EN =
+	 *                        EXT_3V3_ENABLE) -> L1 DFE252012P-1R5M ->
+	 *                        POWER_3V3 -> R143 (0R) -> RASP_3V3 at CON1, the
+	 *                        40-pin header, and also -> EX_DTB_POWER
+	 *   sheet 15 WiFi        "3.3V DC-DC for M.2 Module": VSYS -> R85 (0R) ->
+	 *                        3V3_M.2_VIN -> U4 RT5753AHGQWA (WDFN8-2x2; pin 3
+	 *                        VIN, 7 EN, 6 LX) -> L6 DFE252012P-1R0M ->
+	 *                        WIFI_3V3. Feedback R89 22K_1%.
+	 *
+	 * Ball -> GPIO from reference/soc/mt8385/04_ball_map/4_2_pin_characteristics.txt,
+	 * which is a property of the DIE and so does not move with the board
+	 * revision: PERIPHERAL_EN9 -> ball V22 -> GPIO166. mt8183-pinfunc.h offers
+	 * GPIO166 only as GPIO166 or ANT_SEL6, so there is no function to lose by
+	 * claiming it.
+	 *
+	 * 🔴 The enable is SoC-only -- there is no always-on strap, which is why
+	 * the rail is dead until Linux drives it. Three candidate paths land on the
+	 * M.2 buck's enable and only one is populated (designators per the g500 rev;
+	 * the eMCP equivalents are given because the prior round quoted them):
+	 *
+	 *   EXT_3V3_ENABLE -> 3V3_M.2_EN   R90  0R R0402  POPULATED  (eMCP R4003)
+	 *   VIO28_PMU      -> 3V3_M.2_EN   R88     R0402  NC         (eMCP R4002)
+	 *   VIO18_PMU      -> 3V3_PG       R87     R0402  NM         (eMCP R4025)
+	 *
+	 * regulator-always-on + regulator-boot-on because the header's 3V3 is not
+	 * a per-client rail: it must be live for anything a user plugs into CON1,
+	 * and nothing in the DT can be its consumer. This is the same argument the
+	 * vdram2 node below makes, not a crutch for a missing reference.
+	 *
+	 * ⚪ UNVERIFIED against a fitted module, and it cannot be verified here:
+	 * the bench unit's M.2 Key-E socket is EMPTY (per the operator,
+	 * 2026-09-14). What this node is expected to change is that the rail comes
+	 * up at all; what it cannot settle is whether an SDIO card would answer on
+	 * it.
+	 */
+	ext_3v3: regulator-ext-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "ext_3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&pio 166 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ext_3v3_en_pins>;
+	};
+
+	/*
+	 * J6 VCC_3V3. GPIO153 (LCM1_EN, ball L22) enables U5, and the same
+	 * rail feeds the high side of the I2C0 translator U8, so the bus and
+	 * the panel both wait on it. The J6 panel itself is the LWT overlay
+	 * dsi-rpi-7inch, which references this label.
+	 */
+	vcc_lcm: regulator-vcc-lcm {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc-3v3-lcm";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&pio 153 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+		startup-delay-us = <20000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&lcm_en_pins>;
+	};
+
+	/*
+	 * WIFI_RESET_N -- the M.2 module's reset, held asserted until the SDIO
+	 * bus is scanned. Sheet 15 labels the net "To WiFi RST"; it is
+	 * PERIPHERAL_EN10, ball Y7 = GPIO178 (same pin table as above), and
+	 * mt8183-pinfunc.h gives GPIO178 no alternate function at all.
+	 *
+	 * Active-low, so mmc-pwrseq-simple drives it low at pre_power_on and
+	 * releases it after the supply is up -- which is the ordering an SDIO
+	 * module needs and which nothing in the DT provided before.
+	 *
+	 * ⚪ Same caveat as &ext_3v3: no module is fitted, so the reset timing is
+	 * modelled from the schematic and is UNPROVEN against a card. The node is
+	 * inert on an empty socket -- it toggles a GPIO that reaches only the
+	 * unpopulated connector.
+	 */
+	wifi_pwrseq: pwrseq-wifi {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&pio 178 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_reset_pins>;
+	};
+
+	/* The SCP's DRAM window. mt8183.dtsi's scp@10500000 carries an
+	 * unconditional memory-region = <&scp_mem_reserved>, so the label has to
+	 * exist for the board to compile at all (dtc otherwise fails with
+	 * "Reference to non-existent node or label"). Same base/size as the
+	 * i500, mt8183-pumpkin and mt8183-kukui -- 0x50000000 + 41 MiB is the
+	 * SoC's SCP window, not a board choice, and the stock linux-firmware
+	 * mediatek/mt8183/scp.img is linked for exactly that base, so this
+	 * reservation is what lets the unrelocated vendor blob be used (the
+	 * MT8188/G5 reloc-to-0x40E00000 recipe exists only because that board
+	 * moved the window; nothing here needs it). &scp is enabled below. */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		scp_mem_reserved: scp-mem@50000000 {
+			compatible = "shared-dma-pool";
+			reg = <0 0x50000000 0 0x2900000>;
+			no-map;
+		};
+
+		/* BL31's TZRAM -- the secure monitor, resident for the life of
+		 * the system. Two windows are reserved, because this DT must
+		 * boot under either firmware: upstream TF-A (and the vendor BSP)
+		 * link MT8183 TZRAM at 0x54600000, our TF-A fork at the DRAM base
+		 * 0x40000000 (the libre DRAM load map). Each is TZRAM_SIZE
+		 * (plat/mediatek/mt8183/include/platform_def.h), which is also
+		 * the only DRAM-backed region BL31 maps (MAP_REGION_FLAT(TZRAM_BASE,
+		 * TZRAM_SIZE) in aarch64/platform_common.c); the three
+		 * MTK_DEV_RNG* regions beside it are MMIO below the DRAM base.
+		 * The window the running BL31 does not use costs 192 KiB.
+		 *
+		 * Under upstream TF-A nothing in hardware enforces this: its
+		 * emi_mpu_init() leaves domain 0 at NO_PROTECTION in every
+		 * region, so the AP can read and write the monitor freely. Our
+		 * TF-A trees make the running window a locked, secure-only EMI
+		 * MPU region instead: a normal-world read returns zeros and a
+		 * write is dropped. Either way, without this node
+		 * Linux hands 0x54600000 out as ordinary memory -- measured, a
+		 * 1 GiB allocation landed on it, the pattern and BL31's own
+		 * writes interleaved, and the SoC reset to the BootROM with no
+		 * panic.
+		 *
+		 * Size is TZRAM_SIZE (192 KiB), not the 2 MiB that
+		 * mt8195-demo / mt8390-genio-common / the three mt8395 boards
+		 * reserve at this same base: those are a rounded-up margin over
+		 * an identically-sized window, not a different map. 0x30000 is
+		 * three whole 64 KiB EMI MPU units, and BL31 is 45816 B. */
+		bl31_lc_secmon_reserved: memory@40000000 {
+			reg = <0 0x40000000 0 0x30000>;
+			no-map;
+		};
+
+		bl31_secmon_reserved: memory@54600000 {
+			reg = <0 0x54600000 0 0x30000>;
+			no-map;
+		};
+	};
+
+	firmware {
+		scmi: scmi {
+			compatible = "arm,scmi-smc";
+			arm,smc-id = <0x82000310>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+			/* no shmem: overlay-only reservation. Binding-incomplete
+			 * until P2+P3's overlay; see dtbs_check note above. */
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+/* MT6358 PMIC interrupt.
+ *
+ * Without this, platform_get_irq() in mt6397_probe() returns -ENXIO and the
+ * probe ABORTS before mfd_add_devices(), so the whole MT6358 MFD -- regulators,
+ * RTC, auxadc, audio codec, keys -- never appears. The kernel logs
+ * "mt6397 1000d000.pwrap:pmic: error -ENXIO: IRQ index 0 not found".
+ *
+ * This is NOT copied from a sibling board: it is an MT8183 SoC-level constant,
+ * and the ACE schematic is what establishes that there is no board net here to
+ * differ about. Sourced, three independent readings:
+ *
+ *   1. The ACE schematics carry NO PMIC interrupt net at all.
+ *      The eMCP-revision schematic (2025-06-16),
+ *      sheet 10 "POWER_MT6358-IF" enumerates the complete MT6358<->MT8385
+ *      control interface -- SYSRSTB, WATCHDOG, PWRKEY, HOMEKEY, SD_CARD_DET_N,
+ *      PWRAP SPI CSN/CK/MO/MI, EXT_PMIC_EN1/2, SRCLKENA0/1, SCP_VREQ_VAO -- and
+ *      there is no interrupt line among them. A search of both ACE schematic
+ *      revisions (the eMCP one and the V1.0 final) for
+ *      PMIC_INT / PMU_INT / MT6358_INT / IRQ returns zero hits.
+ *
+ *   2. The MT6358 has no interrupt output ball to route. Its datasheet's
+ *      "Interface Summary" lists SPI,
+ *      SRCLKEN_IN0/1, PWRKEY, HOMEKEY, RESETB, WDTRSTB_IN, EXT_PMIC_EN1/2,
+ *      SCP_VREQ_VAO, SD_CARD_DET_N, HP_EINT (headphone detect), ACCDET,
+ *      PMU_TESTMODE, the audio pairs and the fuel gauge -- and no host IRQ pin.
+ *
+ *   3. MT8183 GPIO182 is not a bonded-out ball on this package, so it cannot be
+ *      a board net either way. GPIO180..GPIO191 appear ZERO times in the whole
+ *      MT8385 datasheet and zero times in its ball map; the documented GPIO
+ *      ball table stops at
+ *      GPIO179. In pinctrl-mtk-mt8183.h pins 180..191 carry only MTK_FUNCTION(0,
+ *      "GPIOnnn") and an EINT number -- GPIO182 -> EINT 173 -- i.e. an internal
+ *      EINT source, which is how the PMIC's interrupt reaches the AP.
+ *
+ * Consistently, every in-tree MT8183+MT6358 board -- MediaTek's own reference
+ * mt8183-evb.dts, mt8183-kukui.dtsi and mt8183-pumpkin.dts -- declares the
+ * identical value, because it is a property of the die and not of the board.
+ */
+&pmic {
+	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+/* eMMC (MSDC0). Pin assignment is the MT8183 fixed MSDC0 function block; the
+ * ACE schematic routes the same DAT0..7 / CMD / CLK / DSL / RSTB set. */
+&mmc0 {
+	status = "okay";
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	bus-width = <8>;
+	max-frequency = <200000000>;
+	cap-mmc-highspeed;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	cap-mmc-hw-reset;
+	no-sdio;
+	no-sd;
+	hs400-ds-delay = <0x12814>;
+	vmmc-supply = <&mt6358_vemc_reg>;
+	vqmmc-supply = <&mt6358_vio18_reg>;
+	assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC50_0>;
+	assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL_CK>;
+	non-removable;
+};
+
+/* MSDC1 -- WiFi SDIO to the M.2 KEY E slot, NOT a microSD slot.
+ *
+ * 🔴 CORRECTION. Both DT copies described this as "microSD, 4-bit" with a
+ * broken-cd polled slot and an unknown cd-gpios. Measured against the
+ * schematic this session, that is wrong in three independent ways, and the
+ * board has NO SD card socket at all:
+ *
+ *   1. Both ACE schematic texts label the MSDC1 block verbatim
+ *      "MSDC1 as WiFi I/F" (sheet 15, WiFi_BT_GPS_Module) and route
+ *      MSDC1_CLK/CMD/DAT0..3 through 0R series resistors R4301..R4306 to the
+ *      M.2 KEY E connector's SDIO_CLK/CMD/D0..D3.
+ *   2. The board's connector list enumerates CN1, J6, J7, J8, CON1, ME2, the 3.5 mm jack, HDMI,
+ *      J4004 and J3 -- and no card socket.
+ *   3. The one card-detect-shaped net on the board, the MT6358's
+ *      SD_CARD_DET_N (pin J13), goes to a TEST POINT only (TP23 / TP8227) and
+ *      reaches no connector -- which is why no cd-gpios was ever findable.
+ *      Its absence was the symptom, not a gap in the OCR.
+ *
+ * So the "unknown cd-gpios" is CLOSED by deletion, not by a value. Supplies
+ * are corrected with it: vqmmc is DVDD18_MSDC1, which the schematic ties to
+ * VIO18_PMU through R90171 (sheet 3) -- not to VMC. vmmc is NOT a PMIC rail
+ * here: the module is fed WIFI_3V3 from an external buck, so the old vmch
+ * reference was a claim about a rail that does not supply this slot.
+ *
+ * ⚠️ NET NAMES CORRECTED. An earlier revision of this comment named
+ * EXT_3V1_ENABLE, WIFI_RST_L, RT5733AHGQWA and WIFI_3V9. None of those four
+ * strings appears anywhere in this board's schematic -- they were misreadings,
+ * not a superseded naming scheme. The board says EXT_3V3_ENABLE, WIFI_RESET_N,
+ * RT5753AHGQWA and WIFI_3V3, in BOTH the g500 and the eMCP revisions, and both
+ * GPIOs are now resolved -- see &ext_3v3 and &wifi_pwrseq.
+ *
+ * ⚠️ The buck's designator really is U4 on this revision -- that part of the
+ * old comment was right. U4000 is the eMCP variant's name for the same part,
+ * and the eMCP document is the OLDER of the two (June vs September 2025), so
+ * it is not a rename and it is not what this unit is.
+ *
+ * ⚪ NO MODULE IS FITTED in the M.2 Key-E socket on the bench unit (per the
+ * operator, 2026-09-14). `mmc1: Failed to initialize a non-removable card`
+ * with cmd=52 / cmd=5 timing out is therefore the CORRECT reading for this
+ * board and not a defect to chase. The supplies below are modelled because
+ * they are true of the board regardless of population -- and because the same
+ * enable also feeds the 40-pin header (see &ext_3v3) -- but the SDIO side of
+ * them is UNVERIFIED, since there is no card here to verify it against. */
+&mmc1 {
+	status = "okay";
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc1_pins_default>;
+	pinctrl-1 = <&mmc1_pins_uhs>;
+	bus-width = <4>;
+	max-frequency = <200000000>;
+	cap-sd-highspeed;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	non-removable;
+	no-mmc;
+	no-sd;
+	vmmc-supply = <&ext_3v3>;
+	vqmmc-supply = <&mt6358_vio18_reg>;
+	mmc-pwrseq = <&wifi_pwrseq>;
+};
+
+/* The MFG (GPU) power domains. 🔴 THESE ARE NOT OPTIONAL AND THEIR ABSENCE
+ * IS NOT LOCAL TO THE GPU.
+ *
+ * Measured 2026-09-14 on the first feature run (DTB 225383aa08ce), verbatim:
+ *
+ *   mtk-power-controller 10006000.syscon:power-controller: Looking up
+ *     domain-supply property in node /soc/syscon@10006000/power-controller failed
+ *   mtk-power-controller 10006000.syscon:power-controller: error -ENODEV:
+ *     /soc/syscon@10006000/power-controller/power-domain@2: failed to get power supply.
+ *
+ * scpsys refuses the WHOLE controller when one domain's supply is missing, so
+ * every consumer of `power-domains = <&spm ...>` is then stranded on
+ * "supplier 10006000.syscon:power-controller not ready" -- measured, that was
+ * 40 platform devices: the entire display pipeline (ovl/rdma/color/ccorr/aal/
+ * gamma/dither/mutex/dpi and therefore mediatek-drm and the HDMI bridge), the
+ * GPU, all six SMI larbs, the IOMMU, MDP3, both video codecs, the JPEG
+ * encoder, the AFE and the display PWM. One missing property, one dead
+ * multimedia subsystem.
+ *
+ * Rails read off the schematic, not copied from a sibling: sheet 8 buck VGPU
+ * -> DVDD_GPU (SoC ball S18), sheet 9 SLDO VSRAM_GPU -> DVDD_VSRAM_GPU_PMU
+ * (ball T18). Both were present-but-disabled in the PMIC round's
+ * 41-regulator enumeration, because nothing claimed them. */
+&mfg_async {
+	domain-supply = <&mt6358_vsram_gpu_reg>;
+};
+
+&mfg {
+	domain-supply = <&mt6358_vgpu_reg>;
+};
+
+/* Mali G72 MP3, panfrost.
+ *
+ * ONLY mali-supply. The SRAM rail belongs on &mfg_async above, not here: this
+ * node's compatible is "mediatek,mt8183b-mali", which panfrost_drv.c maps to
+ * mediatek_mt8183_b_data -> default_supplies[] = { "mali", NULL }. Only the
+ * older "mediatek,mt8183-mali" takes legacy_supplies[] = { "mali", "sram" }.
+ * An earlier revision of this file declared sram-supply here, where it is
+ * inert. Every in-tree MT8183 board (kukui, pumpkin, evb) sets mali-supply
+ * alone for the same reason. */
+&gpu {
+	mali-supply = <&mt6358_vgpu_reg>;
+};
+
+/*
+ * PWR-002 on ACE: make the mtk-svs GPU bank bind deterministically. Same fix
+ * mt8183-kukui.dtsi:389-439 carries (27e60b5cca611), applied here because ACE
+ * includes mt8183.dtsi + mt6358.dtsi and inherits none of the kukui file.
+ *
+ * Board-measured 2026-09-14 on 6.18.35-01555-g511eaa254f99, verbatim and
+ * character-for-character the string that commit was written for:
+ *
+ *   [    3.600810]  SVSB_GPU: buck voltage: 700000uV, expected vboot: 800000uV
+ *   [    3.607684] mtk-svs 1100bc00.svs: error -EPERM: svs start fail
+ *
+ * with SVSB_CPU_LITTLE, SVSB_CPU_BIG and SVSB_CCI all clearing their init01
+ * gates in the same boot, so the GPU bank is the only one left. mtk-svs.c
+ * :1545-1550 requires the live buck to read exactly opp_vboot = volt_base +
+ * vboot*volt_step = 500000 + 0x30*6250 = 800000 uV; vgpu idles at 700 mV and
+ * SVS never drives the rail itself.
+ *
+ * The floor goes on vsram_gpu, NOT vgpu: vgpu is panfrost's mali-supply OPP
+ * regulator, so a hard vgpu regulator-min of 800000 would mark the 15 sub-800
+ * mV GPU OPPs (mt8183.dtsi gpu_opp_table, 300-800 MHz) unsupported and pin the
+ * GPU to 800 MHz. Coupling with a 100 mV max-spread and flooring the SRAM rail
+ * makes the coupler hold vgpu at exactly 800 mV while leaving every GPU OPP
+ * available -- this board's devfreq already reads all 16 of them.
+ */
+&mt6358_vgpu_reg {
+	regulator-max-microvolt = <900000>;
+	regulator-boot-on;
+
+	regulator-coupled-with = <&mt6358_vsram_gpu_reg>;
+	regulator-coupled-max-spread = <100000>;
+};
+
+&mt6358_vsram_gpu_reg {
+	regulator-min-microvolt = <900000>;
+	regulator-max-microvolt = <1000000>;
+	regulator-boot-on;
+
+	regulator-coupled-with = <&mt6358_vgpu_reg>;
+	regulator-coupled-max-spread = <100000>;
+};
+
+/* I2C0 -- LCD/touch, 3.3 V side of the NTS0104GU12 level shifter U8.
+ * Schematic sheet 17: SCL0 -> U8 VL_IO3, SDA0 -> U8 VL_IO4, emerging as
+ * SCL0_3V3 / SDA0_3V3 on J6 pins 20/21. 4.7K pull-ups to VIO18_PMU
+ * (R90105/R90109). Pins: SDA0 = GPIO82 (ball AC5), SCL0 = GPIO83 (ball AB6)
+ * -- MT8385 datasheet 4.2 pin-characteristics table. */
+&i2c0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c_pins_0>;
+	status = "okay";
+	clock-frequency = <100000>;
+	vbus-supply = <&vcc_lcm>;
+};
+
+/* I2C1 -- 40-pin header CON1 pins 3 (SDA1) and 5 (SCL1), schematic sheet 19.
+ * SDA1 = GPIO81 (ball AF4), SCL1 = GPIO84 (ball AE4). */
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c_pins_1>;
+	status = "okay";
+	clock-frequency = <100000>;
+};
+
+/* I2C4 -- Camera A FPC J7 pins 19/20, 4.7K pull-ups R133/R134 (sheet 18).
+ * SCL4 = GPIO105 (ball Y2), SDA4 = GPIO106 (ball W2). No sensor is fitted on
+ * the bench unit; the bus is enabled so a scan can prove the controller. */
+&i2c4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c_pins_4>;
+	status = "okay";
+	clock-frequency = <100000>;
+};
+
+/* I2C5 -- Camera B FPC J8 pins 19/20, 4.7K pull-ups R138/R139 (sheet 18).
+ * SCL5 = GPIO48 (ball AH24), SDA5 = GPIO49 (ball AH25) -- the schematic prints
+ * AH25 against this pair, which the datasheet resolves to SDA5. */
+&i2c5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c_pins_5>;
+	status = "okay";
+	clock-frequency = <100000>;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+};
+
+/* I2C6 -- the IT66121FN HDMI transmitter's control bus.
+ *
+ * NOT I2C0, as an earlier board summary said. The
+ * schematic routes SCL6/SDA6 -> SCL6_R/SDA6_R -> the Q1/Q2 level shifters ->
+ * 1V8_PCSCL/1V8_PCSDA at the IT66121 (sheet 14). Pins: SCL6 = GPIO113
+ * (ball J4, default name CONN_TOP_CLK), SDA6 = GPIO114 (ball J5,
+ * CONN_TOP_DATA) -- and the schematic prints exactly those two default names
+ * beside SCL6/SDA6 on sheet 5, which is the cross-check. */
+&i2c6 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins>;
+	status = "okay";
+	clock-frequency = <100000>;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * 🔴 The fitted part is an IT66122FN, NOT the IT66121FN the schematic
+	 * symbol on sheet 14 names. Read from the silicon's own ID registers on
+	 * 2026-09-14 with the rails up: 0x00=0x54 0x01=0x49 0x02=0x22 0x03=0x06,
+	 * i.e. vendor 0x4954, device 0x0622. The ITE vendor driver decodes
+	 * register 0x02 == 0x22 as Device_IT66122 (0x21 = Device_IT66121).
+	 * Silicon answering its own ID register outranks a schematic symbol for
+	 * part identity; the schematic stays authoritative for the nets, which
+	 * is what it was used for everywhere else in this file.
+	 */
+	it66121hdmitx: hdmitx@4c {
+		compatible = "ite,it66122";
+		/* R52 (0R) pulls PCADR low -> 8-bit address 0x98 -> 7-bit 0x4c
+		 * (schematic sheet 14). */
+		reg = <0x4c>;
+		#sound-dai-cells = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ite_pins>;
+		/*
+		 * INT = GPIO4 / EINT4, ball AC3. Sourced twice: the ACE
+		 * schematic sheet 5 prints "AC3 IT66121_INT" against
+		 * "PERIPHERAL_EN6 / EINT4 / HDMI 66121FN HPD ro INT", and the
+		 * MT8385 datasheet pin table gives GPIO4 = ball AC3 = EINT4.
+		 * (The i500 uses 4 as well; that is a coincidence of the same
+		 * EINT being free on both boards, not the source here.)
+		 *
+		 * No reset-gpios, deliberately. The board DOES have a reset
+		 * net -- IT66121_SYSRSTN on GPIO6 / EINT6 / ball AE2 -- but
+		 * since the 6.18.34 "acquire reset GPIO in probe" change the
+		 * driver PULSES it, and on the i500 that leaves the chip
+		 * unresponsive on its i2c bus. The pin is instead parked
+		 * output-high (deasserted, active-low) in ite_pins and the
+		 * chip self-inits from power-on. Revisit only with a board
+		 * measurement of the pulse.
+		 */
+		interrupt-parent = <&pio>;
+		interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
+		/* Sheet 14: TX_OVDD33 <- VCN33_PMU_IT66121, TX_OVDD (1.8 V)
+		 * <- VCN18_PMU_IT66121, TX_DVDD12 <- VRF12_PMU_IT66121. */
+		vcn33-supply = <&mt6358_vcn33_reg>;
+		vcn18-supply = <&mt6358_vcn18_reg>;
+		vrf12-supply = <&mt6358_vrf12_reg>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				it66121_in: endpoint {
+					bus-width = <12>;
+					remote-endpoint = <&dpi_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				hdmi_connector_out: endpoint {
+					remote-endpoint = <&hdmi_connector_in>;
+				};
+			};
+		};
+	};
+};
+
+/* I2C7 -- 40-pin header CON1 pins 26 (SCL7) and 27 (SDA7), the "EEPROM bus"
+ * (schematic sheets 5 + 19), 4.7K pull-ups R90155/R90156.
+ *
+ * The pins were an open question until this session because mt8183-pinfunc.h
+ * offers SCL7/SDA7 on FOUR different pairs. The ACE schematic prints the ball
+ * designators beside the nets -- "SCL7 L3", "SDA7 K3" -- and the MT8385
+ * datasheet pin table resolves L3 = GPIO110 and K3 = GPIO112, on both of
+ * which SCL7/SDA7 is alt-function 1. */
+&i2c7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c_pins_7>;
+	status = "okay";
+	clock-frequency = <100000>;
+};
+
+/* DPI -> IT66121. 12-bit DBPI data + HSYNC/VSYNC/DE/CK on the SoC's fixed
+ * GPIO13..GPIO28 block (datasheet: GPIO27 = ball AC26 = DPI_DE, GPIO28 =
+ * ball AC25 = DPI_CK, matching the schematic's DPI_DE/DPI_CK nets on sheet
+ * 13). The i500's group additionally muxes I2S5 for HDMI audio; that is left
+ * out here because the ACE HDMI-audio routing has not been read off the
+ * schematic and the MediaTek sound machine driver is a module anyway. */
+&dpi0 {
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&dpi_func_pins>;
+	pinctrl-1 = <&dpi_idle_pins>;
+	status = "okay";
+};
+
+/* mt8183.dtsi already declares dpi0's output endpoint (ports/port@1/
+ * endpoint@1, label dpi_out) with no remote; only the far end is a board
+ * fact. Declaring a second `port` here instead is a dtc duplicate_label. */
+&dpi_out {
+	remote-endpoint = <&it66121_in>;
+};
+
+/*
+ * 🔴 The IT66121's three rails must be live before its control bus exists --
+ * this is an ACE topology fact, not a generic-driver preference.
+ *
+ * Why that is fatal HERE and not on the i500: on ACE the SoC's I2C6 does not
+ * reach the chip directly. SCL6/SDA6 pass through the LM20B50NGI3A level
+ * shifters Q3/Q4 to 1V8_PCSCL/1V8_PCSDA, IT66121_SYSRSTN passes through Q2 to
+ * 1V8_SYSRSTN, and the 4.7 K bus pull-ups R79/R80 sit on TX_OVDD -- which IS
+ * VCN18_PMU_IT66121 (schematic sheet 14). With VCN18 down there are no pull-ups
+ * and no translator reference, so the bus to the chip does not exist.
+ *
+ * ⚠️ This is deliberately NOT scoped to the bridge driver's probe, and that is
+ * the whole point of the layering here. ite-it66121.c enables all three itself
+ * (devm_regulator_bulk_get_enable), so for a pure CHIP rail the driver is the
+ * right owner and always-on would be a crutch. VCN18 is not a pure chip rail:
+ * it is the reference and pull-up supply for the whole i2c-6 SEGMENT. Tying its
+ * lifetime to one client driver's probe RESULT is what produced the earlier
+ * empty scan -- probe returned -ENODEV on the ID mismatch, devm released the
+ * rails, and `i2cdetect -y -r 6` then saw nothing at all, which is
+ * indistinguishable from a dead chip. Bus infrastructure outlives its clients.
+ *
+ * Given VCN18 is always-on, VRF12 must be too. The IT66122FN datasheet requires
+ * IVDD12 (the 1.2 V core, VRF12_PMU_IT66121) to reach VIH BEFORE OVDD (the I/O
+ * rails, VCN18/VCN33), with under 1 ms between them. Leaving VRF12 to the
+ * driver while VCN18 is up from boot would guarantee the forbidden order. VCN33
+ * is TX_OVDD33 and follows the same I/O-rail argument as VCN18.
+ *
+ * ⚠️ Note for anyone tempted to move the ordering into the driver instead:
+ * regulator_bulk_enable() dispatches every supply through
+ * async_schedule_domain() and then waits for all of them, so the enable ORDER
+ * is undefined. The driver as written cannot honour that sequencing under any
+ * device tree; only bringing the rails up at PMIC init makes the state
+ * deterministic.
+ *
+ * Safe and board-specific: each of the three nets has exactly ONE consumer in
+ * the schematic -- VCN33_PMU_IT66121, VCN18_PMU_IT66121, VRF12_PMU_IT66121 --
+ * the HDMI transmitter and nothing else. vcn33 is additionally pinned to its
+ * nominal 3.3 V: the LDO powers up at 3500 mV (measured: `vcn33 uV=3500000`,
+ * constraints 3300-3500 mV) and TX_OVDD33 is a 3.3 V rail.
+ */
+&mt6358_vcn33_reg {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-always-on;
+	regulator-boot-on;
+};
+
+&mt6358_vcn18_reg {
+	regulator-always-on;
+	regulator-boot-on;
+};
+
+&mt6358_vrf12_reg {
+	regulator-always-on;
+	regulator-boot-on;
+};
+
+/*
+ * 🔴 vdram2 IS the LPDDR4X VDDQ. It has no Linux consumer and never can have
+ * one, so the regulator core's init-complete sweep disables it ~30 s after
+ * late_initcall and the board loses DRAM mid-boot.
+ *
+ * Read off the ACE (discrete LPDDR4X) schematic, not inferred:
+ *
+ *   g500_mt8385_schematic_v10_final_full.txt:3428-3438 -- the PMIC output net
+ *   EMI_VDRAM2 reaches the DRAM's EMI_VDDQ through R90169, and the fit note
+ *   beside it reads "For LPDDR4X, R90170/R90258 NC, R90169/R90259 0 ohm". This
+ *   board is LPDDR4X (Micron MT53B512M32D2NP-062, two placements), so R90169 is
+ *   the populated 0 ohm and EMI_VDRAM2 is EMI_VDDQ with nothing in between.
+ *
+ *   :3616-3620 -- the MT8385 trapping table for the VS2_LDO1 ball gives VDRAM2
+ *   = 0.6 V for the LP4/LP4X strap, which is exactly what the rail reads on the
+ *   board (600 000 uV).
+ *
+ * There is no driver that should be claiming this rail: VDDQ supplies the DRAM
+ * die's I/O, and the DRAM is not a Linux device with a supply phandle. The EMI
+ * controller does not model it either. A rail that must be up for the whole
+ * life of the system, with no possible consumer, is exactly what
+ * regulator-always-on is for -- this is not a crutch for a missing reference.
+ *
+ * regulator-boot-on is asserted with it because BL2's libdram brings VDDQ up
+ * before it calibrates, so the rail is already on when Linux first sees it and
+ * the core must not treat the first enable as a transition.
+ *
+ * ⚠️ vaux18 is disabled by the SAME sweep, 3 ms later, and is deliberately NOT
+ * constrained here. On this board VAUX18_PMU has exactly one destination --
+ * AVDD18_AUXADC, the MT6358's own AUXADC analog supply, through R90072
+ * (:2921, :3850) -- so losing it cannot cost the board DRAM. Constraining both
+ * at once would have made this change unfalsifiable.
+ */
+&mt6358_vdram2_reg {
+	regulator-always-on;
+	regulator-boot-on;
+};
+
+/*
+ * Audio: the MT6358's own codec into the 3.5 mm TRRS jack (schematic sheets 11
+ * and 16), and nothing else -- ACE carries no TS3A227E, no MAX98357A, no
+ * DA7219 and no RT1015.
+ *
+ * 🔴 CORRECTION to the 2026-09-14 feature matrix, which recorded "no
+ * MT8183+MT6358-only machine driver exists". One does, on this branch:
+ * a57fd6572aed6 added the bare "mediatek,mt8183-mt6358-sound" card to
+ * sound/soc/mediatek/mt8183/mt8183-mt6358-ts3a227-max98357.c, whose only
+ * mandatory codec link is COMP_CODEC("mt6358-sound",
+ * "mt6358-snd-codec-aif1") and whose only required property is
+ * mediatek,platform. It is already built by
+ * CONFIG_SND_SOC_MT8183_MT6358_TS3A227E_MAX98357A=m. The ACE gap was therefore
+ * never a missing driver -- it was this missing node. mt8183-pumpkin.dts:636
+ * is the same card on the same die.
+ *
+ * No mediatek,hdmi-codec phandle: that FE/BE pair needs AFE I2S5 muxed into
+ * dpi_func_pins, and the ACE HDMI-audio routing has not been read off the
+ * schematic (see the &dpi0 comment). The TRRS path does not need it.
+ */
+/ {
+	sound {
+		compatible = "mediatek,mt8183-mt6358-sound";
+		mediatek,platform = <&afe>;
+		status = "okay";
+	};
+};
+
+&mt6358codec {
+	Avdd-supply = <&mt6358_vaud28_reg>;
+};
+
+
+/* UART1 -- the J3 3-pin header (schematic sheet 5: "UART1_TX ball H4,
+ * UART1_RX ball H3", J3 pin 1 UART1_RX / pin 2 UART1_TX / pin 3 D_GND).
+ * Datasheet: H4 = GPIO115, H3 = GPIO121, and UTXD1/URXD1 is alt-2 on that
+ * pair. 1.8 V, no level shifter and no pull-up anywhere on the nets. */
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pins>;
+	status = "okay";
+};
+
+/* SPI0 -- the 40-pin header's SPI_* group, which doubles as JTAG on this
+ * board (SPI_CLK_JTCK / SPI_MO_JTDI / SPI_MI_JTDO / SPI_CSB_JTMS, sheet 19
+ * CON1 pins 22 / 7 / 16+18 / 11). Every ball on the schematic matches the
+ * datasheet 1:1: AF3 = GPIO88 = SPI_CLK, AH2 = GPIO87 = SPI_MO,
+ * AJ2 = GPIO85 = SPI_MI, AG3 = GPIO86 = SPI_CSB. */
+&spi0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_pins>;
+	mediatek,pad-select = <0>;
+	status = "okay";
+};
+
+/* SPI1 -- the header's second SPI (CON1 pins 19 SPI1_MO, 21 SPI1_MI,
+ * 23 SPI1_CLK, 24 SPI1_CSB). The datasheet pin table names GPIO161..GPIO164
+ * SPI1_MI / SPI1_CSB / SPI1_MO / SPI1_CLK, which is the same net vocabulary
+ * the schematic uses; mt8183-pinfunc.h spells that group SPI1_A_*.
+ *
+ * ⚠️ One unresolved cell: sheet 19 annotates CON1 pin 24 as
+ * "GPIO56 (SPI1_CSB, Raspberry-SPI0 CE1)", i.e. it may route the chip select
+ * from GPIO56 rather than from the SPI1_A_CSB pin. GPIO56 is NOT muxed here;
+ * if a device on this bus never selects, that annotation is where to look. */
+&spi1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi1_pins>;
+	mediatek,pad-select = <0>;
+	status = "okay";
+};
+
+/* SoC AUXADC. Feeds the board thermistor divider on AUX_IN2_NTC and the AP
+ * thermistor NTC1501 (NCP15WF104F03RC) on AUX_IN0_NTC, schematic sheet 4.
+ * The consumer side is not modelled: no iio-hwmon / thermal channel is
+ * declared, because the divider ratios are on the schematic but the
+ * NTC beta/table is not, and a temperature curve invented here would be a
+ * hardware claim. */
+&auxadc {
+	status = "okay";
+};
+
+/* SCP (System Companion Processor) -- an ARM Cortex-M4, EABI5, NOT the RISC-V
+ * core the MT8195/MT8188 generation uses. It is not optional equipment on this
+ * board: mt8183.dtsi wires BOTH vcodec nodes to it with an unconditional
+ * mediatek,scp = <&scp>, so with the node disabled mtk_vcodec_fw_scp_init()
+ * fails scp_get() and the decoder and encoder both abort probe --
+ * "mtk-vcodec-dec 16020000.video-codec: SCP pdev failed" /
+ * "could not get vdec scp handle", measured on this board 2026-09-14. MDP3
+ * degrades rather than aborts ("no SCP; kernel-direct-only mode").
+ *
+ * firmware-name is load-bearing here and its absence is a silent trap, not a
+ * default -- though NOT by the generic rproc_alloc() route. mtk_scp supplies
+ * its own default before that route can be reached: scp_rproc_init()
+ * pre-initialises fw_name to the BARE string "scp.img"
+ * (drivers/remoteproc/mtk_scp.c:1188), calls rproc_of_parse_firmware() and
+ * explicitly tolerates its -EINVAL when the property is missing (:1193), so
+ * devm_rproc_alloc() (:1196) is always handed a non-NULL name and
+ * rproc_alloc_firmware()'s kasprintf("rproc-%s-fw", name) fallback
+ * (remoteproc_core.c:2408) is never taken. The failure is therefore a request
+ * for "scp.img" at the TOP of the firmware search path, not for
+ * "rproc-scp-fw". Either way no such file ships -- linux-firmware puts the
+ * image at mediatek/mt8183/scp.img and request_firmware() does a literal path
+ * lookup with no subdirectory search -- so the load fails and both vcodec
+ * nodes abort probe. mt8183-kukui.dtsi sets the property and is right. The
+ * blob is the stock linux-firmware one, linked for the 0x50000000 window
+ * reserved above.
+ *
+ * 🔴 NO scp_pins here, and that is a board fact rather than an omission.
+ * mt8183-kukui.dtsi's scp_pins muxes GPIO110/GPIO112 to TP_URXD1_AO/TP_UTXD1_AO
+ * for the SCP's own debug UART. On ACE those two pins are the I2C7 bus
+ * (PINMUX_GPIO110__FUNC_SCL7 / PINMUX_GPIO112__FUNC_SDA7, &i2c7 above), so
+ * copying kukui's node would steal a live board bus to gain a console nobody
+ * can reach. The SCP debug UART is diagnostic only; the core boots without it,
+ * which is what mt8183-pumpkin.dts demonstrates.
+ *
+ * No cros-ec-rpmsg child either: that is the Chromebook EC talking over the
+ * SCP's rpmsg channel. ACE has no embedded controller.
+ */
+&scp {
+	status = "okay";
+	firmware-name = "mediatek/mt8183/scp.img";
+};
+
+/*
+ * Dual Cadence Vision-P6 IPU. The nodes, iommus, and SPI 292/293 already
+ * exist in mt8183.dtsi as status = "disabled" (SoC bring-up opt-in). ACE
+ * is the same die as i500; r31 DRAM-boot proved mtk-vp6 probe with
+ * FIT-time fdtput ACE_VP6=1. This overlay is the production DTB form of
+ * that okay, so the compiled mt8183-med-mt83-ace.dtb ships both cores
+ * enabled without a pack-time fdtput.
+ */
+&vp6_core0 {
+	status = "okay";
+};
+
+&vp6_core1 {
+	status = "okay";
+};
+
+/* USB Type-C dual-role. dr_mode = "otg" so the OS can hot-swap host<->device;
+ * drivers/usb/mtu3/mtu3_plat.c maps USB_DR_MODE_OTG -> PERIPHERAL for u-boot's
+ * gadget, so BL33's DFU/UMS/fastboot still works under it.
+ *
+ * 🔴 usb-role-switch + role-switch-default-mode = "peripheral": without a role
+ * property the board settles in HOST role and the device side is electrically
+ * dead, which is measured, not inferred (2026-09-14: a fully composed NCM
+ * gadget reported `UDC bind rc=0`, `UDC readback = 11201000.usb` and then
+ * `udc state = not attached`, beside `usb1 1d6b:0002 xHCI Host Controller` in
+ * the board's own /sys/bus/usb/devices, while the lab host never enumerated
+ * anything).
+ *
+ * Why the DT is the right layer, read from the driver rather than assumed:
+ * ssusb_otg_switch_init() (drivers/usb/mtu3/mtu3_dr.c) is a three-way branch --
+ * debugfs `mode` if manual_drd_enabled, a usb_role_switch if role_sw_used, else
+ * ssusb_extcon_register(). Both flags are DT-only
+ * (mtu3_plat.c: of_property_read_bool(node, "enable-manual-drd") and
+ * of_property_read_bool(node, "usb-role-switch") -- NEITHER carries a vendor
+ * prefix, which is the easy way to write this and get a silent false). With
+ * neither declared the driver took the extcon branch on a board that has no
+ * extcon, ssusb_extcon_register() returned early on a NULL edev, no
+ * ssusb_set_mode() was ever called, and the role was left to the hardware
+ * IDDIG pin -- which on this board cannot indicate device (see below). So
+ * there was no control surface of any kind: `/sys/class/usb_role/` was empty
+ * and mtu3's debugfs carried no `mode` file.
+ *
+ * usb-role-switch is chosen over enable-manual-drd for the same one-line cost:
+ * it creates a stable /sys/class/usb_role/<name>/role with
+ * allow_userspace_control = true (ssusb_role_sw_register() sets it), rather
+ * than a debugfs file whose write path additionally rejects a same-state
+ * request with -EINVAL.
+ *
+ * role-switch-default-mode = "peripheral" is what makes the board useful with
+ * no userspace action: usb_get_role_switch_default_mode() (usb/common/common.c)
+ * reads exactly this string, and ssusb_role_sw_register() maps
+ * USB_DR_MODE_PERIPHERAL -> default_role = USB_ROLE_DEVICE and calls
+ * ssusb_set_mode() with it at probe. dr_mode stays "otg", so host is NOT
+ * removed -- a write of `host` to that sysfs file still switches back. That is
+ * the whole reason this is not dr_mode = "peripheral", which would strip host
+ * capability from the board's ONLY USB port.
+ *
+ * 🔴 The CC presentation says DEVICE, and nothing in the board reports it to
+ * the SoC -- which is why the default belongs in the DT.
+ *
+ * The receptacle is DESIGNED as Rd/Rd: 5.1K pull-downs to D_GND on CC1 and CC2,
+ * R6 and R7 on sheet 1 of the V1.0 final schematic (the older
+ * eMCP revision spells the same pair R5/R6). That is a UFP/sink -- a port that
+ * should come up as a peripheral. "5.1K" occurs exactly twice in the whole
+ * schematic and both are this pair. This corrects earlier bring-up notes that
+ * recorded the OPPOSITE and called it a design gap "that must be corrected";
+ * the likely origin is a designator collision with R8, a 470R LED resistor that
+ * also renders as "R6" at a far column of the same sheet.
+ *
+ * ⚪ DESIGNED, not necessarily FITTED. This unit was reworked -- R1/R2 removed
+ * (per user, 2026-03-12), Q7 never placed (2026-03-11), R90319 removed
+ * (2026-03-13) -- and those notes name neither R6 nor R7, so the population of
+ * the two Rd parts on THIS board is simply unrecorded. Unknown, not absent.
+ * Nothing here depends on resolving it: the DT default decides the role
+ * regardless of what the CC pins do.
+ *
+ * ⚠️ CORRECTION, and it matters because the wrong version of it was written
+ * first: this board's revision has NO CC-to-IDDIG tie. The 0R ties from CC1/CC2
+ * to IDDIG (R90312/R90313) exist only in the OLDER eMCP revision, which is not
+ * what this unit is. Here IDDIG (ball AF23 -- not the AC23 the schematic
+ * analysis doc used to give) reaches the SoC through R90319 (0R), and the
+ * board-rework notes say R90319 was REMOVED (per user, 2026-03-13), with Q7
+ * (NC/LM20B50NGI3A) never placed. On the reworked unit, then, IDDIG is
+ * isolated from CC entirely and floats to the SoC's internal pull-up. That is
+ * an argument for the DT default, not against it: the one signal the
+ * controller could have used for role detection is not connected to anything
+ * that knows what is plugged in. Do not restate the eMCP divider story about
+ * this rev.
+ *
+ * What IS established is the software cause, and it is sufficient on its own:
+ * with neither role property in the DT the driver took the extcon branch on a
+ * board with no extcon, so ssusb_set_mode() was never called from anywhere and
+ * the role was whatever the controller powered up as. The measured result was
+ * host, with a host cable attached, and no surface to change it.
+ *
+ * 🔴 mediatek,u3p-dis-msk: ACE cannot run SuperSpeed, because its U3 analog
+ * supply is not merely absent -- it is tied to ground.
+ *
+ * Schematic g500_mt8385_schematic_v10_final_full.txt, SoC power-ball sheet
+ * :932-947, one line per analog rail. Every USB rail there names a supply net
+ * except one:
+ *
+ *   H22  AVDD12_USB    -> VA12_PMU     (MT6358 VA12)
+ *   F27  AVDD18_USB    -> AVDD18_SOC
+ *   F25  AVDD33_USB    -> VUSB_PMU     (MT6358 VUSB, this node's vusb33-supply)
+ *   H23  AVDD18_SSUSB  -> AVDD18_SOC
+ *   K27  AVDD09_SSUSB  -> D_GND        <-- grounded
+ *
+ * and the rail that would have fed K27 is never brought into existence: :3571
+ * reads "R1  NC  EXT_PMIC_EN2  TP21  EXT_PMIC_EN2 : VA09 for SSUSB/UFS,
+ * Floating if not used". The enable resistor is a do-not-populate, the net ends
+ * at a test point, and grepping all three ACE schematic texts for "VA09" finds
+ * that comment and nothing else -- there is no VA09 net on this board.
+ *
+ * That is what the -110 is. ssusb_check_clocks() (mtu3_plat.c:29-35) polls
+ * U3D_SSUSB_IP_PW_STS1 for SSUSB_U3_MAC_RST_B_STS | SSUSB_SYS125_RST_B_STS |
+ * SSUSB_REF_RST_B_STS | SSUSB_SYSPLL_STABLE with a 20 ms timeout, and
+ * mtu3_core.c:103 puts the U3-MAC bit in that mask whenever u3_capable is set --
+ * which it is, because the IP reports a U3 device port (mtu3_core.c:864) even
+ * though this board does not power one. Our BL33 fails in the same place for
+ * the same reason: u-boot's mtu3_plat.c:47 polls the identical register and the
+ * identical four bits, which is why "clks of sts1 are not stable!" and Linux's
+ * -110 are one fault seen twice, not two.
+ *
+ * mediatek,u3p-dis-msk = <0x1> clears u3_capable (mtu3_core.c:825-826), which
+ * drops the U3-MAC bit from the poll and caps max_speed at high-speed
+ * (:845-846); maximum-speed states that explicitly rather than by side effect.
+ *
+ * ⚠️ This supersedes the file header's earlier refusal to set this property.
+ * That refusal read the SS pairs as proof of a working U3 PHY: on the discrete
+ * variant SSUSB_TXP/TXN/RXP/RXN really are routed to CN1 A2/A3/B10/B11, AC-
+ * coupled through C6/C7 (:66-71, :214-218). But routing is not power. The pairs
+ * are stranded -- and on the eMCP variant they are not even that, terminating at
+ * TP223/TP225/TP226 with a USB2-only 16-pin connector
+ * (med-mt83-ace-emcp-20250616_full.txt:13-115, :1239-1252). Declaring no-U3
+ * here contradicts no schematic; it transcribes one.
+ *
+ * USB2 is unaffected: AVDD12_USB, AVDD18_USB and AVDD33_USB are all supplied.
+ */
+&ssusb {
+	dr_mode = "otg";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
+	mediatek,u3p-dis-msk = <0x1>;
+	maximum-speed = "high-speed";
+	vusb33-supply = <&mt6358_vusb_reg>;
+	status = "okay";
+};
+
+&usb_host {
+	vusb33-supply = <&mt6358_vusb_reg>;
+	status = "okay";
+};
+
+/* MT8183 cpufreq: the MT6358 supplies the little cluster from VPROC12 and the
+ * big cluster from VPROC11. SoC+PMIC pairing, not an ACE routing claim -- it is
+ * identical in every in-tree MT8183 board file. Absent from the u-boot copy
+ * because u-boot runs no DVFS. */
+&cci {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu0 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu1 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu2 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu3 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu4 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&cpu5 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&cpu6 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&cpu7 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+/* PWM_A reaches the 40-pin header on CON1 pin 28 ("Raspberry-PWM0",
+ * schematic sheet 19). Pin: GPIO90, ball AA6 -- the schematic prints AA6
+ * beside the PWM block on sheet 5 and the datasheet gives GPIO90 = AA6 with
+ * PWM_A as its default name.
+ *
+ * 🔴 This is &pwm1, NOT &pwm0. mt8183.dtsi carries two PWM blocks and their
+ * labels do not run in the order the names suggest: pwm0 @0x1100e000 is
+ * "mediatek,mt8183-disp-pwm", the DISPLAY BACKLIGHT controller whose signal
+ * is DISP_PWM, while pwm1 @0x11006000 is "mediatek,mt8183-pwm", the
+ * general-purpose 4-channel block that owns PWM_A/B/C. An earlier revision of
+ * this file hung the header's PWM_A pin off &pwm0, which is a wrong hardware
+ * claim -- it would have handed a 40-pin header line to the backlight engine.
+ * Both nodes are status-less in the dtsi (enabled by default), so the error
+ * was in the pin routing only, not in whether either probed.
+ *
+ * DISP_PWM itself is left alone: the ACE schematic has the net (sheet 5) but
+ * its destination is not established, and the LCD backlight enable that DOES
+ * reach J6 is LCM1_BL_EN through the U8 level shifter (sheet 17), a GPIO, not
+ * this PWM.
+ *
+ * ⚠️ PWM_B (CON1 pin 33) and PWM_C (CON1 pin 35) are NOT muxed: each has
+ * five candidate pins in mt8183-pinfunc.h and the schematic prints no ball
+ * against either, so the routing is unread. The controller is shared, so both
+ * channels still appear in sysfs -- they simply do not reach the header. */
+&pwm1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm_pins>;
+	status = "okay";
+};
+
+&pio {
+	i2c_pins_0: i2c0-pins {
+		pins_i2c {
+			pinmux = <PINMUX_GPIO82__FUNC_SDA0>,
+				 <PINMUX_GPIO83__FUNC_SCL0>;
+			mediatek,pull-up-adv = <3>;
+		};
+	};
+
+	i2c_pins_1: i2c1-pins {
+		pins_i2c {
+			pinmux = <PINMUX_GPIO81__FUNC_SDA1>,
+				 <PINMUX_GPIO84__FUNC_SCL1>;
+			mediatek,pull-up-adv = <3>;
+		};
+	};
+
+	i2c_pins_4: i2c4-pins {
+		pins_i2c {
+			pinmux = <PINMUX_GPIO105__FUNC_SCL4>,
+				 <PINMUX_GPIO106__FUNC_SDA4>;
+			mediatek,pull-up-adv = <3>;
+		};
+	};
+
+	i2c_pins_5: i2c5-pins {
+		pins_i2c {
+			pinmux = <PINMUX_GPIO48__FUNC_SCL5>,
+				 <PINMUX_GPIO49__FUNC_SDA5>;
+			mediatek,pull-up-adv = <3>;
+		};
+	};
+
+	i2c6_pins: i2c6-pins {
+		pins_i2c {
+			pinmux = <PINMUX_GPIO113__FUNC_SCL6>,
+				 <PINMUX_GPIO114__FUNC_SDA6>;
+			mediatek,pull-up-adv = <3>;
+		};
+	};
+
+	i2c_pins_7: i2c7-pins {
+		pins_i2c {
+			pinmux = <PINMUX_GPIO110__FUNC_SCL7>,
+				 <PINMUX_GPIO112__FUNC_SDA7>;
+			mediatek,pull-up-adv = <3>;
+		};
+	};
+
+	ite_pins: ite-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO4__FUNC_GPIO4>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		/* IT66121_SYSRSTN, ball AE2. Parked deasserted (active-low),
+		 * never pulsed -- see the hdmitx@4c comment. */
+		pins-rst {
+			pinmux = <PINMUX_GPIO6__FUNC_GPIO6>;
+			output-high;
+		};
+	};
+
+	dpi_func_pins: dpi-func-pins {
+		pins-dpi {
+			pinmux = <PINMUX_GPIO13__FUNC_DBPI_D0>,
+				 <PINMUX_GPIO14__FUNC_DBPI_D1>,
+				 <PINMUX_GPIO15__FUNC_DBPI_D2>,
+				 <PINMUX_GPIO16__FUNC_DBPI_D3>,
+				 <PINMUX_GPIO17__FUNC_DBPI_D4>,
+				 <PINMUX_GPIO18__FUNC_DBPI_D5>,
+				 <PINMUX_GPIO19__FUNC_DBPI_D6>,
+				 <PINMUX_GPIO20__FUNC_DBPI_D7>,
+				 <PINMUX_GPIO21__FUNC_DBPI_D8>,
+				 <PINMUX_GPIO22__FUNC_DBPI_D9>,
+				 <PINMUX_GPIO23__FUNC_DBPI_D10>,
+				 <PINMUX_GPIO24__FUNC_DBPI_D11>,
+				 <PINMUX_GPIO25__FUNC_DBPI_HSYNC>,
+				 <PINMUX_GPIO26__FUNC_DBPI_VSYNC>,
+				 <PINMUX_GPIO27__FUNC_DBPI_DE>,
+				 <PINMUX_GPIO28__FUNC_DBPI_CK>;
+		};
+	};
+
+	dpi_idle_pins: dpi-idle-pins {
+		pins-idle {
+			pinmux = <PINMUX_GPIO13__FUNC_GPIO13>,
+				 <PINMUX_GPIO14__FUNC_GPIO14>,
+				 <PINMUX_GPIO15__FUNC_GPIO15>,
+				 <PINMUX_GPIO16__FUNC_GPIO16>,
+				 <PINMUX_GPIO17__FUNC_GPIO17>,
+				 <PINMUX_GPIO18__FUNC_GPIO18>,
+				 <PINMUX_GPIO19__FUNC_GPIO19>,
+				 <PINMUX_GPIO20__FUNC_GPIO20>,
+				 <PINMUX_GPIO21__FUNC_GPIO21>,
+				 <PINMUX_GPIO22__FUNC_GPIO22>,
+				 <PINMUX_GPIO23__FUNC_GPIO23>,
+				 <PINMUX_GPIO24__FUNC_GPIO24>,
+				 <PINMUX_GPIO25__FUNC_GPIO25>,
+				 <PINMUX_GPIO26__FUNC_GPIO26>,
+				 <PINMUX_GPIO27__FUNC_GPIO27>,
+				 <PINMUX_GPIO28__FUNC_GPIO28>;
+		};
+	};
+
+	uart1_pins: uart1-pins {
+		pins-uart {
+			pinmux = <PINMUX_GPIO115__FUNC_UTXD1>,
+				 <PINMUX_GPIO121__FUNC_URXD1>;
+		};
+	};
+
+	spi0_pins: spi0-pins {
+		pins-spi {
+			pinmux = <PINMUX_GPIO85__FUNC_SPI0_MI>,
+				 <PINMUX_GPIO86__FUNC_SPI0_CSB>,
+				 <PINMUX_GPIO87__FUNC_SPI0_MO>,
+				 <PINMUX_GPIO88__FUNC_SPI0_CLK>;
+			bias-disable;
+		};
+	};
+
+	spi1_pins: spi1-pins {
+		pins-spi {
+			pinmux = <PINMUX_GPIO161__FUNC_SPI1_A_MI>,
+				 <PINMUX_GPIO162__FUNC_SPI1_A_CSB>,
+				 <PINMUX_GPIO163__FUNC_SPI1_A_MO>,
+				 <PINMUX_GPIO164__FUNC_SPI1_A_CLK>;
+			bias-disable;
+		};
+	};
+
+	pwm_pins: pwm-pins {
+		pins-pwm {
+			pinmux = <PINMUX_GPIO90__FUNC_PWM_A>;
+		};
+	};
+
+	mmc0_pins_default: mmc0-pins-default {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO128__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO125__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO132__FUNC_MSDC0_DAT3>,
+				 <PINMUX_GPIO126__FUNC_MSDC0_DAT4>,
+				 <PINMUX_GPIO129__FUNC_MSDC0_DAT5>,
+				 <PINMUX_GPIO127__FUNC_MSDC0_DAT6>,
+				 <PINMUX_GPIO130__FUNC_MSDC0_DAT7>,
+				 <PINMUX_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-up-adv = <01>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO124__FUNC_MSDC0_CLK>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <2>;
+		};
+
+		pins_rst {
+			pinmux = <PINMUX_GPIO133__FUNC_MSDC0_RSTB>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <01>;
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-pins-uhs {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO128__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO125__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO132__FUNC_MSDC0_DAT3>,
+				 <PINMUX_GPIO126__FUNC_MSDC0_DAT4>,
+				 <PINMUX_GPIO129__FUNC_MSDC0_DAT5>,
+				 <PINMUX_GPIO127__FUNC_MSDC0_DAT6>,
+				 <PINMUX_GPIO130__FUNC_MSDC0_DAT7>,
+				 <PINMUX_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-up-adv = <01>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO124__FUNC_MSDC0_CLK>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <2>;
+		};
+
+		pins_ds {
+			pinmux = <PINMUX_GPIO131__FUNC_MSDC0_DSL>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <2>;
+		};
+
+		pins_rst {
+			pinmux = <PINMUX_GPIO133__FUNC_MSDC0_RSTB>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-up-adv = <01>;
+		};
+	};
+
+	/* EXT_3V3_ENABLE, ball V22. Parked output-low so the pin is a GPIO
+	 * before the regulator core claims it; the fixed-regulator driver then
+	 * drives it high. See the &ext_3v3 node for the sourcing. */
+	ext_3v3_en_pins: ext-3v3-en-pins {
+		pins-en {
+			pinmux = <PINMUX_GPIO166__FUNC_GPIO166>;
+			output-low;
+		};
+	};
+
+	/* LCM1_EN, ball L22. Parked low so the FPC rail stays off until
+	 * the fixed regulator claims the pin. */
+	lcm_en_pins: lcm-en-pins {
+		pins-en {
+			pinmux = <PINMUX_GPIO153__FUNC_GPIO153>;
+			output-low;
+		};
+	};
+
+	/* WIFI_RESET_N, ball Y7. Parked ASSERTED (output-low, active-low) so the
+	 * module is held in reset until mmc-pwrseq-simple releases it after the
+	 * supply is up. See the &wifi_pwrseq node. */
+	wifi_reset_pins: wifi-reset-pins {
+		pins-rst {
+			pinmux = <PINMUX_GPIO178__FUNC_GPIO178>;
+			output-low;
+		};
+	};
+
+	mmc1_pins_default: mmc1-pins-default {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO31__FUNC_MSDC1_CMD>,
+				 <PINMUX_GPIO32__FUNC_MSDC1_DAT0>,
+				 <PINMUX_GPIO34__FUNC_MSDC1_DAT1>,
+				 <PINMUX_GPIO33__FUNC_MSDC1_DAT2>,
+				 <PINMUX_GPIO30__FUNC_MSDC1_DAT3>;
+			input-enable;
+			mediatek,pull-up-adv = <2>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO29__FUNC_MSDC1_CLK>;
+			input-enable;
+			mediatek,pull-down-adv = <2>;
+		};
+	};
+
+	mmc1_pins_uhs: mmc1-pins-uhs {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO31__FUNC_MSDC1_CMD>,
+				 <PINMUX_GPIO32__FUNC_MSDC1_DAT0>,
+				 <PINMUX_GPIO34__FUNC_MSDC1_DAT1>,
+				 <PINMUX_GPIO33__FUNC_MSDC1_DAT2>,
+				 <PINMUX_GPIO30__FUNC_MSDC1_DAT3>;
+			drive-strength = <6>;
+			input-enable;
+			mediatek,pull-up-adv = <2>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO29__FUNC_MSDC1_CLK>;
+			drive-strength = <8>;
+			mediatek,pull-down-adv = <2>;
+			input-enable;
+		};
+	};
+};

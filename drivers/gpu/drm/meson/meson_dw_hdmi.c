@@ -276,26 +276,33 @@ static inline void dw_hdmi_g12a_dwc_write(struct meson_dw_hdmi *dw_hdmi,
 
 /* Setup PHY bandwidth modes */
 static void meson_hdmi_phy_setup_mode(struct meson_dw_hdmi *dw_hdmi,
-				      const struct drm_display_mode *mode,
-				      bool mode_is_420)
+				      unsigned int tmds_clock)
 {
 	struct meson_drm *priv = dw_hdmi->priv;
-	unsigned int pixel_clock = mode->clock;
 
-	/* For 420, pixel clock is half unlike venc clock */
-	if (mode_is_420) pixel_clock /= 2;
-
+	/*
+	 * The PHY bandwidth band must be picked from the real TMDS CHARACTER
+	 * RATE (in kHz, computed once by the caller -- dw_hdmi_phy_init() --
+	 * and passed in here so this function and the >340MHz TMDS-pattern /
+	 * SCDC decision in dw_hdmi_phy_init() can never disagree), not the raw
+	 * pixel clock: 4:2:0 halves the pixel rate and, together with 4:4:4,
+	 * scales by depth/8 for deep color; 4:2:2 never scales (it carries any
+	 * depth within the 8-bit bandwidth). e.g. 4K60 420-10 = 594/2 * 10/8 =
+	 * 371.25MHz (the 3.7Gbps band), NOT the 297MHz (2.97Gbps band) that the
+	 * halved pixel clock alone selects -- which leaves the link
+	 * under-driven / marginal.
+	 */
 	if (dw_hdmi_is_compatible(dw_hdmi, "amlogic,meson-gxl-dw-hdmi") ||
 	    dw_hdmi_is_compatible(dw_hdmi, "amlogic,meson-gxm-dw-hdmi")) {
-		if (pixel_clock >= 371250) {
+		if (tmds_clock >= 371250) {
 			/* 5.94Gbps, 3.7125Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x333d3282);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0x2136315b);
-		} else if (pixel_clock >= 297000) {
+		} else if (tmds_clock >= 297000) {
 			/* 2.97Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x33303382);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0x2036315b);
-		} else if (pixel_clock >= 148500) {
+		} else if (tmds_clock >= 148500) {
 			/* 1.485Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x33303362);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0x2016315b);
@@ -306,11 +313,11 @@ static void meson_hdmi_phy_setup_mode(struct meson_dw_hdmi *dw_hdmi,
 		}
 	} else if (dw_hdmi_is_compatible(dw_hdmi,
 					 "amlogic,meson-gxbb-dw-hdmi")) {
-		if (pixel_clock >= 371250) {
+		if (tmds_clock >= 371250) {
 			/* 5.94Gbps, 3.7125Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x33353245);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0x2100115b);
-		} else if (pixel_clock >= 297000) {
+		} else if (tmds_clock >= 297000) {
 			/* 2.97Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x33634283);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0xb000115b);
@@ -321,12 +328,12 @@ static void meson_hdmi_phy_setup_mode(struct meson_dw_hdmi *dw_hdmi,
 		}
 	} else if (dw_hdmi_is_compatible(dw_hdmi,
 					 "amlogic,meson-g12a-dw-hdmi")) {
-		if (pixel_clock >= 371250) {
+		if (tmds_clock >= 371250) {
 			/* 5.94Gbps, 3.7125Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x37eb65c4);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0x2ab0ff3b);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL5, 0x0000080b);
-		} else if (pixel_clock >= 297000) {
+		} else if (tmds_clock >= 297000) {
 			/* 2.97Gbps */
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL0, 0x33eb6262);
 			regmap_write(priv->hhi, HHI_HDMI_PHY_CNTL3, 0x2ab0ff3b);
@@ -360,22 +367,73 @@ static int dw_hdmi_phy_init(struct dw_hdmi *hdmi, void *data,
 			    const struct drm_display_mode *mode)
 {
 	struct meson_dw_hdmi *dw_hdmi = (struct meson_dw_hdmi *)data;
-	bool is_hdmi2_sink = display->hdmi.scdc.supported;
 	struct meson_drm *priv = dw_hdmi->priv;
 	unsigned int wr_clk =
 		readl_relaxed(priv->io_base + _REG(VPU_HDMI_SETTING));
-	bool mode_is_420 = false;
+	/*
+	 * E5: this used to also OR in drm_mode_is_420_only(display, mode) and
+	 * (!is_hdmi2_sink && drm_mode_is_420_also(display, mode)) -- PRE-
+	 * negotiation predictions mirrored from dw-hdmi's own eligibility gate
+	 * for OFFERING a 420 candidate. They go stale whenever DC-002's
+	 * 444-preferred candidate ordering (dw-hdmi.c
+	 * atomic_get_output_bus_fmts, ~2994-3001) actually picks 444/422 on a
+	 * 420-also sink: with is_hdmi2_sink scdc-only here, a 420-also
+	 * non-SCDC sink kept "!is_hdmi2_sink && 420_also" == true even though
+	 * the negotiated link is 444 -- under-driving the PHY band and, at
+	 * 4K60 444 (594MHz), selecting the LOW (<=340MHz) TMDS pattern for a
+	 * link that needs the high pattern + 1/40 scrambling. Black screen.
+	 *
+	 * dw_hdmi_bus_fmt_is_420(hdmi) reads hdmi->hdmi_data.enc_out_bus_format
+	 * directly -- the ACTUAL negotiated format -- and is already the sole
+	 * source of truth this function trusts for mode_is_422 one line below
+	 * (since E3). By the time phy_init runs, negotiation is complete (see
+	 * the E14 comment on color_depth below), so ground truth alone is
+	 * both sufficient and correct.
+	 */
+	bool mode_is_420 = dw_hdmi_bus_fmt_is_420(hdmi);
+	bool mode_is_422 = dw_hdmi_bus_fmt_is_422(hdmi);
+	unsigned int color_depth = dw_hdmi_bus_fmt_color_depth(hdmi);
+	unsigned int tmds_clock;
 
-	DRM_DEBUG_DRIVER("\"%s\" div%d\n", mode->name,
-			 mode->clock > 340000 ? 40 : 10);
+	/*
+	 * E14: color_depth is 0 for MEDIA_BUS_FMT_FIXED (dw-hdmi's default
+	 * case) -- e.g. before bus-format negotiation has actually run.
+	 * Unguarded, this zeroes tmds_clock below, forcing the lowest PHY
+	 * band + div10 pattern for every mode. Unreachable today (meson is
+	 * always the first/only bridge negotiating a real format by the
+	 * time this runs), but a silent 0 here is unsafe -- clamp to the
+	 * 8-bit default and log loudly instead.
+	 */
+	if (WARN_ON(!color_depth))
+		color_depth = 8;
 
-	if (drm_mode_is_420_only(display, mode) ||
-	    (!is_hdmi2_sink && drm_mode_is_420_also(display, mode)) ||
-	    dw_hdmi_bus_fmt_is_420(hdmi))
-		mode_is_420 = true;
+	/*
+	 * Real TMDS character rate (kHz): 4:2:0 halves the pixel rate, and
+	 * 4:4:4/4:2:0 deep color scales it by depth/8 -- but 4:2:2 does NOT get
+	 * this bump (it carries any depth within the SAME bandwidth as 8-bit
+	 * 4:4:4/4:2:2, matching dw-hdmi's OWN mtmdsclock computation, which
+	 * excludes 4:2:2 from the depth scaling -- see hdmi_bus_fmt_is_yuv422()
+	 * in dw-hdmi.c). Scaling 4:2:2 anyway (the bug this fixes) over-selects
+	 * the PHY band and wrongly enables the >340MHz TMDS pattern, so meson's
+	 * belief and dw-hdmi's own (correct) mtmdsclock -- and thus its SCDC
+	 * 1/40 bit-clock-ratio decision -- disagree and the sink can't lock.
+	 * The high-TMDS (>340MHz) clock pattern below + the PHY band + the SCDC
+	 * ratio all key off THIS value, not the pixel clock -- e.g. 4K60 420-10
+	 * is 371.25MHz (>340), which the pixel clock (halved to 297) alone
+	 * misses, leaving the high pattern off + the PHY under-driven -> a
+	 * marginal link the sink cannot lock.
+	 */
+	tmds_clock = mode->clock;
+	if (mode_is_420)
+		tmds_clock /= 2;
+	if (!mode_is_422)
+		tmds_clock = tmds_clock * color_depth / 8;
+
+	DRM_DEBUG_DRIVER("\"%s\" tmds=%ukHz div%d\n", mode->name,
+			 tmds_clock, tmds_clock > 340000 ? 40 : 10);
 
 	/* TMDS pattern setup */
-	if (mode->clock > 340000 && !mode_is_420) {
+	if (tmds_clock > 340000) {
 		dw_hdmi->data->top_write(dw_hdmi, HDMITX_TOP_TMDS_CLK_PTTN_01,
 				  0);
 		dw_hdmi->data->top_write(dw_hdmi, HDMITX_TOP_TMDS_CLK_PTTN_23,
@@ -393,7 +451,7 @@ static int dw_hdmi_phy_init(struct dw_hdmi *hdmi, void *data,
 	dw_hdmi->data->top_write(dw_hdmi, HDMITX_TOP_TMDS_CLK_PTTN_CNTL, 0x2);
 
 	/* Setup PHY parameters */
-	meson_hdmi_phy_setup_mode(dw_hdmi, mode, mode_is_420);
+	meson_hdmi_phy_setup_mode(dw_hdmi, tmds_clock);
 
 	/* Disable clock, fifo, fifo_wr */
 	regmap_update_bits(priv->hhi, HHI_HDMI_PHY_CNTL1, 0xf, 0);
@@ -413,29 +471,43 @@ static int dw_hdmi_phy_init(struct dw_hdmi *hdmi, void *data,
 	else
 		writel_relaxed(0, priv->io_base + _REG(ENCP_VIDEO_EN));
 
-	/* Temporary Disable HDMI video stream to HDMI-TX */
+	/*
+	 * DC-001 fix (2026-06-08): re-sync the VPU->HDMI-TX async FIFO in the BSP
+	 * enc_vpu_bridge_reset() order -- stop FIFO source + wr_clk, restore
+	 * wr_clk, re-arm the source, then enable VENC LAST -- with a ~1ms settle
+	 * after each VPU_HDMI_SETTING transition. The previous code re-enabled
+	 * VENC BEFORE restoring wr_clk/source and used no delays, so the FIFO
+	 * re-armed at a wrong word phase. Harmless at 8-bit (1 byte/pixel
+	 * self-aligns) but at 10-bit the packed word straddles the boundary and
+	 * the per-channel misalignment locks in -> scrambled deep-color output.
+	 */
+
+	/* Temporary Disable HDMI video stream to HDMI-TX (source + wr_clk off) */
 	writel_bits_relaxed(0x3, 0,
 			    priv->io_base + _REG(VPU_HDMI_SETTING));
 	writel_bits_relaxed(0xf << 8, 0,
 			    priv->io_base + _REG(VPU_HDMI_SETTING));
+	usleep_range(1000, 1005);
 
-	/* Re-Enable VENC video stream */
-	if (priv->venc.hdmi_use_enci)
-		writel_relaxed(1, priv->io_base + _REG(ENCI_VIDEO_EN));
-	else
-		writel_relaxed(1, priv->io_base + _REG(ENCP_VIDEO_EN));
-
-	/* Push back HDMI clock settings */
+	/* Push back HDMI clock settings (restore wr_clk) */
 	writel_bits_relaxed(0xf << 8, wr_clk & (0xf << 8),
 			    priv->io_base + _REG(VPU_HDMI_SETTING));
+	usleep_range(1000, 1005);
 
-	/* Enable and Select HDMI video source for HDMI-TX */
+	/* Enable and Select HDMI video source for HDMI-TX (re-arm FIFO source) */
 	if (priv->venc.hdmi_use_enci)
 		writel_bits_relaxed(0x3, MESON_VENC_SOURCE_ENCI,
 				    priv->io_base + _REG(VPU_HDMI_SETTING));
 	else
 		writel_bits_relaxed(0x3, MESON_VENC_SOURCE_ENCP,
 				    priv->io_base + _REG(VPU_HDMI_SETTING));
+	usleep_range(1000, 1005);
+
+	/* Re-Enable VENC video stream LAST, after the FIFO is fully re-armed */
+	if (priv->venc.hdmi_use_enci)
+		writel_relaxed(1, priv->io_base + _REG(ENCI_VIDEO_EN));
+	else
+		writel_relaxed(1, priv->io_base + _REG(ENCP_VIDEO_EN));
 
 	return 0;
 }
@@ -666,6 +738,11 @@ static int meson_enable_clk(struct device *dev, char *name)
 	return ret;
 }
 
+static void meson_dw_hdmi_del_link(void *data)
+{
+	device_link_del(data);
+}
+
 static int meson_dw_hdmi_bind(struct device *dev, struct device *master,
 				void *data)
 {
@@ -675,6 +752,7 @@ static int meson_dw_hdmi_bind(struct device *dev, struct device *master,
 	struct drm_device *drm = data;
 	struct meson_drm *priv = drm->dev_private;
 	struct dw_hdmi_plat_data *dw_plat_data;
+	struct device_link *link;
 	int irq;
 	int ret;
 
@@ -685,6 +763,24 @@ static int meson_dw_hdmi_bind(struct device *dev, struct device *master,
 		dev_err(&pdev->dev, "failed to get match data\n");
 		return -ENODEV;
 	}
+
+	/*
+	 * Enforce suspend/resume ordering by making the HDMI TX a supplier
+	 * of the DRM master: it is suspended after and resumed before the
+	 * master. The master's resume re-enables the dw-hdmi bridge, which
+	 * needs the HDMI TX re-initialised by meson_dw_hdmi_pm_resume()
+	 * first when the power domain was switched off across suspend.
+	 */
+	link = device_link_add(master, dev, DL_FLAG_STATELESS);
+	if (!link) {
+		dev_err(dev, "failed to create device link to %s\n",
+			dev_name(master));
+		return -EINVAL;
+	}
+
+	ret = devm_add_action_or_reset(dev, meson_dw_hdmi_del_link, link);
+	if (ret)
+		return ret;
 
 	meson_dw_hdmi = devm_kzalloc(dev, sizeof(*meson_dw_hdmi),
 				     GFP_KERNEL);
@@ -765,7 +861,16 @@ static int meson_dw_hdmi_bind(struct device *dev, struct device *master,
 	dw_plat_data->input_bus_encoding = V4L2_YCBCR_ENC_709;
 	dw_plat_data->ycbcr_420_allowed = true;
 	dw_plat_data->disable_cec = true;
+	dw_plat_data->amd_freesync_hdmi = true;	/* FR-001: advertise FreeSync VSIF */
 	dw_plat_data->output_port = 1;
+	/* Let the bridge fall back to YUV420 for modes whose 4:4:4 PHY clock would
+	 * exceed this SoC's HDMI-TX limit (e.g. S805X 4K). 0 (no limit) elsewhere. */
+	dw_plat_data->max_hdmi_phy_freq =
+		priv->limits ? priv->limits->max_hdmi_phy_freq : 0;
+	/* DC-001: meson VENC emits limited-range YUV -- prefer YUV444 sink for
+	 * deep color (no CSC) and use the limited-range YUV->RGB matrix when an
+	 * RGB sink is chosen. See dw_hdmi_plat_data.yuv_deep_color_first. */
+	dw_plat_data->yuv_deep_color_first = true;
 
 	if (dw_hdmi_is_compatible(meson_dw_hdmi, "amlogic,meson-gxl-dw-hdmi") ||
 	    dw_hdmi_is_compatible(meson_dw_hdmi, "amlogic,meson-gxm-dw-hdmi") ||
@@ -809,6 +914,16 @@ static int __maybe_unused meson_dw_hdmi_pm_suspend(struct device *dev)
 	meson_dw_hdmi->data->top_write(meson_dw_hdmi,
 				       HDMITX_TOP_SW_RESET, 0);
 
+	/*
+	 * D4: serialize against the HPD/rxsense threaded IRQ, which also
+	 * calls dw_hdmi_poweroff()/poweron() (via dw_hdmi_update_power())
+	 * under hdmi->mutex and sleeps ~100ms inside dw_hdmi_setup().
+	 */
+	dw_hdmi_lock(meson_dw_hdmi->hdmi);
+	if (dw_hdmi_is_bridge_on(meson_dw_hdmi->hdmi))
+		dw_hdmi_poweroff(meson_dw_hdmi->hdmi);
+	dw_hdmi_unlock(meson_dw_hdmi->hdmi);
+
 	return 0;
 }
 
@@ -821,7 +936,18 @@ static int __maybe_unused meson_dw_hdmi_pm_resume(struct device *dev)
 
 	meson_dw_hdmi_init(meson_dw_hdmi);
 
+	/*
+	 * D12: dw_hdmi_resume() (-> dw_hdmi_init_hw()) must run BEFORE
+	 * poweron -- it masks every interrupt and resets DDC I2CM. Running
+	 * it after poweron (the previous order here) re-masked interrupts
+	 * and reset I2CM while the PHY was already up and FC packets armed.
+	 */
 	dw_hdmi_resume(meson_dw_hdmi->hdmi);
+
+	dw_hdmi_lock(meson_dw_hdmi->hdmi);
+	if (dw_hdmi_is_bridge_on(meson_dw_hdmi->hdmi))
+		dw_hdmi_poweron(meson_dw_hdmi->hdmi);
+	dw_hdmi_unlock(meson_dw_hdmi->hdmi);
 
 	return 0;
 }

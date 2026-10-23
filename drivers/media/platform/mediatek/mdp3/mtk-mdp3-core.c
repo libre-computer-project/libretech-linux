@@ -83,42 +83,25 @@ int mdp_vpu_get_locked(struct mdp_dev *mdp)
 {
 	int ret = 0;
 
+	/* Open in kernel-direct mode: no SCP boot, no INIT handshake. The SCP
+	 * is attached only when a frame reaches the SCP config fallback
+	 * (mdp_vpu_scp_attach), so a board whose ops are all kernel-direct
+	 * runs MDP without any SCP firmware. */
 	if (mdp->vpu_count++ == 0) {
-		ret = rproc_boot(mdp->rproc_handle);
-		if (ret) {
-			dev_err(&mdp->pdev->dev,
-				"vpu_load_firmware failed %d\n", ret);
-			goto err_load_vpu;
-		}
-		ret = mdp_vpu_register(mdp);
-		if (ret) {
-			dev_err(&mdp->pdev->dev,
-				"mdp_vpu register failed %d\n", ret);
-			goto err_reg_vpu;
-		}
-		ret = mdp_vpu_dev_init(&mdp->vpu, mdp->scp, &mdp->vpu_lock);
+		ret = mdp_vpu_dev_init(&mdp->vpu, NULL, &mdp->vpu_lock);
 		if (ret) {
 			dev_err(&mdp->pdev->dev,
 				"mdp_vpu device init failed %d\n", ret);
-			goto err_init_vpu;
+			mdp->vpu_count--;
 		}
 	}
-	return 0;
-
-err_init_vpu:
-	mdp_vpu_unregister(mdp);
-err_reg_vpu:
-err_load_vpu:
-	mdp->vpu_count--;
 	return ret;
 }
 
 void mdp_vpu_put_locked(struct mdp_dev *mdp)
 {
-	if (--mdp->vpu_count == 0) {
-		mdp_vpu_dev_deinit(&mdp->vpu);
-		mdp_vpu_unregister(mdp);
-	}
+	if (--mdp->vpu_count == 0)
+		mdp_vpu_scp_detach(&mdp->vpu);
 }
 
 void mdp_video_device_release(struct video_device *vdev)
@@ -130,7 +113,8 @@ void mdp_video_device_release(struct video_device *vdev)
 		if (mdp->cmdq_clt[i])
 			cmdq_mbox_destroy(mdp->cmdq_clt[i]);
 
-	scp_put(mdp->scp);
+	if (mdp->scp)
+		scp_put(mdp->scp);
 
 	destroy_workqueue(mdp->job_wq);
 	destroy_workqueue(mdp->clock_wq);
@@ -157,10 +141,18 @@ void mdp_video_device_release(struct video_device *vdev)
 	kfree(mdp);
 }
 
+static void mdp_put_device(void *_dev)
+{
+	struct device *dev = _dev;
+
+	put_device(dev);
+}
+
 static int mdp_mm_subsys_deploy(struct mdp_dev *mdp, enum mdp_infra_id id)
 {
 	struct platform_device *mm_pdev = NULL;
 	struct device **dev;
+	int ret;
 	int i;
 
 	if (!mdp)
@@ -193,6 +185,11 @@ static int mdp_mm_subsys_deploy(struct mdp_dev *mdp, enum mdp_infra_id id)
 		mm_pdev = __get_pdev_by_id(mdp->pdev, mm_pdev, sub_id);
 		if (WARN_ON(!mm_pdev))
 			return -ENODEV;
+
+		ret = devm_add_action_or_reset(&mdp->pdev->dev, mdp_put_device,
+					       &mm_pdev->dev);
+		if (ret)
+			return ret;
 
 		*dev = &mm_pdev->dev;
 	}
@@ -273,18 +270,29 @@ static int mdp_probe(struct platform_device *pdev)
 	mdp->scp = scp_get(pdev);
 	if (!mdp->scp) {
 		mm_pdev = __get_pdev_by_id(pdev, NULL, MDP_INFRA_SCP);
-		if (WARN_ON(!mm_pdev)) {
-			dev_err(&pdev->dev, "Could not get scp device\n");
-			ret = -ENODEV;
-			goto err_destroy_clock_wq;
+		if (mm_pdev) {
+			/* Keep the reference: scp_put() drops it. */
+			mdp->scp = platform_get_drvdata(mm_pdev);
+			if (!mdp->scp)
+				put_device(&mm_pdev->dev);
 		}
-		mdp->scp = platform_get_drvdata(mm_pdev);
 	}
 
-	mdp->rproc_handle = scp_get_rproc(mdp->scp);
-	dev_dbg(&pdev->dev, "MDP rproc_handle: %p", mdp->rproc_handle);
+	/* The SCP is OPTIONAL. It only computes the img_config for the SCP-path ops
+	 * (scale / rotate / CSC). The MM21->NV12 detile is kernel-direct: it
+	 * computes its config in-kernel and drives the MDP engines straight through
+	 * the GCE, with zero SCP involvement. So a missing or un-bootable SCP is
+	 * non-fatal -- we probe and run in kernel-direct-only mode. */
+	if (mdp->scp) {
+		mdp->rproc_handle = scp_get_rproc(mdp->scp);
+		dev_dbg(&pdev->dev, "MDP rproc_handle: %p", mdp->rproc_handle);
+	} else {
+		dev_info(&pdev->dev,
+			 "no SCP; kernel-direct-only mode (MM21 detile, no SCP ops)\n");
+	}
 
 	mutex_init(&mdp->vpu_lock);
+	mutex_init(&mdp->vpu.attach_lock);
 	mutex_init(&mdp->m2m_lock);
 
 	for (i = 0; i < mdp->mdp_data->pp_used; i++) {
@@ -298,6 +306,9 @@ static int mdp_probe(struct platform_device *pdev)
 	}
 
 	init_waitqueue_head(&mdp->callback_wq);
+	/* Per-job GCE watchdog (see mtk-mdp3-cmdq.c mdp_gce_timeout_work). */
+	INIT_DELAYED_WORK(&mdp->timeout_work, mdp_gce_timeout_work);
+	atomic_set(&mdp->job_done, 1);
 	ida_init(&mdp->mdp_ida);
 	platform_set_drvdata(pdev, mdp);
 
@@ -325,7 +336,8 @@ err_unregister_device:
 err_mbox_destroy:
 	while (--i >= 0)
 		cmdq_mbox_destroy(mdp->cmdq_clt[i]);
-	scp_put(mdp->scp);
+	if (mdp->scp)
+		scp_put(mdp->scp);
 err_destroy_clock_wq:
 	destroy_workqueue(mdp->clock_wq);
 err_destroy_job_wq:
@@ -409,3 +421,6 @@ module_platform_driver(mdp_driver);
 MODULE_AUTHOR("Ping-Hsun Wu <ping-hsun.wu@mediatek.com>");
 MODULE_DESCRIPTION("MediaTek image processor 3 driver");
 MODULE_LICENSE("GPL");
+/* dma_buf_put() -- the imported-source RDMA pin drop (mtk-mdp3-cmdq.c) -- lives
+ * in the DMA_BUF symbol namespace. */
+MODULE_IMPORT_NS("DMA_BUF");

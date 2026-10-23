@@ -50,6 +50,22 @@ struct etnaviv_gem_object {
 	struct sg_table *sgt;
 	void *vaddr;
 
+	/*
+	 * qi:N1440: pages[] came from etnaviv_gem_contig_get_pages() -- an
+	 * array of split order-8 blocks, not drm_gem_get_pages() shmem, so it
+	 * is released page-by-page rather than through drm_gem_put_pages().
+	 */
+	bool contig;
+	/*
+	 * qi:N1541: blocks actually taken for a contig BO, and the VA phase
+	 * (in pages, below one large page) the blocks were aligned to so that
+	 * every large-page-aligned VA inside the BO lands on a whole,
+	 * naturally aligned block.  Set by etnaviv_gem_mapping_get() from the
+	 * softpin VA before the pages are allocated; 0 for a CPU-first BO.
+	 */
+	unsigned int contig_blocks;
+	unsigned int contig_phase;
+
 	struct list_head vram_list;
 
 	/* cache maintenance */
@@ -102,6 +118,10 @@ struct etnaviv_gem_submit {
 	struct pid *pid;       /* submitting process */
 	u32 exec_state;
 	u32 flags;
+	/* N9 (A311D 0x88): final-op output bytes, for the output-size-scaled
+	 * NN-AXI drain. From drm_etnaviv_gem_submit.npu_output_bytes; 0 for
+	 * non-ML submits. Kept before the variable-length bos[]. */
+	u32 npu_output_bytes;
 	unsigned int nr_pmrs;
 	struct etnaviv_perfmon_request *pmrs;
 	unsigned int nr_bos;

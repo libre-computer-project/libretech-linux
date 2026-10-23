@@ -69,6 +69,54 @@ static const u16 csc_coeff_rgb_out_eitu709[3][4] = {
 	{ 0x2000, 0x0000, 0x3b61, 0x7e25 }
 };
 
+/*
+ * DC-001: LIMITED-range BT.709 YUV->RGB. The stock rgb_out_eitu709 above is
+ * FULL-range (Y gain 1.0); fed the meson OSD's limited-range YUV709 it lifts
+ * blacks + desaturates. These gains are the standard limited-range BT.709
+ * (Y 1.16438, R-Cr 1.79274, G-Cb -0.21325, G-Cr -0.53291, B-Cb 2.11240). B-Cb
+ * (2.1124) exceeds the +-2.0 the 0x2000=1.0 / csc_scale=1 encoding can hold, so
+ * this matrix is stored at HALF (cols = true/2) and used with csc_scale = 2
+ * (output left-shift one less). Rows are G,R,B; cols Y,Cr,Cb,offset -- same
+ * order as the full-range matrix above.
+ *
+ * The offset column (center+black recenter term) does NOT scale like the
+ * coefficients at csc_scale=2: the hardware scales the offset term by
+ * 2^csc_scale (=4) while coefficients scale by 2^(csc_scale-1) (=2), so the
+ * offset needs an EXTRA 1/2 beyond the coefficient halving -- i.e. the full
+ * computed constant / 4. Bench-derived + human-verified on an LG QNED85 over
+ * RGB-10 (DC-001): full constants G=+0.30 R=-0.97 B=-1.13, stored as /4 below.
+ * A wrong offset shows as a HUE cast (green=over-subtracted, pink=under), not
+ * just a lifted black.
+ */
+static const u16 csc_coeff_yuv709_lim_to_rgb[3][4] = {
+	{ 0x12a1, 0x7779, 0x7c97, 0x0134 },	/* G: Y +1.1644  Cr -0.5329  Cb -0.2133 */
+	{ 0x12a1, 0x1caf, 0x0000, 0x7c20 },	/* R: Y +1.1644  Cr +1.7927  Cb  0      */
+	{ 0x12a1, 0x0000, 0x21cc, 0x7b7b }	/* B: Y +1.1644  Cr  0       Cb +2.1124 */
+};
+
+/*
+ * DC-001 (BT.601 companion): SD modes (480p/576p/480i/576i) set
+ * enc_out_encoding = V4L2_YCBCR_ENC_601. A yuv_deep_color_first source
+ * (meson) feeds LIMITED-range YUV601 -> use the limited matrix (csc_scale=2
+ * for the >2.0 B-Cb gain), same construction as csc_coeff_yuv709_lim_to_rgb
+ * above but with the BT.601 (Kr=0.299, Kb=0.114) luma/chroma gains instead
+ * of BT.709's -- these are numerically different matrices, not a copy of
+ * the 709 one. RGB-native users keep the stock full-range eitu601 matrix.
+ *
+ * Gains (Y 1.1644, Cr 1.5960, Cb 2.0172, G-Cb -0.3918, G-Cr -0.8130) are the
+ * standard limited->full BT.601 expansion, register-exact (verified against
+ * the same encoding used by the 709 table above). The offset column is the
+ * analytical baseline (-(16*Ygain + 128*sum(chroma gains))/255, encoded at
+ * /1024); the 709 table's shipped offsets differ from this same formula by
+ * 1-4 LSB after bench verification on real hardware, so this offset should
+ * get the same on-hardware confirmation pass before being treated as final.
+ */
+static const u16 csc_coeff_yuv601_lim_to_rgb[3][4] = {
+	{ 0x12a1, 0x72fe, 0x79bb, 0x0220 },	/* G: Y +1.1644  Cr -0.8130  Cb -0.3918 */
+	{ 0x12a1, 0x1989, 0x0000, 0x7c81 },	/* R: Y +1.1644  Cr +1.5960  Cb  0      */
+	{ 0x12a1, 0x0000, 0x2047, 0x7ba8 }	/* B: Y +1.1644  Cr  0       Cb +2.0172 */
+};
+
 static const u16 csc_coeff_rgb_in_eitu601[3][4] = {
 	{ 0x2591, 0x1322, 0x074b, 0x0000 },
 	{ 0x6535, 0x2000, 0x7acc, 0x0200 },
@@ -422,8 +470,24 @@ static int dw_hdmi_i2c_xfer(struct i2c_adapter *adap,
 {
 	struct dw_hdmi *hdmi = i2c_get_adapdata(adap);
 	struct dw_hdmi_i2c *i2c = hdmi->i2c;
-	u8 addr = msgs[0].addr;
+	u8 addr;
 	int i, ret = 0;
+
+	/*
+	 * Extract the slave address for the I2CM from the first non-segment
+	 * message. For E-DDC (extended) reads, msg[0] is the segment pointer
+	 * write to address 0x30, but the I2CM_SLAVE register must be set to
+	 * the DDC data address (0x50), not the segment pointer address.
+	 */
+	addr = msgs[0].addr;
+	/* D11: widened from num>=3 -- confirmed a no-op for every reachable
+	 * caller today (drm_do_probe_ddc_edid() either omits msgs[0] entirely
+	 * for a non-segment read, so msgs[0].addr is never 0x30 at num==2, or
+	 * sends the full 3-message segment form), and closes the gap for a
+	 * hypothetical future 2-message E-DDC caller that would otherwise
+	 * leave HDMI_I2CM_SLAVE stuck at the segment address 0x30. */
+	if (addr == DDC_SEGMENT_ADDR && num >= 2)
+		addr = msgs[1].addr;
 
 	if (addr == DDC_CI_ADDR)
 		/*
@@ -450,7 +514,7 @@ static int dw_hdmi_i2c_xfer(struct i2c_adapter *adap,
 	/* Unmute DONE and ERROR interrupts */
 	hdmi_writeb(hdmi, 0x00, HDMI_IH_MUTE_I2CM_STAT0);
 
-	/* Set slave device address taken from the first I2C message */
+	/* Set slave device address for DDC data transfers */
 	hdmi_writeb(hdmi, addr, HDMI_I2CM_SLAVE);
 
 	/* Set slave device register address on transfer */
@@ -1105,13 +1169,63 @@ static bool is_csc_needed(struct dw_hdmi *hdmi)
 {
 	return is_color_space_conversion(hdmi) ||
 	       is_color_space_decimation(hdmi) ||
-	       is_color_space_interpolation(hdmi);
+	       is_color_space_interpolation(hdmi) ||
+	       /*
+		* DC-001 (yuv_deep_color_first sources, e.g. meson): RGB >8-bit
+		* (deep color) needs the CSC block IN the data path for the
+		* color-depth scaling, even when no color/range conversion is
+		* required (identity coefficients). Bypassing it for RGB 10-bit
+		* blanks the output. 8-bit RGB (depth == 8) is unaffected and keeps
+		* the feed-through (bypass) path. Gated behind the opt-in so
+		* RGB-native users keep the upstream bypass behavior.
+		*/
+	       (hdmi->plat_data->yuv_deep_color_first &&
+		hdmi_bus_fmt_is_rgb(hdmi->hdmi_data.enc_out_bus_format) &&
+		hdmi_bus_fmt_color_depth(hdmi->hdmi_data.enc_out_bus_format) > 8);
+}
+
+/*
+ * DC-002: rescale a CSC offset (column 3) from the color depth its table was
+ * encoded at to the actual output color depth.
+ *
+ * The CSC coefficient columns are pure gains and are depth-independent, but
+ * the offset column is expressed in OUTPUT color-depth LSBs -- the register
+ * value is (normalized offset) * 2^depth * 2^(2 - csc_scale). Encoding that
+ * for one depth and shipping it at another scales every offset by a power of
+ * four. Decoded against the shipped tables:
+ *
+ *   csc_coeff_rgb_full_to_rgb_limited  +16/256 @ csc_scale 1 -> 0x0020 (depth 8)
+ *   csc_coeff_rgb_in_eitu601          +128/256 @ csc_scale 0 -> 0x0200 (depth 8)
+ *   csc_coeff_yuv709_lim_to_rgb        +0.3014 @ csc_scale 2 -> 0x0134 (depth 10)
+ *
+ * i.e. the upstream tables are encoded at 8-bit and the DC-001 limited-range
+ * tables (bench-derived on an LG QNED85 over RGB-10) at 10-bit, so each needs
+ * its own encoding depth. Values are two's complement in the 15-bit register
+ * field, so sign-extend from bit 14 before shifting and re-truncate after.
+ */
+static u16 dw_hdmi_csc_offset(u16 raw, unsigned int table_depth,
+			      unsigned int depth)
+{
+	int val = (raw & 0x4000) ? (int)raw - 0x8000 : (int)raw;
+	unsigned int shift;
+
+	if (depth > table_depth) {
+		val <<= depth - table_depth;
+	} else if (depth < table_depth) {
+		/* round to nearest rather than toward -infinity */
+		shift = table_depth - depth;
+		val = (val + (1 << (shift - 1))) >> shift;
+	}
+
+	return (u16)val & 0x7fff;
 }
 
 static void dw_hdmi_update_csc_coeffs(struct dw_hdmi *hdmi)
 {
 	const u16 (*csc_coeff)[3][4] = &csc_coeff_default;
 	bool is_input_rgb, is_output_rgb;
+	unsigned int coeff_depth = 8;
+	unsigned int out_depth;
 	unsigned i;
 	u32 csc_scale = 1;
 
@@ -1119,9 +1233,27 @@ static void dw_hdmi_update_csc_coeffs(struct dw_hdmi *hdmi)
 	is_output_rgb = hdmi_bus_fmt_is_rgb(hdmi->hdmi_data.enc_out_bus_format);
 
 	if (!is_input_rgb && is_output_rgb) {
-		if (hdmi->hdmi_data.enc_out_encoding == V4L2_YCBCR_ENC_601)
-			csc_coeff = &csc_coeff_rgb_out_eitu601;
-		else
+		if (hdmi->hdmi_data.enc_out_encoding == V4L2_YCBCR_ENC_601) {
+			if (hdmi->plat_data->yuv_deep_color_first) {
+				/* DC-001 (601 companion): SD modes feed
+				 * LIMITED-range YUV601 -> use the limited
+				 * matrix (csc_scale=2 for the >2.0 B-Cb gain),
+				 * mirroring the 709 branch below. RGB-native
+				 * users keep the stock full-range matrix. */
+				csc_coeff = &csc_coeff_yuv601_lim_to_rgb;
+				csc_scale = 2;
+				coeff_depth = 10;
+			} else
+				csc_coeff = &csc_coeff_rgb_out_eitu601;
+		} else if (hdmi->plat_data->yuv_deep_color_first) {
+			/* DC-001: a yuv_deep_color_first source (meson) feeds
+			 * LIMITED-range YUV709 -> use the limited matrix
+			 * (csc_scale=2 for the >2.0 B-Cb gain). RGB-native users
+			 * keep the stock full-range matrix below. */
+			csc_coeff = &csc_coeff_yuv709_lim_to_rgb;
+			csc_scale = 2;
+			coeff_depth = 10;
+		} else
 			csc_coeff = &csc_coeff_rgb_out_eitu709;
 	} else if (is_input_rgb && !is_output_rgb) {
 		if (hdmi->hdmi_data.enc_out_encoding == V4L2_YCBCR_ENC_601)
@@ -1134,11 +1266,28 @@ static void dw_hdmi_update_csc_coeffs(struct dw_hdmi *hdmi)
 		csc_coeff = &csc_coeff_rgb_full_to_rgb_limited;
 	}
 
+	out_depth = hdmi_bus_fmt_color_depth(hdmi->hdmi_data.enc_out_bus_format);
+
 	/* The CSC registers are sequential, alternating MSB then LSB */
 	for (i = 0; i < ARRAY_SIZE(csc_coeff_default[0]); i++) {
 		u16 coeff_a = (*csc_coeff)[0][i];
 		u16 coeff_b = (*csc_coeff)[1][i];
 		u16 coeff_c = (*csc_coeff)[2][i];
+
+		/*
+		 * DC-002: the last column is the offset, in output color-depth
+		 * LSBs -- rescale it to the depth actually being driven. The
+		 * gain columns are depth-independent.
+		 */
+		if (i == ARRAY_SIZE(csc_coeff_default[0]) - 1 &&
+		    out_depth && out_depth != coeff_depth) {
+			coeff_a = dw_hdmi_csc_offset(coeff_a, coeff_depth,
+						     out_depth);
+			coeff_b = dw_hdmi_csc_offset(coeff_b, coeff_depth,
+						     out_depth);
+			coeff_c = dw_hdmi_csc_offset(coeff_c, coeff_depth,
+						     out_depth);
+		}
 
 		hdmi_writeb(hdmi, coeff_a & 0xff, HDMI_CSC_COEF_A1_LSB + i * 2);
 		hdmi_writeb(hdmi, coeff_a >> 8, HDMI_CSC_COEF_A1_MSB + i * 2);
@@ -1287,7 +1436,18 @@ static void hdmi_video_packetize(struct dw_hdmi *hdmi)
 		  HDMI_VP_CONF_PR_EN_MASK |
 		  HDMI_VP_CONF_BYPASS_SELECT_MASK, HDMI_VP_CONF);
 
-	hdmi_modb(hdmi, 1 << HDMI_VP_STUFF_IDEFAULT_PHASE_OFFSET,
+	/*
+	 * DC-001: IDEFAULT_PHASE is the deep-color PP packer's pixel-packing
+	 * phase. Upstream hardcodes 1; the Amlogic BSP hdmitx20 uses 0. At 8-bit
+	 * the PP packer is bypassed so the bit is a no-op (which is why upstream's
+	 * 1 was never noticed), but at 10-bit (PP) the wrong phase shifts the top
+	 * (R) and bottom (B) channels by a few bits at the packed-word boundary
+	 * while the middle (G) stays centered -- a green-clean, red->purple /
+	 * blue->pink hue shift. Use the BSP phase (0) for the PP path; keep
+	 * upstream's value (1) for the bypass/YCC422 paths.
+	 */
+	hdmi_modb(hdmi, (output_select == HDMI_VP_CONF_OUTPUT_SELECTOR_PP ? 0 : 1)
+		  << HDMI_VP_STUFF_IDEFAULT_PHASE_OFFSET,
 		  HDMI_VP_STUFF_IDEFAULT_PHASE_MASK, HDMI_VP_STUFF);
 
 	hdmi_writeb(hdmi, remap_size, HDMI_VP_REMAP);
@@ -1759,6 +1919,38 @@ static void hdmi_tx_hdcp_config(struct dw_hdmi *hdmi)
 		  HDMI_A_HDCPCFG1_ENCRYPTIONDISABLE_MASK, HDMI_A_HDCPCFG1);
 }
 
+/*
+ * D8: is this DRM "Colorspace" request compatible with the pixel encoding
+ * (frame.colorspace, RGB vs YUV444/422/420) that was actually negotiated?
+ * Most DRM_MODE_COLORIMETRY_* values are domain-specific per the CEA-861
+ * mapping in drm_hdmi_helper.c: every "*_YCC"/xvYCC/sYCC entry and
+ * BT2020_CYCC are YCbCr-only (meaningless -- undefined per spec -- on an
+ * RGB link); OPRGB is RGB-only. BT2020_RGB and BT2020_YCC are exempt: their
+ * HDMI_COLORIMETRY_* macros are byte-identical (both C(3)|EC(6)), so they
+ * produce the same wire bits regardless of pixel encoding.
+ */
+static bool dw_hdmi_colorimetry_matches_encoding(u32 colorspace,
+						  enum hdmi_colorspace out_cs)
+{
+	bool out_is_rgb = out_cs == HDMI_COLORSPACE_RGB;
+
+	switch (colorspace) {
+	case DRM_MODE_COLORIMETRY_OPRGB:
+		return out_is_rgb;
+	case DRM_MODE_COLORIMETRY_SMPTE_170M_YCC:
+	case DRM_MODE_COLORIMETRY_BT709_YCC:
+	case DRM_MODE_COLORIMETRY_XVYCC_601:
+	case DRM_MODE_COLORIMETRY_XVYCC_709:
+	case DRM_MODE_COLORIMETRY_SYCC_601:
+	case DRM_MODE_COLORIMETRY_OPYCC_601:
+	case DRM_MODE_COLORIMETRY_BT2020_CYCC:
+	case DRM_MODE_COLORIMETRY_BT2020_YCC:
+		return !out_is_rgb;
+	default:
+		return true;
+	}
+}
+
 static void hdmi_config_AVI(struct dw_hdmi *hdmi,
 			    const struct drm_connector *connector,
 			    const struct drm_display_mode *mode)
@@ -1768,6 +1960,23 @@ static void hdmi_config_AVI(struct dw_hdmi *hdmi,
 
 	/* Initialise info frame from DRM mode */
 	drm_hdmi_avi_infoframe_from_display_mode(&frame, connector, mode);
+
+	/*
+	 * D2 diag: dw-hdmi's own wire-format decision, independent of what
+	 * meson's bridge-output debug log shows (that is meson's INPUT to
+	 * this driver, not this driver's AVI decision) and of the empty
+	 * infoframes/avi debugfs file (meson does not use the newer DRM
+	 * HDMI-connector helpers that populate it). cea_default is
+	 * recomputed here, before any DC-001 override, purely for
+	 * comparison against the post-override rgb_limited_range.
+	 */
+	dev_info(hdmi->dev,
+		 "D2-diag: avi quant-range: out_fmt=%#x is_rgb=%d rgb_limited_range=%d cea_default=%s\n",
+		 hdmi->hdmi_data.enc_out_bus_format,
+		 hdmi_bus_fmt_is_rgb(hdmi->hdmi_data.enc_out_bus_format),
+		 hdmi->hdmi_data.rgb_limited_range,
+		 drm_default_rgb_quant_range(mode) == HDMI_QUANTIZATION_RANGE_LIMITED ?
+		 "limited" : "full");
 
 	if (hdmi_bus_fmt_is_rgb(hdmi->hdmi_data.enc_out_bus_format)) {
 		drm_hdmi_avi_infoframe_quant_range(&frame, connector, mode,
@@ -1819,6 +2028,25 @@ static void hdmi_config_AVI(struct dw_hdmi *hdmi,
 		frame.extended_colorimetry =
 			HDMI_EXTENDED_COLORIMETRY_XV_YCC_601;
 	}
+
+	/*
+	 * DC-BT2020: honour an explicitly requested DRM "Colorspace" (e.g.
+	 * BT2020_YCC/BT2020_RGB for a wide-gamut HDR10 signal). The block above
+	 * derives colorimetry solely from enc_out_encoding, which only ever
+	 * yields ITU-601/709 or xvYCC -- so BT.2020 could never be signalled even
+	 * when the connector state asked for it.
+	 *
+	 * Only override for a NON-default colorspace: the helper maps
+	 * DRM_MODE_COLORIMETRY_DEFAULT (0) to HDMI_COLORIMETRY_NO_DATA, so
+	 * calling it unconditionally would drop the 601/709 colorimetry that the
+	 * default path signals today. With this guard the default path is
+	 * byte-for-byte unchanged.
+	 */
+	if (connector->state &&
+	    connector->state->colorspace != DRM_MODE_COLORIMETRY_DEFAULT &&
+	    dw_hdmi_colorimetry_matches_encoding(connector->state->colorspace,
+						 frame.colorspace))
+		drm_hdmi_avi_infoframe_colorimetry(&frame, connector->state);
 
 	/*
 	 * The Designware IP uses a different byte format from standard
@@ -1884,6 +2112,149 @@ static void hdmi_config_AVI(struct dw_hdmi *hdmi,
 	hdmi_writeb(hdmi, (frame.left_bar >> 8) & 0xff, HDMI_FC_AVIELB1);
 	hdmi_writeb(hdmi, frame.right_bar & 0xff, HDMI_FC_AVISRB0);
 	hdmi_writeb(hdmi, (frame.right_bar >> 8) & 0xff, HDMI_FC_AVISRB1);
+}
+
+/*
+ * FR-001: AMD FreeSync (pre-HDMI-2.1) advertisement over HDMI.
+ *
+ * WHY this exists: on the HDMI-2.0 DWC IP (GXL/GXM/G12/SM1) there is no
+ * Extended Metadata Packet block, so HDMI-Forum VRR cannot be signalled at
+ * all. Without ANY signalling the meson VRR path stretches the encoder vtotal
+ * while the sink still believes it is receiving a fixed-rate raster, and the
+ * sink renders the stretched frame literally -- 1080 active lines inside 2812
+ * total reads as a half-black picture. The AMD FreeSync vendor payload is the
+ * one variable-refresh advertisement this IP *can* emit, and it is what
+ * pre-HDMI-2.1 FreeSync sinks key on.
+ *
+ * Layout is taken verbatim from the in-tree amdgpu reference
+ * drivers/gpu/drm/amd/display/modules/freesync/freesync.c
+ * :build_vrr_infopacket_data_v1() (payload) and
+ * :build_vrr_infopacket_header_v1() (header -- HDMI carrier is type 0x83 /
+ * version 1). Payload PB1..PB8:
+ *
+ *	PB1..PB3  24-bit AMD IEEE OUI 0x00001A, little-end first: 1A 00 00
+ *	PB4, PB5  reserved (0)
+ *	PB6       flags: bit0 Supported, bit1 Enabled, bit2 Active
+ *	PB7       minimum refresh rate, Hz
+ *	PB8       maximum refresh rate, Hz
+ *
+ * The DW HW generates the checksum (PB0) itself.
+ *
+ * CARRIER + PRECEDENCE RULE. There is exactly ONE vendor-specific (VSD) slot
+ * in the Frame Composer, and hdmi_config_vendor_specific_infoframe() owns it
+ * for the HDMI-VIC (4K @ HDMI 1.4) and stereo-3D infoframe -- both of which
+ * are MANDATORY for the modes that need them, so they always win the VSD slot.
+ * FreeSync therefore does not use it: FC_VSD hard-codes the packet type to
+ * 0x81 (HDMI VSIF) whereas amdgpu's FreeSync carrier is type 0x83 (SPD), which
+ * on this IP is the independent FC_SPD block. FreeSync rides FC_SPD and the two
+ * never contend -- see FR-001b. dw-hdmi emits no SPD infoframe of its own, so
+ * the SPD block is otherwise unused. Consequence for any future change: if the
+ * FreeSync payload is ever moved back onto the VSD carrier it MUST yield when
+ * drm_hdmi_vendor_infoframe_from_display_mode() reports the mode needs an HDMI
+ * vendor infoframe, never overwrite it.
+ *
+ * ORDERING. This runs AFTER hdmi_config_vendor_specific_infoframe() because
+ * both touch FC_DATAUTO2: the VSD path writes it wholesale (0x11) while this
+ * one read-modify-writes only [7:4], preserving the VSD line spacing in [3:0].
+ *
+ * The source must ALSO modulate the frame timing (meson VRR_ENABLED path);
+ * this only tells the sink variable refresh is in effect.
+ */
+void dw_hdmi_set_amd_freesync(struct dw_hdmi *hdmi, u8 min_hz, u8 max_hz,
+			     bool vrr_enabled)
+{
+	u8 spd[25] = { 0 };
+	unsigned int i;
+
+	if (!vrr_enabled) {
+		/*
+		 * VRR off: stop transmitting entirely and zero the payload, so a
+		 * packet armed by an earlier VRR-on modeset cannot keep telling
+		 * the sink to expect a varying frame rate that the encoder is no
+		 * longer producing -- the exact inverse of the defect above. This
+		 * leaves the wire byte-for-byte identical to a build without
+		 * FreeSync support.
+		 *
+		 * NB amdgpu instead keeps advertising with Supported|Enabled set
+		 * and only clears Active. We deliberately do not: on this IP the
+		 * packet is armed once per modeset rather than per flip, so a
+		 * "Supported but not Active" steady state cannot be updated when
+		 * VRR is toggled without another modeset. If a sink turns out to
+		 * need the standing advertisement to arm its FreeSync engine,
+		 * that is the variant to try next.
+		 */
+		hdmi_mask_writeb(hdmi, 0, HDMI_FC_PACKET_TX_EN,
+				 HDMI_FC_PACKET_TX_EN_SPD_OFFSET,
+				 HDMI_FC_PACKET_TX_EN_SPD_MASK);
+		hdmi_mask_writeb(hdmi, 0, HDMI_FC_DATAUTO0,
+				 HDMI_FC_DATAUTO0_SPD_OFFSET,
+				 HDMI_FC_DATAUTO0_SPD_MASK);
+		for (i = 0; i < ARRAY_SIZE(spd); i++)
+			hdmi_writeb(hdmi, 0, HDMI_FC_SPDVENDORNAME0 + i);
+		return;
+	}
+
+	/*
+	 * FC_SPD register sequence per the Amlogic BSP hdmitx: a contiguous
+	 * 25-byte payload write into FC_SPDVENDORNAME0.. (0x104A..0x1062, i.e.
+	 * VENDORNAME0-7 + PRODUCTNAME0-15 + DEVICEINF = SPD PB1..PB25), then
+	 * FC_DATAUTO0 bit4 (SPD auto-transmit) + FC_DATAUTO2[7:4]=1 (send every
+	 * frame) + FC_PACKET_TX_EN bit4 (SPD TX gate). The DW HW forces the SPD
+	 * header (type 0x83, ver 1, length 25) and the checksum; FreeSync
+	 * detection keys on the type + AMD OUI, not on the length.
+	 */
+	spd[0] = 0x1a;			/* PB1 AMD OUI 0x00001A */
+	/* PB6 flags: Supported | Enabled | Active (VRR is on, so all three) */
+	spd[5] = BIT(0) | BIT(1) | BIT(2);
+	spd[6] = min_hz;		/* PB7 min refresh (Hz) */
+	spd[7] = max_hz;		/* PB8 max refresh (Hz) */
+	/* spd[1..4] + spd[8..24] stay 0 (reserved / unused product-name window) */
+
+	/* stop SPD auto-transmit while reloading the payload */
+	hdmi_mask_writeb(hdmi, 0, HDMI_FC_DATAUTO0, HDMI_FC_DATAUTO0_SPD_OFFSET,
+			 HDMI_FC_DATAUTO0_SPD_MASK);
+
+	for (i = 0; i < ARRAY_SIZE(spd); i++)
+		hdmi_writeb(hdmi, spd[i], HDMI_FC_SPDVENDORNAME0 + i);
+
+	/* auto-packet frame interval = every frame (FC_DATAUTO2[7:4] = 1) */
+	hdmi_mask_writeb(hdmi, 1, HDMI_FC_DATAUTO2, 4, 0xf0);
+	/* enable SPD continuous auto-transmit */
+	hdmi_mask_writeb(hdmi, 1, HDMI_FC_DATAUTO0, HDMI_FC_DATAUTO0_SPD_OFFSET,
+			 HDMI_FC_DATAUTO0_SPD_MASK);
+	/* SPD auto TX-enable gate */
+	hdmi_mask_writeb(hdmi, 1, HDMI_FC_PACKET_TX_EN,
+			 HDMI_FC_PACKET_TX_EN_SPD_OFFSET,
+			 HDMI_FC_PACKET_TX_EN_SPD_MASK);
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_set_amd_freesync);
+
+/*
+ * FR-001: is variable refresh actually enabled on the CRTC feeding this
+ * connector?
+ *
+ * dw-hdmi is a bridge and has no CRTC of its own, but the FreeSync packet must
+ * reflect the CRTC's VRR_ENABLED state -- advertising variable refresh while
+ * the encoder emits fixed timings is wrong metadata. The route used here is
+ * the connector's atomic state, which is the same one hdmi_config_drm_infoframe()
+ * already reads for HDR metadata: by the time the bridge is enabled the atomic
+ * helper has swapped state in, so connector->state is the NEW state and
+ * ->crtc->state is the new CRTC state. Preferred over adding VRR arguments to
+ * the bridge atomic hooks because it needs no new plumbing and no new
+ * plat_data callback.
+ *
+ * The paired half of this is in meson_encoder_hdmi_atomic_check(), which forces
+ * a modeset when VRR_ENABLED changes -- otherwise a property-only VRR toggle
+ * never re-runs the bridge enable and the packet would never be updated.
+ */
+static bool dw_hdmi_connector_vrr_enabled(const struct drm_connector *connector)
+{
+	const struct drm_connector_state *conn_state = connector->state;
+
+	if (!conn_state || !conn_state->crtc || !conn_state->crtc->state)
+		return false;
+
+	return conn_state->crtc->state->vrr_enabled;
 }
 
 static void hdmi_config_vendor_specific_infoframe(struct dw_hdmi *hdmi,
@@ -2280,6 +2651,44 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi,
 		drm_default_rgb_quant_range(mode) ==
 		HDMI_QUANTIZATION_RANGE_LIMITED;
 
+	/*
+	 * DC-001: RGB deep-color (10/12/16-bit) output is the full-range (PC /
+	 * graphics) use case (it is reached for non-CEA / DMT modes). Force
+	 * full range so the CSC uses identity coefficients instead of the
+	 * rgb_full->limited matrix, which range-compresses (white -> grey) and
+	 * shifts hue (red -> purple, blue -> pink) on full-range source pixels.
+	 *
+	 * D2: broadened from RGB101010_1X30-only to every RGB output depth.
+	 * A yuv_deep_color_first source (meson) feeds LIMITED-range YUV709
+	 * into csc_coeff_yuv709_lim_to_rgb (dw_hdmi_update_csc_coeffs()),
+	 * whose gains (Y 1.1644, Cr 1.7927, Cb 2.1124 -- the standard
+	 * limited->full BT.709 expansion) produce FULL-range RGB on the wire
+	 * for 8-bit RGB888_1X24 exactly as they do for 10-bit. With the old
+	 * RGB101010-only check, every other RGB depth kept rgb_limited_range
+	 * at the CEA-default (LIMITED for almost all modes), so the AVI
+	 * infoframe declared 16-235 while the wire carried 0-255 -- a sink
+	 * re-expanding already-full-range data crushes blacks / clips
+	 * whites. Matching on hdmi_bus_fmt_is_rgb() makes the signalled
+	 * range agree with what the CSC matrices actually produce for every
+	 * RGB depth; it does not change which CSC matrix is selected.
+	 *
+	 * D3: BT.601 modes (480p/576p/480i/576i, enc_out_encoding ==
+	 * V4L2_YCBCR_ENC_601) previously always went through
+	 * csc_coeff_rgb_out_eitu601 (full-range), even for a
+	 * yuv_deep_color_first source whose OSD blender emits LIMITED-range
+	 * YUV601 -- the same lifted-blacks/desaturation class DC-001 fixed
+	 * for 709. dw_hdmi_update_csc_coeffs() now picks the new
+	 * csc_coeff_yuv601_lim_to_rgb (csc_scale=2, standard limited->full
+	 * BT.601 expansion: Y 1.1644, Cr 1.5960, Cb 2.0172) for that source
+	 * under ENC_601, mirroring the 709 branch above; the full-range
+	 * eitu601 matrix stays for RGB-native sources. The
+	 * hdmi_bus_fmt_is_rgb() force above already covers the AVI-infoframe
+	 * quant-range side for both encodings, so no separate change was
+	 * needed there.
+	 */
+	if (hdmi_bus_fmt_is_rgb(hdmi->hdmi_data.enc_out_bus_format))
+		hdmi->hdmi_data.rgb_limited_range = false;
+
 	hdmi->hdmi_data.pix_repet_factor = 0;
 	hdmi->hdmi_data.hdcp_enable = 0;
 	hdmi->hdmi_data.video_mode.mdataenablepolarity = true;
@@ -2314,6 +2723,44 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi,
 		hdmi_config_AVI(hdmi, connector, mode);
 		hdmi_config_vendor_specific_infoframe(hdmi, connector, mode);
 		hdmi_config_drm_infoframe(hdmi, connector);
+		/*
+		 * FR-001: advertise AMD FreeSync AFTER the 3D/HDMI-VIC VSIF. The
+		 * two use disjoint Frame Composer blocks (VSD 0x81 vs SPD 0x83) so
+		 * neither clobbers the other, but the ordering matters for the
+		 * FC_DATAUTO2 read-modify-write -- see dw_hdmi_set_amd_freesync().
+		 *
+		 * Three conditions must all hold, and the packet is emitted only
+		 * then; otherwise transmission is explicitly stopped and the wire
+		 * is identical to a build without FreeSync support:
+		 *
+		 *   1. the platform opted in (amd_freesync_hdmi),
+		 *   2. the sink advertises FreeSync in its VSDB (has_freesync),
+		 *   3. VRR_ENABLED is set on the CRTC driving this connector.
+		 *
+		 * (3) is the point of the packet: it is the sink's only notice that
+		 * the frame timing is about to vary. (2) supplies the range, which
+		 * is the sink's OWN range parsed out of its FreeSync VSDB -- never a
+		 * fixed 48-120. Sending a range the sink did not advertise is wrong
+		 * metadata that invites it to accept timings it cannot lock to, and
+		 * only ever matched the single monitor such constants were tuned
+		 * against. A sink with no FreeSync VSDB gets no FreeSync packet.
+		 */
+		if (hdmi->plat_data->amd_freesync_hdmi) {
+			const struct drm_monitor_range_info *vrr =
+				&connector->display_info.freesync_range;
+			bool on = connector->display_info.has_freesync &&
+				  dw_hdmi_connector_vrr_enabled(connector);
+
+			/*
+			 * PB7/PB8 are one byte each; display_info carries u16.
+			 * Clamp rather than let a bogus EDID wrap to a low value
+			 * (255 Hz is already far outside anything this IP drives).
+			 */
+			dw_hdmi_set_amd_freesync(hdmi,
+						 min_t(u16, vrr->min_vfreq, 255),
+						 min_t(u16, vrr->max_vfreq, 255),
+						 on);
+		}
 	} else {
 		dev_dbg(hdmi->dev, "%s DVI mode\n", __func__);
 	}
@@ -2379,7 +2826,7 @@ static void initialize_hdmi_ih_mutes(struct dw_hdmi *hdmi)
 	hdmi_writeb(hdmi, ih_mute, HDMI_IH_MUTE);
 }
 
-static void dw_hdmi_poweron(struct dw_hdmi *hdmi)
+void dw_hdmi_poweron(struct dw_hdmi *hdmi)
 {
 	hdmi->bridge_is_on = true;
 
@@ -2389,8 +2836,9 @@ static void dw_hdmi_poweron(struct dw_hdmi *hdmi)
 	 */
 	dw_hdmi_setup(hdmi, hdmi->curr_conn, &hdmi->previous_mode);
 }
+EXPORT_SYMBOL_GPL(dw_hdmi_poweron);
 
-static void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
+void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
 {
 	if (hdmi->phy.enabled) {
 		hdmi->phy.ops->disable(hdmi, hdmi->phy.data);
@@ -2399,6 +2847,28 @@ static void dw_hdmi_poweroff(struct dw_hdmi *hdmi)
 
 	hdmi->bridge_is_on = false;
 }
+EXPORT_SYMBOL_GPL(dw_hdmi_poweroff);
+
+/*
+ * D4: dw_hdmi_poweron()/dw_hdmi_poweroff() have no locking of their own --
+ * every in-driver caller takes hdmi->mutex around them (via
+ * dw_hdmi_update_power(), always called with the mutex held). A caller
+ * outside this file (meson's suspend/resume PM path) has no other way to
+ * serialize against the HPD/rxsense threaded IRQ (dw_hdmi_setup_rx_sense()
+ * -> dw_hdmi_update_power()), which calls these two under the same mutex.
+ * Export lock/unlock instead of exporting the mutex itself.
+ */
+void dw_hdmi_lock(struct dw_hdmi *hdmi)
+{
+	mutex_lock(&hdmi->mutex);
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_lock);
+
+void dw_hdmi_unlock(struct dw_hdmi *hdmi)
+{
+	mutex_unlock(&hdmi->mutex);
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_unlock);
 
 static void dw_hdmi_update_power(struct dw_hdmi *hdmi)
 {
@@ -2636,7 +3106,7 @@ static int dw_hdmi_connector_create(struct dw_hdmi *hdmi)
  */
 
 /* Can return a maximum of 11 possible output formats for a mode/connector */
-#define MAX_OUTPUT_SEL_FORMATS	11
+#define MAX_OUTPUT_SEL_FORMATS	14	/* +1 base-420 PHY-fallback, +1 DC-420-10, +1 force_bus_format 420 */
 
 static u32 *dw_hdmi_bridge_atomic_get_output_bus_fmts(struct drm_bridge *bridge,
 					struct drm_bridge_state *bridge_state,
@@ -2644,6 +3114,7 @@ static u32 *dw_hdmi_bridge_atomic_get_output_bus_fmts(struct drm_bridge *bridge,
 					struct drm_connector_state *conn_state,
 					unsigned int *num_output_fmts)
 {
+	struct dw_hdmi *hdmi = bridge->driver_private;
 	struct drm_connector *conn = conn_state->connector;
 	struct drm_display_info *info = &conn->display_info;
 	struct drm_display_mode *mode = &crtc_state->mode;
@@ -2663,19 +3134,32 @@ static u32 *dw_hdmi_bridge_atomic_get_output_bus_fmts(struct drm_bridge *bridge,
 	/* If dw-hdmi is the first or only bridge, avoid negociating with ourselves */
 	if (list_is_singular(&bridge->encoder->bridge_chain) ||
 	    list_is_first(&bridge->chain_node, &bridge->encoder->bridge_chain)) {
-		*num_output_fmts = 1;
-		output_fmts[0] = MEDIA_BUS_FMT_FIXED;
+		/*
+		 * MEDIA_BUS_FMT_FIXED maps to RGB888. A 4:2:0-only / 4:2:0-also
+		 * mode, or a debugfs force_bus_format pin (YUV444/422/420,
+		 * RGB10, …), must offer the real formats or the wire stays
+		 * RGB888. Auto, non-420 only-bridge modes stay FIXED.
+		 */
+		if (!conn->force_bus_format &&
+		    !(conn->ycbcr_420_allowed &&
+		      (drm_mode_is_420_only(info, mode) ||
+		       drm_mode_is_420_also(info, mode)))) {
+			*num_output_fmts = 1;
+			output_fmts[0] = MEDIA_BUS_FMT_FIXED;
 
-		return output_fmts;
+			return output_fmts;
+		}
 	}
 
 	/*
-	 * If the current mode enforces 4:2:0, force the output bus format
-	 * to 4:2:0 and do not add the YUV422/444/RGB formats
+	 * DC-002: a 4:2:0-ONLY mode can only be 4:2:0 -- emit it and return.
+	 * The upstream code ALSO force-emitted 4:2:0 first for a 4:2:0-ALSO mode
+	 * (e.g. 4K60 on an HDMI2 sink), which made the negotiation land on
+	 * 4:2:0@297MHz even when the sink can do full 4:4:4@594MHz. To prefer
+	 * 4:4:4 we now fall through for 4:2:0-ALSO and add 4:2:0 only as a LAST
+	 * fallback (after the RGB/4:4:4 formats, below).
 	 */
-	if (conn->ycbcr_420_allowed &&
-	    (drm_mode_is_420_only(info, mode) ||
-	     (is_hdmi2_sink && drm_mode_is_420_also(info, mode)))) {
+	if (conn->ycbcr_420_allowed && drm_mode_is_420_only(info, mode)) {
 
 		/* Order bus formats from 16bit to 8bit if supported */
 		if (max_bpc >= 16 && info->bpc == 16 &&
@@ -2693,16 +3177,29 @@ static u32 *dw_hdmi_bridge_atomic_get_output_bus_fmts(struct drm_bridge *bridge,
 		/* Default 8bit fallback */
 		output_fmts[i++] = MEDIA_BUS_FMT_UYYVYY8_0_5X24;
 
-		if (drm_mode_is_420_only(info, mode)) {
-			*num_output_fmts = i;
-			return output_fmts;
-		}
+		*num_output_fmts = i;
+		return output_fmts;
 	}
 
 	/*
 	 * Order bus formats from 16bit to 8bit and from YUV422 to RGB
 	 * if supported. In any case the default RGB888 format is added
 	 */
+
+	/*
+	 * DC-001 (8-bit): a YUV-native source (meson) emits limited-range YUV709
+	 * from the OSD blender. If the SINK link lands on RGB, dw-hdmi inserts a
+	 * YUV709->RGB CSC (csc_coeff_yuv709_lim_to_rgb, csc_scale=2) that is wrong
+	 * on GXL -- every 4:4:4 mode comes out green (bench-confirmed on the S905X
+	 * across 31.5MHz..297MHz). Keeping the SINK in YUV444 makes enc_in ==
+	 * enc_out so dw-hdmi does NO CSC and the TV does the YUV->RGB, exactly like
+	 * the working 4:2:0 path (and the existing 10-bit yuv_deep_color_first
+	 * branch below). Offer YUV444-8 FIRST for such sources when the sink
+	 * advertises 4:4:4; RGB888 stays as the fallback for RGB-only sinks.
+	 */
+	if (hdmi->plat_data->yuv_deep_color_first &&
+	    (info->color_formats & DRM_COLOR_FORMAT_YCBCR444))
+		output_fmts[i++] = MEDIA_BUS_FMT_YUV8_1X24;
 
 	/* Default 8bit RGB fallback */
 	output_fmts[i++] = MEDIA_BUS_FMT_RGB888_1X24;
@@ -2725,21 +3222,134 @@ static u32 *dw_hdmi_bridge_atomic_get_output_bus_fmts(struct drm_bridge *bridge,
 	}
 
 	if (max_bpc >= 10 && info->bpc >= 10) {
-		if (info->color_formats & DRM_COLOR_FORMAT_YCBCR422)
-			output_fmts[i++] = MEDIA_BUS_FMT_UYVY10_1X20;
+		if (hdmi->plat_data->yuv_deep_color_first) {
+			/*
+			 * DC-001 (YUV-native source, e.g. meson): offer YUV444
+			 * 10-bit (YUV10_1X30) FIRST. The VENC is YUV-native
+			 * (limited-range YUV709 from the OSD blender), so keeping
+			 * the SINK in YUV444 makes enc_in == enc_out == YUV10_1X30
+			 * -> dw-hdmi does NO CSC and the VP PP-packs the native
+			 * YUV; the TV does the YUV->RGB. This is exactly what the
+			 * BSP hdmitx20 does for COLORDEPTH_30B (csc_en=0). Offering
+			 * RGB101010 first instead forces a YUV->RGB CSC that, fed
+			 * the limited-range YUV, lifts blacks + rotates chroma.
+			 * RGB101010 stays as the fallback for RGB-only sinks (via
+			 * the limited-range matrix); YUV422 last (it cannot carry
+			 * the *1.25 4:4:4-10bit clock). Each format is gated on the
+			 * sink's matching deep-color EDID bit (DC_30), mirroring the
+			 * existing 4:2:0 y420_dc_modes gating above.
+			 */
+			if ((info->color_formats & DRM_COLOR_FORMAT_YCBCR444) &&
+			    (info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_30))
+				output_fmts[i++] = MEDIA_BUS_FMT_YUV10_1X30;
 
-		if (info->color_formats & DRM_COLOR_FORMAT_YCBCR444)
-			output_fmts[i++] = MEDIA_BUS_FMT_YUV10_1X30;
+			if (info->edid_hdmi_rgb444_dc_modes & DRM_EDID_HDMI_DC_30)
+				output_fmts[i++] = MEDIA_BUS_FMT_RGB101010_1X30;
 
-		output_fmts[i++] = MEDIA_BUS_FMT_RGB101010_1X30;
+			if (info->color_formats & DRM_COLOR_FORMAT_YCBCR422)
+				output_fmts[i++] = MEDIA_BUS_FMT_UYVY10_1X20;
+
+			/*
+			 * DC-420-10: 4:2:0 10-bit deep color. 4:2:0 HALVES the
+			 * TMDS (pixel*1.25/2), so a 4K60 mode whose 444-10 is
+			 * over-spec (742.5MHz) fits at 371.25MHz -- AND 4:2:0 deep
+			 * color IS GCP-CD-signaled (y420_dc_modes DC_30), unlike
+			 * 4:2:2, so the sink recognizes it as 10-bit (the standard
+			 * 4K-HDR path). Offered for a 4:2:0-capable mode on a sink
+			 * that advertises 4:2:0 DC_30; meson gates it per-mode
+			 * against the sink's max_tmds_clock.
+			 */
+			if (conn->ycbcr_420_allowed &&
+			    (drm_mode_is_420_also(info, mode) ||
+			     drm_mode_is_420_only(info, mode)) &&
+			    (info->hdmi.y420_dc_modes & DRM_EDID_YCBCR420_DC_30))
+				output_fmts[i++] = MEDIA_BUS_FMT_UYYVYY10_0_5X30;
+		} else {
+			/* Upstream order: YUV422 -> YUV444 -> RGB (depth-gated). */
+			if (info->color_formats & DRM_COLOR_FORMAT_YCBCR422)
+				output_fmts[i++] = MEDIA_BUS_FMT_UYVY10_1X20;
+
+			if (info->color_formats & DRM_COLOR_FORMAT_YCBCR444)
+				output_fmts[i++] = MEDIA_BUS_FMT_YUV10_1X30;
+
+			output_fmts[i++] = MEDIA_BUS_FMT_RGB101010_1X30;
+		}
 	}
 
 	if (info->color_formats & DRM_COLOR_FORMAT_YCBCR422)
 		output_fmts[i++] = MEDIA_BUS_FMT_UYVY8_1X16;
 
-	if (info->color_formats & DRM_COLOR_FORMAT_YCBCR444)
+	/*
+	 * D9: yuv_deep_color_first already pushed this above (line ~3053)
+	 * with higher priority -- skip the duplicate push for that platform
+	 * class; non-yuv_deep_color_first platforms (upstream) still get it
+	 * here, unchanged.
+	 */
+	if ((info->color_formats & DRM_COLOR_FORMAT_YCBCR444) &&
+	    !hdmi->plat_data->yuv_deep_color_first)
 		output_fmts[i++] = MEDIA_BUS_FMT_YUV8_1X24;
 
+	/*
+	 * Last-resort 8-bit YUV420 candidate, offered ONLY when the platform
+	 * declares a source HDMI-TX PHY ceiling (plat_data->max_hdmi_phy_freq) and
+	 * this mode's 4:4:4 PHY clock exceeds it -- i.e. the source cannot serialize
+	 * 444/422 at this clock but can in 420 (half the TMDS), e.g. GXL S805X 4K.
+	 * Gated this way it never changes the format list for any platform that
+	 * leaves max_hdmi_phy_freq at 0 (every non-PHY-limited dw-hdmi user). Lowest
+	 * priority, so RGB/444/422 are still tried first; the source bridge's
+	 * get_input_bus_fmts rejects those over the limit, leaving 420.
+	 */
+	if (conn->ycbcr_420_allowed &&
+	    hdmi->plat_data->max_hdmi_phy_freq &&
+	    (unsigned long long)mode->clock * 1000 * 10 > hdmi->plat_data->max_hdmi_phy_freq &&
+	    !drm_mode_is_420_only(info, mode) &&
+	    !(is_hdmi2_sink && drm_mode_is_420_also(info, mode)))
+		output_fmts[i++] = MEDIA_BUS_FMT_UYYVYY8_0_5X24;
+
+	/*
+	 * DC-002: 4:2:0 fallback for a 4:2:0-ALSO mode, added AFTER the RGB/4:4:4
+	 * formats above so 4:4:4 is preferred -- the negotiation only falls back
+	 * to 4:2:0 if 4:4:4 exceeds the link bandwidth.
+	 */
+	if (conn->ycbcr_420_allowed && is_hdmi2_sink &&
+	    drm_mode_is_420_also(info, mode)) {
+		/*
+		 * D9: yuv_deep_color_first already pushed this above
+		 * (DC-420-10, line ~3117) under the same DC_30 gate -- skip
+		 * the duplicate for that platform class.
+		 */
+		if (max_bpc >= 10 && info->bpc >= 10 &&
+		    (info->hdmi.y420_dc_modes & DRM_EDID_YCBCR420_DC_30) &&
+		    !hdmi->plat_data->yuv_deep_color_first)
+			output_fmts[i++] = MEDIA_BUS_FMT_UYYVYY10_0_5X30;
+		output_fmts[i++] = MEDIA_BUS_FMT_UYYVYY8_0_5X24;
+	}
+
+	/*
+	 * force_bus_format pins a wire format the EDID / max-bpc list may
+	 * omit (yuv444-8, yuv422-8, rgb101010, yuv420-8, …). It must appear
+	 * in this list or drm_bridge skips it. Auto path is unchanged:
+	 * RGB888 is first when force is 0.
+	 */
+	if (conn->force_bus_format) {
+		unsigned int j;
+		bool have = false;
+
+		for (j = 0; j < i; j++) {
+			if (output_fmts[j] == conn->force_bus_format) {
+				have = true;
+				break;
+			}
+		}
+		if (!have)
+			output_fmts[i++] = conn->force_bus_format;
+	}
+
+	/* D5: regression-detection canary -- fires if a future push-site
+	 * addition overflows the kcalloc above (fires after the overflow
+	 * already happened; a true preventive bounds check would need a
+	 * guard at every one of the ~16 push sites, out of proportion here). */
+	WARN_ON(i > MAX_OUTPUT_SEL_FORMATS);
 	*num_output_fmts = i;
 
 	return output_fmts;
@@ -2861,6 +3471,43 @@ static u32 *dw_hdmi_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 
 	*num_input_fmts = i;
 
+	/*
+	 * Only-bridge: drm_bridge takes input_fmts[0] with no CRTC vote.
+	 * VOP scanout is RGB, so YUV444 on the wire needs RGB in + dw-hdmi
+	 * CSC. A YUV-native previous bridge is not this path.
+	 */
+	if (i && bridge->encoder &&
+	    (list_is_singular(&bridge->encoder->bridge_chain) ||
+	     list_is_first(&bridge->chain_node,
+			   &bridge->encoder->bridge_chain)) &&
+	    hdmi_bus_fmt_is_yuv444(output_fmt)) {
+		unsigned int j;
+		u32 rgb = 0, tmp;
+
+		switch (hdmi_bus_fmt_color_depth(output_fmt)) {
+		case 8:
+			rgb = MEDIA_BUS_FMT_RGB888_1X24;
+			break;
+		case 10:
+			rgb = MEDIA_BUS_FMT_RGB101010_1X30;
+			break;
+		case 12:
+			rgb = MEDIA_BUS_FMT_RGB121212_1X36;
+			break;
+		case 16:
+			rgb = MEDIA_BUS_FMT_RGB161616_1X48;
+			break;
+		}
+		for (j = 0; j < i; j++) {
+			if (input_fmts[j] == rgb) {
+				tmp = input_fmts[0];
+				input_fmts[0] = input_fmts[j];
+				input_fmts[j] = tmp;
+				break;
+			}
+		}
+	}
+
 	if (*num_input_fmts == 0) {
 		kfree(input_fmts);
 		input_fmts = NULL;
@@ -2876,12 +3523,19 @@ static int dw_hdmi_bridge_atomic_check(struct drm_bridge *bridge,
 {
 	struct dw_hdmi *hdmi = bridge->driver_private;
 
-	hdmi->hdmi_data.enc_out_bus_format =
-			bridge_state->output_bus_cfg.format;
-
-	hdmi->hdmi_data.enc_in_bus_format =
-			bridge_state->input_bus_cfg.format;
-
+	/*
+	 * D7: do NOT latch enc_in/out_bus_format here. atomic_check() runs
+	 * identically for a TEST_ONLY probe and a real commit -- DRM gives it
+	 * no way to tell them apart, by design (check must be side-effect
+	 * free). hdmi->hdmi_data.enc_{in,out}_bus_format is a persistent
+	 * struct dw_hdmi field, not per-atomic-state, so an unrelated
+	 * TEST_ONLY probe's check can overwrite it between a real commit's
+	 * check and its own atomic_enable(), or before a later out-of-band
+	 * rxsense-triggered dw_hdmi_poweron()->dw_hdmi_setup() re-reads it --
+	 * reprogramming CSC/GCP/packetizer for a format the VENC/vclk were
+	 * never set up for. Latched instead in dw_hdmi_bridge_atomic_enable(),
+	 * which only ever runs for a commit actually being applied.
+	 */
 	dev_dbg(hdmi->dev, "input format 0x%04x, output format 0x%04x\n",
 		bridge_state->input_bus_cfg.format,
 		bridge_state->output_bus_cfg.format);
@@ -2964,6 +3618,8 @@ static void dw_hdmi_bridge_atomic_enable(struct drm_bridge *bridge,
 					 struct drm_atomic_state *state)
 {
 	struct dw_hdmi *hdmi = bridge->driver_private;
+	struct drm_bridge_state *new_bridge_state =
+		drm_atomic_get_new_bridge_state(state, bridge);
 	struct drm_connector *connector;
 
 	connector = drm_atomic_get_new_connector_for_encoder(state,
@@ -2972,6 +3628,17 @@ static void dw_hdmi_bridge_atomic_enable(struct drm_bridge *bridge,
 	mutex_lock(&hdmi->mutex);
 	hdmi->disabled = false;
 	hdmi->curr_conn = connector;
+	/*
+	 * D7: latch enc_in/out_bus_format from THIS commit's actual bridge
+	 * state here, under hdmi->mutex, at the one point guaranteed to be a
+	 * real (non-TEST_ONLY) apply -- see dw_hdmi_bridge_atomic_check().
+	 */
+	if (new_bridge_state) {
+		hdmi->hdmi_data.enc_out_bus_format =
+			new_bridge_state->output_bus_cfg.format;
+		hdmi->hdmi_data.enc_in_bus_format =
+			new_bridge_state->input_bus_cfg.format;
+	}
 	dw_hdmi_update_power(hdmi);
 	dw_hdmi_update_phy_mask(hdmi);
 	handle_plugged_change(hdmi, true);
@@ -3316,6 +3983,35 @@ bool dw_hdmi_bus_fmt_is_420(struct dw_hdmi *hdmi)
 }
 EXPORT_SYMBOL_GPL(dw_hdmi_bus_fmt_is_420);
 
+/*
+ * The color depth (bits per component) of the negotiated output bus format:
+ * 8/10/12/16. A platform PHY setup needs this to compute the real TMDS
+ * character rate for deep color (pixel_clock * depth/8, and again /2 for 4:2:0)
+ * -- e.g. 4K60 420-10 is 371.25MHz, not the 297MHz the pixel clock alone shows.
+ */
+unsigned int dw_hdmi_bus_fmt_color_depth(struct dw_hdmi *hdmi)
+{
+	return hdmi_bus_fmt_color_depth(hdmi->hdmi_data.enc_out_bus_format);
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_bus_fmt_color_depth);
+
+/*
+ * Whether the negotiated output bus format is YCbCr 4:2:2. A platform PHY
+ * setup re-deriving its own TMDS character rate (mirrors dw_hdmi_bus_fmt_
+ * color_depth() above) must exclude 4:2:2 from the depth/8 deep-color scale
+ * -- 4:2:2 carries any bit depth within the SAME bandwidth as 8-bit
+ * 4:4:4/4:2:2, exactly like this driver's own mtmdsclock computation (see
+ * hdmi_av_composer(), which gates the depth scaling on !hdmi_bus_fmt_is_
+ * yuv422()). Getting this wrong makes the platform's PHY-band / high-TMDS-
+ * pattern decision disagree with this driver's own >340MHz SCDC decision
+ * for the same mode, and the sink can't lock.
+ */
+bool dw_hdmi_bus_fmt_is_422(struct dw_hdmi *hdmi)
+{
+	return hdmi_bus_fmt_is_yuv422(hdmi->hdmi_data.enc_out_bus_format);
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_bus_fmt_is_422);
+
 struct dw_hdmi *dw_hdmi_probe(struct platform_device *pdev,
 			      const struct dw_hdmi_plat_data *plat_data)
 {
@@ -3385,7 +4081,8 @@ struct dw_hdmi *dw_hdmi_probe(struct platform_device *pdev,
 			break;
 		default:
 			dev_err(dev, "reg-io-width must be 1 or 4\n");
-			return ERR_PTR(-EINVAL);
+			ret = -EINVAL;
+			goto err_res;
 		}
 
 		iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -3643,6 +4340,12 @@ void dw_hdmi_resume(struct dw_hdmi *hdmi)
 	dw_hdmi_init_hw(hdmi);
 }
 EXPORT_SYMBOL_GPL(dw_hdmi_resume);
+
+bool dw_hdmi_is_bridge_on(struct dw_hdmi *hdmi)
+{
+	return !hdmi->disabled;
+}
+EXPORT_SYMBOL_GPL(dw_hdmi_is_bridge_on);
 
 MODULE_AUTHOR("Sascha Hauer <s.hauer@pengutronix.de>");
 MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com>");

@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Pumpkin i350 (MT8365) SCMI v1 FIT overlay. Applied only by genio-mkfit.sh
+ * when GENIO350_SCMI=1. Adds the SMT page as reserved-memory no-map and enables
+ * the board's disabled firmware/scmi node. Zero protocol children.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/reserved-memory} {
+	scmi_shmem: shmem@43030000 {
+		compatible = "arm,scmi-shmem";
+		reg = <0 0x43030000 0 0x1000>;
+		no-map;
+	};
+};
+
+&scmi {
+	shmem = <&scmi_shmem>;
+	status = "okay";
+};

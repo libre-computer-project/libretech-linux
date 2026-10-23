@@ -11,6 +11,7 @@
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 
+#include "etnaviv_buffer_internal.h"
 #include "etnaviv_cmdbuf.h"
 #include "etnaviv_drv.h"
 #include "etnaviv_gpu.h"
@@ -424,6 +425,7 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 	int out_fence_fd = -1;
 	struct pid *pid = get_pid(task_pid(current));
 	void *stream;
+	u32 npu_n_barriers = 0, npu_content_bytes = 0;
 	int ret;
 
 	if (args->pipe >= ETNA_MAX_PIPES)
@@ -522,8 +524,16 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 
 	submit->pid = pid;
 
+	/* Resident-NBG per-batch drain (A311D 0x88): plan the kernel-side
+	 * interleave (barriers inserted at UNK10A4 cadence) so the cmdbuf is
+	 * grown to hold them. Non-resident / per-op / 0x99 submits return 0
+	 * barriers and content_bytes == stream_size (unchanged path). */
+	npu_n_barriers = etnaviv_npu_resident_plan(gpu, stream,
+						   args->stream_size,
+						   &npu_content_bytes);
+
 	ret = etnaviv_cmdbuf_init(priv->cmdbuf_suballoc, &submit->cmdbuf,
-				  ALIGN(args->stream_size, 8) + 8);
+				  ALIGN(npu_content_bytes, 8) + 8);
 	if (ret)
 		goto err_submit_put;
 
@@ -531,6 +541,10 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 	submit->mmu_context = etnaviv_iommu_context_get(submit->ctx->mmu);
 	submit->exec_state = args->exec_state;
 	submit->flags = args->flags;
+	/* N9: final-op output bytes for the A311D output-size-scaled NN-AXI
+	 * drain (backward-compatible reuse of the former pad slot; 0 = legacy
+	 * behavior). */
+	submit->npu_output_bytes = args->npu_output_bytes;
 
 	ret = drm_sched_job_init(&submit->sched_job,
 				 &ctx->sched_entity[args->pipe],
@@ -575,7 +589,22 @@ int etnaviv_ioctl_gem_submit(struct drm_device *dev, void *data,
 	if (ret)
 		goto err_submit_job;
 
-	memcpy(submit->cmdbuf.vaddr, stream, args->stream_size);
+	/*
+	 * qi:N1443 -- force VIVS_GL_NN_CONFIG.DDR_BURST_SIZE inside the user's
+	 * own command stream when npu_nn_ddr_burst is armed.  No-op (and no
+	 * walk at all) at the default -1.  Placed after relocation and before
+	 * the copy into the cmdbuf, so it operates on the kernel's copy.
+	 */
+	etnaviv_npu_nn_config_patch_stream(gpu, stream, args->stream_size / 4);
+
+	/* Resident 0x88: interleave the BSP FullQueue per-batch drain into the
+	 * kernel's (grown) cmdbuf copy; the userspace dispatch bytes are copied
+	 * verbatim. Otherwise plain copy (unchanged). */
+	if (npu_n_barriers)
+		etnaviv_npu_resident_build(gpu, submit->cmdbuf.vaddr, stream,
+					   args->stream_size);
+	else
+		memcpy(submit->cmdbuf.vaddr, stream, args->stream_size);
 
 	ret = submit_lock_objects(submit, &ticket);
 	if (ret)

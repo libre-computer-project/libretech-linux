@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/amlogic/amlogic,gxl-pubmon-sc-shmem.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Amlogic GXL DDR PUB monitor SC shared-memory block
+
+maintainers:
+  - Da Xue <da@libre.computer>
+
+description: |
+  One KiB at the tail of the AO Cortex-M3 System Controller's heap
+  (non-secure address 0xc8011c00, SRAM offset 0x11c00) that the System
+  Controller publishes DDR PHY (PUB) VT tracking statistics into: a
+  magic/version header, a seqcount-guarded field table, control words for
+  the sample rate and a reset request/acknowledge pair, and a ring of the
+  most recent delay-line changes.
+
+properties:
+  compatible:
+    const: amlogic,gxl-pubmon-sc-shmem
+
+  reg:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    sram@c8000000 {
+        compatible = "mmio-sram";
+        reg = <0xc8000000 0x14000>;
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges = <0 0xc8000000 0x14000>;
+
+        pubmon_sc_shmem: pubmon-sram@11c00 {
+            compatible = "amlogic,gxl-pubmon-sc-shmem";
+            reg = <0x11c00 0x400>;
+        };
+    };

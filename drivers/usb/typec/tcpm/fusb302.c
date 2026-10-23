@@ -87,6 +87,9 @@ struct fusb302_chip {
 	int gpio_int_n_irq;
 	struct extcon_dev *extcon;
 
+	/* SWITCHES1 as the previous session left it, read before the reset */
+	u8 prior_switches1;
+
 	struct workqueue_struct *wq;
 	struct delayed_work bc_lvl_handler;
 
@@ -238,10 +241,62 @@ static int fusb302_i2c_write(struct fusb302_chip *chip,
 			     u8 address, u8 data)
 {
 	int ret = 0;
-
+	if (address == 0x02){
+		if (data == 0x03)
+			fusb302_log(chip, "WRITE SWITCHES0 %#04x %#04x PULL DOWN", address, data);
+		else if (data == 0x07)
+			fusb302_log(chip, "WRITE SWITCHES0 %#04x %#04x PULL DOWN MEAS_CC1", address, data);
+		else
+			fusb302_log(chip, "WRITE SWITCHES0 %#04x %#04x PULL", address, data);
+	} else if (address == 0x03){
+		if (data == 0x20)
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x SINK DEVICE ROLE MAN_CRC", address, data);
+		else if (data == 0x21)
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x SINK DEVICE ROLE TX CC1", address, data);
+		else if (data == 0x22)
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x SINK DEVICE ROLE TX CC2", address, data);
+		else if (data == 0x24)
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x SINK DEVICE ROLE AUTO_CRC", address, data);
+		else if (data == 0x25)
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x SINK DEVICE ROLE AUTO_CRC TX CC1", address, data);
+		else if (data == 0x26)
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x SINK DEVICE ROLE AUTO_CRC TX CC2", address, data);
+		else
+			fusb302_log(chip, "WRITE SWITCHES1 %#04x %#04x ROLE", address, data);
+	} else if (address == 0x06){
+		if (data == 0x44)
+			fusb302_log(chip, "WRITE CONTROL0  %#04x %#04x TX FLUSH", address, data);
+		else
+			fusb302_log(chip, "WRITE CONTROL0  %#04x %#04x TX", address, data);
+	} else if (address == 0x07)
+		if (data == 0x04)
+			fusb302_log(chip, "WRITE CONTROL1  %#04x %#04x RX FLUSH", address, data);
+		else
+			fusb302_log(chip, "WRITE CONTROL1  %#04x %#04x RX", address, data);
+	else if (address == 0x08){
+		if (data == 0x00)
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG DISABLE", address, data);
+		else if (data == 0x02)
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG DRP", address, data);
+		else if (data == 0x04)
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG SNK", address, data);
+		else if (data == 0x05)
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG SNK ENABLE", address, data);
+		else if (data == 0x06)
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG SRC", address, data);
+		else if (data == 0x07)
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG SRC ENABLE", address, data);
+		else
+			fusb302_log(chip, "WRITE CONTROL2  %#04x %#04x TOG", address, data);
+	} else if (address == 0x09){
+		if (data == 0x07)
+			fusb302_log(chip, "WRITE CONTROL3  %#04x %#04x AUTO HR SR DISABLED AUTO MR 3", address, data);
+		else
+			fusb302_log(chip, "WRITE CONTROL3  %#04x %#04x RES", address, data);
+	}
 	ret = i2c_smbus_write_byte_data(chip->i2c_client, address, data);
 	if (ret < 0)
-		fusb302_log(chip, "cannot write 0x%02x to 0x%02x, ret=%d",
+		fusb302_log(chip, "cannot write %#04x to %#04x, ret=%d",
 			    data, address, ret);
 
 	return ret;
@@ -254,11 +309,12 @@ static int fusb302_i2c_block_write(struct fusb302_chip *chip, u8 address,
 
 	if (length <= 0)
 		return ret;
+	fusb302_log(chip, "BWRITE %#04x %#04x", address, length);
 
 	ret = i2c_smbus_write_i2c_block_data(chip->i2c_client, address,
 					     length, data);
 	if (ret < 0)
-		fusb302_log(chip, "cannot block write 0x%02x, len=%d, ret=%d",
+		fusb302_log(chip, "cannot block write %#04x, len=%d, ret=%d",
 			    address, length, ret);
 
 	return ret;
@@ -272,7 +328,7 @@ static int fusb302_i2c_read(struct fusb302_chip *chip,
 	ret = i2c_smbus_read_byte_data(chip->i2c_client, address);
 	*data = (u8)ret;
 	if (ret < 0)
-		fusb302_log(chip, "cannot read %02x, ret=%d", address, ret);
+		fusb302_log(chip, "cannot read %#04x, ret=%d", address, ret);
 
 	return ret;
 }
@@ -288,12 +344,12 @@ static int fusb302_i2c_block_read(struct fusb302_chip *chip, u8 address,
 	ret = i2c_smbus_read_i2c_block_data(chip->i2c_client, address,
 					    length, data);
 	if (ret < 0) {
-		fusb302_log(chip, "cannot block read 0x%02x, len=%d, ret=%d",
+		fusb302_log(chip, "cannot block read %#04x, len=%d, ret=%d",
 			    address, length, ret);
 		goto done;
 	}
 	if (ret != length) {
-		fusb302_log(chip, "only read %d/%d bytes from 0x%02x",
+		fusb302_log(chip, "only read %d/%d bytes from %#04x",
 			    ret, length, address);
 		ret = -EIO;
 	}
@@ -335,13 +391,18 @@ static int fusb302_i2c_clear_bits(struct fusb302_chip *chip, u8 address,
 static int fusb302_sw_reset(struct fusb302_chip *chip)
 {
 	int ret = 0;
+	u8 status1;
+
+	fusb302_i2c_read(chip, FUSB_REG_STATUS1, &status1);
+	if (!(status1 & FUSB_REG_STATUS1_RX_EMPTY))
+		fusb302_log(chip, "SW RESET BUT RX NOT EMPTY!");
 
 	ret = fusb302_i2c_write(chip, FUSB_REG_RESET,
 				FUSB_REG_RESET_SW_RESET);
 	if (ret < 0)
 		fusb302_log(chip, "cannot sw reset the chip, ret=%d", ret);
 	else
-		fusb302_log(chip, "sw reset");
+		fusb302_log(chip, "SW RESET");
 
 	return ret;
 }
@@ -379,6 +440,8 @@ static int fusb302_init_interrupt(struct fusb302_chip *chip)
 	if (ret < 0)
 		return ret;
 
+	fusb302_log(chip, "VBUSOK INTERRUPT ENABLED");
+
 	return ret;
 }
 
@@ -391,12 +454,37 @@ static int fusb302_set_power_mode(struct fusb302_chip *chip, u8 power_mode)
 	return ret;
 }
 
+static int tcpm_get_prior_roles(struct tcpc_dev *dev, enum typec_role *role,
+				enum typec_data_role *data)
+{
+	struct fusb302_chip *chip = container_of(dev, struct fusb302_chip,
+						 tcpc_dev);
+	u8 sw1 = chip->prior_switches1;
+
+	if (!(sw1 & FUSB_REG_SWITCHES1_AUTO_GCRC))
+		return -ENOENT;
+
+	*role = sw1 & FUSB_REG_SWITCHES1_POWERROLE ? TYPEC_SOURCE : TYPEC_SINK;
+	*data = sw1 & FUSB_REG_SWITCHES1_DATAROLE ? TYPEC_HOST : TYPEC_DEVICE;
+
+	return 0;
+}
+
 static int tcpm_init(struct tcpc_dev *dev)
 {
 	struct fusb302_chip *chip = container_of(dev, struct fusb302_chip,
 						 tcpc_dev);
 	int ret = 0;
 	u8 data;
+
+	/*
+	 * The chip is not reset with the SoC. SWITCHES1 still holds the roles
+	 * the last session (the bootloader, or this kernel before a reboot)
+	 * put in its GoodCRC headers, and AUTO_GCRC says whether it spoke PD
+	 * at all; the reset below clears both.
+	 */
+	if (fusb302_i2c_read(chip, FUSB_REG_SWITCHES1, &chip->prior_switches1) < 0)
+		chip->prior_switches1 = 0;
 
 	ret = fusb302_sw_reset(chip);
 	if (ret < 0)
@@ -410,14 +498,26 @@ static int tcpm_init(struct tcpc_dev *dev)
 	ret = fusb302_set_power_mode(chip, FUSB_REG_POWER_PWR_ALL);
 	if (ret < 0)
 		return ret;
+	udelay(200);
 	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS0, &data);
 	if (ret < 0)
 		return ret;
+	fusb302_log(chip, "READ STATUS0 %#04x", data);
+
 	chip->vbus_present = !!(data & FUSB_REG_STATUS0_VBUSOK);
+
+	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS1, &data);
+	if (ret < 0)
+		return ret;
+	if (data == 0x28)
+		fusb302_log(chip, "READ STATUS1 RX/TX EMPTY");
+	else
+		fusb302_log(chip, "READ STATUS1 %#04x", data);
+
 	ret = fusb302_i2c_read(chip, FUSB_REG_DEVICE_ID, &data);
 	if (ret < 0)
 		return ret;
-	fusb302_log(chip, "fusb302 device ID: 0x%02x", data);
+	fusb302_log(chip, "fusb302 device ID: %#04x, vbus_present %d", data, chip->vbus_present);
 
 	return ret;
 }
@@ -629,7 +729,7 @@ static int tcpm_set_cc(struct tcpc_dev *dev, enum typec_cc_status cc)
 		goto done;
 	}
 
-	fusb302_log(chip, "cc := %s", typec_cc_status_name[cc]);
+	fusb302_log(chip, "CC SET %s", typec_cc_status_name[cc]);
 
 	ret = fusb302_set_toggling(chip, TOGGLING_MODE_OFF);
 	if (ret < 0) {
@@ -790,12 +890,24 @@ done:
 
 static int fusb302_pd_tx_flush(struct fusb302_chip *chip)
 {
+	u8 status1;
+
+	fusb302_i2c_read(chip, FUSB_REG_STATUS1, &status1);
+	if (!(status1 & FUSB_REG_STATUS1_TX_EMPTY))
+		fusb302_log(chip, "  TX not empty");
+
 	return fusb302_i2c_set_bits(chip, FUSB_REG_CONTROL0,
 				    FUSB_REG_CONTROL0_TX_FLUSH);
 }
 
 static int fusb302_pd_rx_flush(struct fusb302_chip *chip)
 {
+	u8 status1;
+
+	fusb302_i2c_read(chip, FUSB_REG_STATUS1, &status1);
+	if (!(status1 & FUSB_REG_STATUS1_RX_EMPTY))
+		fusb302_log(chip, "  RX NOT EMPTY!");
+
 	return fusb302_i2c_set_bits(chip, FUSB_REG_CONTROL1,
 				    FUSB_REG_CONTROL1_RX_FLUSH);
 }
@@ -852,6 +964,8 @@ static int tcpm_set_pd_rx(struct tcpc_dev *dev, bool on)
 		fusb302_log(chip, "cannot flush pd rx buffer, ret=%d", ret);
 		goto done;
 	}
+
+	fusb302_log(chip, "TX FLUSH INIT");
 	ret = fusb302_pd_tx_flush(chip);
 	if (ret < 0) {
 		fusb302_log(chip, "cannot flush pd tx buffer, ret=%d", ret);
@@ -911,7 +1025,7 @@ static int tcpm_set_roles(struct tcpc_dev *dev, bool attached,
 			    ret);
 		goto done;
 	}
-	fusb302_log(chip, "pd header := %s, %s", typec_role_name[pwr],
+	fusb302_log(chip, "POWER ROLE %s DATA ROLE %s", typec_role_name[pwr],
 		    typec_data_role_name[data]);
 done:
 	mutex_unlock(&chip->lock);
@@ -979,7 +1093,7 @@ static int fusb302_pd_send_message(struct fusb302_chip *chip,
 	len += 2;
 	if (len > 0x1F) {
 		fusb302_log(chip,
-			    "PD message too long %d (incl. header)", len);
+			    "TX message too long %d (incl. header)", len);
 		return -EINVAL;
 	}
 	/* packsym tells the FUSB302 chip that the next X bytes are payload */
@@ -1003,8 +1117,7 @@ static int fusb302_pd_send_message(struct fusb302_chip *chip,
 	ret = fusb302_i2c_block_write(chip, FUSB_REG_FIFOS, pos, buf);
 	if (ret < 0)
 		return ret;
-	fusb302_log(chip, "sending PD message header: %x", msg->header);
-	fusb302_log(chip, "sending PD message len: %d", len);
+	fusb302_log(chip, "  TX header: %#06x len: %d", msg->header, len);
 
 	return ret;
 }
@@ -1084,6 +1197,8 @@ static void fusb302_bc_lvl_handler_work(struct work_struct *work)
 	u8 bc_lvl;
 	enum typec_cc_status cc_status;
 
+	//fusb302_log(chip, "BC_LVL");
+
 	mutex_lock(&chip->lock);
 	if (!chip->intr_bc_lvl) {
 		fusb302_log(chip, "BC_LVL interrupt is turned off, abort");
@@ -1092,7 +1207,7 @@ static void fusb302_bc_lvl_handler_work(struct work_struct *work)
 	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS0, &status0);
 	if (ret < 0)
 		goto done;
-	fusb302_log(chip, "BC_LVL handler, status0=0x%02x", status0);
+	fusb302_log(chip, "BC_LVL STATUS0 %#04x", status0);
 	if (status0 & FUSB_REG_STATUS0_ACTIVITY) {
 		fusb302_log(chip, "CC activities detected, delay handling");
 		mod_delayed_work(chip->wq, &chip->bc_lvl_handler,
@@ -1126,6 +1241,7 @@ done:
 static void init_tcpc_dev(struct tcpc_dev *fusb302_tcpc_dev)
 {
 	fusb302_tcpc_dev->init = tcpm_init;
+	fusb302_tcpc_dev->get_prior_roles = tcpm_get_prior_roles;
 	fusb302_tcpc_dev->get_vbus = tcpm_get_vbus;
 	fusb302_tcpc_dev->get_current_limit = tcpm_get_current_limit;
 	fusb302_tcpc_dev->set_cc = tcpm_set_cc;
@@ -1153,6 +1269,8 @@ static int fusb302_set_cc_polarity_and_pull(struct fusb302_chip *chip,
 	u8 switches1_mask = FUSB_REG_SWITCHES1_TXCC1_EN |
 			    FUSB_REG_SWITCHES1_TXCC2_EN;
 	u8 switches1_data = 0x00;
+
+	fusb302_log(chip, "    CC SET PULL INIT UP %d DOWN %d", pull_up, pull_down);
 
 	if (pull_down)
 		switches0_data |= FUSB_REG_SWITCHES0_CC1_PD_EN |
@@ -1194,6 +1312,8 @@ static int fusb302_handle_togdone_snk(struct fusb302_chip *chip,
 	enum typec_cc_polarity cc_polarity;
 	enum typec_cc_status cc_status_active, cc1, cc2;
 
+	fusb302_log(chip, "  TOGDONE SNK HANDLER");
+
 	/* set polarity and pull_up, pull_down */
 	cc_polarity = (togdone_result == FUSB_REG_STATUS1A_TOGSS_SNK1) ?
 		      TYPEC_POLARITY_CC1 : TYPEC_POLARITY_CC2;
@@ -1203,6 +1323,7 @@ static int fusb302_handle_togdone_snk(struct fusb302_chip *chip,
 			    cc_polarity_name[cc_polarity], ret);
 		return ret;
 	}
+	fusb302_log(chip, "    CC SET PULL DOWN COMPLETE");
 	/* fusb302_set_cc_polarity() has set the correct measure block */
 	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS0, &status0);
 	if (ret < 0)
@@ -1232,6 +1353,7 @@ static int fusb302_handle_togdone_snk(struct fusb302_chip *chip,
 			    "cannot set toggling mode off, ret=%d", ret);
 		return ret;
 	}
+	fusb302_log(chip, "  TOG OFF COMPLETE");
 	/* unmask bc_lvl interrupt */
 	ret = fusb302_i2c_clear_bits(chip, FUSB_REG_MASK, FUSB_REG_MASK_BC_LVL);
 	if (ret < 0) {
@@ -1239,8 +1361,9 @@ static int fusb302_handle_togdone_snk(struct fusb302_chip *chip,
 			    "cannot unmask bc_lcl interrupt, ret=%d", ret);
 		return ret;
 	}
+	fusb302_log(chip, "  BC_LVL INTERRUPT ENABLED");
 	chip->intr_bc_lvl = true;
-	fusb302_log(chip, "detected cc1=%s, cc2=%s",
+	fusb302_log(chip, "    TOGDONE cc1=%s, cc2=%s",
 		    typec_cc_status_name[cc1],
 		    typec_cc_status_name[cc2]);
 
@@ -1266,7 +1389,7 @@ static int fusb302_get_src_cc_status(struct fusb302_chip *chip,
 		return ret;
 
 	fusb302_i2c_read(chip, FUSB_REG_SWITCHES0, &status0);
-	fusb302_log(chip, "get_src_cc_status switches: 0x%0x", status0);
+	fusb302_log(chip, "get_src_cc_status switches: %#04x", status0);
 
 	/* Step 2: Set compararator volt to differentiate between Open and Rd */
 	ret = fusb302_i2c_write(chip, FUSB_REG_MEASURE, rd_mda);
@@ -1278,7 +1401,7 @@ static int fusb302_get_src_cc_status(struct fusb302_chip *chip,
 	if (ret < 0)
 		return ret;
 
-	fusb302_log(chip, "get_src_cc_status rd_mda status0: 0x%0x", status0);
+	fusb302_log(chip, "get_src_cc_status rd_mda status0: %#04x", status0);
 	if (status0 & FUSB_REG_STATUS0_COMP) {
 		*cc = TYPEC_CC_OPEN;
 		return 0;
@@ -1294,7 +1417,7 @@ static int fusb302_get_src_cc_status(struct fusb302_chip *chip,
 	if (ret < 0)
 		return ret;
 
-	fusb302_log(chip, "get_src_cc_status ra_mda status0: 0x%0x", status0);
+	fusb302_log(chip, "get_src_cc_status ra_mda status0: %#04x", status0);
 	if (status0 & FUSB_REG_STATUS0_COMP)
 		*cc = TYPEC_CC_RD;
 	else
@@ -1382,7 +1505,7 @@ static int fusb302_handle_togdone_src(struct fusb302_chip *chip,
 		return ret;
 	}
 	chip->intr_comp_chng = true;
-	fusb302_log(chip, "detected cc1=%s, cc2=%s",
+	fusb302_log(chip, "togdone detected cc1=%s, cc2=%s",
 		    typec_cc_status_name[cc1],
 		    typec_cc_status_name[cc2]);
 
@@ -1394,6 +1517,8 @@ static int fusb302_handle_togdone(struct fusb302_chip *chip)
 	int ret = 0;
 	u8 status1a;
 	u8 togdone_result;
+
+	fusb302_log(chip, "TOGDONE HANDLER");
 
 	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS1A, &status1a);
 	if (ret < 0)
@@ -1446,7 +1571,7 @@ static int fusb302_pd_read_message(struct fusb302_chip *chip,
 	len = pd_header_cnt_le(msg->header) * 4;
 	/* add 4 to length to include the CRC */
 	if (len > PD_MAX_PAYLOAD * 4) {
-		fusb302_log(chip, "PD message too long %d", len);
+		fusb302_log(chip, "RX message too long %d", len);
 		return -EINVAL;
 	}
 	if (len > 0) {
@@ -1459,8 +1584,8 @@ static int fusb302_pd_read_message(struct fusb302_chip *chip,
 	ret = fusb302_i2c_block_read(chip, FUSB_REG_FIFOS, 4, crc);
 	if (ret < 0)
 		return ret;
-	fusb302_log(chip, "PD message header: %x", msg->header);
-	fusb302_log(chip, "PD message len: %d", len);
+	fusb302_log(chip, "RX Header: %#06x", msg->header);
+	fusb302_log(chip, "  RX Length: %d", len);
 
 	/*
 	 * Check if we've read off a GoodCRC message. If so then indicate to
@@ -1474,6 +1599,8 @@ static int fusb302_pd_read_message(struct fusb302_chip *chip,
 	 */
 	if ((!len) && (pd_header_type_le(msg->header) == PD_CTRL_GOOD_CRC))
 		tcpm_pd_transmit_complete(chip->tcpm_port, TCPC_TX_SUCCESS);
+	else if (pd_header_type_le(msg->header) != 0)
+		tcpm_pd_receive(chip->tcpm_port, msg, TCPC_TX_SOP);
 	else
 		tcpm_pd_receive(chip->tcpm_port, msg, TCPC_TX_SOP);
 
@@ -1507,6 +1634,7 @@ static void fusb302_irq_work(struct work_struct *work)
 	u8 interrupta;
 	u8 interruptb;
 	u8 status0;
+	u8 status1;
 	bool vbus_present;
 	bool comp_result;
 	bool intr_togdone;
@@ -1532,9 +1660,12 @@ static void fusb302_irq_work(struct work_struct *work)
 	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS0, &status0);
 	if (ret < 0)
 		goto done;
+	ret = fusb302_i2c_read(chip, FUSB_REG_STATUS1, &status1);
+	if (ret < 0)
+		goto done;
 	fusb302_log(chip,
-		    "IRQ: 0x%02x, a: 0x%02x, b: 0x%02x, status0: 0x%02x",
-		    interrupt, interrupta, interruptb, status0);
+		    "IRQ: %#04x, a: %#04x, b: %#04x, s0: %#04x, s1: %#04x",
+		    interrupt, interrupta, interruptb, status0, status1);
 
 	if (interrupt & FUSB_REG_INTERRUPT_VBUSOK) {
 		vbus_present = !!(status0 & FUSB_REG_STATUS0_VBUSOK);
@@ -1547,7 +1678,7 @@ static void fusb302_irq_work(struct work_struct *work)
 	}
 
 	if ((interrupta & FUSB_REG_INTERRUPTA_TOGDONE) && intr_togdone) {
-		fusb302_log(chip, "IRQ: TOGDONE");
+		fusb302_log(chip, "  IRQ: TOGDONE");
 		ret = fusb302_handle_togdone(chip);
 		if (ret < 0) {
 			fusb302_log(chip,
@@ -1557,7 +1688,7 @@ static void fusb302_irq_work(struct work_struct *work)
 	}
 
 	if ((interrupt & FUSB_REG_INTERRUPT_BC_LVL) && intr_bc_lvl) {
-		fusb302_log(chip, "IRQ: BC_LVL, handler pending");
+		fusb302_log(chip, "  IRQ: BC_LVL, handler pending");
 		/*
 		 * as BC_LVL interrupt can be affected by PD activity,
 		 * apply delay to for the handler to wait for the PD
@@ -1580,17 +1711,17 @@ static void fusb302_irq_work(struct work_struct *work)
 	}
 
 	if (interrupt & FUSB_REG_INTERRUPT_COLLISION) {
-		fusb302_log(chip, "IRQ: PD collision");
+		fusb302_log(chip, "  IRQ: PD collision");
 		tcpm_pd_transmit_complete(chip->tcpm_port, TCPC_TX_FAILED);
 	}
 
 	if (interrupta & FUSB_REG_INTERRUPTA_RETRYFAIL) {
-		fusb302_log(chip, "IRQ: PD retry failed");
+		fusb302_log(chip, "  IRQ: PD retry failed");
 		tcpm_pd_transmit_complete(chip->tcpm_port, TCPC_TX_FAILED);
 	}
 
 	if (interrupta & FUSB_REG_INTERRUPTA_HARDSENT) {
-		fusb302_log(chip, "IRQ: PD hardreset sent");
+		fusb302_log(chip, "  IRQ: TX Hard Reset sent");
 		ret = fusb302_pd_reset(chip);
 		if (ret < 0) {
 			fusb302_log(chip, "cannot PD reset, ret=%d", ret);
@@ -1600,7 +1731,7 @@ static void fusb302_irq_work(struct work_struct *work)
 	}
 
 	if (interrupta & FUSB_REG_INTERRUPTA_TX_SUCCESS) {
-		fusb302_log(chip, "IRQ: PD tx success");
+		fusb302_log(chip, "  IRQ: TX success");
 		ret = fusb302_pd_read_message(chip, &pd_msg);
 		if (ret < 0) {
 			fusb302_log(chip,
@@ -1610,7 +1741,8 @@ static void fusb302_irq_work(struct work_struct *work)
 	}
 
 	if (interrupta & FUSB_REG_INTERRUPTA_HARDRESET) {
-		fusb302_log(chip, "IRQ: PD received hardreset");
+		fusb302_log(chip, "  IRQ: RX Hard Reset");
+
 		ret = fusb302_pd_reset(chip);
 		if (ret < 0) {
 			fusb302_log(chip, "cannot PD reset, ret=%d", ret);
@@ -1620,7 +1752,7 @@ static void fusb302_irq_work(struct work_struct *work)
 	}
 
 	if (interruptb & FUSB_REG_INTERRUPTB_GCRCSENT) {
-		fusb302_log(chip, "IRQ: PD sent good CRC");
+		fusb302_log(chip, "  IRQ: TX CRC good");
 		ret = fusb302_pd_read_message(chip, &pd_msg);
 		if (ret < 0) {
 			fusb302_log(chip,
@@ -1755,9 +1887,9 @@ static int fusb302_probe(struct i2c_client *client)
 		goto destroy_workqueue;
 	}
 
-	ret = request_irq(chip->gpio_int_n_irq, fusb302_irq_intn,
-			  IRQF_ONESHOT | IRQF_TRIGGER_LOW,
-			  "fsc_interrupt_int_n", chip);
+	ret = request_threaded_irq(chip->gpio_int_n_irq, NULL, fusb302_irq_intn,
+				   IRQF_ONESHOT | IRQF_TRIGGER_LOW,
+				   "fsc_interrupt_int_n", chip);
 	if (ret < 0) {
 		dev_err(dev, "cannot request IRQ for GPIO Int_N, ret=%d", ret);
 		goto tcpm_unregister_port;
@@ -1809,6 +1941,8 @@ static int fusb302_pm_resume(struct device *dev)
 {
 	struct fusb302_chip *chip = dev->driver_data;
 	unsigned long flags;
+
+	fusb302_log(chip, "pm_resume");
 
 	spin_lock_irqsave(&chip->irq_lock, flags);
 	if (chip->irq_while_suspended) {

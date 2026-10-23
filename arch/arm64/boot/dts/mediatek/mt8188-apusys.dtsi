@@ -1,0 +1,439 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * MediaTek MT8188/MT8370 APUSYS (MDLA 3.0 NPU) device-tree nodes.
+ *
+ * Ported from the Genio-510 EVK BSP overlay
+ * (genio-flash/genio-510-evk/devicetree/apusys.dtbo, BSP kernel 6.6.37)
+ * to drive the out-of-tree mtk-apusys-driver (apusys_rv 2.0, mt8188_plat).
+ *
+ * Dependencies satisfied from mainline mt8188.dtsi /
+ * mt8390-genio-common.dtsi: topckgen (CLK_TOP_DSP..DSP7), the apu_mem /
+ * vpu_mem reserved-memory regions, the mt6359 vmodem/vsram_md regulators,
+ * and the efuse@11f20000 controller.
+ *
+ * APU M4U: compatible "mediatek,mt8188-iommu-apu" matches mt8188_data_apu
+ * in drivers/iommu/mtk_iommu.c (TYPE_APU, SHARE_PGTABLE, STD_AXI_MODE).
+ * Runtime-resume PT_BASE rewrite is the existing TYPE_APU path (APU-008).
+ */
+
+#include <dt-bindings/clock/mediatek,mt8188-clk.h>
+
+&{/soc} {
+	apu_iommu0: iommu@19010000 {
+		compatible = "mediatek,mt8188-iommu-apu";
+		reg = <0 0x19010000 0 0x1000>;
+		interrupts = <GIC_SPI 433 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&topckgen CLK_TOP_DSP>;
+		clock-names = "bclk";
+		#iommu-cells = <1>;
+		status = "okay";
+	};
+
+	apu_iommu1: iommu@19015000 {
+		compatible = "mediatek,mt8188-iommu-apu";
+		reg = <0 0x19015000 0 0x1000>;
+		interrupts = <GIC_SPI 438 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&topckgen CLK_TOP_DSP>;
+		clock-names = "bclk";
+		#iommu-cells = <1>;
+		status = "okay";
+	};
+
+	apu_top_3: apu_top_3@190f0000 {
+		compatible = "mt8188,apu_top_3";
+		clocks = <&topckgen CLK_TOP_DSP>,
+			 <&topckgen CLK_TOP_DSP1>,
+			 <&topckgen CLK_TOP_DSP2>,
+			 <&topckgen CLK_TOP_DSP3>,
+			 <&topckgen CLK_TOP_DSP4>,
+			 <&topckgen CLK_TOP_DSP5>,
+			 <&topckgen CLK_TOP_DSP6>,
+			 <&topckgen CLK_TOP_DSP7>;
+		clock-names = "clk_top_dsp", "clk_top_dsp1", "clk_top_dsp2",
+			      "clk_top_dsp3", "clk_top_dsp4", "clk_top_dsp5",
+			      "clk_top_dsp6", "clk_top_dsp7";
+		reg = <0 0x190f0000 0 0x1000>,
+		      <0 0x10006000 0 0x1000>,
+		      <0 0x10276000 0 0x1000>,
+		      <0 0x19020000 0 0x1000>,
+		      <0 0x190e0000 0 0x1000>,
+		      <0 0x190e1000 0 0x1000>,
+		      <0 0x190f1000 0 0x1000>,
+		      <0 0x190f2000 0 0x1000>,
+		      <0 0x190f3000 0 0x1000>,
+		      <0 0x190f4000 0 0x1000>,
+		      <0 0x190f6000 0 0x1000>,
+		      <0 0x190f7000 0 0x1000>,
+		      <0 0x190f8000 0 0x1000>,
+		      <0 0x19100000 0 0x40000>,
+		      <0 0x19140000 0 0x1000>;
+		reg-names = "apu_rpc", "sys_spm", "bcrm_fmem_pdn", "apu_rcx",
+			    "apu_vcore", "apu_md32_mbox", "apu_pcu", "apu_ao_ctl",
+			    "apu_pll", "apu_acc", "apu_are0", "apu_are1",
+			    "apu_are2", "apu_acx0", "apu_acx0_rpc_lite";
+		apusys,thermal-zones = "apu";
+		vapu-supply = <&mt6359_vmodem_buck_reg>;
+		vsram-supply = <&mt6359_vsram_md_ldo_reg>;
+		operating-points-v2 = <&opp_table_apu_conn>, <&opp_table_apu_rv>,
+				      <&opp_table_vpu>, <&opp_table_dla>;
+		nvmem-cells = <&socinfo_data2>;
+		nvmem-cell-names = "efuse_apu_segment";
+	};
+
+	apusys_rv: apusys_rv@19001000 {
+		compatible = "mediatek,mt8188-apusys_rv";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		memory-region = <&apu_mem>;
+		dma-ranges = <0 0x40000000 0 0x40000000 0 0xc0000000>;
+		reg = <0 0x190e1000 0 0x1000>,
+		      <0 0x19001000 0 0x1000>,
+		      <0 0x19002000 0 0x10>,
+		      <0 0x1903c000 0 0x8000>,
+		      <0 0x19050000 0 0x10000>,
+		      <0 0x190f2000 0 0x1000>,
+		      <0 0x0d298000 0 0x10000>;
+		reg-names = "apu_mbox", "md32_sysctrl", "apu_wdt",
+			    "apu_sctrl_reviser", "md32_cache_dump",
+			    "apu_ao_ctl", "md32_debug_apb";
+		mediatek,apusys_power = <&apu_top_3>;
+		firmware-name = "mediatek/mt8370/apusys.sig.img";
+		apu_iommu0 = <&apu_iommu0>;
+		apu_iommu1 = <&apu_iommu1>;
+		iommus = <&apu_iommu0 0x340>;
+		interrupts = <GIC_SPI 425 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 412 IRQ_TYPE_LEVEL_HIGH 0>;
+		interrupt-names = "apu_wdt", "mbox0_irq";
+		up_code_buf_sz = <0x100000>;
+		up_coredump_buf_sz = <0x180000>;
+		regdump_buf_sz = <0x10000>;
+		mdla_coredump_buf_sz = <0x0>;
+		mvpu_coredump_buf_sz = <0x0>;
+		mvpu_sec_coredump_buf_sz = <0x0>;
+
+		apu_ctrl {
+			compatible = "mediatek,apu-ctrl-rpmsg";
+			mtk,rpmsg-name = "apu-ctrl-rpmsg";
+		};
+
+		apu_top_rpmsg {
+			compatible = "mediatek,aputop-rpmsg";
+			mtk,rpmsg-name = "apu_top_3_rpmsg";
+		};
+
+		apu_mdw {
+			compatible = "mediatek,apu-mdw-rpmsg";
+			mtk,rpmsg-name = "apu-mdw-rpmsg";
+		};
+
+		apu_reviser {
+			compatible = "mediatek,apu-reviser-rpmsg";
+			mtk,rpmsg-name = "apu-reviser-rpmsg";
+		};
+
+		apu_edma {
+			compatible = "mediatek,apu-edma-rpmsg";
+			mtk,rpmsg-name = "apu-edma-rpmsg";
+		};
+
+		apu_mnoc {
+			compatible = "mediatek,apu-mnoc-rpmsg";
+			mtk,rpmsg-name = "apu-mnoc-rpmsg";
+		};
+
+		mdla_tx_rpmsg {
+			compatible = "mediatek,mdla-tx-rpmsg";
+			mtk,rpmsg-name = "mdla-tx-rpmsg";
+		};
+
+		mdla_rx_rpmsg {
+			compatible = "mediatek,mdla-rx-rpmsg";
+			mtk,rpmsg-name = "mdla-rx-rpmsg";
+		};
+	};
+
+	apusys_hw_logger: apusys_hw_logger@19024000 {
+		compatible = "mediatek,apusys_hw_logger";
+		reg = <0 0x19024000 0 0x1000>,
+		      <0 0x190e1000 0 0x1000>;
+		reg-names = "apu_logtop", "apu_mbox";
+		interrupts = <GIC_SPI 424 IRQ_TYPE_LEVEL_HIGH 0>;
+		interrupt-names = "apu_logtop";
+		iommus = <&apu_iommu1 0x360>;
+	};
+
+	apusys_reviser: apusys_reviser@1903c000 {
+		compatible = "mediatek, rv-reviser";
+		reg = <0 0x1903c000 0 0x1000>,
+		      <0 0x02000000 0 0x100000>,
+		      <0 0x1d900000 0 0x0>,
+		      <0 0x19001000 0 0x1000>;
+		default-dram = <0>;
+		boundary = <0>;
+		iommus = <&apu_iommu0 0x340>;
+	};
+
+	mdla: mdla {
+		compatible = "mediatek, mdla-rv";
+		core_num = <1>;
+		version = <0x81360350>;
+		iommus = <&apu_iommu0 0x340>;
+	};
+
+	/*
+	 * VP6 compute core. Copied verbatim from the BSP apusys.dtbo
+	 * (genio-510-evk, kernel 6.6.37). The RV33 management firmware brings up
+	 * this VP6 at boot, reading its reset-vector + memory IOVAs from the conf
+	 * buffer's eVPU_INIT_INFO (user1) which the vpu/4.5 driver fills via
+	 * vpu_set_init_info(). Without this node + the driver path, user1 is
+	 * all-zero -> the RV releases the VP6 at reset-vector 0x0 -> null jump ->
+	 * APU watchdog (the 2026-06-09 night-4 root cause).
+	 *
+	 * reg:   [0] ctrl 0x19120000/0x1000  [1] dmem 0x1d100000/0x40000
+	 *        [2] imem 0x1d140000/0x30000 [3] dbg  0x0d190000/0x4000
+	 * iommus VLM port 0x343 (M4U_PORT_L0_APU_VLM); fw maps cam_vpu*.img into
+	 * the 0x70000000 VLM window (reset 0x7da00000 / main 0x7db00000 /
+	 * kernel-lib 0x7de00000). compatible has NO space (matches the driver
+	 * of_match "mediatek,mt8188-vpu_core").
+	 */
+	vpu_core0: vpu_core0@19120000 {
+		compatible = "mediatek,mt8188-vpu_core";
+		memory-region = <&vpu_mem>;
+		reg = <0 0x19120000 0 0x1000>,
+		      <0 0x1d100000 0 0x40000>,
+		      <0 0x1d140000 0 0x30000>,
+		      <0 0x0d190000 0 0x4000>;
+		interrupts = <GIC_SPI 446 IRQ_TYPE_LEVEL_HIGH 0>;
+		id = <0>;
+		reset-vector = <0x7da00000 0x100000 0x0>;
+		main-prog = <0x7db00000 0x300000 0x100000>;
+		kernel-lib = <0x7de00000 0x500000 0xffffffff>;
+		work-buf = <0x0 0x12000 0xffffffff>;
+		/*
+		 * NO dma-ranges HERE -- DELIBERATE. The BSP apusys.dtbo carried
+		 * dma-ranges = <0x0 0x70000000  0x0 0x40000000  0x0 0x12600000>,
+		 * i.e. the 294 MiB APU VLM IOVA window. Under 6.18 that property
+		 * is (a) redundant and (b) has a SYSTEM-WIDE side effect:
+		 *
+		 *   of_dma_get_max_cpu_address() (bootmem_init, [0.000000]) takes
+		 *   the MINIMUM of cpu_addr+size over EVERY node carrying a
+		 *   dma-ranges -- it does not skip IOMMU-backed devices. This
+		 *   node's cpu_addr+size = 0x52600000 was the global minimum, so
+		 *   it set zone_dma_limit for the whole machine: board-measured
+		 *   DMA [mem 0x40000000-0x525fffff] (294 MiB) with the 128 MiB CMA
+		 *   and the 64 MiB SWIOTLB forced inside it, against 0xffffffff on
+		 *   a DTB predating this file.
+		 *
+		 * The CPU-side half of that range is also simply FALSE: this
+		 * master sits behind apu_iommu0 (VLM port 0x343), so the IOMMU
+		 * can map ANY physical page into the window -- it is not confined
+		 * to CPU PA 0x40000000-0x525fffff.
+		 *
+		 * The IOVA window itself is real and is declared TWICE elsewhere,
+		 * authoritatively:
+		 *   - drivers/iommu/mtk_iommu.c mt8188_multi_dom_apu[] Region2
+		 *     "APU VLM" { .iova_base = 0x70000000, .size = 0x12600000 },
+		 *     selected for larb26 port3 by mt8188_apu_region_msk[2], and
+		 *     installed by mtk_iommu_domain_finalise() as
+		 *     geometry.aperture_start/end with force_aperture = true.
+		 *     iommu_dma_alloc_iova() then clamps every IOVA to that
+		 *     aperture and iommu_dma_init_domain() takes its base_pfn
+		 *     from aperture_start -- so the floor AND the ceiling are
+		 *     already enforced without this property.
+		 *   - the out-of-tree mtk-apusys-driver vpu/4.5 vpu_cfg.c
+		 *     vpu_cfg_mt8188 { .iova_start = 0x70000000,
+		 *     .iova_heap = 0x80000000, .iova_end = 0x82600000 }, and
+		 *     vpu_mem.c calls dma_set_mask_and_coherent() with its own
+		 *     per-mapping ceiling on every map. The driver never reads
+		 *     dma-ranges.
+		 *
+		 * There is no way to keep this property and lose the side effect:
+		 * dma-ranges has ONE size cell shared by the child and CPU halves,
+		 * so a 294 MiB IOVA window is inseparable from a 294 MiB CPU
+		 * reachability claim. Hence removal, not widening.
+		 *
+		 * Cross-check: mt8195-apusys.dtsi's vpu_core0 -- same VP6 IP, same
+		 * driver, same mtk_iommu Region2 0x70000000/0x12600000 -- declares
+		 * a completely different dma-ranges (child 0x20000000, size
+		 * 0xe0000000). The vendor's own DT values disagree with the
+		 * aperture the hardware enforces, which is what a decorative
+		 * property looks like.
+		 *
+		 * #address-cells / #size-cells are dropped with it: they existed
+		 * only because a node carrying dma-ranges must supply its own cell
+		 * counts or 6.18's of_pci_range_parser_one() NULL-derefs.
+		 */
+		iommus = <&apu_iommu0 0x343>;
+		firmware-name = "mediatek/mt8370/cam_vpu1.img",
+				"mediatek/mt8370/cam_vpu2.img",
+				"mediatek/mt8370/cam_vpu3.img";
+	};
+
+	mdla_devfreq: mdla_devfreq {
+		compatible = "mediatek,mt8188-mdla-devfreq";
+		#cooling-cells = <2>;
+		dynamic-power-coefficient = <1233>;
+		power_table = <667 583 423 296 189 145 92>;
+	};
+
+	mtk_apu_mem_code: mtk_apu_mem_code {
+		compatible = "mediatek, apu_mem_code";
+		type = <1>;
+		mask = <3 0xffffffff>;
+		iommus = <&apu_iommu0 0x340>;
+	};
+
+	mtk_apu_mem_data: mtk_apu_mem_data {
+		compatible = "mediatek, apu_mem_data";
+		type = <2>;
+		mask = <3 0xffffffff>;
+		iommus = <&apu_iommu0 0x341>;
+	};
+
+	opp_table_apu_conn: opp-table-apu-conn {
+		compatible = "operating-points-v2";
+
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-640000000 {
+			opp-hz = /bits/ 64 <640000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-535000000 {
+			opp-hz = /bits/ 64 <535000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-275000000 {
+			opp-hz = /bits/ 64 <275000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-210000000 {
+			opp-hz = /bits/ 64 <210000000>;
+			opp-microvolt = <575000>;
+		};
+		opp-160000000 {
+			opp-hz = /bits/ 64 <160000000>;
+			opp-microvolt = <550000>;
+		};
+	};
+
+	opp_table_apu_rv: opp-table-apu-rv {
+		compatible = "operating-points-v2";
+
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-640000000 {
+			opp-hz = /bits/ 64 <640000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-535000000 {
+			opp-hz = /bits/ 64 <535000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-275000000 {
+			opp-hz = /bits/ 64 <275000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-210000000 {
+			opp-hz = /bits/ 64 <210000000>;
+			opp-microvolt = <575000>;
+		};
+		opp-160000000 {
+			opp-hz = /bits/ 64 <160000000>;
+			opp-microvolt = <550000>;
+		};
+	};
+
+	opp_table_dla: opp-table-dla {
+		compatible = "operating-points-v2";
+
+		opp-700000000-0 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-700000000-1 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-700000000-2 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-570000000 {
+			opp-hz = /bits/ 64 <570000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-430000000 {
+			opp-hz = /bits/ 64 <430000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-360000000 {
+			opp-hz = /bits/ 64 <360000000>;
+			opp-microvolt = <575000>;
+		};
+		opp-250000000 {
+			opp-hz = /bits/ 64 <250000000>;
+			opp-microvolt = <550000>;
+		};
+	};
+
+	opp_table_vpu: opp-table-vpu {
+		compatible = "operating-points-v2";
+
+		opp-832000000 {
+			opp-hz = /bits/ 64 <832000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-728000000 {
+			opp-hz = /bits/ 64 <728000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-624000000 {
+			opp-hz = /bits/ 64 <624000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-524000000 {
+			opp-hz = /bits/ 64 <524000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-360000000 {
+			opp-hz = /bits/ 64 <360000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-275000000 {
+			opp-hz = /bits/ 64 <275000000>;
+			opp-microvolt = <575000>;
+		};
+		opp-190000000 {
+			opp-hz = /bits/ 64 <190000000>;
+			opp-microvolt = <550000>;
+		};
+	};
+
+	vpu_devfreq: vpu_devfreq {
+		compatible = "mediatek,mt8188-vpu-devfreq";
+		#cooling-cells = <2>;
+		dynamic-power-coefficient = <808>;
+		power_table = <404 333 248 178 104 73 47>;
+	};
+};
+
+/*
+ * The APU segment-binning efuse lives at offset 0x7e0, which mainline
+ * mt8188.dtsi already exposes as socinfo-data2@7e0. It is referenced via
+ * the socinfo_data2 label added to that node -- no duplicate unit-address
+ * node is declared. The efuse cell is OPTIONAL: the apu_top driver falls
+ * back to efuse_plat_id = 0 when it is absent.
+ */

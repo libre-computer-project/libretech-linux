@@ -163,16 +163,25 @@ struct h264_fb {
 	u32 reserved;
 };
 
+/*
+ * Field ABI, written only when the firmware advertises
+ * MTK_VDEC_IS_SUPPORT_H264_FIELD: a bottom-field reference list entry carries
+ * bit 6, and a DPB entry's flags carry its v4l2 fields in bits 8-9.
+ */
+#define MTK_H264_REF_BOTTOM_FIELD	0x40
+#define MTK_H264_DPB_FIELDS_SHIFT	8
+
 /**
  * mtk_vdec_h264_get_ref_list - translate V4L2 reference list
  *
  * @ref_list:		Mediatek reference picture list
  * @v4l2_ref_list:	V4L2 reference picture list
  * @num_valid:		used reference number
+ * @field_abi:		the firmware reads the reference field parity
  */
 void mtk_vdec_h264_get_ref_list(u8 *ref_list,
 				const struct v4l2_h264_reference *v4l2_ref_list,
-				int num_valid);
+				int num_valid, bool field_abi);
 
 /**
  * mtk_vdec_h264_get_ctrl_ptr - get each CID control address.
@@ -242,11 +251,13 @@ void mtk_vdec_h264_copy_scaling_matrix(struct slice_api_h264_scaling_matrix *dst
  * @dst_params:	dst params for hw decoder
  * @src_params:	decode params from user driver
  * @dpb:		dpb information
+ * @field_abi:		the firmware reads each DPB entry's reference fields
  */
 void
 mtk_vdec_h264_copy_decode_params(struct slice_api_h264_decode_param *dst_params,
 				 const struct v4l2_ctrl_h264_decode_params *src_params,
-				 const struct v4l2_h264_dpb_entry dpb[V4L2_H264_NUM_DPB_ENTRIES]);
+				 const struct v4l2_h264_dpb_entry dpb[V4L2_H264_NUM_DPB_ENTRIES],
+				 bool field_abi);
 
 /**
  * mtk_vdec_h264_update_dpb - update dpb list.

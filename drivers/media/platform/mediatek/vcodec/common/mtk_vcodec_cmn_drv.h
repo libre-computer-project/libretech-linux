@@ -43,6 +43,13 @@ enum mtk_hw_reg_idx {
 	VDEC_HWQ,
 	VDEC_HWB,
 	VDEC_HWG,
+	/*
+	 * VP9_VLD (mt8365 0x16028400). The mt8365 in-kernel VP9 backend
+	 * (vdec_vp9_mt8365_if.c) is the first user of a 13th VDEC register
+	 * window; every other SoC's node has fewer ranges and is unaffected
+	 * (mtk_vcodec_get_reg_bases() only requires reg_num <= this bound).
+	 */
+	VDEC_HWV,
 	NUM_MAX_VDEC_REG_BASE,
 	/* h264 encoder */
 	VENC_SYS = NUM_MAX_VDEC_REG_BASE,

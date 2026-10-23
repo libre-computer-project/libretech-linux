@@ -21,7 +21,11 @@ int vdec_if_init(struct mtk_vcodec_dec_ctx *ctx, unsigned int fourcc)
 
 	switch (fourcc) {
 	case V4L2_PIX_FMT_H264_SLICE:
-		if (!ctx->dev->vdec_pdata->is_subdev_supported) {
+		if (ctx->dev->vdec_pdata->no_firmware) {
+			/* MT8365: direct-register backend, no SCP/firmware */
+			ctx->dec_if = &vdec_h264_mt8365_if;
+			ctx->hw_id = MTK_VDEC_CORE;
+		} else if (!ctx->dev->vdec_pdata->is_subdev_supported) {
 			ctx->dec_if = &vdec_h264_slice_if;
 			ctx->hw_id = MTK_VDEC_CORE;
 		} else {
@@ -34,7 +38,12 @@ int vdec_if_init(struct mtk_vcodec_dec_ctx *ctx, unsigned int fourcc)
 		ctx->hw_id = MTK_VDEC_CORE;
 		break;
 	case V4L2_PIX_FMT_VP8_FRAME:
-		ctx->dec_if = &vdec_vp8_slice_if;
+		if (ctx->dev->vdec_pdata->no_firmware) {
+			/* MT8365: direct-register backend, no SCP/firmware */
+			ctx->dec_if = &vdec_vp8_mt8365_if;
+		} else {
+			ctx->dec_if = &vdec_vp8_slice_if;
+		}
 		ctx->hw_id = MTK_VDEC_CORE;
 		break;
 	case V4L2_PIX_FMT_VP8:
@@ -46,12 +55,40 @@ int vdec_if_init(struct mtk_vcodec_dec_ctx *ctx, unsigned int fourcc)
 		ctx->hw_id = MTK_VDEC_CORE;
 		break;
 	case V4L2_PIX_FMT_VP9_FRAME:
-		ctx->dec_if = &vdec_vp9_slice_lat_if;
-		ctx->hw_id = IS_VDEC_LAT_ARCH(hw_arch) ? MTK_VDEC_LAT0 : MTK_VDEC_CORE;
+		if (ctx->dev->vdec_pdata->no_firmware) {
+			/* MT8365: direct-register backend, no SCP/firmware */
+			ctx->dec_if = &vdec_vp9_mt8365_if;
+			ctx->hw_id = MTK_VDEC_CORE;
+		} else {
+			ctx->dec_if = &vdec_vp9_slice_lat_if;
+			ctx->hw_id = IS_VDEC_LAT_ARCH(hw_arch) ? MTK_VDEC_LAT0 :
+								 MTK_VDEC_CORE;
+		}
 		break;
 	case V4L2_PIX_FMT_HEVC_SLICE:
-		ctx->dec_if = &vdec_hevc_slice_multi_if;
-		ctx->hw_id = MTK_VDEC_LAT0;
+		if (ctx->dev->vdec_pdata->no_firmware) {
+			/* MT8365: direct-register backend, no SCP/firmware */
+			ctx->dec_if = &vdec_hevc_mt8365_if;
+			ctx->hw_id = MTK_VDEC_CORE;
+		} else if (!ctx->dev->vdec_pdata->is_subdev_supported) {
+			/*
+			 * MT8183 single core: the open kukui SCP's HEVC
+			 * handler, over the H.264 IPI. S265 is listed only
+			 * when that firmware publishes HEVC_FRAME.
+			 */
+			ctx->dec_if = &vdec_hevc_slice_if;
+			ctx->hw_id = MTK_VDEC_CORE;
+		} else {
+			ctx->dec_if = &vdec_hevc_slice_multi_if;
+			ctx->hw_id = MTK_VDEC_LAT0;
+		}
+		break;
+	case V4L2_PIX_FMT_MPEG2_SLICE:
+		if (!ctx->dev->vdec_pdata->no_firmware)
+			return -EINVAL;
+		/* MT8365: direct-register backend, no SCP/firmware */
+		ctx->dec_if = &vdec_mpeg2_mt8365_if;
+		ctx->hw_id = MTK_VDEC_CORE;
 		break;
 	case V4L2_PIX_FMT_AV1_FRAME:
 		ctx->dec_if = &vdec_av1_slice_lat_if;
@@ -60,6 +97,15 @@ int vdec_if_init(struct mtk_vcodec_dec_ctx *ctx, unsigned int fourcc)
 	default:
 		return -EINVAL;
 	}
+
+	/*
+	 * The driver can be unbound underneath a live file handle; the ioctl
+	 * that got here is not waited for by remove(). Refuse rather than
+	 * program hardware whose clocks, power domain and register windows have
+	 * already been taken away.
+	 */
+	if (READ_ONCE(ctx->dev->unplugged))
+		return -ENODEV;
 
 	mtk_vcodec_dec_enable_hardware(ctx, ctx->hw_id);
 	ret = ctx->dec_if->init(ctx);
@@ -91,9 +137,14 @@ int vdec_if_decode(struct mtk_vcodec_dec_ctx *ctx, struct mtk_vcodec_mem *bs,
 	if (!ctx->drv_handle)
 		return -EIO;
 
+	/* Unbound underneath us -- see vdec_if_init(). */
+	if (READ_ONCE(ctx->dev->unplugged))
+		return -ENODEV;
+
 	mtk_vcodec_dec_enable_hardware(ctx, ctx->hw_id);
 	mtk_vcodec_set_curr_ctx(ctx->dev, ctx, ctx->hw_id);
 	ret = ctx->dec_if->decode(ctx->drv_handle, bs, fb, res_chg);
+	mtk_vcodec_dec_probe_note_ret(ret);
 	mtk_vcodec_set_curr_ctx(ctx->dev, NULL, ctx->hw_id);
 	mtk_vcodec_dec_disable_hardware(ctx, ctx->hw_id);
 
@@ -107,6 +158,10 @@ int vdec_if_get_param(struct mtk_vcodec_dec_ctx *ctx, enum vdec_get_param_type t
 
 	if (!ctx->drv_handle)
 		return -EIO;
+
+	/* Unbound underneath us -- see vdec_if_init(). */
+	if (READ_ONCE(ctx->dev->unplugged))
+		return -ENODEV;
 
 	mtk_vdec_lock(ctx);
 	ret = ctx->dec_if->get_param(ctx->drv_handle, type, out);

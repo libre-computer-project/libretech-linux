@@ -11,6 +11,7 @@
 #include <dt-bindings/sound/meson-aiu.h>
 
 #include "meson-gxl-s805x.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "amlogic,p241", "amlogic,s805x", "amlogic,meson-gxl";

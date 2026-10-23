@@ -74,6 +74,18 @@ properties:
       - const: dma
       - const: dma-ocp
 
+  rockchip,dmc-devfreq:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      The memory controller whose devfreq changes the DRAM clock this DMAC's
+      transfers run against. The driver registers a transition notifier on
+      it and, before every change, stops issuing new requests and waits for
+      the channel threads to finish the ones in flight (bounded, with the
+      change vetoed when they cannot), so no burst meets the controller
+      mid-retrain. Boards on which a DMA transfer in flight during a DRAM
+      frequency change hangs the interconnect (RK3399 LPDDR4) set this on
+      every DMAC.
+
 required:
   - compatible
   - reg

@@ -6,6 +6,7 @@
 */
 
 #include <linux/slab.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/module.h>
@@ -93,6 +94,21 @@ static irqreturn_t mtk_vcodec_enc_irq_handler(int irq, void *priv)
 	spin_unlock_irqrestore(&dev->irqlock, flags);
 
 	core_id = dev->venc_pdata->core_id;
+	if (!ctx) {
+		/*
+		 * No encode owns this interrupt -- the same latent NULL
+		 * dereference the decoder core handler took (a write through
+		 * ctx at offsetof(irq_status), fatal because it is in
+		 * interrupt context). Acknowledge it if we can and drop it.
+		 */
+		if (core_id >= 0 && core_id < NUM_MAX_VCODEC_REG_BASE) {
+			addr = dev->reg_base[core_id] + MTK_VENC_IRQ_ACK_OFFSET;
+			clean_irq_status(readl(dev->reg_base[core_id] +
+					       MTK_VENC_IRQ_STATUS_OFFSET), addr);
+		}
+		return IRQ_HANDLED;
+	}
+
 	if (core_id < 0 || core_id >= NUM_MAX_VCODEC_REG_BASE) {
 		mtk_v4l2_venc_err(ctx, "Invalid core id: %d, ctx id: %d", core_id, ctx->id);
 		return IRQ_HANDLED;
@@ -117,6 +133,7 @@ static int fops_vcodec_open(struct file *file)
 	struct mtk_vcodec_enc_ctx *ctx = NULL;
 	int ret = 0;
 	struct vb2_queue *src_vq;
+	unsigned long flags;
 
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -176,9 +193,9 @@ static int fops_vcodec_open(struct file *file)
 	mtk_v4l2_venc_dbg(2, ctx, "Create instance [%d]@%p m2m_ctx=%p ",
 			  ctx->id, ctx, ctx->m2m_ctx);
 
-	mutex_lock(&dev->dev_ctx_lock);
+	spin_lock_irqsave(&dev->dev_ctx_lock, flags);
 	list_add(&ctx->list, &dev->ctx_list);
-	mutex_unlock(&dev->dev_ctx_lock);
+	spin_unlock_irqrestore(&dev->dev_ctx_lock, flags);
 
 	mutex_unlock(&dev->dev_mutex);
 	mtk_v4l2_venc_dbg(0, ctx, "%s encoder [%d]", dev_name(&dev->plat_dev->dev),
@@ -203,6 +220,7 @@ static int fops_vcodec_release(struct file *file)
 {
 	struct mtk_vcodec_enc_dev *dev = video_drvdata(file);
 	struct mtk_vcodec_enc_ctx *ctx = file_to_enc_ctx(file);
+	unsigned long flags;
 
 	mtk_v4l2_venc_dbg(1, ctx, "[%d] encoder", ctx->id);
 	mutex_lock(&dev->dev_mutex);
@@ -213,9 +231,18 @@ static int fops_vcodec_release(struct file *file)
 	v4l2_fh_exit(&ctx->fh);
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
 
-	mutex_lock(&dev->dev_ctx_lock);
+	/*
+	 * Cancel any pending encode work before freeing the context.
+	 * Although v4l2_m2m_ctx_release() waits for m2m job completion,
+	 * the workqueue handler (mtk_venc_worker) may still be accessing
+	 * the context after v4l2_m2m_job_finish() returns. Without this,
+	 * a use-after-free occurs when the worker accesses ctx after kfree.
+	 */
+	cancel_work_sync(&ctx->encode_work);
+
+	spin_lock_irqsave(&dev->dev_ctx_lock, flags);
 	list_del_init(&ctx->list);
-	mutex_unlock(&dev->dev_ctx_lock);
+	spin_unlock_irqrestore(&dev->dev_ctx_lock, flags);
 	kfree(ctx);
 	mutex_unlock(&dev->dev_mutex);
 	return 0;
@@ -262,6 +289,27 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 		return PTR_ERR(dev->fw_handler);
 
 	dev->venc_pdata = of_device_get_match_data(&pdev->dev);
+
+	/*
+	 * On the MT8188 VENC the SMI larb (larb19, id 21) is masked to MM-IOMMU
+	 * region 1 (4G-8G) only (mt8188_larb_region_msk[1][21]=~0, IOVA_34_EN).
+	 * The default 32-bit DMA mask allocates the encoder work / frame /
+	 * bitstream buffers in region 0 (<4G), which the region-1 larb cannot
+	 * translate -- the venc engine DMA faults and the SCP stalls
+	 * (watchdog) while programming the encode. A 34-bit mask (matching the
+	 * uses_34bit pdata flag and the IOVA_34_EN iommu) places the buffers in
+	 * region 1 so the larb can translate them. Same root cause + fix as the
+	 * mt8188 mtk-jpeg encode (mtk_jpeg_core.c). Gate on uses_34bit so
+	 * MT8195 (uses_34bit=false, single 4G region) keeps the 32-bit mask.
+	 */
+	if (dev->venc_pdata->uses_34bit) {
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(34));
+		if (ret) {
+			dev_err(&pdev->dev, "[MTK VCODEC] Failed to set 34-bit DMA mask");
+			goto err_enc_pm;
+		}
+	}
+
 	ret = mtk_vcodec_init_enc_clk(dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "[MTK VCODEC] Failed to get mtk vcodec clock source!");
@@ -297,7 +345,7 @@ static int mtk_vcodec_probe(struct platform_device *pdev)
 
 	mutex_init(&dev->enc_mutex);
 	mutex_init(&dev->dev_mutex);
-	mutex_init(&dev->dev_ctx_lock);
+	spin_lock_init(&dev->dev_ctx_lock);
 	spin_lock_init(&dev->irqlock);
 
 	snprintf(dev->v4l2_dev.name, sizeof(dev->v4l2_dev.name), "%s",

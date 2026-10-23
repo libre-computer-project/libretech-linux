@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2018 BayLibre, SAS.
+ * Author: Neil Armstrong <narmstrong@baylibre.com>
+ * Author: Jerome Brunet <jbrunet@baylibre.com>
+ *
+ * AML-S805X-AC-V2 on the VENDOR firmware chain. The libre chain boots
+ * meson-gxl-s805x-libretech-ac-v2-libre.dts instead.
+ */
+
+/dts-v1/;
+
+#include "meson-gxl-s805x-libretech-ac-v2.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"

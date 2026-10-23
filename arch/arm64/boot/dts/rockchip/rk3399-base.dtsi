@@ -82,6 +82,7 @@
 			reg = <0x0 0x0>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <485>;
+			cci-control-port = <&cci_control0>;
 			clocks = <&cru ARMCLKL>;
 			#cooling-cells = <2>; /* min followed by max */
 			dynamic-power-coefficient = <100>;
@@ -101,6 +102,7 @@
 			reg = <0x0 0x1>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <485>;
+			cci-control-port = <&cci_control0>;
 			clocks = <&cru ARMCLKL>;
 			#cooling-cells = <2>; /* min followed by max */
 			dynamic-power-coefficient = <100>;
@@ -120,6 +122,7 @@
 			reg = <0x0 0x2>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <485>;
+			cci-control-port = <&cci_control0>;
 			clocks = <&cru ARMCLKL>;
 			#cooling-cells = <2>; /* min followed by max */
 			dynamic-power-coefficient = <100>;
@@ -139,6 +142,7 @@
 			reg = <0x0 0x3>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <485>;
+			cci-control-port = <&cci_control0>;
 			clocks = <&cru ARMCLKL>;
 			#cooling-cells = <2>; /* min followed by max */
 			dynamic-power-coefficient = <100>;
@@ -158,6 +162,7 @@
 			reg = <0x0 0x100>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1024>;
+			cci-control-port = <&cci_control1>;
 			clocks = <&cru ARMCLKB>;
 			#cooling-cells = <2>; /* min followed by max */
 			dynamic-power-coefficient = <436>;
@@ -183,6 +188,7 @@
 			reg = <0x0 0x101>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1024>;
+			cci-control-port = <&cci_control1>;
 			clocks = <&cru ARMCLKB>;
 			#cooling-cells = <2>; /* min followed by max */
 			dynamic-power-coefficient = <436>;
@@ -257,6 +263,51 @@
 		status = "disabled";
 	};
 
+	cci: cci@ffb00000 {
+		compatible = "arm,cci-500";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		reg = <0x0 0xffb00000 0 0x10000>;
+		ranges = <0x0 0x0 0xffb00000 0x90000>;
+
+		cci_control0: slave-if@1000 {
+			compatible = "arm,cci-400-ctrl-if";
+			interface-type = "ace";
+			reg = <0x1000 0x1000>;
+		};
+
+		cci_control1: slave-if@2000 {
+			compatible = "arm,cci-400-ctrl-if";
+			interface-type = "ace";
+			reg = <0x2000 0x1000>;
+		};
+
+		pmu@10000 {
+			compatible = "arm,cci-500-pmu,r0";
+			reg = <0x10000 0x80000>;
+			/*
+			 * One overflow interrupt per counter is what the
+			 * binding asks for; on RK3399 all eight are the same
+			 * shared errirq_cci, and drivers/perf/arm-cci.c
+			 * de-duplicates them itself (is_duplicate_irq()).
+			 * The list must still have eight entries, because the
+			 * driver requires platform_get_irq(pdev, 0..7) to
+			 * resolve before it looks at the values.
+			 *
+			 * FOUR cells, not three: this GIC has ppi-partitions
+			 * and so declares #interrupt-cells = <4>.
+			 */
+			interrupts = <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH 0>;
+		};
+	};
+
 	pmu_a53 {
 		compatible = "arm,cortex-a53-pmu";
 		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_LOW &ppi_cluster0>;
@@ -312,7 +363,7 @@
 				<0 0 0 2 &pcie0_intc 1>,
 				<0 0 0 3 &pcie0_intc 2>,
 				<0 0 0 4 &pcie0_intc 3>;
-		max-link-speed = <1>;
+		max-link-speed = <2>;
 		msi-map = <0x0 &its 0x0 0x1000>;
 		phys = <&pcie_phy 0>, <&pcie_phy 1>,
 		       <&pcie_phy 2>, <&pcie_phy 3>;
@@ -919,6 +970,7 @@
 
 	thermal_zones: thermal-zones {
 		cpu_thermal: cpu-thermal {
+			sustainable-power = <1800>;
 			polling-delay-passive = <100>;
 			polling-delay = <1000>;
 
@@ -963,6 +1015,7 @@
 		};
 
 		gpu_thermal: gpu-thermal {
+			sustainable-power = <1200>;
 			polling-delay-passive = <100>;
 			polling-delay = <1000>;
 
@@ -1748,6 +1801,7 @@
 		reg = <0x0 0xff848000 0x0 0x100>;
 		clocks = <&cru PCLK_WDT>;
 		interrupts = <GIC_SPI 120 IRQ_TYPE_LEVEL_HIGH 0>;
+		resets = <&cru SRST_P_WDT0>;
 	};
 
 	rktimer: rktimer@ff850000 {

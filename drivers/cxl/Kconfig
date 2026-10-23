@@ -58,6 +58,7 @@ config CXL_ACPI
 	tristate "CXL ACPI: Platform Support"
 	depends on ACPI
 	depends on ACPI_NUMA
+	depends on CXL_PMEM || !CXL_PMEM
 	default CXL_BUS
 	select ACPI_TABLE_LIB
 	select ACPI_HMAT
@@ -232,5 +233,9 @@ config CXL_REGION_INVALIDATION_TEST
 config CXL_MCE
 	def_bool y
 	depends on X86_MCE && MEMORY_FAILURE
+
+config CXL_RAS
+	def_bool y
+	depends on ACPI_APEI_GHES && PCIEAER && CXL_PCI
 
 endif

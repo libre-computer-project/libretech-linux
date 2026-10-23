@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2016 Andreas Färber
+ * Copyright (c) 2016 BayLibre, Inc.
+ *
+ * GXBB / GXL / GXM firmware reservations for the VENDOR boot chain (Amlogic
+ * BL2 + BL31 at 0x05000000). A board .dts includes exactly one of this file
+ * or meson-gx-libre-firmware.dtsi, after its SoC .dtsi.
+ */
+
+/ {
+	reserved-memory {
+		/* 3 MiB reserved for ARM Trusted Firmware (BL31) */
+		secmon_reserved: secmon@5000000 {
+			reg = <0x0 0x05000000 0x0 0x300000>;
+			no-map;
+		};
+
+		/* 32 MiB reserved for ARM Trusted Firmware (BL32) */
+		/*
+		secmon_reserved_bl32: secmon@5300000 {
+			reg = <0x0 0x05300000 0x0 0x2000000>;
+			no-map;
+		};
+		*/
+	};
+};

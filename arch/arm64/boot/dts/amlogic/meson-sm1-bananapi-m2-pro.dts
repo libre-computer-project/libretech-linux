@@ -8,6 +8,7 @@
 
 #include "meson-sm1-bananapi.dtsi"
 #include <dt-bindings/sound/meson-g12a-tohdmitx.h>
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "bananapi,bpi-m2-pro", "amlogic,sm1";

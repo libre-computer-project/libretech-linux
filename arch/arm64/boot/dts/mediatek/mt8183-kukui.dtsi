@@ -389,6 +389,30 @@
 &mt6358_vgpu_reg {
 	regulator-max-microvolt = <900000>;
 
+	/*
+	 * PWR-002: make the mtk-svs GPU bank bind deterministically on all
+	 * MT8183 kukui/jacuzzi boards. The svs GPU bank's init01 gate requires
+	 * the live vgpu (mali) buck to read exactly vboot (opp_vboot =
+	 * volt_base + vboot*volt_step = 500000 + 0x30*6250 = 800000 uV) at
+	 * probe; otherwise it logs "SVSB_GPU: buck voltage: 700000uV, expected
+	 * vboot: 800000uV", fails "svs start" with -EPERM, and the whole
+	 * 1100bc00.svs device stays unbound (an intermittent boot-state race:
+	 * vgpu idles at 700 mV on ~1/6 boots). vgpu is coupled to vsram_gpu
+	 * with a 100 mV max-spread, so pinning vsram_gpu's floor to 900 mV (see
+	 * below) makes the regulator coupler floor vgpu at exactly 800 mV on
+	 * every boot and the gate always passes.
+	 *
+	 * The floor is applied to vsram_gpu, not vgpu, on purpose: vgpu is
+	 * panfrost's mali-supply OPP regulator, so a hard vgpu regulator-min of
+	 * 800000 would mark the 15 sub-800 mV GPU OPPs "not supported by
+	 * regulator" and pin the GPU to 800 MHz -- a real DVFS regression.
+	 * Flooring the coupled SRAM rail instead leaves every GPU OPP available
+	 * (frequency scaling intact); only the vgpu undervolt below 800 mV is
+	 * forgone -- a minor idle-power cost. HW-verified 6/6 BOUND on the
+	 * MT8183 Fennel; the rest of the family inherits it here.
+	 */
+	regulator-boot-on;
+
 	regulator-coupled-with = <&mt6358_vsram_gpu_reg>;
 	regulator-coupled-max-spread = <100000>;
 };
@@ -404,8 +428,11 @@
 };
 
 &mt6358_vsram_gpu_reg {
-	regulator-min-microvolt = <850000>;
+	/* PWR-002 (see &mt6358_vgpu_reg above): floor at 900 mV so the coupler
+	 * pins vgpu at the SVS GPU-bank vboot (800 mV) every boot. */
+	regulator-min-microvolt = <900000>;
 	regulator-max-microvolt = <1000000>;
+	regulator-boot-on;
 
 	regulator-coupled-with = <&mt6358_vgpu_reg>;
 	regulator-coupled-max-spread = <100000>;

@@ -94,14 +94,38 @@ static struct rockchip_pll_rate_table rk3399_pll_rates[] = {
 	RK3036_PLL_RATE( 408000000, 1, 68, 2, 2, 1, 0),
 	RK3036_PLL_RATE( 312000000, 1, 52, 2, 2, 1, 0),
 	RK3036_PLL_RATE( 297000000, 1, 99, 4, 2, 1, 0),
+	/*
+	 * Pixel clocks the CEA table above lacks, for VPLL: the 1000/1001
+	 * (59.94 Hz) family and the VESA PC rates a monitor's EDID lists.
+	 * Fractional mode (dsmpd 0): FOUTVCO = 24 MHz / refdiv *
+	 * (fbdiv + frac / 2^24), FOUTPOSTDIV = FOUTVCO / postdiv1 / postdiv2
+	 * (RK3399 TRM 2.6.2); every VCO here is inside the 800 MHz .. 3.2 GHz
+	 * 4:1 range and fbdiv inside the fractional [20, 320] window. The
+	 * frac values are the rounded 24-bit fractions; the driver's own
+	 * recalc reproduces the target within 0.02 ppm for each.
+	 */
+	RK3036_PLL_RATE( 296703000, 1, 98, 4, 2, 0, 15116272),
+	RK3036_PLL_RATE( 256250000, 1, 85, 2, 4, 0, 6990507),
+	RK3036_PLL_RATE( 241700000, 1, 80, 2, 4, 0, 9507089),
+	/* 2560x1440@60 DTD many 4K EDIDs list (241.50 vs the 241.70 row). */
+	RK3036_PLL_RATE( 241500000, 1, 80, 2, 4, 0, 8388608),
 	RK3036_PLL_RATE( 216000000, 1, 72, 4, 2, 1, 0),
 	RK3036_PLL_RATE( 148500000, 1, 99, 4, 4, 1, 0),
+	RK3036_PLL_RATE( 148352000, 1, 98, 4, 4, 0, 15121864),
+	RK3036_PLL_RATE( 108000000, 1, 72, 4, 4, 1, 0),
 	RK3036_PLL_RATE( 106500000, 1, 71, 4, 4, 1, 0),
 	RK3036_PLL_RATE(  96000000, 1, 64, 4, 4, 1, 0),
 	RK3036_PLL_RATE(  74250000, 2, 99, 4, 4, 1, 0),
+	RK3036_PLL_RATE(  74176000, 2, 98, 4, 4, 0, 15121864),
 	RK3036_PLL_RATE(  65000000, 1, 65, 6, 4, 1, 0),
+	RK3036_PLL_RATE(  59400000, 1, 39, 4, 4, 0, 10066330),
+	RK3036_PLL_RATE(  59341000, 1, 39, 4, 4, 0, 9406426),
 	RK3036_PLL_RATE(  54000000, 1, 54, 6, 4, 1, 0),
+	RK3036_PLL_RATE(  40000000, 1, 40, 6, 4, 1, 0),
+	RK3036_PLL_RATE(  27027000, 1, 39, 7, 5, 0, 6952059),
 	RK3036_PLL_RATE(  27000000, 1, 27, 6, 4, 1, 0),
+	RK3036_PLL_RATE(  25200000, 1, 36, 7, 5, 0, 12582912),
+	RK3036_PLL_RATE(  25175000, 1, 36, 7, 5, 0, 11971243),
 	{ /* sentinel */ },
 };
 
@@ -1032,7 +1056,12 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 	GATE(PCLK_UART1, "pclk_uart1", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 1, GFLAGS),
 	GATE(PCLK_UART2, "pclk_uart2", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 2, GFLAGS),
 	GATE(PCLK_UART3, "pclk_uart3", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 3, GFLAGS),
-	GATE(PCLK_I2C7, "pclk_rki2c7", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 5, GFLAGS),
+	/*
+	 * I2C7 carries the rear Type-C0 FUSB302 and the MP8859 on boards whose
+	 * PD the BL31 M0 owns; the M0 reads I2C7 registers at any time, and a
+	 * read behind a closed gate hangs it. Never gate either I2C7 clock.
+	 */
+	GATE(PCLK_I2C7, "pclk_rki2c7", "pclk_perilp1", CLK_IS_CRITICAL, RK3399_CLKGATE_CON(22), 5, GFLAGS),
 	GATE(PCLK_I2C1, "pclk_rki2c1", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 6, GFLAGS),
 	GATE(PCLK_I2C5, "pclk_rki2c5", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 7, GFLAGS),
 	GATE(PCLK_I2C6, "pclk_rki2c6", "pclk_perilp1", 0, RK3399_CLKGATE_CON(22), 8, GFLAGS),
@@ -1162,7 +1191,13 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 	GATE(HCLK_VOP0_NOC, "hclk_vop0_noc", "hclk_vop0_pre", CLK_IGNORE_UNUSED,
 			RK3399_CLKGATE_CON(28), 0, GFLAGS),
 
-	COMPOSITE(DCLK_VOP0_DIV, "dclk_vop0_div", mux_pll_src_vpll_cpll_gpll_p, 0,
+	/*
+	 * Propagate a VOP dclk request to the current parent (VPLL) without
+	 * switching onto CPLL/GPLL. CLK_SET_RATE_PARENT alone would let a
+	 * 241.7 MHz request retune those system PLLs.
+	 */
+	COMPOSITE(DCLK_VOP0_DIV, "dclk_vop0_div", mux_pll_src_vpll_cpll_gpll_p,
+		  CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT,
 			RK3399_CLKSEL_CON(49), 8, 2, MFLAGS, 0, 8, DFLAGS,
 			RK3399_CLKGATE_CON(10), 12, GFLAGS),
 
@@ -1192,7 +1227,8 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 	GATE(HCLK_VOP1_NOC, "hclk_vop1_noc", "hclk_vop1_pre", CLK_IGNORE_UNUSED,
 			RK3399_CLKGATE_CON(28), 4, GFLAGS),
 
-	COMPOSITE(DCLK_VOP1_DIV, "dclk_vop1_div", mux_pll_src_vpll_cpll_gpll_p, 0,
+	COMPOSITE(DCLK_VOP1_DIV, "dclk_vop1_div", mux_pll_src_vpll_cpll_gpll_p,
+		  CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT,
 			RK3399_CLKSEL_CON(50), 8, 2, MFLAGS, 0, 8, DFLAGS,
 			RK3399_CLKGATE_CON(10), 13, GFLAGS),
 
@@ -1362,7 +1398,7 @@ static struct rockchip_clk_branch rk3399_clk_branches[] __initdata = {
 			RK3399_CLKSEL_CON(62), 15, 1, MFLAGS, 8, 7, DFLAGS,
 			RK3399_CLKGATE_CON(10), 3, GFLAGS),
 
-	COMPOSITE(SCLK_I2C7, "clk_i2c7", mux_pll_src_cpll_gpll_p, 0,
+	COMPOSITE(SCLK_I2C7, "clk_i2c7", mux_pll_src_cpll_gpll_p, CLK_IS_CRITICAL, /* see pclk_rki2c7 */
 			RK3399_CLKSEL_CON(63), 15, 1, MFLAGS, 8, 7, DFLAGS,
 			RK3399_CLKGATE_CON(10), 5, GFLAGS),
 

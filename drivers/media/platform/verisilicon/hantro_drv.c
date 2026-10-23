@@ -13,6 +13,7 @@
 #include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -166,6 +167,24 @@ void hantro_end_prepare_run(struct hantro_ctx *ctx)
 			      msecs_to_jiffies(2000));
 }
 
+void hantro_abort_prepare_run(struct hantro_ctx *ctx)
+{
+	struct vb2_v4l2_buffer *src_buf;
+
+	/*
+	 * A ->run() callback that fails after hantro_start_prepare_run() has
+	 * already called v4l2_ctrl_request_setup() must still complete the
+	 * request, or the requesting fd's media request stays queued forever.
+	 * Complete it here, but -- unlike hantro_end_prepare_run() -- do not
+	 * arm the watchdog: the job is aborted before the hardware was ever
+	 * kicked, so no completion IRQ will arrive to cancel the timer and a
+	 * stray watchdog would later fire against an unrelated job.
+	 */
+	src_buf = hantro_get_src_buf(ctx);
+	v4l2_ctrl_request_complete(src_buf->vb2_buf.req_obj.req,
+				   &ctx->ctrl_handler);
+}
+
 static void device_run(void *priv)
 {
 	struct hantro_ctx *ctx = priv;
@@ -175,21 +194,53 @@ static void device_run(void *priv)
 	src = hantro_get_src_buf(ctx);
 	dst = hantro_get_dst_buf(ctx);
 
+	/*
+	 * Three ways out of here fail the job, and they hold different
+	 * amounts of state, so they must not share one unwind label:
+	 *
+	 *  - pm_runtime_resume_and_get() failing already dropped the usage
+	 *    count itself, so nothing is held.
+	 *  - clk_bulk_enable() failing leaves the PM reference taken and the
+	 *    clocks off.
+	 *  - ->run() failing leaves both taken; that is what hantro_job_finish()
+	 *    releases on every normal completion.
+	 *
+	 * hantro_job_finish_no_pm() releases neither, so reaching it with
+	 * either resource held leaks it: the usage count never returns to its
+	 * resting value and the device never autosuspends again. ->run() has
+	 * been able to fail since the driver gained hantro_g1_h264_dec_run()
+	 * and friends -- rockchip_vpu2_h264_enc_run()'s CAPTURE-buffer refusal
+	 * (5d410e25ead1c) only made it reachable from userspace on demand.
+	 *
+	 * The contract that makes the ->run() arm correct, and which every
+	 * implementation must keep: a non-zero return means the job was NOT
+	 * started and has NOT been finished, so device_run() owns the entire
+	 * unwind. A ->run() that both finishes the job itself and returns
+	 * non-zero is unwound twice -- two pm_runtime_put_autosuspend() for one
+	 * get, two clk_bulk_disable() for one enable, two
+	 * v4l2_m2m_buf_done_and_job_finish(). An abort path that has already
+	 * called hantro_start_prepare_run() calls hantro_abort_prepare_run()
+	 * and returns the error; it must not call hantro_irq_done().
+	 */
 	ret = pm_runtime_resume_and_get(ctx->dev->dev);
 	if (ret < 0)
 		goto err_cancel_job;
 
 	ret = clk_bulk_enable(ctx->dev->variant->num_clocks, ctx->dev->clocks);
 	if (ret)
-		goto err_cancel_job;
+		goto err_cancel_job_pm;
 
 	v4l2_m2m_buf_copy_metadata(src, dst, true);
 
-	if (ctx->codec_ops->run(ctx))
-		goto err_cancel_job;
+	if (ctx->codec_ops->run(ctx)) {
+		hantro_job_finish(ctx->dev, ctx, VB2_BUF_STATE_ERROR);
+		return;
+	}
 
 	return;
 
+err_cancel_job_pm:
+	pm_runtime_put_autosuspend(ctx->dev->dev);
 err_cancel_job:
 	hantro_job_finish_no_pm(ctx->dev, ctx, VB2_BUF_STATE_ERROR);
 }
@@ -437,6 +488,82 @@ static const struct hantro_ctrl controls[] = {
 			 * enabled is already the minimum required set.
 			 */
 			.flags = V4L2_CTRL_FLAG_READ_ONLY,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_H264_PROFILE,
+			.min = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE,
+			.max = V4L2_MPEG_VIDEO_H264_PROFILE_MAIN,
+			.menu_skip_mask = 0,
+			.def = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+			.min = V4L2_MPEG_VIDEO_H264_LEVEL_1_0,
+			.max = V4L2_MPEG_VIDEO_H264_LEVEL_4_1,
+			.def = V4L2_MPEG_VIDEO_H264_LEVEL_4_0,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP,
+			.min = 0,
+			.max = 51,
+			.step = 1,
+			.def = 26,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP,
+			.min = 0,
+			.max = 51,
+			.step = 1,
+			.def = 26,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_GOP_SIZE,
+			.min = 0,
+			.max = 300,
+			.step = 1,
+			.def = 30,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			.id = V4L2_CID_MPEG_VIDEO_BITRATE,
+			.min = 10000,
+			.max = 40000000,
+			.step = 1,
+			.def = 4000000,
+		},
+	}, {
+		.codec = HANTRO_H264_ENCODER,
+		.cfg = {
+			/*
+			 * Without this control the encoder had no reachable
+			 * constant-QP mode at all. BITRATE above has
+			 * .min = 10000, so the driver's "bitrate == 0 means
+			 * CQP" test could never be false: every `else` branch
+			 * behind it was dead code, and the file header
+			 * documented a mode userspace had no way to select.
+			 *
+			 * Only CBR and CQ are offered. VARIABLE_BITRATE is
+			 * masked out because nothing here implements it, and
+			 * advertising a mode that silently behaves as CBR is
+			 * the same defect one level up.
+			 */
+			.id = V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
+			.min = V4L2_MPEG_VIDEO_BITRATE_MODE_VBR,
+			.max = V4L2_MPEG_VIDEO_BITRATE_MODE_CQ,
+			.menu_skip_mask =
+				BIT(V4L2_MPEG_VIDEO_BITRATE_MODE_VBR),
+			.def = V4L2_MPEG_VIDEO_BITRATE_MODE_CBR,
 		},
 	}, {
 		.codec = HANTRO_MPEG2_DECODER,
@@ -1035,6 +1162,41 @@ static int hantro_disable_multicore(struct hantro_dev *vpu)
 	return 0;
 }
 
+static struct v4l2_m2m_dev *hantro_get_v4l2_m2m_dev(struct hantro_dev *vpu)
+{
+	struct device_node *node;
+	struct hantro_dev *shared_vpu;
+
+	if (!vpu->variant || !vpu->variant->shared_devices)
+		goto init_new_m2m_dev;
+
+	for_each_matching_node(node, vpu->variant->shared_devices) {
+		struct platform_device *pdev;
+		struct v4l2_m2m_dev *m2m_dev;
+
+		pdev = of_find_device_by_node(node);
+		if (!pdev)
+			continue;
+
+		shared_vpu = platform_get_drvdata(pdev);
+		if (IS_ERR_OR_NULL(shared_vpu) || shared_vpu == vpu) {
+			platform_device_put(pdev);
+			continue;
+		}
+
+		v4l2_m2m_get(shared_vpu->m2m_dev);
+		m2m_dev = shared_vpu->m2m_dev;
+		platform_device_put(pdev);
+
+		of_node_put(node);
+
+		return m2m_dev;
+	}
+
+init_new_m2m_dev:
+	return v4l2_m2m_init(&vpu_m2m_ops);
+}
+
 static int hantro_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *match;
@@ -1186,7 +1348,7 @@ static int hantro_probe(struct platform_device *pdev)
 	}
 	platform_set_drvdata(pdev, vpu);
 
-	vpu->m2m_dev = v4l2_m2m_init(&vpu_m2m_ops);
+	vpu->m2m_dev = hantro_get_v4l2_m2m_dev(vpu);
 	if (IS_ERR(vpu->m2m_dev)) {
 		v4l2_err(&vpu->v4l2_dev, "Failed to init mem2mem device\n");
 		ret = PTR_ERR(vpu->m2m_dev);
@@ -1225,7 +1387,7 @@ err_rm_enc_func:
 	hantro_remove_enc_func(vpu);
 err_m2m_rel:
 	media_device_cleanup(&vpu->mdev);
-	v4l2_m2m_release(vpu->m2m_dev);
+	v4l2_m2m_put(vpu->m2m_dev);
 err_v4l2_unreg:
 	v4l2_device_unregister(&vpu->v4l2_dev);
 err_clk_unprepare:
@@ -1248,7 +1410,7 @@ static void hantro_remove(struct platform_device *pdev)
 	hantro_remove_dec_func(vpu);
 	hantro_remove_enc_func(vpu);
 	media_device_cleanup(&vpu->mdev);
-	v4l2_m2m_release(vpu->m2m_dev);
+	v4l2_m2m_put(vpu->m2m_dev);
 	v4l2_device_unregister(&vpu->v4l2_dev);
 	clk_bulk_unprepare(vpu->variant->num_clocks, vpu->clocks);
 	reset_control_assert(vpu->resets);

@@ -243,14 +243,16 @@ static void rproc_virtio_reset(struct virtio_device *vdev)
 }
 
 /* provide the vdev features as retrieved from the firmware */
-static u64 rproc_virtio_get_features(struct virtio_device *vdev)
+static int rproc_virtio_get_features(struct virtio_device *vdev, u64 *features)
 {
 	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
 	struct fw_rsc_vdev *rsc;
 
 	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
 
-	return rsc->dfeatures;
+	*features = rsc->dfeatures;
+
+	return 0;
 }
 
 static void rproc_transport_features(struct virtio_device *vdev)

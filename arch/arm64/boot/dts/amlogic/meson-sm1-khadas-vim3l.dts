@@ -9,6 +9,7 @@
 #include "meson-sm1.dtsi"
 #include "meson-khadas-vim3.dtsi"
 #include <dt-bindings/sound/meson-g12a-tohdmitx.h>
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "khadas,vim3l", "amlogic,sm1";

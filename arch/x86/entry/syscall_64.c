@@ -7,6 +7,9 @@
 #include <linux/syscalls.h>
 #include <linux/entry-common.h>
 #include <linux/nospec.h>
+#include <linux/moduleparam.h>
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "syscall."
 #include <asm/syscall.h>
 
 #define __SYSCALL(nr, sym) extern long __x64_##sym(const struct pt_regs *);
@@ -75,7 +78,7 @@ static __always_inline bool do_syscall_x32(struct pt_regs *regs, int nr)
 	 */
 	unsigned int xnr = nr - __X32_SYSCALL_BIT;
 
-	if (IS_ENABLED(CONFIG_X86_X32_ABI) && likely(xnr < X32_NR_syscalls)) {
+	if (IS_ENABLED(CONFIG_X86_X32_ABI) && unlikely(x32_enabled) && likely(xnr < X32_NR_syscalls)) {
 		xnr = array_index_nospec(xnr, X32_NR_syscalls);
 		regs->ax = x32_sys_call(regs, xnr);
 		return true;
@@ -139,3 +142,48 @@ __visible noinstr bool do_syscall_64(struct pt_regs *regs, int nr)
 	/* Use SYSRET to exit to userspace */
 	return true;
 }
+
+#ifdef CONFIG_X86_X32_ABI
+/* Maybe enable x32 syscalls */
+
+#if defined(CONFIG_X86_X32_DISABLED)
+DEFINE_STATIC_KEY_FALSE(x32_enabled_skey);
+#else
+DEFINE_STATIC_KEY_TRUE(x32_enabled_skey);
+#endif
+
+static int __init x32_param_set(const char *val, const struct kernel_param *p)
+{
+	bool enabled;
+	int ret;
+
+	ret = kstrtobool(val, &enabled);
+	if (ret)
+		return ret;
+	if (IS_ENABLED(CONFIG_X86_X32_DISABLED)) {
+		if (enabled) {
+			static_key_enable(&x32_enabled_skey.key);
+			pr_info("Enabled x32 syscalls\n");
+		}
+	} else {
+		if (!enabled) {
+			static_key_disable(&x32_enabled_skey.key);
+			pr_info("Disabled x32 syscalls\n");
+		}
+	}
+	return 0;
+}
+
+static int x32_param_get(char *buffer, const struct kernel_param *p)
+{
+	return sprintf(buffer, "%c\n",
+		       static_key_enabled(&x32_enabled_skey) ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops x32_param_ops = {
+	.set = x32_param_set,
+	.get = x32_param_get,
+};
+
+arch_param_cb(x32, &x32_param_ops, NULL, 0444);
+#endif

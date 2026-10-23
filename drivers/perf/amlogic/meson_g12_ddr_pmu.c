@@ -295,6 +295,26 @@ static void dmc_g12_get_counters(struct dmc_info *info,
 	}
 }
 
+static void dmc_g12_counter_clear(struct dmc_info *info,
+				  struct dmc_counter *drained)
+{
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_CTRL0);
+
+	dmc_g12_get_counters(info, drained);
+
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_ALL_REQ_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_ALL_GRANT_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_ONE_GRANT_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_SEC_GRANT_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_THD_GRANT_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_G12_FOR_GRANT_CNT);
+
+	/*
+	 * CTRL1..CTRL8 (the axi-port filters) are deliberately untouched: they
+	 * belong to the event that programmed them, not to the counting window.
+	 */
+}
+
 static int dmc_g12_irq_handler(struct dmc_info *info,
 			       struct dmc_counter *counter)
 {
@@ -311,11 +331,260 @@ static int dmc_g12_irq_handler(struct dmc_info *info,
 	return ret;
 }
 
+/*
+ * GXL/GXM family backend. Same class of DMC bandwidth monitor as G12 but at a
+ * different base (DMC 0xc8838000) with a different register layout. The DT
+ * reg[0] points at a window starting at DMC+0x60 -- above canvas@48, so the
+ * core's exclusive ioremap does not clash with the canvas driver. The offsets
+ * below are relative to that window (absolute DMC offset in the comment).
+ * Register model from the Amlogic BSP ddr_band_op_gxl.c.
+ */
+#define DMC_MON_GXL_CTRL1		0x34	/* abs 0x94: channel 0 port filter */
+#define DMC_MON_GXL_CTRL2		0x38	/* abs 0x98: enable(31)/use-timer(20)/chan[3:0] */
+#define DMC_MON_GXL_CTRL3		0x3c	/* abs 0x9c: timer clock_count */
+#define DMC_MON_GXL_CTRL4		0x00	/* abs 0x60: channel 1 port filter */
+#define DMC_MON_GXL_CTRL5		0x04	/* abs 0x64: channel 2 port filter */
+#define DMC_MON_GXL_CTRL6		0x08	/* abs 0x68: channel 3 port filter */
+#define DMC_MON_GXL_ALL_REQ_CNT		0x40	/* abs 0xa0 */
+#define DMC_MON_GXL_ALL_GRANT_CNT	0x44	/* abs 0xa4: all-channel grant (x16 = bytes) */
+#define DMC_MON_GXL_ONE_GRANT_CNT	0x48	/* abs 0xa8: ch0 grant; ch1..3 at +0x4/0x8/0xc */
+
+/*
+ * GXL per-master axi-line filters. The config1 bit is the port_id from the BSP
+ * ddr_port_desc_gxl[]. GXL differs from G12 (VPU/VDEC/HCODEC/GE2D at bits 8-15,
+ * not 16-23), so it needs its own format-attr set. Clean userspace names with
+ * gxl_-prefixed symbols so they don't collide with the G12 format_attr_* of the
+ * same name in this file.
+ */
+#define GXL_FMT_ATTR(_name, _cfg)					\
+	static ssize_t gxl_##_name##_show(struct device *dev,		\
+			struct device_attribute *attr, char *page)	\
+	{								\
+		return sprintf(page, _cfg "\n");			\
+	}								\
+	static struct device_attribute gxl_format_attr_##_name =	\
+		__ATTR(_name, 0444, gxl_##_name##_show, NULL)
+
+GXL_FMT_ATTR(arm,        "config1:0");
+GXL_FMT_ATTR(mali0,      "config1:1");
+GXL_FMT_ATTR(mali1,      "config1:2");
+GXL_FMT_ATTR(hdcp,       "config1:3");
+GXL_FMT_ATTR(hevc,       "config1:4");
+GXL_FMT_ATTR(usb3_0,     "config1:6");
+GXL_FMT_ATTR(device,     "config1:7");
+GXL_FMT_ATTR(vpu_read0,  "config1:8");
+GXL_FMT_ATTR(vpu_read1,  "config1:9");
+GXL_FMT_ATTR(vpu_read2,  "config1:10");
+GXL_FMT_ATTR(vpu_write0, "config1:11");
+GXL_FMT_ATTR(vpu_write1, "config1:12");
+GXL_FMT_ATTR(vdec,       "config1:13");
+GXL_FMT_ATTR(hcodec,     "config1:14");
+GXL_FMT_ATTR(ge2d,       "config1:15");
+GXL_FMT_ATTR(sd_emmc_a,  "config1:32");
+GXL_FMT_ATTR(usb0,       "config1:33");
+GXL_FMT_ATTR(dma,        "config1:34");
+GXL_FMT_ATTR(arb0,       "config1:35");
+GXL_FMT_ATTR(sd_emmc_b,  "config1:36");
+GXL_FMT_ATTR(usb1,       "config1:37");
+GXL_FMT_ATTR(audio_out,  "config1:38");
+GXL_FMT_ATTR(audio_in,   "config1:39");
+GXL_FMT_ATTR(aiu,        "config1:40");
+GXL_FMT_ATTR(parser,     "config1:41");
+GXL_FMT_ATTR(ao_cpu,     "config1:42");
+GXL_FMT_ATTR(sd_emmc_c,  "config1:43");
+GXL_FMT_ATTR(spicc,      "config1:44");
+GXL_FMT_ATTR(ethernet,   "config1:45");
+GXL_FMT_ATTR(sana,       "config1:46");
+
+static struct attribute *gxl_pmu_format_attrs[] = {
+	&format_attr_event.attr,
+	&gxl_format_attr_arm.attr,
+	&gxl_format_attr_mali0.attr,
+	&gxl_format_attr_mali1.attr,
+	&gxl_format_attr_hdcp.attr,
+	&gxl_format_attr_hevc.attr,
+	&gxl_format_attr_usb3_0.attr,
+	&gxl_format_attr_device.attr,
+	&gxl_format_attr_vpu_read0.attr,
+	&gxl_format_attr_vpu_read1.attr,
+	&gxl_format_attr_vpu_read2.attr,
+	&gxl_format_attr_vpu_write0.attr,
+	&gxl_format_attr_vpu_write1.attr,
+	&gxl_format_attr_vdec.attr,
+	&gxl_format_attr_hcodec.attr,
+	&gxl_format_attr_ge2d.attr,
+	&gxl_format_attr_sd_emmc_a.attr,
+	&gxl_format_attr_usb0.attr,
+	&gxl_format_attr_dma.attr,
+	&gxl_format_attr_arb0.attr,
+	&gxl_format_attr_sd_emmc_b.attr,
+	&gxl_format_attr_usb1.attr,
+	&gxl_format_attr_audio_out.attr,
+	&gxl_format_attr_audio_in.attr,
+	&gxl_format_attr_aiu.attr,
+	&gxl_format_attr_parser.attr,
+	&gxl_format_attr_ao_cpu.attr,
+	&gxl_format_attr_sd_emmc_c.attr,
+	&gxl_format_attr_spicc.attr,
+	&gxl_format_attr_ethernet.attr,
+	&gxl_format_attr_sana.attr,
+	NULL,
+};
+
+/*
+ * The GXL DDR PLL is HHI_DPLL_TOP_I (0xc883c318 -- "DPLL" = DDR PLL, named in
+ * clk-gxbb.h but not modelled as a clock), in the HHI block, supplied as
+ * reg[1]/pll_reg. Found by RE of the board BL2/BL30 (which program the HHI clock
+ * registers) and confirmed by reading it on an S805X (decodes to ~the measured
+ * 540 MHz DMC clock). Unlike G12 (PLL at DMC+0xc00, same block as the monitor),
+ * the GXL DPLL is in a different block from the DMC monitor, so the DT node sits
+ * at soc level with absolute reg cells.
+ */
+static unsigned long dmc_gxl_get_freq_quick(struct dmc_info *info)
+{
+	unsigned int val, m, n, od, od1;
+	unsigned long freq = 0;
+
+	val = readl(info->pll_reg);
+	od  = (val >> 2) & 0x03;
+	m   = (val >> 4) & 0x1ff;
+	n   = (val >> 16) & 0x1f;
+	od1 = (val >> 0) & 0x03;
+	freq = DEFAULT_XTAL_FREQ / 1000;	/* avoid overflow */
+	if (n)
+		freq = ((freq * m / (n * (1 + od))) >> od1) * 1000;
+
+	return freq;
+}
+
+static void dmc_gxl_counter_enable(struct dmc_info *info)
+{
+	unsigned long clock_count = dmc_gxl_get_freq_quick(info) / 10; /* 100ms */
+
+	writel(clock_count, info->ddr_reg[0] + DMC_MON_GXL_CTRL3);
+
+	/* enable all four channels, counted over the timer window */
+	writel(BIT(31) | BIT(20) | 0x0f, info->ddr_reg[0] + DMC_MON_GXL_CTRL2);
+}
+
+static void dmc_gxl_config_fiter(struct dmc_info *info, int port, int channel)
+{
+	u32 port_reg[MAX_CHANNEL_NUM] = { DMC_MON_GXL_CTRL1, DMC_MON_GXL_CTRL4,
+					  DMC_MON_GXL_CTRL5, DMC_MON_GXL_CTRL6 };
+	int subport = -1;
+	u32 val;
+
+	/* clear all port mask */
+	if (port < 0) {
+		writel(0, info->ddr_reg[0] + port_reg[channel]);
+		return;
+	}
+
+	if (port >= PORT_MAJOR)
+		subport = port - PORT_MAJOR;
+
+	val = readl(info->ddr_reg[0] + port_reg[channel]);
+	if (port < 16)
+		val |= (1 << (16 + port)) | 0xffff;
+	else if (subport > 0)
+		val = BIT(23) | (1 << subport);
+	else
+		return;
+	writel(val, info->ddr_reg[0] + port_reg[channel]);
+}
+
+static void dmc_gxl_set_axi_filter(struct dmc_info *info, int axi_id, int channel)
+{
+	if (channel > info->hw_info->chann_nr)
+		return;
+
+	dmc_gxl_config_fiter(info, axi_id, channel);
+}
+
+static void dmc_gxl_counter_disable(struct dmc_info *info)
+{
+	int i;
+
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_CTRL2);
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_CTRL3);
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_ALL_REQ_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_ALL_GRANT_CNT);
+	for (i = 0; i < info->hw_info->chann_nr; i++)
+		writel(0, info->ddr_reg[0] + DMC_MON_GXL_ONE_GRANT_CNT + (i << 2));
+
+	/* clear port channel mapping */
+	for (i = 0; i < info->hw_info->chann_nr; i++)
+		dmc_gxl_config_fiter(info, -1, i);
+}
+
+static void dmc_gxl_get_counters(struct dmc_info *info,
+				 struct dmc_counter *counter)
+{
+	int i;
+	unsigned int reg;
+
+	counter->all_cnt = readl(info->ddr_reg[0] + DMC_MON_GXL_ALL_GRANT_CNT);
+	counter->all_req = readl(info->ddr_reg[0] + DMC_MON_GXL_ALL_REQ_CNT);
+
+	for (i = 0; i < info->hw_info->chann_nr; i++) {
+		reg = DMC_MON_GXL_ONE_GRANT_CNT + (i << 2);
+		counter->channel_cnt[i] = readl(info->ddr_reg[0] + reg);
+	}
+}
+
+static void dmc_gxl_counter_clear(struct dmc_info *info,
+				  struct dmc_counter *drained)
+{
+	int i;
+
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_CTRL2);
+
+	dmc_gxl_get_counters(info, drained);
+
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_ALL_REQ_CNT);
+	writel(0, info->ddr_reg[0] + DMC_MON_GXL_ALL_GRANT_CNT);
+	for (i = 0; i < info->hw_info->chann_nr; i++)
+		writel(0, info->ddr_reg[0] + DMC_MON_GXL_ONE_GRANT_CNT + (i << 2));
+
+	/* CTRL1/CTRL4/CTRL5/CTRL6 (the axi-port filters) are left as set */
+}
+
+static int dmc_gxl_irq_handler(struct dmc_info *info,
+			       struct dmc_counter *counter)
+{
+	unsigned int val;
+	int ret = -EINVAL;
+
+	val = readl(info->ddr_reg[0] + DMC_MON_GXL_CTRL2);
+	if (val & DMC_QOS_IRQ) {
+		dmc_gxl_get_counters(info, counter);
+		/* clear irq flags */
+		writel(val, info->ddr_reg[0] + DMC_MON_GXL_CTRL2);
+		ret = 0;
+	}
+	return ret;
+}
+
+static const struct dmc_hw_info gxl_dmc_info = {
+	.enable		= dmc_gxl_counter_enable,
+	.disable	= dmc_gxl_counter_disable,
+	.irq_handler	= dmc_gxl_irq_handler,
+	.get_counters	= dmc_gxl_get_counters,
+	.clear_counters = dmc_gxl_counter_clear,
+	.set_axi_filter	= dmc_gxl_set_axi_filter,
+
+	.dmc_nr = 1,
+	.chann_nr = 4,
+	.capability = {0x00007FFF0000FFDFULL, 0},	/* GXL axi-lines: ports 0-4, 6-15, 32-46 */
+	.fmt_attr = gxl_pmu_format_attrs,
+};
+
 static const struct dmc_hw_info g12a_dmc_info = {
 	.enable		= dmc_g12_counter_enable,
 	.disable	= dmc_g12_counter_disable,
 	.irq_handler	= dmc_g12_irq_handler,
 	.get_counters	= dmc_g12_get_counters,
+	.clear_counters = dmc_g12_counter_clear,
 	.set_axi_filter	= dmc_g12_set_axi_filter,
 
 	.dmc_nr = 1,
@@ -329,6 +598,7 @@ static const struct dmc_hw_info g12b_dmc_info = {
 	.disable	= dmc_g12_counter_disable,
 	.irq_handler	= dmc_g12_irq_handler,
 	.get_counters	= dmc_g12_get_counters,
+	.clear_counters = dmc_g12_counter_clear,
 	.set_axi_filter	= dmc_g12_set_axi_filter,
 
 	.dmc_nr = 1,
@@ -342,6 +612,7 @@ static const struct dmc_hw_info sm1_dmc_info = {
 	.disable	= dmc_g12_counter_disable,
 	.irq_handler	= dmc_g12_irq_handler,
 	.get_counters	= dmc_g12_get_counters,
+	.clear_counters = dmc_g12_counter_clear,
 	.set_axi_filter	= dmc_g12_set_axi_filter,
 
 	.dmc_nr = 1,
@@ -373,6 +644,10 @@ static const struct of_device_id meson_ddr_pmu_dt_match[] = {
 		.compatible = "amlogic,sm1-ddr-pmu",
 		.data = &sm1_dmc_info,
 	},
+	{
+		.compatible = "amlogic,gxl-ddr-pmu",
+		.data = &gxl_dmc_info,
+	},
 	{}
 };
 MODULE_DEVICE_TABLE(of, meson_ddr_pmu_dt_match);
@@ -390,4 +665,4 @@ static struct platform_driver g12_ddr_pmu_driver = {
 module_platform_driver(g12_ddr_pmu_driver);
 MODULE_AUTHOR("Jiucheng Xu");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Amlogic G12 series SoC DDR PMU");
+MODULE_DESCRIPTION("Amlogic G12/GXL series SoC DDR PMU");

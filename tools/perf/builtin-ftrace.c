@@ -18,6 +18,7 @@
 #include <poll.h>
 #include <ctype.h>
 #include <linux/capability.h>
+#include <linux/err.h>
 #include <linux/string.h>
 #include <sys/stat.h>
 
@@ -70,18 +71,11 @@ static void ftrace__workload_exec_failed_signal(int signo __maybe_unused,
 
 static bool check_ftrace_capable(void)
 {
-	bool used_root;
-
-	if (perf_cap__capable(CAP_PERFMON, &used_root))
+	if (perf_cap__capable(CAP_PERFMON) ||
+	    perf_cap__capable(CAP_SYS_ADMIN))
 		return true;
 
-	if (!used_root && perf_cap__capable(CAP_SYS_ADMIN, &used_root))
-		return true;
-
-	pr_err("ftrace only works for %s!\n",
-		used_root ? "root"
-			  : "users with the CAP_PERFMON or CAP_SYS_ADMIN capability"
-		);
+	pr_err("ftrace only works for users with the CAP_PERFMON or CAP_SYS_ADMIN capability!\n");
 	return false;
 }
 
@@ -1209,8 +1203,12 @@ static int prepare_func_profile(struct perf_ftrace *ftrace)
 	ftrace->graph_verbose = 0;
 
 	ftrace->profile_hash = hashmap__new(profile_hash, profile_equal, NULL);
-	if (ftrace->profile_hash == NULL)
-		return -ENOMEM;
+	if (IS_ERR(ftrace->profile_hash)) {
+		int err = PTR_ERR(ftrace->profile_hash);
+
+		ftrace->profile_hash = NULL;
+		return err;
+	}
 
 	return 0;
 }

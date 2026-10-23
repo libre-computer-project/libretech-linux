@@ -168,15 +168,15 @@
 			no-map;
 		};
 
-		adsp_dma_mem: memory@61000000 {
+		adsp_dma_mem: memory@60c00000 {
 			compatible = "shared-dma-pool";
-			reg = <0 0x61000000 0 0x100000>;
-			no-map;
+			reg = <0 0x60c00000 0 0x400000>;
+			reusable;
 		};
 
 		adsp_mem: memory@60000000 {
 			compatible = "shared-dma-pool";
-			reg = <0 0x60000000 0 0x1000000>;
+			reg = <0 0x60000000 0 0xc00000>;
 			no-map;
 		};
 

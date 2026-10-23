@@ -14,6 +14,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -478,6 +479,7 @@ struct it6505 {
 	struct device *codec_dev;
 	struct delayed_work delayed_audio;
 	struct it6505_audio_data audio;
+	struct platform_device *audio_pdev;
 	struct dentry *debugfs;
 
 	/* it6505 driver hold option */
@@ -2960,7 +2962,7 @@ static void it6505_remove_notifier_module(struct it6505 *it6505)
 	}
 }
 
-static void __maybe_unused it6505_delayed_audio(struct work_struct *work)
+static void it6505_delayed_audio(struct work_struct *work)
 {
 	struct it6505 *it6505 = container_of(work, struct it6505,
 					     delayed_audio.work);
@@ -2974,9 +2976,8 @@ static void __maybe_unused it6505_delayed_audio(struct work_struct *work)
 		it6505_enable_audio(it6505);
 }
 
-static int __maybe_unused it6505_audio_setup_hw_params(struct it6505 *it6505,
-						       struct hdmi_codec_params
-						       *params)
+static int it6505_audio_setup_hw_params(struct it6505 *it6505,
+					struct hdmi_codec_params *params)
 {
 	struct device *dev = it6505->dev;
 	int i = 0;
@@ -2985,8 +2986,17 @@ static int __maybe_unused it6505_audio_setup_hw_params(struct it6505 *it6505,
 			     params->sample_rate, params->sample_width,
 			     params->cea.channels);
 
+	/*
+	 * The it6505 hdmi-codec can share an I2S bus with a second codec (e.g. a
+	 * speaker amp on the same machine dai-link, as on MT8186 Chromebooks where
+	 * I2S3 fans out to both this bridge and an rt1019p). When no DP sink is
+	 * attached the bridge has no encoder, but returning an error here would
+	 * fail hw_params for the whole shared backend and block the co-located
+	 * codec's playback. Accept the params as a no-op instead; actual DP audio
+	 * output is separately gated on it6505->powered in the enable path.
+	 */
 	if (!it6505->bridge.encoder)
-		return -ENODEV;
+		return 0;
 
 	if (params->cea.channels <= 1 || params->cea.channels > 8) {
 		DRM_DEV_DEBUG_DRIVER(dev, "channel number: %d not support",
@@ -3031,7 +3041,7 @@ static int __maybe_unused it6505_audio_setup_hw_params(struct it6505 *it6505,
 	return 0;
 }
 
-static void __maybe_unused it6505_audio_shutdown(struct device *dev, void *data)
+static void it6505_audio_shutdown(struct device *dev, void *data)
 {
 	struct it6505 *it6505 = dev_get_drvdata(dev);
 
@@ -3039,16 +3049,66 @@ static void __maybe_unused it6505_audio_shutdown(struct device *dev, void *data)
 		it6505_disable_audio(it6505);
 }
 
-static int __maybe_unused it6505_audio_hook_plugged_cb(struct device *dev,
-						       void *data,
-						       hdmi_codec_plugged_cb fn,
-						       struct device *codec_dev)
+static int it6505_audio_hook_plugged_cb(struct device *dev,
+					void *data,
+					hdmi_codec_plugged_cb fn,
+					struct device *codec_dev)
 {
 	struct it6505 *it6505 = data;
 
 	it6505->plugged_cb = fn;
 	it6505->codec_dev = codec_dev;
 	it6505_plugged_status_to_codec(it6505);
+
+	return 0;
+}
+
+static int it6505_audio_startup(struct device *dev, void *data)
+{
+	struct it6505 *it6505 = data;
+
+	if (it6505->powered)
+		schedule_delayed_work(&it6505->delayed_audio, 0);
+
+	return 0;
+}
+
+static int it6505_audio_hw_params(struct device *dev, void *data,
+				  struct hdmi_codec_daifmt *fmt,
+				  struct hdmi_codec_params *params)
+{
+	struct it6505 *it6505 = data;
+
+	return it6505_audio_setup_hw_params(it6505, params);
+}
+
+static const struct hdmi_codec_ops it6505_audio_codec_ops = {
+	.hw_params = it6505_audio_hw_params,
+	.audio_startup = it6505_audio_startup,
+	.audio_shutdown = it6505_audio_shutdown,
+	.hook_plugged_cb = it6505_audio_hook_plugged_cb,
+};
+
+static int it6505_register_audio_driver(struct device *dev)
+{
+	struct it6505 *it6505 = dev_get_drvdata(dev);
+	struct hdmi_codec_pdata codec_data = {
+		.ops = &it6505_audio_codec_ops,
+		.i2s = 1,
+		.no_capture_mute = 1,
+		.max_i2s_channels = 8,
+		.data = it6505,
+	};
+	struct platform_device *pdev;
+
+	pdev = platform_device_register_data(dev, HDMI_CODEC_DRV_NAME,
+					     PLATFORM_DEVID_AUTO, &codec_data,
+					     sizeof(codec_data));
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
+
+	it6505->audio_pdev = pdev;
+	DRM_DEV_DEBUG_DRIVER(dev, "bound to %s", HDMI_CODEC_DRV_NAME);
 
 	return 0;
 }
@@ -3615,6 +3675,7 @@ static int it6505_i2c_probe(struct i2c_client *client)
 	INIT_WORK(&it6505->link_works, it6505_link_training_work);
 	INIT_WORK(&it6505->hdcp_wait_ksv_list, it6505_hdcp_wait_ksv_list);
 	INIT_DELAYED_WORK(&it6505->hdcp_work, it6505_hdcp_work);
+	INIT_DELAYED_WORK(&it6505->delayed_audio, it6505_delayed_audio);
 	init_completion(&it6505->extcon_completion);
 	memset(it6505->dpcd, 0, sizeof(it6505->dpcd));
 	it6505->powered = false;
@@ -3637,6 +3698,12 @@ static int it6505_i2c_probe(struct i2c_client *client)
 			     DRM_BRIDGE_OP_HPD;
 	drm_bridge_add(&it6505->bridge);
 
+	err = it6505_register_audio_driver(dev);
+	if (err) {
+		drm_bridge_remove(&it6505->bridge);
+		return err;
+	}
+
 	return 0;
 }
 
@@ -3644,6 +3711,7 @@ static void it6505_i2c_remove(struct i2c_client *client)
 {
 	struct it6505 *it6505 = i2c_get_clientdata(client);
 
+	platform_device_unregister(it6505->audio_pdev);
 	drm_bridge_remove(&it6505->bridge);
 	drm_dp_aux_unregister(&it6505->aux);
 	it6505_debugfs_remove(it6505);

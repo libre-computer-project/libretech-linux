@@ -10,6 +10,7 @@
 #include <dt-bindings/gpio/meson-g12a-gpio.h>
 #include <dt-bindings/sound/meson-g12a-tohdmitx.h>
 #include <dt-bindings/sound/meson-g12a-toacodec.h>
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "amlogic,u200", "amlogic,g12a";

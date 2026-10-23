@@ -9,6 +9,7 @@
 /* The Amlogic S922X Rev. C supports the same OPPs as the A311D variant */
 #include "meson-g12b-a311d.dtsi"
 #include "meson-g12b-odroid-n2.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "hardkernel,odroid-n2-plus", "amlogic,s922x", "amlogic,g12b";

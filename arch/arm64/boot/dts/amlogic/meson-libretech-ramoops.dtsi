@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2026 Libre Computer
+ *
+ * Shared pstore/ramoops carve-out for Libre Computer Amlogic boards
+ * (GXL, GXM, G12B and SM1).
+ *
+ * Silent watchdog resets leave zero printk by construction: fleet-client
+ * holds /dev/watchdog0 (Meson GXBB, 30 s) and a bite resets the SoC without
+ * a panic, so there is no kmsg_dump and nothing reaches the rootfs journal.
+ * A statically placed ramoops region plus CONFIG_PSTORE_CONSOLE is the only
+ * mechanism that survives that path.
+ *
+ * Address: 0x07400000, 1 MiB. One address for every Amlogic family, derived
+ * rather than assumed:
+ *
+ *  - Above every firmware carve-out. On G12B/SM1 meson-g12-common.dtsi
+ *    reserves secmon@5000000 (BL31, 3 MiB) and secmon@5300000 (BL32,
+ *    32 MiB); the pair ends at 0x07300000, which /proc/iomem on a live
+ *    AML-A311D-CC and AML-S905D3-CC confirms ("05000000-072fffff :
+ *    reserved", System RAM resuming at 07300000). On GXL/GXM meson-gx.dtsi
+ *    reserves hwrom@0 (16 MiB), secmon@5000000 (3 MiB) and
+ *    secmon@10000000 (2 MiB), and U-Boot's meson_init_reserved_memory()
+ *    (arch/arm/mach-meson/board-gx.c) additionally adds BL31/BL32 as FDT
+ *    memory reservations from AO_SEC_GP_CFG3/4/5 at runtime, using the
+ *    same 0x05000000/0x05300000 bases. 0x07400000 leaves a 1 MiB margin
+ *    past the largest BL32 those registers describe today.
+ *
+ *  - Below every bootloader load address in include/configs/meson64.h:
+ *    scriptaddr 0x08000000, fdt_addr_r 0x08008000, kernel_addr_r
+ *    0x08080000, kernel_comp_addr_r 0x0d080000 (+0x2000000), ramdisk_addr_r
+ *    0x13000000, and below the kernel image itself (0x08200000 on the live
+ *    boards). pxefile_addr_r 0x01080000 and fdtoverlay_addr_r 0x01000000
+ *    are below the region. U-Boot relocates itself to the top of DRAM.
+ *
+ *  - Inside DRAM on every shipped SKU, including the 512 MiB variants.
+ *    This is why 0x50000000 (1.25 GiB), used by the first A311D-CC-only
+ *    version of this node, is not used fleet-wide: the board DTS files all
+ *    say "comes in up to N GiB RAM variants", U-Boot rewrites /memory from
+ *    the detected size (get_effective_memsize()), and no in-tree document
+ *    states the minimum shipped DRAM per model. 0x07400000 + 1 MiB fits
+ *    below 0x20000000, so it is correct for every SKU without knowing which
+ *    SKUs exist.
+ *
+ *  - Clear of CMA on both families. U-Boot's meson_fixup_cma_size()
+ *    (arch/arm/mach-meson/board-common.c) force-writes linux,cma's
+ *    alloc-ranges to <0 0 0 MESON_VDEC_DMA_LIMIT> = the first 1 GiB on
+ *    every boot, so CMA lands low; but the guarantee that matters here is
+ *    ordering, not range: reserved-memory children carrying a static "reg"
+ *    are reserved by early_init_fdt_scan_reserved_mem() before
+ *    fdt_init_reserved_mem() size-allocates the dynamic linux,cma node, so
+ *    CMA can never be placed on top of this region.
+ *
+ * no-map is deliberate. It keeps the region out of the linear map so
+ * fs/pstore/ram_core.c takes the !pfn_valid() branch and maps with
+ * ioremap_wc() rather than a cached vmap; a watchdog bite never flushes
+ * D-cache, so a cached mapping could lose exactly the bytes being kept.
+ *
+ * console-size is the load-bearing zone: a watchdog bite produces no panic
+ * and therefore no kmsg_dump, so the dmesg record zones stay empty for that
+ * failure mode and only the continuously written console ring captures it.
+ *
+ * ecc-size = 16 enables the Reed-Solomon software ECC in
+ * fs/pstore/ram_core.c. BL2 re-runs full DDR PHY 1D/2D training including a
+ * per-boot ZQ-cal/MRW sequence on every boot, which is a per-bit hazard for
+ * anything held across a reset. 16 is the kernel's own default
+ * (ecc_info.ecc_size ?: 16) and the value ramoops.ecc=1 maps to; with the
+ * fixed 128-byte block size (not settable from DT -- ram.c parses only
+ * "ecc-size") it corrects up to 8 corrupted bytes per 128-byte block and
+ * costs 16/(128+16) = 11.1% of each zone's payload.
+ */
+
+/ {
+	reserved-memory {
+		ramoops@7400000 {
+			compatible = "ramoops";
+			reg = <0x0 0x07400000 0x0 0x100000>;	/* 1 MiB */
+			no-map;
+			console-size = <0x80000>;	/* 512 KiB ring */
+			record-size = <0x20000>;	/* 128 KiB x 4 dumps */
+			ecc-size = <16>;		/* RS, 8 bytes/128 B block */
+		};
+	};
+};

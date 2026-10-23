@@ -8,6 +8,7 @@
 
 #include "meson-sm1-ac2xx.dtsi"
 #include <dt-bindings/sound/meson-g12a-tohdmitx.h>
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "amediatech,x96-air-gbit", "amlogic,sm1";

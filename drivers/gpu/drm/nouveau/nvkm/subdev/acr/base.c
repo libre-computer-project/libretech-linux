@@ -182,7 +182,7 @@ nvkm_acr_managed_falcon(struct nvkm_device *device, enum nvkm_acr_lsf_id id)
 }
 
 static int
-nvkm_acr_fini(struct nvkm_subdev *subdev, bool suspend)
+nvkm_acr_fini(struct nvkm_subdev *subdev, enum nvkm_suspend_state suspend)
 {
 	if (!subdev->use.enabled)
 		return 0;
@@ -315,6 +315,7 @@ nvkm_acr_oneinit(struct nvkm_subdev *subdev)
 					  i, us, fw);
 			}
 		}
+		nvkm_done(acr->wpr);
 		return -EINVAL;
 	}
 	nvkm_done(acr->wpr);

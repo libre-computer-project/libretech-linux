@@ -6,6 +6,7 @@
 /dts-v1/;
 
 #include "meson-sm1-odroid.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "hardkernel,odroid-hc4", "amlogic,sm1";

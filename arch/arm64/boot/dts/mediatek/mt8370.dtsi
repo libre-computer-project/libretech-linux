@@ -14,10 +14,27 @@
 		/delete-node/ cpu@400;
 		/delete-node/ cpu@500;
 
+		/*
+		 * The cpu-map core nodes must be numbered without a gap: the
+		 * kernel's topology parser walks core0, core1, ... and stops at
+		 * the first missing one. Deleting only core4/core5 left the
+		 * Cortex-A78s as core6/core7, so they were never parsed and
+		 * their cpu_capacity was 0, pinning schedutil to their lowest OPP.
+		 */
 		cpu-map {
 			cluster0 {
 				/delete-node/ core4;
 				/delete-node/ core5;
+				/delete-node/ core6;
+				/delete-node/ core7;
+
+				core4 {
+					cpu = <&cpu6>;
+				};
+
+				core5 {
+					cpu = <&cpu7>;
+				};
 			};
 		};
 	};

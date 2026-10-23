@@ -111,6 +111,16 @@ void kfd_debugfs_init(void)
 			    kfd_debugfs_hqds_by_device, &kfd_debugfs_fops);
 	debugfs_create_file("rls", S_IFREG | 0444, debugfs_root,
 			    kfd_debugfs_rls_by_device, &kfd_debugfs_fops);
+	/*
+	 * "sched": the DQM scheduling flags, per node. Read-only, and
+	 * deliberately a file of its own rather than a few lines added to
+	 * "hqds": hqds walks every HIQ/CP/SDMA slot with hqd_dump(), i.e. an
+	 * MMIO register storm, which is exactly what one must not provoke on
+	 * the card this file exists to diagnose. This one touches no register,
+	 * takes no DQM lock and cannot block.
+	 */
+	debugfs_create_file("sched", S_IFREG | 0444, debugfs_root,
+			    kfd_debugfs_sched_by_device, &kfd_debugfs_fops);
 	debugfs_create_file("hang_hws", S_IFREG | 0200, debugfs_root,
 			    kfd_debugfs_hang_hws_read, &kfd_debugfs_hang_hws_fops);
 	debugfs_create_file("mem_limit", S_IFREG | 0200, debugfs_root,

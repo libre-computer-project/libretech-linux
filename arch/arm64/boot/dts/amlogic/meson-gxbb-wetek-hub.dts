@@ -8,6 +8,7 @@
 
 #include "meson-gxbb-wetek.dtsi"
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "wetek,hub", "amlogic,meson-gxbb";

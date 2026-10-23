@@ -123,6 +123,7 @@
 	cpu_opp_table: opp-table {
 		compatible = "operating-points-v2";
 		opp-shared;
+		clock-latency-ns = <50000>;
 
 		opp-1000000000 {
 			opp-hz = /bits/ 64 <1000000000>;
@@ -140,34 +141,40 @@
 			opp-microvolt = <790000>;
 		};
 
-		opp-1500000000 {
-			opp-hz = /bits/ 64 <1500000000>;
-			opp-microvolt = <800000>;
-		};
-
 		opp-1608000000 {
 			opp-hz = /bits/ 64 <1608000000>;
 			opp-microvolt = <810000>;
 		};
 
-		opp-1704000000 {
-			opp-hz = /bits/ 64 <1704000000>;
-			opp-microvolt = <850000>;
-		};
-
 		opp-1800000000 {
 			opp-hz = /bits/ 64 <1800000000>;
-			opp-microvolt = <900000>;
+			opp-microvolt = <940000>;
 		};
 
 		opp-1908000000 {
 			opp-hz = /bits/ 64 <1908000000>;
-			opp-microvolt = <950000>;
+			opp-microvolt = <1000000>;
 		};
 	};
 };
 
 &apb {
+	csi_dphy: phy@50000 {
+		compatible = "amlogic,g12a-mipi-csi-dphy";
+		reg = <0x0 0x50000 0x0 0x2000>;
+		clocks = <&clkc CLKID_MIPI_ISP_CSI_PHY0>,
+			 <&clkc CLKID_MIPI_CSI_PHY_CLK0>;
+		clock-names = "pclk", "phy";
+		phys = <&csi_analog_dphy>;
+		phy-names = "analog";
+		#phy-cells = <0>;
+		status = "disabled";
+	};
+
+	/* CSI-2 host on SM1 is at 0xFFE0C000, outside APB.
+	 * Keep a disabled placeholder here; real node is in &{/soc}.
+	 */
+
 	audio: bus@60000 {
 		compatible = "simple-bus";
 		reg = <0x0 0x60000 0x0 0x1000>;
@@ -574,10 +581,86 @@
 	power-domains = <&pwrc PWRC_SM1_VPU_ID>;
 };
 
+&ge2d {
+	compatible = "amlogic,sm1-ge2d";
+	power-domains = <&pwrc PWRC_SM1_GE2D_ID>;
+};
+
 &usb {
 	power-domains = <&pwrc PWRC_SM1_USB_ID>;
 };
 
 &npu {
+	status = "okay";
 	power-domains = <&pwrc PWRC_SM1_NNA_ID>;
+	interrupts = <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&{/soc} {
+	csi: csi@ffe0c000 {
+		compatible = "amlogic,g12a-csi2";
+		reg = <0x0 0xffe0c000 0x0 0x1000>;
+		phys = <&csi_dphy>;
+		phy-names = "dphy";
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+			};
+
+			port@1 {
+				reg = <1>;
+
+				csi_out: endpoint {
+					remote-endpoint = <&cap_in>;
+				};
+			};
+		};
+	};
+
+	wave420l: hevc-encoder@ff610000 {
+		compatible = "amlogic,meson-sm1-wave420l";
+		reg = <0x0 0xff610000 0x0 0x4000>;
+		interrupts = <GIC_SPI 187 IRQ_TYPE_EDGE_RISING>;
+		clocks = <&clkc CLKID_DOS>,
+			 <&clkc CLKID_WAVE420L_A>,
+			 <&clkc CLKID_WAVE420L_B>,
+			 <&clkc CLKID_WAVE420L_C>;
+		clock-names = "dos", "wave420_aclk", "wave420_bclk", "wave420_cclk";
+		assigned-clocks = <&clkc CLKID_WAVE420L_A_SEL>,
+				  <&clkc CLKID_WAVE420L_B_SEL>,
+				  <&clkc CLKID_WAVE420L_C_SEL>,
+				  <&clkc CLKID_WAVE420L_A>,
+				  <&clkc CLKID_WAVE420L_B>,
+				  <&clkc CLKID_WAVE420L_C>;
+		assigned-clock-parents = <&clkc CLKID_FCLK_DIV3>,
+					 <&clkc CLKID_FCLK_DIV3>,
+					 <&clkc CLKID_FCLK_DIV3>;
+		assigned-clock-rates = <0>, <0>, <0>,
+				       <666666667>, <666666667>, <666666667>;
+		amlogic,hhi-sysctrl = <&hhi>;
+		amlogic,ao-sysctrl = <&rti>;
+		status = "disabled";
+	};
+
+	csi_capture: csi-capture@ffe0d000 {
+		compatible = "amlogic,g12a-csi-capture";
+		reg = <0x0 0xffe0d000 0x0 0x2000>;
+		clocks = <&clkc CLKID_MIPI_ISP_GATE>,
+			 <&clkc CLKID_MIPI_ISP>,
+			 <&clkc CLKID_CSI2_ADAPT>;
+		clock-names = "gate", "isp", "adapt";
+		amlogic,canvas = <&canvas>;
+		status = "disabled";
+
+		port {
+			cap_in: endpoint {
+				remote-endpoint = <&csi_out>;
+			};
+		};
+	};
 };

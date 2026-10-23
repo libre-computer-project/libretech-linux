@@ -44,9 +44,19 @@
  *
  * device/tile#/gt#/freq0/<item>_freq *read-write* files:
  *
- * - min_freq: Min frequency request.
- * - max_freq: Max frequency request.
- *             If max <= min, then freq_min becomes a fixed frequency request.
+ * - min_freq: Min frequency request (soft floor for GuC SLPC).
+ * - max_freq: Max frequency request (soft ceiling for GuC SLPC).
+ *             GuC may request any frequency in [min_freq, max_freq]; PCODE
+ *             still decides the actual running frequency under thermal/power.
+ *
+ * Soft ceiling vs pin (userspace policy):
+ *   - Soft max (preferred for sustained load): write max_freq to the soft
+ *     ceiling and leave min_freq at rpn_freq so DVFS can idle to the floor.
+ *     Example: max_freq=2400, min_freq=rpn_freq.
+ *   - Pin (fixed frequency): set max_freq <= min_freq (both ends collapse);
+ *     GuC then treats min_freq as a fixed frequency request.
+ * Writing max_freq alone does not raise min_freq — only userspace that
+ * deliberately writes both ends can pin.
  */
 
 static struct xe_guc_pc *
@@ -296,8 +306,10 @@ int xe_gt_freq_init(struct xe_gt *gt)
 		return -ENOMEM;
 
 	err = sysfs_create_files(gt->freq, freq_attrs);
-	if (err)
+	if (err) {
+		kobject_put(gt->freq);
 		return err;
+	}
 
 	err = devm_add_action_or_reset(xe->drm.dev, freq_fini, gt->freq);
 	if (err)

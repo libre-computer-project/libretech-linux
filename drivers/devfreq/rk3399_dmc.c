@@ -7,6 +7,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
 #include <linux/devfreq-event.h>
@@ -16,10 +17,12 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_qos.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/rwsem.h>
 #include <linux/suspend.h>
+#include <linux/workqueue.h>
 
 #include <soc/rockchip/pm_domains.h>
 #include <soc/rockchip/rockchip_grf.h>
@@ -65,7 +68,23 @@ struct rk3399_dmcfreq {
 	unsigned int sr_mc_gate_idle_dis_freq;
 	unsigned int srpd_lite_idle_dis_freq;
 	unsigned int standby_idle_dis_freq;
+
+	struct delayed_work mr4_work;
+	/* Max-frequency cap while LPDDR4 reports a derate or over-limit code. */
+	struct dev_pm_qos_request hot_qos;
+	unsigned int hot_cool_polls;
+	bool hot_capped;
 };
+
+/*
+ * LPDDR4 MR4 poll period. BL31 keeps tREFI at the safe-first short interval
+ * until repeated cool readings allow a longer one, so the risk is a long
+ * period with NO reading while the part heats. Same period as the old
+ * devfreq status tick, which this replaces.
+ */
+#define RK3399_DMC_MR4_POLL_MS		200
+/* Cool polls (5 s) before a hot cap is released. */
+#define RK3399_DMC_MR4_COOL_POLLS	25
 
 static int rk3399_dmcfreq_target(struct device *dev, unsigned long *freq,
 				 u32 flags)
@@ -176,8 +195,19 @@ static int rk3399_dmcfreq_target(struct device *dev, unsigned long *freq,
 		}
 	}
 
+	/*
+	 * The switch parks every other online CPU in BL31 for its duration
+	 * (clk-ddr.c runs the SIP under stop_machine_cpuslocked()), so no CPU
+	 * may come or go while it is in flight. Take the hotplug lock HERE,
+	 * outside clk_set_rate(), because the hotplug path already nests the
+	 * clk prepare lock inside it (cpufreq's online callback sets its
+	 * initial target); the clk driver taking it the other way round would
+	 * be an inversion.
+	 */
+	cpus_read_lock();
 	err = clk_set_rate(dmcfreq->dmc_clk, target_rate);
 	if (err) {
+		cpus_read_unlock();
 		dev_err(dev, "Cannot set frequency %lu (%d)\n", target_rate,
 			err);
 		regulator_set_voltage(dmcfreq->vdd_center, dmcfreq->volt,
@@ -192,13 +222,20 @@ static int rk3399_dmcfreq_target(struct device *dev, unsigned long *freq,
 	 * 2. Ddr frequency scaling sucessful, we get the rate we set.
 	 */
 	dmcfreq->rate = clk_get_rate(dmcfreq->dmc_clk);
+	cpus_read_unlock();
 
-	/* If get the incorrect rate, set voltage to old value. */
+	/*
+	 * If get the incorrect rate, set voltage to old value -- and say so
+	 * with an errno: BL31 refuses a switch whose rendezvous did not
+	 * complete and keeps the old rate, and a 0 here would let devfreq
+	 * record a transition that did not happen.
+	 */
 	if (dmcfreq->rate != target_rate) {
 		dev_err(dev, "Got wrong frequency, Request %lu, Current %lu\n",
 			target_rate, dmcfreq->rate);
 		regulator_set_voltage(dmcfreq->vdd_center, dmcfreq->volt,
 				      dmcfreq->volt);
+		err = -EAGAIN;
 		goto out;
 	} else if (old_clk_rate > target_rate)
 		err = regulator_set_voltage(dmcfreq->vdd_center, target_volt,
@@ -234,6 +271,74 @@ static int rk3399_dmcfreq_get_dev_status(struct device *dev,
 	return ret;
 }
 
+/*
+ * A board that never switches rate never issues DRAM_SET_RATE, so this is
+ * what lets BL31 reread LPDDR4 MR4 and set tREFI from it. It used to ride the
+ * devfreq status tick, which only runs under a load-sampling governor: under
+ * userspace or performance nothing sampled MR4 and a relaxed tREFI stayed in
+ * place however hot the part got. A BL31 without the opcode returns 0. The
+ * refresh-interval decision stays in BL31.
+ *
+ * What this side does with the result is the hot case. MR4 110b asks for AC
+ * timing derate, which BL31 arms for its next generated timing (bit 24; bit 20
+ * from a BL31 that predates it), and 111b is past the part's high limit.
+ * Either caps the DMC at its lowest OPP: that forces the switch that puts
+ * the derated timing into effect, the lowest OPP's 4-cycle minimums already
+ * cover the derate, and it is the least DRAM power available. The cap goes
+ * after RK3399_DMC_MR4_COOL_POLLS polls without either.
+ */
+static bool rk3399_dmcfreq_mr4_hot(unsigned long r)
+{
+	if (r & (ROCKCHIP_SIP_DRAM_MR4_AC_DERATE | ROCKCHIP_SIP_DRAM_MR4_DERATE))
+		return true;
+	return FIELD_GET(ROCKCHIP_SIP_DRAM_MR4_CH0, r) % 8 == 7 ||
+	       FIELD_GET(ROCKCHIP_SIP_DRAM_MR4_CH1, r) % 8 == 7;
+}
+
+static void rk3399_dmcfreq_mr4_work(struct work_struct *work)
+{
+	struct rk3399_dmcfreq *dmcfreq =
+		container_of(to_delayed_work(work), struct rk3399_dmcfreq,
+			     mr4_work);
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(ROCKCHIP_SIP_DRAM_FREQ, 0, 0,
+		      ROCKCHIP_SIP_CONFIG_DRAM_MR4_REFRESH,
+		      0, 0, 0, 0, &res);
+
+	if (dev_pm_qos_request_active(&dmcfreq->hot_qos) &&
+	    !(res.a0 & ROCKCHIP_SIP_DRAM_MR4_BUSY)) {
+		if (rk3399_dmcfreq_mr4_hot(res.a0)) {
+			dmcfreq->hot_cool_polls = 0;
+			if (!dmcfreq->hot_capped) {
+				unsigned long f = 0;
+				struct dev_pm_opp *opp;
+
+				opp = dev_pm_opp_find_freq_ceil(dmcfreq->dev, &f);
+				if (!IS_ERR(opp)) {
+					dev_pm_opp_put(opp);
+					dev_warn(dmcfreq->dev,
+						 "LPDDR4 hot (MR4 result %#lx): capped at %lu MHz\n",
+						 res.a0, f / 1000000);
+					dev_pm_qos_update_request(&dmcfreq->hot_qos,
+								  f / 1000);
+					dmcfreq->hot_capped = true;
+				}
+			}
+		} else if (dmcfreq->hot_capped &&
+			   ++dmcfreq->hot_cool_polls >= RK3399_DMC_MR4_COOL_POLLS) {
+			dev_info(dmcfreq->dev, "LPDDR4 cool again: cap released\n");
+			dev_pm_qos_update_request(&dmcfreq->hot_qos,
+						  PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+			dmcfreq->hot_capped = false;
+		}
+	}
+
+	queue_delayed_work(system_freezable_power_efficient_wq,
+			   &dmcfreq->mr4_work,
+			   msecs_to_jiffies(RK3399_DMC_MR4_POLL_MS));
+}
+
 static int rk3399_dmcfreq_get_cur_freq(struct device *dev, unsigned long *freq)
 {
 	struct rk3399_dmcfreq *dmcfreq = dev_get_drvdata(dev);
@@ -247,6 +352,9 @@ static __maybe_unused int rk3399_dmcfreq_suspend(struct device *dev)
 {
 	struct rk3399_dmcfreq *dmcfreq = dev_get_drvdata(dev);
 	int ret = 0;
+
+	/* BL31 drops back to the short interval across suspend on its own. */
+	cancel_delayed_work_sync(&dmcfreq->mr4_work);
 
 	ret = devfreq_event_disable_edev(dmcfreq->edev);
 	if (ret < 0) {
@@ -279,6 +387,9 @@ static __maybe_unused int rk3399_dmcfreq_resume(struct device *dev)
 		dev_err(dev, "failed to resume the devfreq devices\n");
 		return ret;
 	}
+
+	queue_delayed_work(system_freezable_power_efficient_wq,
+			   &dmcfreq->mr4_work, 0);
 	return ret;
 }
 
@@ -451,6 +562,18 @@ no_pmu:
 	data->dev = dev;
 	platform_set_drvdata(pdev, data);
 
+	/* Without it the MR4 poll still runs; only the hot cap is lost. */
+	ret = dev_pm_qos_add_request(dev, &data->hot_qos,
+				     DEV_PM_QOS_MAX_FREQUENCY,
+				     PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+	if (ret < 0)
+		dev_warn(dev, "no max-frequency request for the LPDDR4 hot cap: %d\n",
+			 ret);
+
+	INIT_DELAYED_WORK(&data->mr4_work, rk3399_dmcfreq_mr4_work);
+	queue_delayed_work(system_freezable_power_efficient_wq,
+			   &data->mr4_work, 0);
+
 	return 0;
 
 err_edev:
@@ -463,6 +586,9 @@ static void rk3399_dmcfreq_remove(struct platform_device *pdev)
 {
 	struct rk3399_dmcfreq *dmcfreq = dev_get_drvdata(&pdev->dev);
 
+	cancel_delayed_work_sync(&dmcfreq->mr4_work);
+	if (dev_pm_qos_request_active(&dmcfreq->hot_qos))
+		dev_pm_qos_remove_request(&dmcfreq->hot_qos);
 	devfreq_event_disable_edev(dmcfreq->edev);
 }
 

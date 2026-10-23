@@ -10,9 +10,12 @@
 
 #include <linux/aperture.h>
 #include <linux/component.h>
+#include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
+#include <linux/seq_file.h>
 #include <linux/sys_soc.h>
+#include <linux/mfd/syscon.h>
 #include <linux/platform_device.h>
 #include <linux/soc/amlogic/meson-canvas.h>
 
@@ -30,13 +33,17 @@
 #include "meson_crtc.h"
 #include "meson_drv.h"
 #include "meson_overlay.h"
+#include "meson_overlay2.h"
+#include "meson_writeback.h"
 #include "meson_plane.h"
+#include "meson_plane2.h"
 #include "meson_osd_afbcd.h"
 #include "meson_registers.h"
 #include "meson_encoder_cvbs.h"
 #include "meson_encoder_hdmi.h"
 #include "meson_encoder_dsi.h"
 #include "meson_viu.h"
+#include "meson_venc.h"
 #include "meson_vpp.h"
 #include "meson_rdma.h"
 
@@ -92,6 +99,105 @@ static int meson_dumb_create(struct drm_file *file, struct drm_device *dev,
 	return drm_gem_dma_dumb_create_internal(file, dev, args);
 }
 
+/* VENC Test Pattern Generator (debugfs) */
+
+static int meson_venc_tpg_show(struct seq_file *m, void *data)
+{
+	struct drm_device *dev = m->private;
+	struct meson_drm *priv = dev->dev_private;
+
+	seq_printf(m, "%d\n",
+		   readl_relaxed(priv->io_base + _REG(VENC_VIDEO_TST_EN)) & 1);
+	return 0;
+}
+
+/*
+ * Audit #25: mirrors meson_crtc_vrr_encp_active() in meson_crtc.c -- ENCP
+ * only drives the link in MESON_VENC_MODE_HDMI with !hdmi_use_enci. 480i/576i
+ * (DBLCLK) and every interlaced HDMI mode run on ENCI instead, and CVBS/DSI
+ * never touch ENCP at all. Reading HAVON_BEGIN/END or writing
+ * ENCP_VIDEO_MODE_ADV/VENC_VIDEO_TST_* on those modes touches a dead ENCP
+ * (HAVON falls back to the hardcoded 1920 clamp) instead of the encoder that
+ * is actually live.
+ */
+static bool meson_venc_tpg_encp_active(struct meson_drm *priv)
+{
+	return priv->venc.current_mode == MESON_VENC_MODE_HDMI &&
+	       !priv->venc.hdmi_use_enci;
+}
+
+static ssize_t meson_venc_tpg_write(struct file *file,
+				    const char __user *ubuf,
+				    size_t len, loff_t *offp)
+{
+	struct seq_file *m = file->private_data;
+	struct drm_device *dev = m->private;
+	struct meson_drm *priv = dev->dev_private;
+	int val;
+
+	if (kstrtoint_from_user(ubuf, len, 0, &val))
+		return -EFAULT;
+
+	if (val) {
+		u32 hb, he, hactive, adv;
+
+		if (!meson_venc_tpg_encp_active(priv))
+			return -ENODEV;
+
+		/*
+		 * The ENCP test pattern is gated off by ENCP_VIDEO_MODE_ADV bit3
+		 * (without clearing it, TST_EN has no visible effect -- the GXL
+		 * output stays the normal scanout). Clear the gate, then program the
+		 * 8-bar color-bar generator: bar START and width both read live from
+		 * the ENCP active window (HAVON_BEGIN .. HAVON_END) so the bars align
+		 * to active video at any resolution. TST_CLRBAR_STRT is in the same
+		 * VENC H-counter space as HAVON_BEGIN, so the bars must START at
+		 * HAVON_BEGIN -- NOT a fixed constant. venc-repeat (pixel-doubled)
+		 * modes (480p/576p/720p) double the ENCP H-timing, pushing HAVON_BEGIN
+		 * out to ~648 at 720p; a hardcoded start (was 0x113=275) then began the
+		 * bars in blanking, clipping the leftmost (white) bar off-screen and
+		 * leaving black on the right. Anchoring to HAVON_BEGIN fixes every mode.
+		 */
+		hb = readl_relaxed(priv->io_base + _REG(ENCP_VIDEO_HAVON_BEGIN));
+		he = readl_relaxed(priv->io_base + _REG(ENCP_VIDEO_HAVON_END));
+		hactive = (he > hb) ? (he - hb + 1) : 1920;
+
+		/*
+		 * Audit #25: save the gate bit as it actually was, so "off"
+		 * can restore that exact value instead of unconditionally
+		 * force-setting it.
+		 */
+		adv = readl_relaxed(priv->io_base + _REG(ENCP_VIDEO_MODE_ADV));
+		priv->venc.tpg_saved_mode_adv = adv;
+		priv->venc.tpg_active = true;
+
+		writel_relaxed(adv & ~BIT(3),
+			       priv->io_base + _REG(ENCP_VIDEO_MODE_ADV));
+		writel_relaxed(1, priv->io_base + _REG(VENC_VIDEO_TST_MDSEL));
+		writel_relaxed(hb, priv->io_base + _REG(VENC_VIDEO_TST_CLRBAR_STRT));
+		writel_relaxed(hactive / 8,
+			       priv->io_base + _REG(VENC_VIDEO_TST_CLRBAR_WIDTH));
+		writel_relaxed(1, priv->io_base + _REG(VENC_VIDEO_TST_EN));
+	} else if (priv->venc.tpg_active) {
+		writel_relaxed(0, priv->io_base + _REG(VENC_VIDEO_TST_EN));
+		/* restore the exact ENCP_VIDEO_MODE_ADV value saved on "on",
+		 * not a hardcoded bit3=1 (audit #25). */
+		writel_relaxed(priv->venc.tpg_saved_mode_adv,
+			       priv->io_base + _REG(ENCP_VIDEO_MODE_ADV));
+		priv->venc.tpg_active = false;
+	}
+
+	return len;
+}
+
+DEFINE_SHOW_STORE_ATTRIBUTE(meson_venc_tpg);
+
+static void meson_debugfs_init(struct drm_minor *minor)
+{
+	debugfs_create_file("venc_tpg", 0600, minor->debugfs_root,
+			    minor->dev, &meson_venc_tpg_fops);
+}
+
 DEFINE_DRM_GEM_DMA_FOPS(fops);
 
 static const struct drm_driver meson_driver = {
@@ -103,6 +209,7 @@ static const struct drm_driver meson_driver = {
 
 	/* Misc */
 	.fops			= &fops,
+	.debugfs_init		= meson_debugfs_init,
 	.name			= DRIVER_NAME,
 	.desc			= DRIVER_DESC,
 	.major			= 1,
@@ -139,12 +246,11 @@ static void meson_vpu_init(struct meson_drm *priv)
 	u32 value;
 
 	/*
-	 * Slave dc0 and dc5 connected to master port 1.
-	 * By default other slaves are connected to master port 0.
+	 * L1C1 read arbiter: keep all slaves on master port 0.
+	 * BSP uses 0 here; splitting dc0/dc5 to port 1 can cause
+	 * bandwidth starvation at high resolutions.
 	 */
-	value = VPU_RDARB_SLAVE_TO_MASTER_PORT(0, 1) |
-		VPU_RDARB_SLAVE_TO_MASTER_PORT(5, 1);
-	writel_relaxed(value, priv->io_base + _REG(VPU_RDARB_MODE_L1C1));
+	writel_relaxed(0, priv->io_base + _REG(VPU_RDARB_MODE_L1C1));
 
 	/* Slave dc0 connected to master port 1 */
 	value = VPU_RDARB_SLAVE_TO_MASTER_PORT(0, 1);
@@ -173,6 +279,35 @@ static const struct meson_drm_soc_attr meson_drm_soc_attrs[] = {
 		},
 		.attrs = (const struct soc_device_attribute []) {
 			{ .soc_id = "GXL (S805*)", },
+			{ /* sentinel */ }
+		}
+	},
+	/*
+	 * GXL S905X/S905D/S905W: the full HDMI 2.0 range, 5.94GHz TMDS.
+	 *
+	 * This used to read 2.97GHz, justified by a garbled (green) VENC test
+	 * pattern at 5.94GHz being "simply beyond the GXL TMDS PHY". That was
+	 * RETRACTED by b6a37bf9577ee: the green pattern was the dw-hdmi RGB-wire
+	 * CSC bug (since fixed by keeping the link in YUV444), not a PHY limit.
+	 * The 2.97GHz cap was ~2x below the silicon and pruned every mode needing
+	 * a 296..593MHz char rate -- 3440x1440@60/@100, 2560x1440@120 -- which now
+	 * run at full 8-bit 4:4:4 (3440x1440@100 = 543.5MHz char, 5435MHz VCO,
+	 * loopback-clean).
+	 *
+	 * Note this ceiling does NOT decide 4K60's chroma. 4K60 is observed to
+	 * come out 4:2:0 (measured: hdmi_pll 2970000000 / cts_encp 594000000), but
+	 * not because 5940MHz is unreachable -- the PLL synthesizes it as
+	 * m=247/frac=512/od=1 (meson_vclk.c even hard-codes that pair for
+	 * 5940000000), and this sink advertises 4K60 as 4:2:0-ALSO, not 4:2:0-only.
+	 * Why 4:4:4 is not selected there is an OPEN question; do not re-derive it
+	 * from this constant.
+	 */
+	{
+		.limits = {
+			.max_hdmi_phy_freq = 5940000000, /* TEST: full VCO range (od=1) to map the real PHY ceiling */
+		},
+		.attrs = (const struct soc_device_attribute []) {
+			{ .soc_id = "GXL (S905*)", },
 			{ /* sentinel */ }
 		}
 	},
@@ -221,24 +356,31 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 
 	priv->io_base = regs;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hhi");
-	if (!res) {
-		ret = -EINVAL;
-		goto free_drm;
-	}
-	/* Simply ioremap since it may be a shared register zone */
-	regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!regs) {
-		ret = -EADDRNOTAVAIL;
-		goto free_drm;
-	}
-
-	priv->hhi = devm_regmap_init_mmio(dev, regs,
-					  &meson_regmap_config);
+	/*
+	 * Use the HHI syscon regmap if available (shares lock with clock
+	 * driver, preventing PLL register races). Fall back to independent
+	 * ioremap for old DTBs without the amlogic,hhi phandle.
+	 */
+	priv->hhi = syscon_regmap_lookup_by_phandle(dev->of_node,
+						    "amlogic,hhi");
 	if (IS_ERR(priv->hhi)) {
-		dev_err(&pdev->dev, "Couldn't create the HHI regmap\n");
-		ret = PTR_ERR(priv->hhi);
-		goto free_drm;
+		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hhi");
+		if (!res) {
+			ret = -EINVAL;
+			goto free_drm;
+		}
+		regs = devm_ioremap(dev, res->start, resource_size(res));
+		if (!regs) {
+			ret = -EADDRNOTAVAIL;
+			goto free_drm;
+		}
+		priv->hhi = devm_regmap_init_mmio(dev, regs,
+						  &meson_regmap_config);
+		if (IS_ERR(priv->hhi)) {
+			dev_err(&pdev->dev, "Couldn't create the HHI regmap\n");
+			ret = PTR_ERR(priv->hhi);
+			goto free_drm;
+		}
 	}
 
 	priv->canvas = meson_canvas_get(dev);
@@ -250,21 +392,33 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_osd1);
 	if (ret)
 		goto free_drm;
-	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_0);
+	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_osd2);
 	if (ret)
 		goto free_canvas_osd1;
+	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_0);
+	if (ret)
+		goto free_canvas_osd2;
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_1);
 	if (ret)
 		goto free_canvas_vd1_0;
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_2);
 	if (ret)
 		goto free_canvas_vd1_1;
+	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd2_0);
+	if (ret)
+		goto free_canvas_vd1_2;
+	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd2_1);
+	if (ret)
+		goto free_canvas_vd2_0;
+	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd2_2);
+	if (ret)
+		goto free_canvas_vd2_1;
 
 	priv->vsync_irq = platform_get_irq(pdev, 0);
 
 	ret = drm_vblank_init(drm, 1);
 	if (ret)
-		goto free_canvas_vd1_2;
+		goto free_canvas_vd2_2;
 
 	/* Assign limits per soc revision/package */
 	for (i = 0 ; i < ARRAY_SIZE(meson_drm_soc_attrs) ; ++i) {
@@ -280,13 +434,21 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	 */
 	ret = aperture_remove_all_conflicting_devices(meson_driver.name);
 	if (ret)
-		goto free_canvas_vd1_2;
+		goto free_canvas_vd2_2;
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
-		goto free_canvas_vd1_2;
-	drm->mode_config.max_width = 3840;
-	drm->mode_config.max_height = 2160;
+		goto free_canvas_vd2_2;
+	/*
+	 * VPU hardware max. Supersedes the older per-SoC gate (3840 on G12A,
+	 * 1920 otherwise): the GXL 4K bandwidth work that accompanies this
+	 * (OSD FIFO hold_fifo_lines/burst_length, VPP_OFIFO_SIZE_DEFAULT for
+	 * all variants, L1C1 read-arbiter port fix) lifts the 1080p ceiling on
+	 * the older SoCs, and meson_venc_hdmi_supported_mode() now validates
+	 * up to 4096 to match.
+	 */
+	drm->mode_config.max_width = 4096;
+	drm->mode_config.max_height = 4096;
 	drm->mode_config.funcs = &meson_mode_config_funcs;
 	drm->mode_config.helper_private	= &meson_mode_config_helpers;
 
@@ -296,10 +458,18 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	meson_venc_init(priv);
 	meson_vpp_init(priv);
 	meson_viu_init(priv);
+	/*
+	 * Audit #10: at cold probe the cache is all-zero (bypass/disabled),
+	 * matching hardware reset state, so this is a no-op here -- it exists
+	 * so meson_drv_pm_resume() below can share the exact same two calls
+	 * instead of duplicating the "what does resume need to redo" logic.
+	 */
+	meson_viu_apply_ctm(priv);
+	meson_viu_apply_gamma(priv);
 	if (priv->afbcd.ops) {
 		ret = priv->afbcd.ops->init(priv);
 		if (ret)
-			goto free_canvas_vd1_2;
+			goto free_canvas_vd2_2;
 	}
 
 	/* Encoder Initialization */
@@ -332,13 +502,40 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (ret)
 		goto exit_afbcd;
 
+	ret = meson_plane2_create(priv);
+	if (ret)
+		goto exit_afbcd;
+
 	ret = meson_overlay_create(priv);
+	if (ret)
+		goto exit_afbcd;
+
+	ret = meson_overlay2_create(priv);
 	if (ret)
 		goto exit_afbcd;
 
 	ret = meson_crtc_create(priv);
 	if (ret)
 		goto exit_afbcd;
+
+	ret = meson_writeback_create(priv);
+	if (ret)
+		goto exit_afbcd;
+
+	/*
+	 * Audit #24: meson_writeback_create() (meson_writeback.c) already
+	 * sets up possible_clones correctly and narrowly -- the writeback
+	 * encoder clones with each display encoder sharing its CRTC (and
+	 * vice versa, via OR, preserving each encoder's own bits), which is
+	 * the only combination the hardware actually supports (writeback
+	 * taps the composed VPP output, independent of which VENC mux is
+	 * live). This used to be followed by a blanket
+	 * "possible_clones = all_mask" on every encoder, overwriting that
+	 * setup and making HDMI/CVBS/DSI mutually cloneable -- accepting a
+	 * commit that clones HDMI and CVBS onto one CRTC, which need
+	 * different VENC muxes and cannot actually coexist. Removed;
+	 * meson_writeback_create()'s narrower setup stands alone.
+	 */
 
 	ret = request_irq(priv->vsync_irq, meson_irq, 0, drm->driver->name, drm);
 	if (ret)
@@ -363,12 +560,20 @@ uninstall_irq:
 exit_afbcd:
 	if (priv->afbcd.ops)
 		priv->afbcd.ops->exit(priv);
+free_canvas_vd2_2:
+	meson_canvas_free(priv->canvas, priv->canvas_id_vd2_2);
+free_canvas_vd2_1:
+	meson_canvas_free(priv->canvas, priv->canvas_id_vd2_1);
+free_canvas_vd2_0:
+	meson_canvas_free(priv->canvas, priv->canvas_id_vd2_0);
 free_canvas_vd1_2:
 	meson_canvas_free(priv->canvas, priv->canvas_id_vd1_2);
 free_canvas_vd1_1:
 	meson_canvas_free(priv->canvas, priv->canvas_id_vd1_1);
 free_canvas_vd1_0:
 	meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
+free_canvas_osd2:
+	meson_canvas_free(priv->canvas, priv->canvas_id_osd2);
 free_canvas_osd1:
 	meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
 free_drm:
@@ -396,9 +601,13 @@ static void meson_drv_unbind(struct device *dev)
 
 	if (priv->canvas) {
 		meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
+		meson_canvas_free(priv->canvas, priv->canvas_id_osd2);
 		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
 		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_1);
 		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_2);
+		meson_canvas_free(priv->canvas, priv->canvas_id_vd2_0);
+		meson_canvas_free(priv->canvas, priv->canvas_id_vd2_1);
+		meson_canvas_free(priv->canvas, priv->canvas_id_vd2_2);
 	}
 
 	drm_dev_unregister(drm);
@@ -443,6 +652,20 @@ static int __maybe_unused meson_drv_pm_resume(struct device *dev)
 	meson_venc_init(priv);
 	meson_vpp_init(priv);
 	meson_viu_init(priv);
+	/*
+	 * Audit #10: meson_viu_init() above reprograms the OSD matrix from
+	 * scratch (bypass on GXL/GXM, fixed RGB709->YUV709l on G12A+), and
+	 * VPU power-domain cycling across suspend/resume resets the L_GAMMA
+	 * LUT hardware regardless of what the driver explicitly rewrites.
+	 * Neither is reflected back into drm_crtc_state -- duplicated atomic
+	 * state doesn't set color_mgmt_changed on its own -- so without this,
+	 * DRM and the driver keep reporting the user's last CTM/gamma while
+	 * hardware is actually neutral. Re-apply from the same cache #6/#8
+	 * use, independent of whether a future commit ever touches the
+	 * CTM/gamma properties again.
+	 */
+	meson_viu_apply_ctm(priv);
+	meson_viu_apply_gamma(priv);
 	if (priv->afbcd.ops)
 		priv->afbcd.ops->init(priv);
 

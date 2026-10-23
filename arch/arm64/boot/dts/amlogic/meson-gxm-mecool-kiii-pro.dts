@@ -10,6 +10,7 @@
 #include "meson-gx-p23x-q20x.dtsi"
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "videostrong,gxm-kiii-pro", "amlogic,s912", "amlogic,meson-gxm";

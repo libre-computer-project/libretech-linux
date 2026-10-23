@@ -273,6 +273,17 @@ struct device_queue_manager {
 	struct kfd_mem_obj	hiq_sdma_mqd;
 	bool			sched_running;
 	bool			sched_halt;
+	/*
+	 * Set when kfd_hws_hang() contained an MES hang and took a reference on
+	 * the amdgpu module to make the (host-fatal) reload impossible. Owns
+	 * exactly one reference, released by whichever of these runs first:
+	 * device_queue_manager_uninit(), or kfd_dqm_rearm_contained_mes() on the
+	 * way out of a successful device reset. Both clear the flag under the
+	 * DQM lock before putting, so the reference cannot be double-released.
+	 * It also doubles as "this halt is the containment halt", distinguishing
+	 * it from the debugger/CRIU halt_cpsch() halt.
+	 */
+	bool			mes_hang_module_ref;
 
 	/* used for GFX 9.4.3 only */
 	uint32_t		current_logical_xcc_start;
@@ -327,6 +338,11 @@ int debug_refresh_runlist(struct device_queue_manager *dqm);
 bool kfd_dqm_is_queue_in_process(struct device_queue_manager *dqm,
 				 struct qcm_process_device *qpd,
 				 int doorbell_off, u32 *queue_format);
+size_t mqd_size_from_queue_type(struct device_queue_manager *dqm,
+				enum kfd_queue_type type);
+int kfd_reset_queue_mes(struct device_queue_manager *dqm, int queue_type,
+			int pipe, int queue, unsigned int db);
+void kfd_dqm_rearm_contained_mes(struct device_queue_manager *dqm);
 
 static inline unsigned int get_sh_mem_bases_32(struct kfd_process_device *pdd)
 {

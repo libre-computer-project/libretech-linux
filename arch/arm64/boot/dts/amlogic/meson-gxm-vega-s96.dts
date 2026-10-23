@@ -9,6 +9,7 @@
 
 #include "meson-gxm.dtsi"
 #include "meson-gx-p23x-q20x.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "tronsmart,vega-s96", "amlogic,s912", "amlogic,meson-gxm";

@@ -14,6 +14,18 @@
 	compatible = "amlogic,meson-gxl";
 
 	soc {
+		ge2d: ge2d@d0160000 {
+			compatible = "amlogic,gxl-ge2d";
+			reg = <0x0 0xd0160000 0x0 0x10000>;
+			interrupts = <GIC_SPI 150 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&clkc CLKID_VAPB>, <&clkc CLKID_G2D>;
+			clock-names = "vapb", "g2d";
+			resets = <&reset RESET_GE2D>;
+			amlogic,canvas = <&canvas>;
+			power-domains = <&pwrc PWRC_GXBB_VPU_ID>;
+			#cooling-cells = <2>;
+		};
+
 		usb: usb@d0078080 {
 			compatible = "amlogic,meson-gxl-usb-ctrl";
 			reg = <0x0 0xd0078080 0x0 0x20>;
@@ -74,6 +86,64 @@
 			clock-names = "blkmv";
 			status = "okay";
 		};
+	};
+};
+
+/ {
+	soc {
+		/*
+		 * DDR bandwidth monitor (meson_ddr_pmu). GXL family only -- GXBB
+		 * (S905) shares meson-gx.dtsi but is unvalidated. Sits at soc level
+		 * (not a dmcbus child) because reg[1], the DDR PLL, is in a different
+		 * block from the DMC monitor:
+		 *   reg[0] = DMC monitor window (0xc8838000 + 0x60, above canvas@48)
+		 *   reg[1] = HHI_DPLL_TOP_I, the DDR PLL (0xc883c318)
+		 * IRQ confirmed on hardware = GIC_SPI 52 (timer completion).
+		 */
+		ddr-pmu@c8838060 {
+			compatible = "amlogic,gxl-ddr-pmu";
+			reg = <0x0 0xc8838060 0x0 0x60>,
+			      <0x0 0xc883c318 0x0 0x04>;
+			interrupts = <GIC_SPI 52 IRQ_TYPE_EDGE_RISING>;
+		};
+
+		/*
+		 * DDR PHY (PUB) VT telemetry monitor (meson-gxl-ddr-pub-mon).
+		 * GXL family only, read-only. PUB block base = u-boot
+		 * dram-gxl.h DDR0_PUB_REG_BASE (0xc8836000). At soc level
+		 * like ddr-pmu: the block is in no child bus ranges window
+		 * (periphs ends at 0xc8836000, dmcbus starts at 0xc8838000).
+		 * Disabled here because meson-gxm.dtsi includes this file and
+		 * the GXM (S912) PUB map is unverified -- a read of a region
+		 * the non-secure world cannot reach faults the CPU. Boards
+		 * whose PUB read has been verified enable it with
+		 * &ddr_pub { status = "okay"; }; in their own .dts.
+		 * amlogic,sc-shmem selects SC mode when that node is enabled
+		 * and the block validates; while it stays disabled the driver
+		 * keeps its in-kernel sampler.
+		 */
+		ddr_pub: ddr-pub@c8836000 {
+			compatible = "amlogic,gxl-ddr-pub-mon";
+			reg = <0x0 0xc8836000 0x0 0x1000>;
+			amlogic,sc-shmem = <&pubmon_sc_shmem>;
+			status = "disabled";
+		};
+	};
+};
+
+/*
+ * SC pubmon shared block: the SC heap-tail KiB at NS 0xc8011c00, which the
+ * SC's pubmon module opens to the non-secure world and fills with PUB VT
+ * statistics. Disabled by default: an NS read of this KiB before the SC has
+ * opened it is unsafe, so it is enabled
+ * only where the SC is known to hold the block -- the U-Boot SCMI fixup flips
+ * it on the open chain, and a comparison-run test DTB enables it explicitly.
+ */
+&sram {
+	pubmon_sc_shmem: pubmon-sram@11c00 {
+		compatible = "amlogic,gxl-pubmon-sc-shmem";
+		reg = <0x11c00 0x400>;
+		status = "disabled";
 	};
 };
 
@@ -286,7 +356,7 @@
 			mux {
 				groups = "ao_cec";
 				function = "cec_ao";
-				bias-disable;
+				bias-pull-up;
 			};
 		};
 
@@ -297,6 +367,38 @@
 				bias-disable;
 			};
 		};
+	};
+
+	/*
+	 * The always-on watchdog the BootROM arms before it loads anything,
+	 * and hands the SoC over with counting: CTRL 0xC8100120 reads
+	 * 0x03245DBF at hand-off (EN set, 1 ms tick), TCNT 0x00001388 = a
+	 * 5000 ms budget. The open chain's U-Boot keeps refreshing it while
+	 * U-Boot runs, and by default STOPS it before entering the OS. Only
+	 * with the U-Boot env wdt_handoff=1 does it hand the watchdog over
+	 * running, for a kernel known to carry this driver: meson_gxbb_wdt
+	 * then finds EN already set, Linux OWNS it, and the watchdog core
+	 * feeds it until userspace opens /dev/watchdog. Without an enabled
+	 * node a watchdog handed over running expires (5 s) during kernel
+	 * init and the board resets.
+	 *
+	 * Disabled here because the vendor chain's earlier stages handle this
+	 * block themselves; the open-chain U-Boot enables it at boot (the SCMI
+	 * fixup flips it to okay at bootm). 0x120 is a gap in the aobus node
+	 * list (cec@100 ends at 0x114, ao-secure@140 starts after), so this
+	 * overlaps nothing.
+	 */
+	ao_wdt: watchdog@120 {
+		compatible = "amlogic,meson-gxl-ao-wdt";
+		reg = <0x0 0x120 0x0 0x10>;
+		clocks = <&xtal>;
+		/*
+		 * Keep the ROM's own period across the hand-off. Without it
+		 * the driver settles at its hardware maximum, 65 s. 5 s is
+		 * not a new policy; it is what is already in the register.
+		 */
+		timeout-sec = <5>;
+		status = "disabled";
 	};
 };
 
@@ -894,6 +996,9 @@
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 	resets = <&reset RESET_SD_EMMC_A>;
+
+	assigned-clocks = <&clkc CLKID_SD_EMMC_A_CLK0>;
+	assigned-clock-rates = <24000000>;
 };
 
 &sd_emmc_b {
@@ -902,6 +1007,9 @@
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 	resets = <&reset RESET_SD_EMMC_B>;
+
+	assigned-clocks = <&clkc CLKID_SD_EMMC_B_CLK0>;
+	assigned-clock-rates = <24000000>;
 };
 
 &sd_emmc_c {
@@ -910,6 +1018,9 @@
 		 <&clkc CLKID_FCLK_DIV2>;
 	clock-names = "core", "clkin0", "clkin1";
 	resets = <&reset RESET_SD_EMMC_C>;
+
+	assigned-clocks = <&clkc CLKID_SD_EMMC_C_CLK0>;
+	assigned-clock-rates = <24000000>;
 };
 
 &simplefb_hdmi {
@@ -957,15 +1068,29 @@
 &vpu {
 	compatible = "amlogic,meson-gxl-vpu", "amlogic,meson-gx-vpu";
 	power-domains = <&pwrc PWRC_GXBB_VPU_ID>;
+	amlogic,ge2d = <&ge2d>;
+};
+
+&cpu_cooling_maps {
+	map_ge2d {
+		trip = <&cpu_hot>;
+		cooling-device = <&ge2d THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+	};
 };
 
 &vdec {
 	compatible = "amlogic,gxl-vdec", "amlogic,gx-vdec";
+	interrupts = <GIC_SPI 44 IRQ_TYPE_EDGE_RISING>,
+		     <GIC_SPI 32 IRQ_TYPE_EDGE_RISING>,
+		     <GIC_SPI 45 IRQ_TYPE_EDGE_RISING>;
+	interrupt-names = "vdec", "esparser", "hcodec";
 	clocks = <&clkc CLKID_DOS_PARSER>,
 		 <&clkc CLKID_DOS>,
 		 <&clkc CLKID_VDEC_1>,
-		 <&clkc CLKID_VDEC_HEVC>;
-	clock-names = "dos_parser", "dos", "vdec_1", "vdec_hevc";
+		 <&clkc CLKID_VDEC_HEVC>,
+		 <&clkc CLKID_VDEC_HCODEC>;
+	clock-names = "dos_parser", "dos", "vdec_1", "vdec_hevc",
+		      "hcodec";
 	resets = <&reset RESET_PARSER>;
 	reset-names = "esparser";
 };

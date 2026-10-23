@@ -24,6 +24,16 @@ int esparser_power_up(struct amvdec_session *sess);
 int esparser_queue_eos(struct amvdec_core *core, const u8 *data, u32 len);
 
 /**
+ * esparser_queue() - queue a single source buffer to the ESPARSER
+ *
+ * @sess: decoder session
+ * @vbuf: source buffer to queue
+ *
+ * Returns 0 on success, -EAGAIN if VIFIFO is full, or error code.
+ */
+int esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf);
+
+/**
  * esparser_queue_all_src() - work handler that writes as many src buffers
  * as possible to the ESPARSER
  *

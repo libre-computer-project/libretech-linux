@@ -191,6 +191,19 @@ static int soc24_read_register(struct amdgpu_device *adev, u32 se_num,
 static enum amd_reset_method
 soc24_asic_reset_method(struct amdgpu_device *adev)
 {
+	/*
+	 * Navi48 (R9700, GC 12.0.1): BACO takes the whole host down (see the
+	 * quirk below), so it is refused even when asked for explicitly --
+	 * amdgpu.reset_method is a runtime-writable, host-global parameter and
+	 * one wrong write must not turn every later reset into a host hang.
+	 */
+	if (amdgpu_reset_method == AMD_RESET_METHOD_BACO &&
+	    amdgpu_ip_version(adev, GC_HWIP, 0) == IP_VERSION(12, 0, 1)) {
+		dev_warn_once(adev->dev,
+			      "reset_method BACO is host-fatal on this ASIC; using MODE1\n");
+		return AMD_RESET_METHOD_MODE1;
+	}
+
 	if (amdgpu_reset_method == AMD_RESET_METHOD_MODE1 ||
 	    amdgpu_reset_method == AMD_RESET_METHOD_MODE2 ||
 	    amdgpu_reset_method == AMD_RESET_METHOD_BACO)
@@ -206,6 +219,24 @@ soc24_asic_reset_method(struct amdgpu_device *adev)
 	case IP_VERSION(14, 0, 3):
 		return AMD_RESET_METHOD_MODE1;
 	default:
+		/*
+		 * lc fleet quirk (aitop, 2026-07-11): Navi48 (Radeon AI PRO R9700,
+		 * GC 12.0.1) BACO reset wedges the PCIe bus -- the closed PSP/SMU BACO
+		 * firmware path drops the GPU off the bus ("Failed to exit BACO state",
+		 * "device lost from bus"), which turns an in-driver GPU reset into a
+		 * whole-host hang. This is the reset-path companion to the runtime-PM
+		 * disable in amdgpu_device_detect_runtime_pm_mode() (same root cause).
+		 * Force MODE1 (amdgpu_device_mode1_reset), which never touches BACO, so a
+		 * reset recovers the card device-only: "GPU reset(1) succeeded",
+		 * "device wedged, but recovered through reset", host stays up + compute
+		 * works (aitop 2026-07-11). Note the parameter's numbering: MODE1 is
+		 * reset_method=2. The value 1 is MODE0, which this ASIC does not
+		 * support, so a 1 is rejected above and lands HERE by the AUTO route --
+		 * that is how the 2026-07-11 validation (and every fleet reset since,
+		 * which wrote 1) reached MODE1. Without this quirk AUTO would pick BACO.
+		 */
+		if (amdgpu_ip_version(adev, GC_HWIP, 0) == IP_VERSION(12, 0, 1))
+			return AMD_RESET_METHOD_MODE1;
 		if (amdgpu_dpm_is_baco_supported(adev))
 			return AMD_RESET_METHOD_BACO;
 		else
@@ -526,8 +557,36 @@ static int soc24_common_suspend(struct amdgpu_ip_block *ip_block)
 	return soc24_common_hw_fini(ip_block);
 }
 
+static bool soc24_need_reset_on_resume(struct amdgpu_device *adev)
+{
+	u32 sol_reg1, sol_reg2;
+
+	/* Will reset for the following suspend abort cases.
+	 * 1) Only reset dGPU side.
+	 * 2) S3 suspend got aborted and TOS is active.
+	 *    As for dGPU suspend abort cases the SOL value
+	 *    will be kept as zero at this resume point.
+	 */
+	if (!(adev->flags & AMD_IS_APU) && adev->in_s3) {
+		sol_reg1 = RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_81);
+		msleep(100);
+		sol_reg2 = RREG32_SOC15(MP0, 0, regMPASP_SMN_C2PMSG_81);
+
+		return (sol_reg1 != sol_reg2);
+	}
+
+	return false;
+}
+
 static int soc24_common_resume(struct amdgpu_ip_block *ip_block)
 {
+	struct amdgpu_device *adev = ip_block->adev;
+
+	if (soc24_need_reset_on_resume(adev)) {
+		dev_info(adev->dev, "S3 suspend aborted, resetting...");
+		soc24_asic_reset(adev);
+	}
+
 	return soc24_common_hw_init(ip_block);
 }
 

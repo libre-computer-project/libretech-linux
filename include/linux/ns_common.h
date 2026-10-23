@@ -119,6 +119,17 @@ void __ns_common_free(struct ns_common *ns);
 		struct user_namespace *:   CLONE_NEWUSER,   \
 		struct uts_namespace *:    CLONE_NEWUTS)
 
+#define NS_COMMON_INIT(nsname, refs)							\
+{											\
+	.ns_type		= ns_common_type(&nsname),				\
+	.ns_id			= 0,							\
+	.inum			= ns_init_inum(&nsname),				\
+	.ops			= to_ns_operations(&nsname),				\
+	.stashed		= NULL,							\
+	.__ns_ref		= REFCOUNT_INIT(refs),					\
+	.ns_list_node		= LIST_HEAD_INIT(nsname.ns.ns_list_node),		\
+}
+
 #define ns_common_init(__ns)                     \
 	__ns_common_init(to_ns_common(__ns),     \
 			 ns_common_type(__ns),   \
@@ -133,6 +144,8 @@ void __ns_common_free(struct ns_common *ns);
 
 #define ns_common_free(__ns) __ns_common_free(to_ns_common((__ns)))
 
+bool may_see_all_namespaces(void);
+
 static __always_inline __must_check bool __ns_ref_put(struct ns_common *ns)
 {
 	return refcount_dec_and_test(&ns->__ns_ref);
@@ -143,7 +156,12 @@ static __always_inline __must_check bool __ns_ref_get(struct ns_common *ns)
 	return refcount_inc_not_zero(&ns->__ns_ref);
 }
 
-#define ns_ref_read(__ns) refcount_read(&to_ns_common((__ns))->__ns_ref)
+static __always_inline __must_check int __ns_ref_read(const struct ns_common *ns)
+{
+	return refcount_read(&ns->__ns_ref);
+}
+
+#define ns_ref_read(__ns) __ns_ref_read(to_ns_common((__ns)))
 #define ns_ref_inc(__ns) refcount_inc(&to_ns_common((__ns))->__ns_ref)
 #define ns_ref_get(__ns) __ns_ref_get(to_ns_common((__ns)))
 #define ns_ref_put(__ns) __ns_ref_put(to_ns_common((__ns)))

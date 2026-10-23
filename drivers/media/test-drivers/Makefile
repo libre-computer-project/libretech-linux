@@ -8,6 +8,7 @@
 
 obj-$(CONFIG_DVB_VIDTV) += vidtv/
 
+obj-$(CONFIG_VIDEO_V4L2_LOOPBACK) += v4l2loopback/
 obj-$(CONFIG_VIDEO_VICODEC) += vicodec/
 obj-$(CONFIG_VIDEO_VIM2M) += vim2m.o
 obj-$(CONFIG_VIDEO_VIMC) += vimc/

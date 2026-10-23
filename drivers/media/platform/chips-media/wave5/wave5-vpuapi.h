@@ -8,6 +8,7 @@
 #ifndef VPUAPI_H_INCLUDED
 #define VPUAPI_H_INCLUDED
 
+#include <linux/kfifo.h>
 #include <linux/idr.h>
 #include <linux/genalloc.h>
 #include <media/v4l2-device.h>
@@ -521,6 +522,13 @@ struct enc_wave_param {
 	s32 chroma_cb_qp_offset; /* the value of chroma(cb) QP offset */
 	s32 chroma_cr_qp_offset; /* the value of chroma(cr) QP offset */
 	s32 initial_rc_qp;
+	u32 nr_y_enable : 1; /* enable noise reduction for Y component */
+	u32 nr_cb_enable : 1; /* enable noise reduction for Cb component */
+	u32 nr_cr_enable : 1; /* enable noise reduction for Cr component */
+	u32 nr_noise_est_enable : 1; /* enable HW noise estimation (auto sigma) */
+	u32 nr_noise_sigma_y; /* Y noise sigma (0 ~ 255, used when nr_noise_est_enable=0) */
+	u32 nr_noise_sigma_cb; /* Cb noise sigma (0 ~ 255) */
+	u32 nr_noise_sigma_cr; /* Cr noise sigma (0 ~ 255) */
 	u32 nr_intra_weight_y;
 	u32 nr_intra_weight_cb; /* weight to cb noise level for intra picture (0 ~ 31) */
 	u32 nr_intra_weight_cr; /* weight to cr noise level for intra picture (0 ~ 31) */
@@ -546,6 +554,11 @@ struct enc_wave_param {
 	u32 intra_mb_refresh_arg;
 	u32 rc_weight_param;
 	u32 rc_weight_buf;
+	u32 force_pic_qp_p; /* force QP for P pictures (0=disabled, 1-51=QP value) */
+	u32 force_pic_qp_b; /* force QP for B pictures (0=disabled, 1-51=QP value) */
+	u32 force_pic_qp_enable: 1; /* enable force picture QP */
+	u32 use_general_pb: 1; /* enable generalized P/B reference structure */
+	u32 cu_size_mode: 3; /* bit0=8x8, bit1=16x16, bit2=32x32 (default 0x7=all) */
 
 	/* flags */
 	u32 en_still_picture: 1; /* still picture profile */
@@ -569,6 +582,7 @@ struct enc_wave_param {
 	u32 transform8x8_enable: 1; /* enable 8x8 intra prediction and 8x8 transform */
 	u32 mb_level_rc_enable: 1; /* enable MB-level rate control */
 	u32 forced_idr_header_enable: 1; /* enable header encoding before IDR frame */
+	u32 constraint_set1_flag: 1; /* enable CBP */
 };
 
 struct enc_open_param {
@@ -618,6 +632,10 @@ struct enc_param {
 	struct enc_code_opt code_option;
 	u64 pts; /* presentation timestamp (PTS) of the input source */
 	bool src_end_flag;
+	u32 force_pic_qp_enable; /* enable force picture QP override */
+	u32 force_pic_qp_i; /* force QP for I pictures (0-63) */
+	u32 force_pic_qp_p; /* force QP for P pictures (0-63) */
+	u32 force_pic_qp_b; /* force QP for B pictures (0-63) */
 };
 
 struct enc_output_info {
@@ -747,6 +765,7 @@ struct vpu_device {
 	struct video_device *video_dev_enc;
 	struct mutex dev_lock; /* lock for the src, dst v4l2 queues */
 	struct mutex hw_lock; /* lock hw configurations */
+	struct mutex irq_lock;
 	int irq;
 	enum product_id product;
 	struct vpu_attr attr;
@@ -764,7 +783,10 @@ struct vpu_device {
 	struct kthread_worker *worker;
 	int vpu_poll_interval;
 	int num_clks;
+	struct task_struct *irq_thread;
+	struct semaphore irq_sem; /* signal to irq_thread when interrupt happens*/
 	struct reset_control *resets;
+	spinlock_t irq_spinlock; /* protect instances list */
 };
 
 struct vpu_instance;
@@ -788,6 +810,7 @@ struct vpu_instance {
 	enum v4l2_ycbcr_encoding ycbcr_enc;
 	enum v4l2_quantization quantization;
 
+	struct kfifo irq_status;
 	enum vpu_instance_state state;
 	enum vpu_instance_type type;
 	const struct vpu_instance_ops *ops;

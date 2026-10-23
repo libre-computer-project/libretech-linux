@@ -88,6 +88,7 @@ struct drm_i915_gem_object *i915_gem_object_alloc(void)
 
 void i915_gem_object_free(struct drm_i915_gem_object *obj)
 {
+	dma_resv_fini(&obj->base._resv);
 	return kmem_cache_free(slab_objects, obj);
 }
 
@@ -143,7 +144,6 @@ void __i915_gem_object_fini(struct drm_i915_gem_object *obj)
 {
 	mutex_destroy(&obj->mm.get_page.lock);
 	mutex_destroy(&obj->mm.get_dma_page.lock);
-	dma_resv_fini(&obj->base._resv);
 }
 
 /**
@@ -172,6 +172,27 @@ void i915_gem_object_set_cache_coherency(struct drm_i915_gem_object *obj,
 		!IS_DGFX(i915);
 }
 
+/*
+ * Whether GPU access through @pat_index is coherent with the CPU caches.
+ *
+ * Before Xe_LPG every PAT index other than I915_CACHE_NONE's was a snooped,
+ * coherent mapping. Xe_LPG (MTL, ARL) encodes coherency per entry instead
+ * (xelpg_setup_private_ppat): only entries 3 (WB, 1-way coherent) and 4 (WB,
+ * 2-way coherent) snoop the CPU caches; 0 (WB), 1 (WT) and 2 (UC) do not.
+ * Userspace picks the entry (I915_GEM_CREATE_EXT_SET_PAT); Mesa gives shared
+ * and scanout buffers entry 1. Treating that entry as coherent made
+ * begin_cpu_access skip the clflush, so a CPU mapping of the dma-buf kept
+ * returning stale cache lines after the GPU had written the buffer.
+ */
+static bool i915_gem_pat_index_is_coherent(struct drm_i915_private *i915,
+					   unsigned int pat_index)
+{
+	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 70))
+		return pat_index == 3 || pat_index == 4;
+
+	return pat_index != i915_gem_get_pat_index(i915, I915_CACHE_NONE);
+}
+
 /**
  * i915_gem_object_set_pat_index - set PAT index to be used in PTE encode
  * @obj: #drm_i915_gem_object
@@ -190,7 +211,7 @@ void i915_gem_object_set_pat_index(struct drm_i915_gem_object *obj,
 
 	obj->pat_index = pat_index;
 
-	if (pat_index != i915_gem_get_pat_index(i915, I915_CACHE_NONE))
+	if (i915_gem_pat_index_is_coherent(i915, pat_index))
 		obj->cache_coherent = (I915_BO_CACHE_COHERENT_FOR_READ |
 				       I915_BO_CACHE_COHERENT_FOR_WRITE);
 	else if (HAS_LLC(i915))

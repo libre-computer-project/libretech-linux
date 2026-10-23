@@ -282,6 +282,91 @@ void mt7601u_mac_config_tsf(struct mt7601u_dev *dev, bool enable, int interval)
 		MT_BEACON_TIME_CFG_TIMER_EN |
 		MT_BEACON_TIME_CFG_SYNC_MODE |
 		MT_BEACON_TIME_CFG_TBTT_EN;
+
+	/* The enable path computed `val` and never wrote it back, so enabling the
+	 * TSF/beacon timer was a no-op while disabling worked. Latent for as long as
+	 * this driver was STA-only -- nothing depended on the enable side. AP mode
+	 * does: without this the beacon interval is never programmed and the TBTT
+	 * timer never starts. Present in upstream mt7601u; the last change to this
+	 * function was the mechanical d43af50566b43 "use linux/bitfield.h".
+	 */
+	mt7601u_wr(dev, MT_BEACON_TIME_CFG, val);
+}
+
+/* ---- AP beacon support ------------------------------------------------------
+ *
+ * Ported from mt76x02_beacon.c, which is the direct architectural descendant of
+ * this part and drives the SAME registers: MT_BEACON_BASE, MT_BCN_OFFSET() and
+ * MT_BEACON_TIME_CFG's TIMER_EN/TBTT_EN/BEACON_TX. The modern mt76 drivers
+ * (mt7915/mt7921/mt7925) are NOT a reference here -- their beaconing is offloaded
+ * to firmware through mt76_connac and shares no register layout with this MAC.
+ *
+ * Two differences from mt76x02, both forced by this being a USB part:
+ *  - beacon memory is reached with mt7601u_burst_write_regs() (an MCU BURST_WRITE
+ *    over the command path) rather than mt76_wr_copy()'s direct MMIO;
+ *  - the TXWI is built into the same buffer as the frame rather than pushed onto
+ *    the skb, because nothing is transmitted from this skb -- it is copied into
+ *    the MAC's beacon slot and the hardware sends from there at each TBTT.
+ */
+#define MT7601U_BEACON_SLOT_SIZE	512
+
+static int mt7601u_write_beacon(struct mt7601u_dev *dev, u32 offset,
+				struct sk_buff *skb)
+{
+	int total = sizeof(struct mt76_txwi) + skb->len;
+	struct mt76_txwi *txwi;
+	int words, ret;
+	u32 *buf;
+
+	if (total > MT7601U_BEACON_SLOT_SIZE)
+		return -ENOSPC;
+
+	/* Round the slot write up to whole words: burst_write_regs moves u32s. */
+	words = DIV_ROUND_UP(total, sizeof(u32));
+	buf = kzalloc(words * sizeof(u32), GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	txwi = (struct mt76_txwi *)buf;
+	txwi->len_ctl = cpu_to_le16(skb->len);
+	txwi->wcid = 0xff;			/* no per-STA entry for a beacon */
+	txwi->flags = cpu_to_le16(MT_TXWI_FLAGS_NO_RATE_FALLBACK);
+	/* rate_ctl left 0: the lowest basic CCK rate, which is what a beacon uses.
+	 * ack_ctl left 0: a beacon is never ACKed, and the hardware must not insert
+	 * a sequence number -- mac80211 has already numbered the template. */
+
+	memcpy((u8 *)buf + sizeof(*txwi), skb->data, skb->len);
+
+	ret = mt7601u_burst_write_regs(dev, offset, buf, words);
+	kfree(buf);
+
+	return ret;
+}
+
+void mt7601u_mac_set_beacon(struct mt7601u_dev *dev, struct sk_buff *skb)
+{
+	if (!skb)
+		return;
+
+	/* Slot 0. mt76_init_beacon_offsets() already programmed the 16 slot
+	 * offsets at init, so the hardware knows where this lives. */
+	mt7601u_write_beacon(dev, MT_BEACON_BASE, skb);
+	dev_kfree_skb(skb);
+}
+
+void mt7601u_mac_set_beacon_enable(struct mt7601u_dev *dev, bool enable)
+{
+	u32 mask = MT_BEACON_TIME_CFG_BEACON_TX |
+		   MT_BEACON_TIME_CFG_TBTT_EN |
+		   MT_BEACON_TIME_CFG_TIMER_EN;
+	u32 val = mt7601u_rr(dev, MT_BEACON_TIME_CFG);
+
+	if (enable)
+		val |= mask;
+	else
+		val &= ~mask;
+
+	mt7601u_wr(dev, MT_BEACON_TIME_CFG, val);
 }
 
 static void mt7601u_check_mac_err(struct mt7601u_dev *dev)

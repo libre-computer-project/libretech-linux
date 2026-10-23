@@ -1671,6 +1671,9 @@
 			reg = <0 0x11c10000 0 0x1000>;
 			#address-cells = <1>;
 			#size-cells = <1>;
+			unique_id: unique-id@140 {
+				reg = <0x140 0x8>;
+			};
 			u3_tx_imp_p0: usb3-tx-imp@184,1 {
 				reg = <0x184 0x1>;
 				bits = <0 5>;
@@ -3067,7 +3070,7 @@
 
 			jpgdec@0,10000 {
 				compatible = "mediatek,mt8195-jpgdec-hw";
-				reg = <0 0 0x10000 0x10000>;/* JPGDEC_C1 */
+				reg = <0 0x10000 0 0x10000>;/* JPGDEC_C1 */
 				iommus = <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA0>,
 					 <&iommu_vdo M4U_PORT_L19_JPGDEC_BSDMA0>,
 					 <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA1>,

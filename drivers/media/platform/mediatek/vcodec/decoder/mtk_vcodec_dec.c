@@ -309,6 +309,62 @@ static int vidioc_try_fmt(struct mtk_vcodec_dec_ctx *ctx, struct v4l2_format *f,
 	} else if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		int tmp_w, tmp_h;
 
+		if (ctx->dev->vdec_pdata->no_firmware) {
+			/*
+			 * MT8365 direct-register backend (vdec_h264_mt8365_if):
+			 * the HW writes the MM21 recon planes DENSELY at the coded
+			 * TILE geometry -- Y as 16x32 tiles over ALIGN(w,16) x
+			 * ALIGN(h,32), UV as 16x16 tiles over the same width x
+			 * ALIGN(h,32)/2, with the UV plane immediately following the
+			 * packed Y. The generic 64-alignment below over-declares the
+			 * luma stride (bytesperline = ALIGN(w,64), e.g. 192 for a
+			 * 176-wide dense plane) and floats the UV plane at
+			 * ALIGN(w,64)*ALIGN(h,64) -- so a standard MM21/NV12_16L32S
+			 * detiler reads 12 tile-columns from an 11-tile-column plane
+			 * (a per-tile-row diagonal shift) and reads UV from the wrong
+			 * offset, collapsing an otherwise bit-exact decode to ~8.58 dB
+			 * through GStreamer videoconvert / vdec-sweep. Declare the
+			 * CAPTURE at the tile geometry so bytesperline matches the
+			 * HW's dense stride and the UV plane sits at the packed offset,
+			 * making the CAPTURE a standard detileable MM21 (this is the
+			 * same geometry the vendor vpud path emits). The visible/crop
+			 * rectangle stays the true display size (q_data->visible_*).
+			 */
+			/*
+			 * ...except for VP9, whose recon is written at the
+			 * SUPERBLOCK geometry ALIGN(w,64) x ALIGN(h,64) --
+			 * MEASURED against the vendor CAPTURE geometry on five
+			 * resolutions (176x144 -> 192x192, 192x192 -> 192x192,
+			 * 320x240 -> 320x256, 160x128 -> 192x128, 96x64 ->
+			 * 128x64). The same dense-plane argument applies, only
+			 * with a different alignment.
+			 */
+			/*
+			 * ...and HEVC, whose recon is written at the CTB
+			 * geometry ALIGN(w,CtbSizeY) x ALIGN(h,CtbSizeY) --
+			 * MEASURED on two same-resolution 416x240 vendor
+			 * traces that differ only in CtbSizeY (MERGE_A_TI_3
+			 * CTB 64 -> MC+0x22c = 28 i.e. stride 448;
+			 * MAXBINS_A_TI_5 CTB 16 -> MC+0x22c = 26 i.e. stride
+			 * 416). try_fmt runs BEFORE the stateless SPS control
+			 * exists, so it cannot know CtbSizeY and uses the
+			 * 64 upper bound; vdec_hevc_mt8365_get_param() applies
+			 * the real per-SPS alignment once the header is in.
+			 */
+			if (ctx->q_data[MTK_Q_DATA_SRC].fmt &&
+			    (ctx->q_data[MTK_Q_DATA_SRC].fmt->fourcc ==
+			     V4L2_PIX_FMT_VP9_FRAME ||
+			     ctx->q_data[MTK_Q_DATA_SRC].fmt->fourcc ==
+			     V4L2_PIX_FMT_HEVC_SLICE)) {
+				pix_fmt_mp->width = ALIGN(pix_fmt_mp->width, 64);
+				pix_fmt_mp->height = ALIGN(pix_fmt_mp->height, 64);
+			} else {
+				pix_fmt_mp->width = ALIGN(pix_fmt_mp->width, 16);
+				pix_fmt_mp->height = ALIGN(pix_fmt_mp->height, 32);
+			}
+			goto cap_plane_fmt;
+		}
+
 		/*
 		 * Find next closer width align 64, height align 64, size align
 		 * 64 rectangle
@@ -333,6 +389,7 @@ static int vidioc_try_fmt(struct mtk_vcodec_dec_ctx *ctx, struct v4l2_format *f,
 				  tmp_w, tmp_h, pix_fmt_mp->width, pix_fmt_mp->height,
 				  pix_fmt_mp->width * pix_fmt_mp->height);
 
+cap_plane_fmt:
 		pix_fmt_mp->num_planes = fmt->num_planes;
 		pix_fmt_mp->plane_fmt[0].sizeimage =
 				pix_fmt_mp->width * pix_fmt_mp->height;
@@ -461,6 +518,51 @@ static int vidioc_vdec_s_selection(struct file *file, void *priv,
 	return 0;
 }
 
+/*
+ * H.264 field/PAFF pictures are coded as two field pictures (top + bottom) that
+ * decode into a single CAPTURE (frame) buffer. The stateless userspace pairs the
+ * two fields by holding that CAPTURE buffer across the two OUTPUT field requests
+ * via V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF. The m2m core honours that hold flag
+ * only when the OUTPUT queue advertises VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF
+ * -- otherwise the flag is stripped at QBUF (videobuf2-v4l2.c) and the
+ * field-pairing request is rejected ("Driver did not accept the decode request").
+ *
+ * MPEG-2 is the SAME shape and was missed: ISO/IEC 13818-2 field pictures
+ * (picture_structure = TOP_FIELD / BOTTOM_FIELD) are likewise two coded
+ * pictures decoding into one CAPTURE frame buffer, and GStreamer's
+ * gst_v4l2_codec_mpeg2_dec pairs them with the same hold flag. N182 measured
+ * the consequence directly: the five MPEG2_VIDEO-MAIN vectors whose FIRST
+ * coded picture is field-coded (sony-ct1, sony-ct2, tcela-8, tcela-9,
+ * tcela-10) fail with exactly the string this comment predicts, "Driver did
+ * not accept the decode request", and emit ZERO driver log lines -- the
+ * request never reaches vdec_if_decode, so it was never a register-program
+ * defect. The silicon does support field-coded MPEG-2: the vendor HAL trace
+ * (N156 section 2.2) decoded 16 field pictures of sony-ct1 on this chip, and
+ * vdec_mpeg2_mt8365_if.c already carries the VDEC_TOP+0x70 field arm.
+ *
+ * Every other codec here decodes one frame per buffer. Gating advertisement on
+ * the coded OUTPUT format keeps every other path byte-identical, and is safe
+ * for frame-coded streams too: userspace sets the per-buffer hold flag only
+ * for a field pair, never for a frame, so a frame-coded stream never exercises
+ * the hold path. Mirrors the reference stateless H.264 driver
+ * drivers/media/platform/verisilicon/hantro_v4l2.c.
+ */
+static void mtk_vdec_update_hold_capture_buf(struct mtk_vcodec_dec_ctx *ctx,
+					     u32 out_fourcc)
+{
+	struct vb2_queue *vq;
+
+	vq = v4l2_m2m_get_vq(ctx->m2m_ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+	if (!vq)
+		return;
+
+	if (out_fourcc == V4L2_PIX_FMT_H264_SLICE ||
+	    out_fourcc == V4L2_PIX_FMT_MPEG2_SLICE)
+		vq->subsystem_flags |= VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF;
+	else
+		vq->subsystem_flags &= ~VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF;
+}
+
 static int vidioc_vdec_s_fmt(struct file *file, void *priv,
 			     struct v4l2_format *f)
 {
@@ -527,6 +629,8 @@ static int vidioc_vdec_s_fmt(struct file *file, void *priv,
 		ctx->xfer_func = pix_mp->xfer_func;
 
 		ctx->current_codec = fmt->fourcc;
+		if (dec_pdata->uses_stateless_api)
+			mtk_vdec_update_hold_capture_buf(ctx, fmt->fourcc);
 		if (ctx->state == MTK_STATE_FREE) {
 			ret = vdec_if_init(ctx, q_data->fmt->fourcc);
 			if (ret) {
@@ -988,6 +1092,7 @@ const struct v4l2_ioctl_ops mtk_vdec_ioctl_ops = {
 	.vidioc_g_fmt_vid_out_mplane	= vidioc_vdec_g_fmt,
 
 	.vidioc_create_bufs		= v4l2_m2m_ioctl_create_bufs,
+	.vidioc_remove_bufs		= v4l2_m2m_ioctl_remove_bufs,
 
 	.vidioc_enum_fmt_vid_cap	= vidioc_vdec_enum_fmt_vid_cap,
 	.vidioc_enum_fmt_vid_out	= vidioc_vdec_enum_fmt_vid_out,

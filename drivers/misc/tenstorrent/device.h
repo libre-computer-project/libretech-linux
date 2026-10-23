@@ -1,0 +1,108 @@
+// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
+// SPDX-License-Identifier: GPL-2.0-only
+
+#ifndef TTDRIVER_DEVICE_H_INCLUDED
+#define TTDRIVER_DEVICE_H_INCLUDED
+
+#include <linux/types.h>
+#include <linux/device.h>
+#include <linux/pci.h>
+#include <linux/cdev.h>
+#include <linux/reboot.h>
+#include <linux/kref.h>
+#include <linux/rwsem.h>
+#include <linux/wait.h>
+
+#include "ioctl.h"
+#include "memory.h"
+#include "telemetry.h"
+
+#define MAX_TLB_KINDS 4
+
+struct tenstorrent_device_class;
+
+struct tenstorrent_device {
+	struct kref kref;
+
+	struct device dev;
+	struct cdev chardev;
+	struct pci_dev *pdev;
+	const struct tenstorrent_device_class *dev_class;
+	bool detached; // No longer valid for hardware access
+	bool needs_hw_init;
+	atomic_long_t reset_gen; // Generation counter, incremented on reset
+	struct rw_semaphore reset_rwsem;
+	struct dentry *debugfs_root;
+	struct proc_dir_entry *procfs_root;
+
+	unsigned int ordinal;
+	bool dma_capable;
+	bool interrupt_enabled;
+
+	struct mutex chardev_mutex;
+	unsigned int chardev_open_count;
+
+	struct notifier_block reboot_notifier;
+
+	DECLARE_BITMAP(resource_lock, TENSTORRENT_RESOURCE_LOCK_COUNT);
+	wait_queue_head_t resource_lock_waitqueue;
+
+	struct device *hwmon_dev;
+	const struct tt_hwmon_attr *hwmon_attributes;
+	const struct tt_hwmon_label *hwmon_labels;
+
+	struct list_head open_fds_list;	// List of struct chardev_private, linked through open_fds field
+
+	DECLARE_BITMAP(tlbs, TENSTORRENT_MAX_INBOUND_TLBS);
+	u32 tlb_counts[MAX_TLB_KINDS];	// Per-device TLB counts (may differ from dev_class defaults)
+
+	struct mutex iatu_mutex;
+	struct tenstorrent_outbound_iatu_region outbound_iatus[TENSTORRENT_MAX_OUTBOUND_IATU_REGIONS];
+
+	struct attribute **telemetry_attrs;
+	struct attribute_group telemetry_group;
+
+	// Per-device tag-to-address cache, indexed by tag ID.
+	// Populated by telemetry_probe(); zero means tag not available.
+	// The stored value is arch-specific: WH stores a BAR4 sysreg offset,
+	// BH stores a raw CSM address for NOC reads.
+	u64 telemetry_tag_cache[TELEM_TAG_CACHE_SIZE];
+};
+
+struct tlb_descriptor;
+
+struct tenstorrent_device_class {
+	const char *name;
+	u32 instance_size;
+	u32 dma_address_bits;
+	u64 noc_dma_limit;
+	u64 noc_pcie_offset;
+	u32 tlb_kinds;
+	u32 tlb_counts[MAX_TLB_KINDS];
+	u64 tlb_sizes[MAX_TLB_KINDS];
+	bool (*reset)(struct tenstorrent_device *ttdev, u32 reset_flag);
+	bool (*init_device)(struct tenstorrent_device *ttdev);
+	bool (*init_hardware)(struct tenstorrent_device *ttdev);
+	bool (*init_telemetry)(struct tenstorrent_device *ttdev);
+	void (*cleanup_telemetry)(struct tenstorrent_device *ttdev);
+	void (*cleanup_hardware)(struct tenstorrent_device *ttdev);
+	void (*cleanup_device)(struct tenstorrent_device *ttdev);
+	void (*first_open_cb)(struct tenstorrent_device *ttdev);
+	void (*last_release_cb)(struct tenstorrent_device *ttdev);
+	void (*reboot)(struct tenstorrent_device *ttdev);
+	int (*configure_tlb)(struct tenstorrent_device *ttdev, int tlb, struct tenstorrent_noc_tlb_config *config);
+	int (*describe_tlb)(struct tenstorrent_device *ttdev, int tlb, struct tlb_descriptor *tlb_desc);
+	void (*save_reset_state)(struct tenstorrent_device *ttdev);
+	void (*restore_reset_state)(struct tenstorrent_device *ttdev);
+	int (*configure_outbound_atu)(struct tenstorrent_device *ttdev, u32 region, u64 base, u64 limit, u64 target);
+	void (*noc_write32)(struct tenstorrent_device *ttdev, u32 x, u32 y, u64 addr, u32 data, int noc);
+	int (*csm_read32)(struct tenstorrent_device *ttdev, u64 addr, u32 *value);
+	int (*csm_write32)(struct tenstorrent_device *ttdev, u64 addr, u32 value);
+	int (*set_power_state)(struct tenstorrent_device *ttdev, struct tenstorrent_power_state *power_state);
+	int (*read_telemetry_tag)(struct tenstorrent_device *ttdev, u16 tag_id, u32 *value);
+	int (*probe_telemetry)(struct tenstorrent_device *ttdev);
+};
+
+void tenstorrent_device_put(struct tenstorrent_device *);
+
+#endif

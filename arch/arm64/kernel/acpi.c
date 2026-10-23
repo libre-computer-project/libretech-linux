@@ -36,6 +36,8 @@
 #include <asm/daifflags.h>
 #include <asm/smp_plat.h>
 
+#include <acpi/apei.h>
+
 int acpi_noirq = 1;		/* skip ACPI IRQ initialization */
 int acpi_disabled = 1;
 EXPORT_SYMBOL(acpi_disabled);
@@ -178,6 +180,33 @@ out:
 }
 
 /*
+ * acpi_fixup_m400_quirks - Work-around for HPE ProLiant m400 APEI firmware
+ * problems.
+ */
+static void __init acpi_fixup_m400_quirks(void)
+{
+	acpi_status status;
+	struct acpi_table_header *header;
+#if !defined(CONFIG_ACPI_APEI)
+	int hest_disable = HEST_DISABLED;
+#endif
+
+	if (!IS_ENABLED(CONFIG_ACPI_APEI) || hest_disable != HEST_ENABLED)
+		return;
+
+	status = acpi_get_table(ACPI_SIG_HEST, 0, &header);
+
+	if (ACPI_SUCCESS(status) && !strncmp(header->oem_id, "HPE   ", 6) &&
+		!strncmp(header->oem_table_id, "ProLiant", 8) &&
+		MIDR_IMPLEMENTOR(read_cpuid_id()) == ARM_CPU_IMP_APM) {
+		hest_disable = HEST_DISABLED;
+		pr_info("Disabled APEI for m400.\n");
+	}
+
+	acpi_put_table(header);
+}
+
+/*
  * acpi_boot_table_init() called from setup_arch(), always.
  *	1. find RSDP and get its address, and then find XSDT
  *	2. extract all tables and checksums them all
@@ -255,6 +284,8 @@ done:
 
 		if (IS_ENABLED(CONFIG_ACPI_BGRT))
 			acpi_table_parse(ACPI_SIG_BGRT, acpi_parse_bgrt);
+	
+		acpi_fixup_m400_quirks();
 	}
 }
 
@@ -377,7 +408,7 @@ void __iomem *acpi_os_ioremap(acpi_physical_address phys, acpi_size size)
 				prot = __acpi_get_writethrough_mem_attribute();
 		}
 	}
-	return ioremap_prot(phys, size, prot);
+	return __ioremap_prot(phys, size, prot);
 }
 
 /*
@@ -448,12 +479,14 @@ int acpi_map_cpu(acpi_handle handle, phys_cpuid_t physid, u32 apci_id,
 		return *pcpu;
 	}
 
+	set_cpu_present(*pcpu, true);
 	return 0;
 }
 EXPORT_SYMBOL(acpi_map_cpu);
 
 int acpi_unmap_cpu(int cpu)
 {
+	set_cpu_present(cpu, false);
 	return 0;
 }
 EXPORT_SYMBOL(acpi_unmap_cpu);

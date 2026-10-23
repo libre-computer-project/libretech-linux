@@ -16,3 +16,33 @@
 	phy-mode = "rmii";
 	phy-handle = <&internal_phy>;
 };
+
+/*
+ * GPU OPP table override for S905X.
+ *
+ * 2026-05-14 per-die OC characterisation (GP0_PLL DCO ceiling walk-up on
+ * an S905X-V2 board): the S905X die's runtime-
+ * stable ceiling on the OD=1 path is 828 MHz (M=69 DCO=1656). 840 MHz
+ * is the first rate where PP soft-recovery starts firing under load.
+ *
+ * For the default daily-driver max we conservatively pick 744 MHz
+ * (M=62 OD=1 DCO=1488) -- the highest historical "stock" OPP from the
+ * upstream meson-gxl.dtsi table, well below the per-die ceiling, and
+ * a clean reproducible path through gp0_pll on every S905X die. The
+ * extra OC headroom (792..828 MHz) is left in the OPP table only via
+ * per-board overrides; the per-SoC default does not expose it.
+ *
+ * The kernel-side default cap (lima_devfreq.c) is also bumped to
+ * 744 MHz for amlogic,s905x compatibles. With the cap matched to
+ * the highest OPP here, simple_ondemand can scale up to 744 MHz
+ * under load without triggering gp0_pll reprogramming on every
+ * governor tick (744 needs ONE relock from idle, then stays).
+ *
+ * 792 MHz (also M=66 OD=1, DCO=1584, in the upstream stock table)
+ * is removed at this level. Some S905X dies tolerate 792 MHz cleanly,
+ * but per-die variance argues for the conservative cap; per-board
+ * overrides can re-add 792 if a deployment validates it.
+ */
+&gpu_opp_table {
+	/delete-node/ opp-792000000;
+};

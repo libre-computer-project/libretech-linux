@@ -19,6 +19,9 @@
 #include <linux/cleanup.h>
 #include <linux/device.h>
 #include <linux/errno.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/irqdomain.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -27,6 +30,12 @@
 #include <linux/slab.h>
 
 #include "of_private.h"
+
+#ifdef CONFIG_OF_DYNAMIC
+static void of_irq_record(struct device_node *np, int virq);
+#else
+static inline void of_irq_record(struct device_node *np, int virq) { }
+#endif
 
 /**
  * irq_of_parse_and_map - Parse and map an interrupt into linux virq space
@@ -46,6 +55,7 @@ unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
 
 	ret = irq_create_of_mapping(&oirq);
 	of_node_put(oirq.np);
+	of_irq_record(dev, ret);
 
 	return ret;
 }
@@ -472,6 +482,7 @@ int of_irq_get(struct device_node *dev, int index)
 	}
 
 	rc = irq_create_of_mapping(&oirq);
+	of_irq_record(dev, rc);
 out:
 	of_node_put(oirq.np);
 
@@ -660,6 +671,8 @@ void __init of_irq_init(const struct of_device_id *matches)
 
 	list_for_each_entry_safe(desc, temp_desc, &intc_parent_list, list) {
 		list_del(&desc->list);
+		of_node_put(desc->interrupt_parent);
+		of_node_put(desc->dev);
 		kfree(desc);
 	}
 err:
@@ -796,3 +809,133 @@ void of_msi_configure(struct device *dev, const struct device_node *np)
 			   of_msi_get_domain(dev, np, DOMAIN_BUS_PLATFORM_MSI));
 }
 EXPORT_SYMBOL_GPL(of_msi_configure);
+
+#ifdef CONFIG_OF_DYNAMIC
+/*
+ * A mapping created from a node's "interrupts" lives until
+ * irq_dispose_mapping(), and nothing disposes of it when the node's devices
+ * go away (an overlay removed, a node disabled). On an interrupt controller
+ * with few parent lines, such as a GPIO interrupt mux, every mapping holds
+ * one, so a few overlays applied and removed use them all up.
+ *
+ * The node cannot be parsed again when it goes: an overlay's changeset is
+ * reverted (properties removed, nodes detached) before any notification is
+ * sent. So the mappings made for dynamic nodes are recorded when they are
+ * created; when such a node is removed its mappings become pending, and a
+ * pending mapping is disposed of once no handler is installed on it -- the
+ * device that held it may be destroyed by a later notification (a key
+ * node's interrupt is held by the gpio-keys device of its parent, which
+ * goes after it). A mapping another live node still holds is left to that
+ * node's record.
+ *
+ * The domain is kept only to be compared, never dereferenced: it may be
+ * removed (an interrupt controller in another overlay) before the record is.
+ */
+struct of_irq_owner {
+	struct list_head list;
+	const struct device_node *np;	/* NULL once pending */
+	const struct irq_domain *domain;
+	irq_hw_number_t hwirq;
+	unsigned int virq;
+};
+
+static LIST_HEAD(of_irq_owners);
+static DEFINE_MUTEX(of_irq_owners_lock);
+
+static void of_irq_record(struct device_node *np, int virq)
+{
+	struct of_irq_owner *o;
+	struct irq_data *d;
+
+	if (virq <= 0 || !of_node_check_flag(np, OF_DYNAMIC))
+		return;
+	d = irq_get_irq_data(virq);
+	if (!d)
+		return;
+
+	guard(mutex)(&of_irq_owners_lock);
+	list_for_each_entry(o, &of_irq_owners, list)
+		if (o->np == np && o->virq == virq)
+			return;
+	o = kzalloc(sizeof(*o), GFP_KERNEL);
+	if (!o)
+		return;
+	o->np = np;
+	o->domain = d->domain;
+	o->hwirq = d->hwirq;
+	o->virq = virq;
+	list_add(&o->list, &of_irq_owners);
+}
+
+/* Is @virq held by a node that is still there? Called with the lock held. */
+static bool of_irq_virq_owned(unsigned int virq)
+{
+	struct of_irq_owner *o;
+
+	list_for_each_entry(o, &of_irq_owners, list)
+		if (o->np && o->virq == virq)
+			return true;
+	return false;
+}
+
+/**
+ * of_irq_mapping_owned - is an interrupt mapping held by a device tree node
+ * @virq: Linux interrupt number
+ *
+ * For a driver that disposes of mappings it made: true if @virq is also held
+ * by a dynamic node's "interrupts", which may not have requested it yet.
+ */
+bool of_irq_mapping_owned(unsigned int virq)
+{
+	guard(mutex)(&of_irq_owners_lock);
+	return of_irq_virq_owned(virq);
+}
+EXPORT_SYMBOL_GPL(of_irq_mapping_owned);
+
+static int of_irq_reconfig_notify(struct notifier_block *nb,
+				  unsigned long action, void *arg)
+{
+	struct of_reconfig_data *rd = arg;
+	/* a node detached while disabled reports no state change */
+	bool removed = action == OF_RECONFIG_DETACH_NODE ||
+		       of_reconfig_get_state_change(action, rd) ==
+		       OF_RECONFIG_CHANGE_REMOVE;
+	struct of_irq_owner *o, *tmp;
+	struct irq_data *d;
+
+	guard(mutex)(&of_irq_owners_lock);
+	list_for_each_entry(o, &of_irq_owners, list)
+		if (removed && o->np == rd->dn)
+			o->np = NULL;
+	list_for_each_entry_safe(o, tmp, &of_irq_owners, list) {
+		if (o->np)
+			continue;
+		/* pending: gone already, still in use, or disposable now */
+		d = irq_get_irq_data(o->virq);
+		if (d && d->domain == o->domain && d->hwirq == o->hwirq &&
+		    !of_irq_virq_owned(o->virq)) {
+			if (irq_has_action(o->virq))
+				continue;
+			pr_debug("disposing of unused irq %u (hwirq %lu)\n",
+				 o->virq, o->hwirq);
+			irq_dispose_mapping(o->virq);
+		}
+		list_del(&o->list);
+		kfree(o);
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block of_irq_reconfig_nb = {
+	.notifier_call = of_irq_reconfig_notify,
+	/* after the platform/SPI/I2C notifiers (0) have removed the devices */
+	.priority = -1,
+};
+
+static int __init of_irq_reconfig_init(void)
+{
+	return of_reconfig_notifier_register(&of_irq_reconfig_nb);
+}
+postcore_initcall(of_irq_reconfig_init);
+#endif /* CONFIG_OF_DYNAMIC */

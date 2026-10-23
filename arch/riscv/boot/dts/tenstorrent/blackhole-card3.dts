@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/dts-v1/;
+
+#include "blackhole.dtsi"
+
+/ {
+	model = "Tenstorrent Blackhole";
+	compatible = "tenstorrent,blackhole-card", "tenstorrent,blackhole";
+
+	/*
+	 * Upper 256 MiB of the shared bank-7 guest window (see
+	 * blackhole-card2.dts). Bank-local 0xF0000000, AXI
+	 * 0x4001_2000_0000. Top of the window is still 0x4001_3000_0000,
+	 * so virtio MMIO sits at the same addresses as clusters 0/1.
+	 */
+	memory@400120000000 {
+		device_type = "memory";
+		reg = <0x4001 0x20000000 0x0 0x10000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		virtio_devices: memory@40012fa00000 {
+			reg = <0x4001 0x2fa00000 0x00 0x600000>;
+			no-map;
+		};
+	};
+
+	virtio_net_0@40012fc00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x2fc00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 32>;
+	};
+
+	virtio_blk_0@40012fe00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x2fe00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 33>;
+	};
+
+	virtio_blk_1@40012fa00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x2fa00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 31>;
+	};
+};

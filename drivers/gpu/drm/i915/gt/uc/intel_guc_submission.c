@@ -4811,6 +4811,18 @@ fail_sem:
 /* Note: By the time we're here, GuC may have already been reset */
 void intel_guc_submission_disable(struct intel_guc *guc)
 {
+	/*
+	 * Stop the submission tasklet so guc_sched_engine_destroy()'s
+	 * tasklet_kill() can return even when the GuC firmware is
+	 * wedged and continues to deliver G2H interrupts that would
+	 * otherwise re-arm the tasklet indefinitely.  Without this,
+	 * `pci/remove` after a Fence-expiration GuC wedge hangs forever
+	 * in D-state (observed 2026-05-27 on A370M; full triage in the
+	 * F5 GUC-tasklet-kill deadlock audit).
+	 */
+	if (guc->sched_engine)
+		tasklet_disable(&guc->sched_engine->tasklet);
+
 	guc_cancel_busyness_worker(guc);
 
 	/* Semaphore interrupt disable and route to host */

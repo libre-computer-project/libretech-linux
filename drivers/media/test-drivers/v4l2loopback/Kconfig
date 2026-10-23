@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0
+config VIDEO_V4L2_LOOPBACK
+	tristate "V4L2 loopback device"
+	depends on VIDEO_DEV
+	help
+	  Video devices whose output a userspace program writes and other
+	  programs open as an ordinary camera (v4l2loopback 0.15.0, ported to
+	  6.18). agentc's remote mode presents the browser's camera on one,
+	  for apps that open /dev/video* themselves.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called v4l2loopback.

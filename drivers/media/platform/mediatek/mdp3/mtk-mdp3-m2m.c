@@ -5,10 +5,36 @@
  */
 
 #include <linux/platform_device.h>
+#include <linux/sizes.h>
+#include <linux/slab.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-event.h>
 #include <media/videobuf2-dma-contig.h>
 #include "mtk-mdp3-m2m.h"
+#include "mtk-mdp3-regs.h"
+
+/* Private MediaTek MDP3 control: the WROT programmable color-correction matrix
+ * (CCM). A compound s32[MDP_CCM_NELEMS] array carrying the 3x3 matrix + pre/post
+ * -add (see mtk-mdp3-m2m.h). Settable per-context via
+ *   v4l2-ctl -d <node> --set-ctrl='mtk_mdp_ccm=<15 comma-separated s32>'
+ * All-zero (the default) => the WROT keeps its built-in CSC (production byte-
+ * identical); any non-zero element activates the ext-matrix for RGB-output CSCs. */
+#define V4L2_CID_MTK_MDP_CCM		(V4L2_CID_USER_MTK_MDP_BASE + 0)
+#define V4L2_CID_MTK_MDP_RSZ_COEFF_TABLE	(V4L2_CID_USER_MTK_MDP_BASE + 1)
+
+/*
+ * 4:4:4 (I444/YV24) output via a HW+CPU hybrid. The mt8195 WROT cannot write 4:4:4
+ * (mapColorFormat has an I444 case but the 1:1 datapath never delivers full-H chroma
+ * -> SCP watchdog / WROT GCE hang; board-proven, mdp-walls-mt8195.md). Instead the HW
+ * produces 4:2:2 (NV12->I422 -- a proven op whose vertical chroma upsample is done in
+ * HW), and the CPU does the remaining HORIZONTAL chroma 2x upsample to reach 4:4:4.
+ * Genuine HW-assist: the HW performs the Y plane (plus any scale/CSC) and the vertical
+ * chroma reconstruction; only the horizontal chroma doubling is CPU. Gated; default on.
+ */
+static int mdp_kd_444hybrid = 1;
+module_param(mdp_kd_444hybrid, int, 0644);
+MODULE_PARM_DESC(mdp_kd_444hybrid,
+	"mt8195 4:4:4 hybrid: HW 4:2:2 + CPU horizontal chroma upsample (1=on default, 0=off)");
 
 static inline struct mdp_m2m_ctx *file_to_ctx(struct file *filp)
 {
@@ -58,15 +84,358 @@ static void mdp_m2m_process_done(void *priv, int vb_state)
 	v4l2_m2m_job_finish(ctx->mdp_dev->m2m_dev, ctx->m2m_ctx);
 }
 
+/* The full decoded per-op img_config dump below emits hundreds of lines per op
+ * (every component, every subframe, a 320B hex per comp, ctrls). It is the OLD
+ * pre-debugfs oracle, SUPERSEDED by the lossless on-demand debugfs snapshot
+ * (mtk-mdp3/cfg8195_snapshot). Kept for the decoded field view but behind its
+ * OWN default-off knob so a mdp_kd_debug=1 STREAM can never trigger it (single-op
+ * opt-in: set it, run ONE op, clear it). */
+static bool mdp_kd_dump_config;
+module_param(mdp_kd_dump_config, bool, 0644);
+MODULE_PARM_DESC(mdp_kd_dump_config,
+	"dump full decoded per-op img_config to dmesg (default 0; single-op use only, verbose)");
+
+/* Whole-img_config oracle dump (mt8195), gated by mdp_kd_dump_config. Prints every
+ * component, EVERY subframe (luma/chroma phase int+subpix + tile index), the
+ * per-engine udata head, and ctrls[]. For the multi-tile scale RE: with
+ * mdp_kernel_direct=0 the SCP fills vpu->config, and this dumps the SCP-computed
+ * "tpipe" horizontal tile-split + per-tile phase accumulation we need to derive.
+ * Throwaway instrumentation -- not for mainline. */
+bool mdp_kd_debug_on(void);
+static void mdp_dbg_dump_config(struct mdp_dev *mdp, struct img_config *cfg)
+{
+	struct img_config_8195 *c;
+	u32 i;
+
+	if (!mdp_kd_dump_config || IS_ERR_OR_NULL(cfg))
+		return;
+	c = &cfg->config_8195;
+	pr_info("MDPDBG BEGIN num_comp=%u num_subfrm=%u\n",
+		c->num_components, c->num_subfrms);
+	for (i = 0; i < c->num_components && i < IMG_MAX_COMPONENTS; i++) {
+		struct img_compparam_8195 *p = &c->components[i];
+		u32 k;
+
+		pr_info("MDPDBG c%u type=%u id=%u in=%ux%u out=%ux%u crop=(%d,%d %ux%u) totw(in=%u out=%u) nsub=%u outdis=%u byp=%u\n",
+			i, p->type, p->id,
+			p->frame.in_width, p->frame.in_height,
+			p->frame.out_width, p->frame.out_height,
+			p->frame.crop.left, p->frame.crop.top,
+			p->frame.crop.width, p->frame.crop.height,
+			p->frame.in_total_width, p->frame.out_total_width,
+			p->num_subfrms, p->frame.output_disable, p->frame.bypass);
+		for (k = 0; k < p->num_subfrms && k < IMG_MAX_SUBFRAMES_8195; k++) {
+			struct img_comp_subfrm_8195 *s = &p->subfrms[k];
+
+			pr_info("MDPDBG c%u sub%u in[l%d r%d t%d b%d] out[l%d r%d t%d b%d] luma(l%d t%d sl%u st%u) chroma(l%d t%d sl%u st%u) ov%d oh%d tiledis=%u\n",
+				i, k, s->in.left, s->in.right, s->in.top, s->in.bottom,
+				s->out.left, s->out.right, s->out.top, s->out.bottom,
+				s->luma.left, s->luma.top, s->luma.left_subpix, s->luma.top_subpix,
+				s->chroma.left, s->chroma.top, s->chroma.left_subpix, s->chroma.top_subpix,
+				s->out_vertical, s->out_horizontal, s->tile_disable);
+		}
+		/* per-engine register-data head (overlaid union; 320 B reaches the
+		 * per-tile subfrms[k] -- RSZ subfrms start at ~u[15], +12 u32/tile). */
+		print_hex_dump(KERN_INFO, "MDPDBG udata ", DUMP_PREFIX_OFFSET,
+			       16, 4, &p->rdma, 320, false);
+	}
+	for (i = 0; i < c->num_subfrms && i < IMG_MAX_SUBFRAMES_8195; i++) {
+		struct img_mmsys_ctrl *mc = &c->ctrls[i];
+		u32 j;
+
+		pr_info("MDPDBG ctrl[%u] num_sets=%u\n", i, mc->num_sets);
+		for (j = 0; j < mc->num_sets && j < 32; j++)
+			pr_info("MDPDBG   set[%u] reg=%#x val=%#x subsys=%u\n", j,
+				mc->sets[j].reg, mc->sets[j].value,
+				mc->sets[j].subsys_id);
+	}
+	pr_info("MDPDBG END\n");
+}
+
+/*
+ * Hybrid NV12 rotate, CPU chroma half: the WROT 3-plane I420 write is broken on
+ * mt8183, so the interleaved-CbCr plane is rotated on the CPU. Reads the input UV
+ * (hc rows x istride), writes the rotated output UV (hc rows x ostride), copying
+ * each 16-bit CbCr pair intact. rev_rows/rev_cols match the HW Y rotation:
+ *   hflip -> rev_cols; vflip -> rev_rows; rot180 -> both. Buffers are dma-contig
+ * coherent (same as vpu->config), so CPU writes are visible without an explicit
+ * sync; the HW writes only the Y plane (disjoint), so the two never race.
+ */
+static void mdp_hybrid_chroma_rotate(u8 *dst_uv, const u8 *src_uv,
+				     u32 wc, u32 hc, u32 istride, u32 ostride,
+				     bool rev_rows, bool rev_cols)
+{
+	u32 r, c;
+
+	for (r = 0; r < hc; r++) {
+		const u8 *srow = src_uv + (rev_rows ? (hc - 1 - r) : r) * istride;
+		u8 *drow = dst_uv + r * ostride;
+
+		for (c = 0; c < wc; c++) {
+			u32 sc = rev_cols ? (wc - 1 - c) : c;
+
+			drow[2 * c]     = srow[2 * sc];		/* Cb */
+			drow[2 * c + 1] = srow[2 * sc + 1];	/* Cr */
+		}
+	}
+}
+
+/*
+ * Hybrid rot90/270, CPU chroma DIM-SWAP half: the chroma transposes like the frame.
+ * Input chroma is wc x hc CbCr pairs (stride istride); output is hc x wc pairs
+ * (stride ostride, dim-swapped). Clockwise rot90: out[or][oc] = in[hc-1-oc][or];
+ * counter-clockwise rot270 (ccw): out[or][oc] = in[oc][wc-1-or]. Each CbCr pair
+ * (16 bit) is copied intact. Matches the HW GREY Y rotate (V4L2 rotate=90 = cw).
+ */
+static void mdp_hybrid_chroma_swap(u8 *dst_uv, const u8 *src_uv,
+				   u32 wc, u32 hc, u32 istride, u32 ostride, bool ccw)
+{
+	u32 orow, ocol;
+
+	/* output chroma: hc cols x wc rows (frame dims swapped) */
+	for (orow = 0; orow < wc; orow++) {
+		u8 *drow = dst_uv + orow * ostride;
+
+		for (ocol = 0; ocol < hc; ocol++) {
+			u32 sr = ccw ? ocol : (hc - 1 - ocol);
+			u32 sc = ccw ? (wc - 1 - orow) : orow;
+			const u8 *spair = src_uv + sr * istride + 2 * sc;
+
+			drow[2 * ocol]     = spair[0];	/* Cb */
+			drow[2 * ocol + 1] = spair[1];	/* Cr */
+		}
+	}
+}
+
+/*
+ * Hybrid 4:4:4 CPU half: horizontal 2x chroma upsample, IN PLACE. The HW wrote a
+ * 4:2:2 chroma plane (w/2 samples per row at stride istride, h rows) into a plane
+ * buffer sized for 4:4:4 (w samples per row at stride ostride). Expand each row to
+ * full width by duplicating columns (nearest -- matches the validated SW reference).
+ * Walk BOTTOM-UP and RIGHT-TO-LEFT so an in-place write (offset 2*c) never clobbers a
+ * not-yet-read source (offset c): within a row 2*c >= c, and for ostride > istride a
+ * higher row's writes (base r'*ostride) sit entirely above row r's source (r*istride).
+ * The Y plane is HW-final and untouched; chroma planes are disjoint per-plane buffers.
+ */
+static void mdp_hybrid_444_hupsample(u8 *plane, u32 w, u32 h,
+				     u32 istride, u32 ostride)
+{
+	u32 wc = w / 2;
+	int r, c;
+
+	for (r = (int)h - 1; r >= 0; r--) {
+		const u8 *srow = plane + (u32)r * istride;
+		u8 *drow = plane + (u32)r * ostride;
+
+		for (c = (int)wc - 1; c >= 0; c--) {
+			u8 v = srow[c];
+
+			drow[2 * c]     = v;
+			drow[2 * c + 1] = v;
+		}
+	}
+}
+
+/*
+ * I420/YV12-dst hybrid CPU post-pass: the HW wrote 2-plane NV12 (Y + interleaved
+ * CbCr) into the single output dma-buf; split the CbCr plane into the separate U/V
+ * planes. The Y plane [0, ystride*h) is HW-final and untouched. The NV12 UV plane
+ * sits at offset ystride*h (h/2 rows x ystride bytes = ystride/2 CbCr pairs/row);
+ * I420/YV12 want two half-width planes (ystride/2 bytes/row). Copy the whole UV
+ * plane to scratch first (an in-place forward split would clobber not-yet-read
+ * source bytes), then write U (Cb, even) + V (Cr, odd): I420 = U-plane then V-plane,
+ * YV12 = V-plane then U-plane. Pure byte reshuffle -- bit-exact vs a CPU NV12->I420.
+ * The output dma-buf is dma-contig coherent (same as the 4:4:4 hybrid); the HW wrote
+ * only the disjoint Y+UV region, so this runs after the HW job with no race.
+ */
+static int mdp_hybrid_i420_deinterleave(u8 *base, u32 w, u32 h, u32 ystride, bool yv12)
+{
+	u32 wc = w / 2, hc = h / 2;
+	u32 cstride = ystride / 2;		/* I420/YV12 chroma plane pitch */
+	u8 *uv = base + (size_t)ystride * h;	/* HW-written NV12 interleaved UV plane */
+	u8 *plane0 = uv;			/* first chroma plane in the buffer */
+	u8 *plane1 = uv + (size_t)cstride * hc;	/* second chroma plane */
+	u8 *cb_plane = yv12 ? plane1 : plane0;	/* U = Cb (even bytes) */
+	u8 *cr_plane = yv12 ? plane0 : plane1;	/* V = Cr (odd bytes) */
+	size_t uvsz = (size_t)ystride * hc;
+	u8 *tmp;
+	u32 r, c;
+
+	tmp = kvmalloc(uvsz, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+	memcpy(tmp, uv, uvsz);
+	for (r = 0; r < hc; r++) {
+		const u8 *srow = tmp + (size_t)r * ystride;
+		u8 *cbrow = cb_plane + (size_t)r * cstride;
+		u8 *crrow = cr_plane + (size_t)r * cstride;
+
+		for (c = 0; c < wc; c++) {
+			cbrow[c] = srow[2 * c];		/* Cb -> U */
+			crrow[c] = srow[2 * c + 1];	/* Cr -> V */
+		}
+	}
+	kvfree(tmp);
+	return 0;
+}
+
+/*
+ * Multi-planar (YM12/YM21) I420/YV12-dst hybrid CPU post-pass. The HW wrote the
+ * 2-plane NV12: Y directly into the real Y-plane dma-buf, and the interleaved
+ * CbCr plane into a SCRATCH buffer (uv, uvstride bytes/row, hc rows). Split the
+ * scratch CbCr into the two SEPARATE chroma-plane dma-bufs: cb_dst (Cb, even
+ * bytes) and cr_dst (Cr, odd bytes), each cstride bytes/row. The caller maps
+ * cb_dst/cr_dst to vb2 plane 1/2 in I420 (U,V) or YV12 (V,U) order. Source
+ * (scratch) and destinations (plane bufs) are disjoint, so no bounce buffer is
+ * needed -- pure byte reshuffle, bit-exact vs a CPU NV12->I420. Void: it cannot
+ * fail (all buffers are pre-validated non-NULL by the caller).
+ */
+static void mdp_hybrid_i420_deinterleave_mp(const u8 *uv, u8 *cb_dst, u8 *cr_dst,
+					    u32 w, u32 h, u32 uvstride, u32 cstride)
+{
+	u32 wc = w / 2, hc = h / 2;
+	u32 r, c;
+
+	for (r = 0; r < hc; r++) {
+		const u8 *srow = uv + (size_t)r * uvstride;
+		u8 *cbrow = cb_dst + (size_t)r * cstride;
+		u8 *crrow = cr_dst + (size_t)r * cstride;
+
+		for (c = 0; c < wc; c++) {
+			cbrow[c] = srow[2 * c];		/* Cb -> U */
+			crrow[c] = srow[2 * c + 1];	/* Cr -> V */
+		}
+	}
+}
+
+/*
+ * SCP-tail class #2: 3-plane 4:2:2 dst (YM16/YM61) CPU post-pass. Identical to the
+ * multi-planar i420 de-interleave EXCEPT the chroma is FULL height (4:2:2): the HW
+ * wrote 2-plane NV16 (Y direct to the real Y-plane, interleaved CbCr to scratch,
+ * uvstride bytes/row x h rows). Split the scratch CbCr -> cb_dst (Cb, even) and
+ * cr_dst (Cr, odd), each cstride bytes/row x h rows (half-width, full-height). The
+ * caller maps cb_dst/cr_dst to vb2 plane 1/2 in YM16 (U,V) or YM61 (V,U) order.
+ */
+static void mdp_hybrid_nv16_deinterleave_mp(const u8 *uv, u8 *cb_dst, u8 *cr_dst,
+					    u32 w, u32 h, u32 uvstride, u32 cstride)
+{
+	u32 wc = w / 2;
+	u32 r, c;
+
+	for (r = 0; r < h; r++) {		/* FULL height (4:2:2), not h/2 */
+		const u8 *srow = uv + (size_t)r * uvstride;
+		u8 *cbrow = cb_dst + (size_t)r * cstride;
+		u8 *crrow = cr_dst + (size_t)r * cstride;
+
+		for (c = 0; c < wc; c++) {
+			cbrow[c] = srow[2 * c];		/* Cb -> U */
+			crrow[c] = srow[2 * c + 1];	/* Cr -> V */
+		}
+	}
+}
+
+/* mdp_kd_pktreuse: two pre-compute frameparams describe the SAME transform (so
+ * the built GCE packet is byte-identical except the src/dst iovas) iff every
+ * config-determining field matches. iovas are excluded (they are what reuse
+ * patches). Any S_FMT / S_SELECTION / rotation change flips a compared field,
+ * so a stale cache naturally misses and rebuilds. */
+static bool mdp_reuse_match(const struct img_ipi_frameparam *a,
+			    const struct img_ipi_frameparam *b)
+{
+	return a->type == b->type &&
+	       a->inputs[0].flags == b->inputs[0].flags &&
+	       a->inputs[0].buffer.usage == b->inputs[0].buffer.usage &&
+	       a->outputs[0].flags == b->outputs[0].flags &&
+	       a->outputs[0].rotation == b->outputs[0].rotation &&
+	       a->outputs[0].buffer.usage == b->outputs[0].buffer.usage &&
+	       !memcmp(&a->inputs[0].buffer.format, &b->inputs[0].buffer.format,
+		       sizeof(struct img_pix_format)) &&
+	       !memcmp(&a->outputs[0].buffer.format, &b->outputs[0].buffer.format,
+		       sizeof(struct img_pix_format)) &&
+	       !memcmp(&a->outputs[0].crop, &b->outputs[0].crop,
+		       sizeof(struct img_crop));
+}
+
+/* Drop the cached reuse packet. Waits out any in-flight job first (the
+ * completion callback keeps the cmd alive, so it must be idle before we free). */
+static void mdp_ctx_reuse_invalidate(struct mdp_m2m_ctx *ctx)
+{
+	if (!ctx->reuse_cmd)
+		return;
+	if (refcount_read(&ctx->mdp_dev->job_count))
+		wait_event_timeout(ctx->mdp_dev->callback_wq,
+				   !refcount_read(&ctx->mdp_dev->job_count), 2 * HZ);
+	mdp_cmdq_reuse_free(ctx->reuse_cmd);
+	ctx->reuse_cmd = NULL;
+}
+
+/*
+ * mdp_iova_guard: reject (and log) a job whose imported SOURCE plane iova is
+ * structurally invalid BEFORE it is programmed into the SVPP2 RDMA, so a
+ * stale/zero dmabuf-import plane iova becomes a clean per-job -EIO instead of a
+ * console-flooding, CPU-stalling mtk-iommu fault (region-2 master =
+ * M4U_PORT_L5_SVPP2_MDP_RDMA). The MTK MM IOMMU is bank/region-based: a master
+ * issues a 32-bit iova (0..4G) that HW prepends with its 4G region base, so a
+ * valid plane iova is in (0, 4G-8M) -- iova 0 faults at the region base
+ * (0x2_0000_0000, the observed layer-0 signature) and anything in the top 8 MB
+ * per-region gap is unmappable. Belt-and-suspenders ALONGSIDE the
+ * mdp_buffer_planes_contig reuse fix below (which removes the stale-chroma-iova
+ * SOURCE); it also logs the offending plane iovas so an induced fault is
+ * captured (Fault B's stale value never trips the range check, only the fix
+ * prevents it). Default on; instrumentation-logs every frame under mdp_kd_debug.
+ */
+static bool mdp_iova_guard = true;
+module_param(mdp_iova_guard, bool, 0644);
+MODULE_PARM_DESC(mdp_iova_guard,
+	"reject + log a job whose source plane iova is 0 or in the IOMMU top guard (default 1)");
+
+/* 8 MB per-region top gap (drivers/iommu/mtk_iommu.c MTK_IOMMU_IOVA_SZ_4G). */
+#define MDP_IOVA_TOP_GUARD	((u32)(SZ_4G - SZ_8M))	/* 0xFF800000 */
+
+static inline bool mdp_iova_valid(u32 iova)
+{
+	return iova != 0 && iova < MDP_IOVA_TOP_GUARD;
+}
+
+/*
+ * The packet-reuse fast-path (mdp_cmdq_reuse) delta-patches EVERY recorded
+ * plane-iova write by a SINGLE plane-0 base delta. That is only correct when the
+ * buffer's planes are contiguous in the IOMMU (iova[k] == iova[k-1] +
+ * plane_fmt[k-1].size) -- a single-fd / MMAP-contiguous buffer where the whole
+ * allocation moves as one. A MULTI-fd dmabuf-import whose chroma plane is an
+ * INDEPENDENT allocation moves plane 1 by a DIFFERENT delta, so the reused
+ * packet keeps a STALE chroma base -> once that chroma buffer is
+ * recycled/unmapped the SVPP2 RDMA faults on the stale in-region iova (the
+ * observed layer=1 signature). Only cache/reuse when both src and dst are
+ * plane-contiguous; a non-contiguous buffer takes the full rebuild (fresh
+ * per-plane iovas via mdp_prepare_buffer), which is always correct. Mirrors the
+ * existing block-mode (detile) reuse exclusion; single-plane / single-fd reuse
+ * (the board-validated case) is unaffected.
+ */
+static bool mdp_buffer_planes_contig(const struct img_image_buffer *b)
+{
+	u32 n = MDP_COLOR_GET_PLANE_COUNT(b->format.colorformat);
+	u32 k;
+
+	for (k = 1; k < n && k < IMG_MAX_PLANES; k++)
+		if (b->iova[k] != b->iova[k - 1] + b->format.plane_fmt[k - 1].size)
+			return false;
+	return true;
+}
+
 static void mdp_m2m_device_run(void *priv)
 {
 	struct mdp_m2m_ctx *ctx = priv;
 	struct mdp_frame *frame;
 	struct vb2_v4l2_buffer *src_vb, *dst_vb;
 	struct img_ipi_frameparam param = {};
+	struct img_ipi_frameparam param_snap;
 	struct mdp_cmdq_param task = {};
 	enum vb2_buffer_state vb_state = VB2_BUF_STATE_ERROR;
 	int ret;
+	u32 nchunks;
+	bool is_444_hybrid = false;
+	bool can_cache = false;
 
 	if (mdp_m2m_ctx_is_state_set(ctx, MDP_M2M_CTX_ERROR)) {
 		dev_err(&ctx->mdp_dev->pdev->dev,
@@ -83,12 +452,146 @@ static void mdp_m2m_device_run(void *priv)
 	src_vb = v4l2_m2m_next_src_buf(ctx->m2m_ctx);
 	mdp_set_src_config(&param.inputs[0], frame, &src_vb->vb2_buf);
 
+	/*
+	 * Pin the imported source mapping for the whole async job (SVPP2 MDP_RDMA
+	 * use-after-unmap iommu-fault fix): hand the source plane dma_bufs to the
+	 * submit path, which takes a get_dma_buf() ref held until the GCE completion
+	 * callback, so a concurrent context (decoder/pool churn under load) cannot
+	 * free/unmap the imported buffer while the in-flight RDMA still reads the
+	 * baked iova. Only MEMORY_DMABUF sources (the dmabuf-import detile that
+	 * faults) have a dma_buf to pin; MMAP sources are vb2-allocated with a
+	 * persistent mapping that never faults, so they pin nothing (src_dbuf_n=0).
+	 * src_vb is held by v4l2-m2m until this job's completion, so its plane
+	 * dma_bufs are valid to reference here.
+	 */
+	if (src_vb->vb2_buf.memory == VB2_MEMORY_DMABUF) {
+		u32 p;
+
+		for (p = 0; p < src_vb->vb2_buf.num_planes && p < IMG_MAX_PLANES; p++) {
+			task.src_dbuf[p] = src_vb->vb2_buf.planes[p].dbuf;
+			task.src_dbuf_n++;
+		}
+	}
+
 	frame = ctx_get_frame(ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	dst_vb = v4l2_m2m_next_dst_buf(ctx->m2m_ctx);
 	mdp_set_dst_config(&param.outputs[0], frame, &dst_vb->vb2_buf);
 
+	/*
+	 * Guard: never program the RDMA with a structurally-invalid source plane
+	 * iova (0 / IOMMU top-guard) -- that is what floods mtk-iommu with SVPP2
+	 * read faults. Reject the job cleanly and log the plane iovas so an induced
+	 * fault is captured (also logs every frame under mdp_kd_debug to catch the
+	 * stale-but-in-range chroma value). Covers both the fresh-compute and the
+	 * reuse fast-path (evaluated on the fresh param before either branch).
+	 */
+	if (mdp_iova_guard) {
+		struct img_image_buffer *ib = &param.inputs[0].buffer;
+		struct img_image_buffer *ob = &param.outputs[0].buffer;
+		u32 innp = MDP_COLOR_GET_PLANE_COUNT(ib->format.colorformat);
+		bool bad = false;
+		u32 pl;
+
+		for (pl = 0; pl < innp && pl < IMG_MAX_PLANES; pl++)
+			if (!mdp_iova_valid(ib->iova[pl]))
+				bad = true;
+
+		if (bad || mdp_kd_debug_on())
+			dev_err_ratelimited(&ctx->mdp_dev->pdev->dev,
+				"MDP-IOVA%s frame=%u type=%u src %ux%u cf=%#x iova[%#x,%#x,%#x] dst cf=%#x iova[%#x,%#x,%#x]\n",
+				bad ? "-BAD" : "", param.frame_no, param.type,
+				ib->format.width, ib->format.height,
+				ib->format.colorformat,
+				ib->iova[0], ib->iova[1], ib->iova[2],
+				ob->format.colorformat,
+				ob->iova[0], ob->iova[1], ob->iova[2]);
+		if (bad)
+			goto worker_end;
+	}
+
+	/* Job-batching (backlog #1) queue-depth probe: how many src/dst pairs are
+	 * ALREADY QBUF'd-and-ready at this device_run entry -- i.e. the batch factor
+	 * a driver-side coalescer could fold into one GCE packet. min(src,dst)>1 is
+	 * the precondition for any batching win; a 1-deep client leaves it at 1
+	 * (batching never triggers). Gated on mdp_kd_debug -- measurement only, no
+	 * behaviour change. */
+	if (mdp_kd_debug_on()) {
+		unsigned int rs = v4l2_m2m_num_src_bufs_ready(ctx->m2m_ctx);
+		unsigned int rd = v4l2_m2m_num_dst_bufs_ready(ctx->m2m_ctx);
+
+		dev_info(&ctx->mdp_dev->pdev->dev,
+			 "MDPKD-BATCH ready src=%u dst=%u pairs=%u\n",
+			 rs, rd, min(rs, rd));
+	}
+
+	/*
+	 * 4:4:4 hybrid: the dst is I444/YV24, which the WROT cannot write. Reconfigure
+	 * the HW output to 4:2:2 (I422/YV16 -- proven) writing compact half-width chroma
+	 * into the SAME 4:4:4 plane buffers (iova[] already set above, Y unchanged); the
+	 * CPU horizontal-upsamples the chroma to 4:4:4 after the HW job completes.
+	 */
+	if (frame->mdp_fmt &&
+	    (frame->mdp_fmt->mdp_color == MDP_COLOR_I444 ||
+	     frame->mdp_fmt->mdp_color == MDP_COLOR_YV24)) {
+		struct img_image_buffer *b = &param.outputs[0].buffer;
+		u32 ow = b->format.width;
+		u32 oh = b->format.height;
+
+		if (!mdp_kd_444hybrid) {
+			dev_err(&ctx->mdp_dev->pdev->dev,
+				"4:4:4 output requires mdp_kd_444hybrid=1\n");
+			goto worker_end;
+		}
+		b->format.colorformat =
+			(frame->mdp_fmt->mdp_color == MDP_COLOR_YV24) ?
+				MDP_COLOR_YV16 : MDP_COLOR_I422;
+		b->format.plane_fmt[1].stride = ow / 2;
+		b->format.plane_fmt[1].size   = (ow / 2) * oh;
+		b->format.plane_fmt[2].stride = ow / 2;
+		b->format.plane_fmt[2].size   = (ow / 2) * oh;
+		is_444_hybrid = true;
+	}
+
 	if (mdp_check_pp_enable(ctx->mdp_dev, frame))
 		param.type = MDP_STREAM_TYPE_DUAL_BITBLT;
+
+	/* Packet-reuse fast-path: same transform as the cached packet -> patch only
+	 * the src/dst plane iovas and re-submit, skipping mdp_vpu_process + the whole
+	 * GCE-packet rebuild. Only the simple single-pp path is ever cached (see the
+	 * can_cache gate below), so a hit is non-4:4:4-hybrid / non-detile / non-DUAL;
+	 * the block-mode/compress guard here is defensive (a block-mode source never
+	 * matches a cached linear packet -- colorformat is in the mdp_reuse_match key
+	 * -- and is never cached, so this makes that invariant explicit). */
+	if (mdp_kd_pktreuse && ctx->reuse_cmd && !is_444_hybrid && !ctx->ccm.en &&
+	    ctx->rsz_table < 0 &&
+	    param.type != MDP_STREAM_TYPE_DUAL_BITBLT &&
+	    !MDP_COLOR_IS_BLOCK_MODE(param.inputs[0].buffer.format.colorformat) &&
+	    !MDP_COLOR_IS_COMPRESS(param.inputs[0].buffer.format.colorformat) &&
+	    mdp_buffer_planes_contig(&param.inputs[0].buffer) &&
+	    mdp_buffer_planes_contig(&param.outputs[0].buffer) &&
+	    mdp_reuse_match(&ctx->reuse_param, &param)) {
+		if (refcount_read(&ctx->mdp_dev->job_count)) {
+			ret = wait_event_timeout(ctx->mdp_dev->callback_wq,
+						 !refcount_read(&ctx->mdp_dev->job_count),
+						 2 * HZ);
+			if (ret == 0) {
+				dev_err(&ctx->mdp_dev->pdev->dev,
+					"reuse: previous job not done\n");
+				goto worker_end;
+			}
+		}
+		ret = mdp_cmdq_reuse(ctx->mdp_dev, ctx->reuse_cmd, &param);
+		if (!ret)
+			return;
+		/* reuse submit failed -> drop the cache, fall through to full rebuild */
+		dev_warn(&ctx->mdp_dev->pdev->dev,
+			 "reuse submit failed %d, rebuilding\n", ret);
+		mdp_cmdq_reuse_free(ctx->reuse_cmd);
+		ctx->reuse_cmd = NULL;
+	}
+
+	/* Snapshot the pre-compute (geometry) frameparam for the reuse-match key. */
+	param_snap = param;
 
 	ret = mdp_vpu_process(&ctx->mdp_dev->vpu, &param);
 	if (ret) {
@@ -97,30 +600,264 @@ static void mdp_m2m_device_run(void *priv)
 		goto worker_end;
 	}
 
-	task.config = ctx->mdp_dev->vpu.config;
+	mdp_dbg_dump_config(ctx->mdp_dev,
+			    (struct img_config *)ctx->mdp_dev->vpu.config); /* MDPDBG oracle */
+
+	/* GREY (Y8) SOURCE pre-expand: mdp_vpu_process reconfigured the source to plain
+	 * NV12 @ scratch_b (the config already reads it); here the CPU builds that
+	 * scratch NV12 from the real GREY input before the GCE submit -- copy the Y plane
+	 * verbatim, fill a neutral (0x80) interleaved UV plane. The source stride was
+	 * preserved, so Y is a straight istride*h copy and the UV plane follows it. */
+	if (ctx->mdp_dev->vpu.grey_src) {
+		struct mdp_vpu_dev *vpu = &ctx->mdp_dev->vpu;
+		u32 h = param.inputs[0].buffer.format.height;
+		u32 istride = param.inputs[0].buffer.format.plane_fmt[0].stride;
+		size_t ysz = (size_t)istride * h;
+		u8 *sva = vb2_plane_vaddr(&src_vb->vb2_buf, 0);
+		u8 *nv = vpu->scratch_b;
+
+		if (!sva || !nv) {
+			dev_warn(&ctx->mdp_dev->pdev->dev,
+				 "GREY src-expand: no vaddr (src=%p scratch=%p)\n",
+				 sva, nv);
+			goto worker_end;
+		}
+		memcpy(nv, sva, ysz);		/* Y plane, verbatim */
+		memset(nv + ysz, 0x80, ysz / 2);	/* neutral interleaved UV */
+		wmb();		/* drain the WC scratch before the GCE reads it */
+	}
+
+	/* Hybrid NV12 rotate: HW does the Y plane (GREY), the CPU does the chroma
+	 * here (the WROT 3-plane I420 write is broken). Disjoint planes, so this runs
+	 * before the async HW Y submit without racing it. */
+	if (ctx->mdp_dev->vpu.hybrid_chroma) {
+		struct mdp_vpu_dev *vpu = &ctx->mdp_dev->vpu;
+		u32 w = param.inputs[0].buffer.format.width;
+		u32 h = param.inputs[0].buffer.format.height;
+		u32 oh = param.outputs[0].buffer.format.height;	/* = w for rot90/270 */
+		u32 istride = param.inputs[0].buffer.format.plane_fmt[0].stride;
+		u32 ostride = param.outputs[0].buffer.format.plane_fmt[0].stride;
+		u8 *sva = vb2_plane_vaddr(&src_vb->vb2_buf, 0);
+		u8 *dva = vb2_plane_vaddr(&dst_vb->vb2_buf, 0);
+
+		if (!sva || !dva)
+			dev_warn(&ctx->mdp_dev->pdev->dev,
+				 "hybrid chroma: no CPU vaddr (src=%p dst=%p)\n", sva, dva);
+		else if (vpu->hybrid_swap)	/* rot90/270: dim-swap the chroma */
+			mdp_hybrid_chroma_swap(dva + ostride * oh, sva + istride * h,
+					       w / 2, h / 2, istride, ostride,
+					       vpu->hybrid_ccw);
+		else
+			mdp_hybrid_chroma_rotate(dva + ostride * oh, sva + istride * h,
+						 w / 2, h / 2, istride, ostride,
+						 vpu->hybrid_rev_rows,
+						 vpu->hybrid_rev_cols);
+	}
+
+	/* Multi-job detile: mdp_vpu_process published detile_nchunks (1 for every
+	 * path except an mt8183 kernel-direct detile whose 64x32 tile grid exceeds
+	 * IMG_MAX_SUBFRAMES_8183). For nchunks>1 the whole frame is ONE async batch
+	 * -- mdp_cmdq_send_detile builds nchunks packets and submits them all to the
+	 * single GCE thread (chained in submit order, so the inter-chunk WROT-EOF ->
+	 * RDMA barrier holds), with ONE pm ref + ONE job_count, buf_done on the last
+	 * packet. No per-chunk wait: the worker returns after submit (0 CPU while the
+	 * MDP HW runs). All chunks write the same in/out dma-buf (per-tile offsets). */
+	nchunks = ctx->mdp_dev->vpu.detile_nchunks;
+
+	task.config = ctx->mdp_dev->vpu.config;	/* chunk 0 from mdp_vpu_process */
 	task.param = &param;
 	task.composes[0] = &frame->compose;
 	task.cmdq_cb = NULL;
 	task.cb_data = NULL;
-	task.mdp_ctx = ctx;
+	/* send_detile gives it to the last packet only. For the 4:4:4 hybrid AND the
+	 * I420/YV12-dst hybrid we suppress the auto buf_done (mdp_ctx == NULL) and
+	 * finalize manually below, AFTER the CPU chroma pass. */
+	task.mdp_ctx = (is_444_hybrid || ctx->mdp_dev->vpu.i420_deint) ? NULL : ctx;
+	/* Per-context WROT programmable CCM (V4L2_CID_MTK_MDP_CCM). NULL when the
+	 * control is unset => config_wrot_frame keeps the built-in CSC. */
+	task.ccm = ctx->ccm.en ? &ctx->ccm : NULL;
+	/* Per-context RSZ coeff-table select (V4L2_CID_MTK_MDP_RSZ_COEFF_TABLE).
+	 * -1 (the ctx default) => config_rsz_frame keeps the driver-default table.
+	 * NB: the mdp_cmdq_param default is 0 (= table 0), so this MUST be set by
+	 * every builder that runs an active RSZ -- m2m is the only such builder. */
+	task.rsz_table = ctx->rsz_table;
+	/* Gate the RSZ coeff-table override KERNEL-DIRECT-only: mdp_vpu_process (called
+	 * above) set vpu.kd_used=false iff it fell back to the SCP. On the SCP path the
+	 * override must NOT run (it would patch the SCP-computed config on the fragile
+	 * SCP GCE path -- WARN/wedge risk), so config_rsz_frame keys off cmd->rsz_kd. */
+	task.rsz_kd = ctx->mdp_dev->vpu.kd_used;
 
+	/* Per-FRAME wait: previous frame's job must finish before we reuse
+	 * vpu->config + job_count (the m2m core already serializes frames, so this
+	 * is normally satisfied immediately -- it is a defensive backstop). */
 	if (refcount_read(&ctx->mdp_dev->job_count)) {
 		ret = wait_event_timeout(ctx->mdp_dev->callback_wq,
 					 !refcount_read(&ctx->mdp_dev->job_count),
 					 2 * HZ);
 		if (ret == 0) {
-			dev_err(&ctx->mdp_dev->pdev->dev,
-				"%d jobs not yet done\n",
+			dev_err(&ctx->mdp_dev->pdev->dev, "%d jobs not yet done\n",
 				refcount_read(&ctx->mdp_dev->job_count));
 			goto worker_end;
 		}
 	}
+	/* Debug: previous frame's job is now done -- dump its de-interleaved scratch
+	 * to isolate the 5-pass de-interleave (write) from re-interleave (read). */
+	mdp_vpu_scratch_dump(&ctx->mdp_dev->vpu);
 
-	ret = mdp_cmdq_send(ctx->mdp_dev, &task);
+	/* Cache for reuse only the simple single-pp path (non-4:4:4-hybrid, non-
+	 * detile, non-DUAL, no hybrid chroma) -- the common blit / scale / crop /
+	 * CSC / fmtconv transform a streaming session repeats with fixed geometry.
+	 * mdp_cmdq_send stashes the built cmd into ctx->reuse_cmd via reuse_slot and
+	 * marks it so the completion callback keeps it alive.
+	 *
+	 * Detile MUST be excluded: an MM21/MT21 (block-mode/compressed) source is a
+	 * tiled detile whose reuse iova-patch is NOT bit-exact (the WROT/RDMA tile
+	 * addressing is not the simple SRC_BASE/END + VIDO_BASE patch reuse scans for).
+	 * On mt8195 a single-pipe detile is nchunks==1, so nchunks>1 does NOT exclude
+	 * it (only the mt8183 >14-tile detile is nchunks>1) -- the earlier "detile ==
+	 * nchunks>1" assumption was wrong and defaulting reuse on corrupted frames 2..N
+	 * of the codec detile path (board-caught: kd-defaulton 1280x720-single exact=0).
+	 * Gate explicitly on the block-mode/compressed source instead. */
+	can_cache = mdp_kd_pktreuse && !is_444_hybrid && nchunks == 1 &&
+		    !ctx->mdp_dev->vpu.i420_deint && !ctx->ccm.en &&
+		    ctx->rsz_table < 0 &&
+		    !ctx->mdp_dev->vpu.grey_src &&
+		    param.type != MDP_STREAM_TYPE_DUAL_BITBLT &&
+		    !ctx->mdp_dev->vpu.hybrid_chroma &&
+		    !MDP_COLOR_IS_BLOCK_MODE(param.inputs[0].buffer.format.colorformat) &&
+		    !MDP_COLOR_IS_COMPRESS(param.inputs[0].buffer.format.colorformat) &&
+		    mdp_buffer_planes_contig(&param.inputs[0].buffer) &&
+		    mdp_buffer_planes_contig(&param.outputs[0].buffer);
+	if (can_cache) {
+		mdp_ctx_reuse_invalidate(ctx);	/* drop any stale geometry cmd */
+		task.reuse_slot = &ctx->reuse_cmd;
+	}
+
+	if (nchunks > 1)
+		ret = mdp_cmdq_send_detile(ctx->mdp_dev, &task, nchunks,
+					   mdp_vpu_compute_8183_chunk);
+	else
+		ret = mdp_cmdq_send(ctx->mdp_dev, &task);
 	if (ret) {
-		dev_err(&ctx->mdp_dev->pdev->dev,
-			"CMDQ sendtask failed: %d\n", ret);
+		dev_err(&ctx->mdp_dev->pdev->dev, "CMDQ send failed: %d\n", ret);
 		goto worker_end;
+	}
+
+	if (can_cache && ctx->reuse_cmd)
+		ctx->reuse_param = param_snap;
+
+	if (is_444_hybrid) {
+		/* The HW wrote 4:2:2 into the 4:4:4 plane buffers. Wait for that job,
+		 * then CPU horizontal-upsample each chroma plane (compact ow/2-wide ->
+		 * full ow-wide, in place) to complete the 4:4:4 frame, then finalize. */
+		struct mdp_vpu_dev *vpu = &ctx->mdp_dev->vpu;
+		u32 ow = param.outputs[0].buffer.format.width;
+		u32 oh = param.outputs[0].buffer.format.height;
+		u8 *cb = vb2_plane_vaddr(&dst_vb->vb2_buf, 1);
+		u8 *cr = vb2_plane_vaddr(&dst_vb->vb2_buf, 2);
+
+		if (refcount_read(&ctx->mdp_dev->job_count)) {
+			ret = wait_event_timeout(ctx->mdp_dev->callback_wq,
+						 !refcount_read(&ctx->mdp_dev->job_count),
+						 2 * HZ);
+			if (ret == 0) {
+				dev_err(&ctx->mdp_dev->pdev->dev,
+					"4:4:4 hybrid: HW job timed out\n");
+				goto worker_end;
+			}
+		}
+		if (cb && cr) {
+			/*
+			 * KI-014: the compute routes the reconfigured 3-plane I422/YV16
+			 * dst through the ym16dst arm (mdp_kd_ym16dst8195): the HW wrote
+			 * 2-plane NV16 (interleaved CbCr, FULL-height) to scratch_a and set
+			 * ym16_deint, expecting the CPU de-interleave (the i420_deint branch
+			 * below) to split scratch -> the compact 4:2:2 chroma planes 1/2.
+			 * is_444_hybrid takes THIS branch instead, so run that de-interleave
+			 * HERE first (compact 4:2:2 into plane 1/2), then horizontal-upsample
+			 * each to 4:4:4 in place. Without it plane 1/2 stay zero -> the Y
+			 * plane is bit-exact but U/V are all-zero. YV24 (i420_deint_yv12)
+			 * selects the U/V plane order exactly as the i420_deint branch does.
+			 */
+			if (vpu->ym16_deint) {
+				u32 ostride =
+					param.outputs[0].buffer.format.plane_fmt[0].stride;
+				bool yv = vpu->i420_deint_yv12;
+				u8 *cb_dst = yv ? cr : cb;	/* Cb -> U plane */
+				u8 *cr_dst = yv ? cb : cr;	/* Cr -> V plane */
+
+				mdp_hybrid_nv16_deinterleave_mp(vpu->scratch_a, cb_dst,
+								cr_dst, ow, oh,
+								ostride, ow / 2);
+			}
+			mdp_hybrid_444_hupsample(cb, ow, oh, ow / 2, ow);
+			mdp_hybrid_444_hupsample(cr, ow, oh, ow / 2, ow);
+			mdp_m2m_process_done(ctx, VB2_BUF_STATE_DONE);
+		} else {
+			dev_warn(&ctx->mdp_dev->pdev->dev,
+				 "4:4:4 hybrid: no chroma vaddr (cb=%p cr=%p)\n", cb, cr);
+			goto worker_end;
+		}
+	} else if (ctx->mdp_dev->vpu.i420_deint) {
+		/* The HW wrote 2-plane NV12 (Y + interleaved CbCr). Wait for that job, then
+		 * CPU de-interleave the CbCr plane into the separate I420/YV12 U/V planes,
+		 * then finalize. Two layouts:
+		 *  - single-buffer (i420_deint_mp==false): Y+UV are in ONE dma-buf; the CbCr
+		 *    plane at ystride*h is split in place into the contiguous U/V region.
+		 *  - multi-planar (i420_deint_mp==true, YM12/YM21): Y went to the real Y-plane
+		 *    dma-buf, the interleaved CbCr went to scratch_a; split scratch_a -> the
+		 *    two SEPARATE chroma-plane dma-bufs (vb2 plane 1/2). */
+		struct mdp_vpu_dev *vpu = &ctx->mdp_dev->vpu;
+		u32 ow = param.outputs[0].buffer.format.width;
+		u32 oh = param.outputs[0].buffer.format.height;
+		u32 ostride = param.outputs[0].buffer.format.plane_fmt[0].stride;
+		bool yv12 = vpu->i420_deint_yv12;
+		u8 *base = vb2_plane_vaddr(&dst_vb->vb2_buf, 0);
+
+		if (refcount_read(&ctx->mdp_dev->job_count)) {
+			ret = wait_event_timeout(ctx->mdp_dev->callback_wq,
+						 !refcount_read(&ctx->mdp_dev->job_count),
+						 2 * HZ);
+			if (ret == 0) {
+				dev_err(&ctx->mdp_dev->pdev->dev,
+					"I420/YV12-dst hybrid: HW job timed out\n");
+				goto worker_end;
+			}
+		}
+		if (vpu->i420_deint_mp) {
+			/* multi-planar: scratch_a holds the interleaved UV (uvstride =
+			 * NV12 UV pitch = ostride); de-interleave to plane 1/2. */
+			const u8 *uv = vpu->scratch_a;
+			u8 *p1 = vb2_plane_vaddr(&dst_vb->vb2_buf, 1);	/* I420 U / YV12 V */
+			u8 *p2 = vb2_plane_vaddr(&dst_vb->vb2_buf, 2);	/* I420 V / YV12 U */
+			u8 *cb_dst = yv12 ? p2 : p1;			/* Cb -> U plane */
+			u8 *cr_dst = yv12 ? p1 : p2;			/* Cr -> V plane */
+
+			if (!uv || !p1 || !p2) {
+				dev_warn(&ctx->mdp_dev->pdev->dev,
+					 "multi-planar I420/YV12-dst hybrid: no vaddr (uv=%p p1=%p p2=%p)\n",
+					 uv, p1, p2);
+				goto worker_end;
+			}
+			if (vpu->ym16_deint)	/* 3-plane 4:2:2: FULL-height chroma */
+				mdp_hybrid_nv16_deinterleave_mp(uv, cb_dst, cr_dst,
+								ow, oh, ostride, ostride / 2);
+			else
+				mdp_hybrid_i420_deinterleave_mp(uv, cb_dst, cr_dst,
+								ow, oh, ostride, ostride / 2);
+		} else {
+			if (!base) {
+				dev_warn(&ctx->mdp_dev->pdev->dev,
+					 "I420/YV12-dst hybrid: no CPU vaddr\n");
+				goto worker_end;
+			}
+			if (mdp_hybrid_i420_deinterleave(base, ow, oh, ostride, yv12)) {
+				dev_warn(&ctx->mdp_dev->pdev->dev,
+					 "I420/YV12-dst hybrid: de-interleave alloc failed\n");
+				goto worker_end;
+			}
+		}
+		mdp_m2m_process_done(ctx, VB2_BUF_STATE_DONE);
 	}
 
 	return;
@@ -191,6 +928,8 @@ static void mdp_m2m_stop_streaming(struct vb2_queue *q)
 {
 	struct mdp_m2m_ctx *ctx = vb2_get_drv_priv(q);
 	struct vb2_v4l2_buffer *vb;
+
+	mdp_ctx_reuse_invalidate(ctx);	/* drop the cached reuse packet */
 
 	vb = mdp_m2m_buf_remove(ctx, q->type);
 	while (vb) {
@@ -308,6 +1047,30 @@ static int mdp_m2m_g_fmt_mplane(struct file *file, void *fh,
 	return 0;
 }
 
+/*
+ * Set the crop (output queue) / compose (capture queue) rectangle on S_FMT.
+ * The V4L2 default is the full frame. We only preserve a rectangle across a
+ * later S_FMT when the client *explicitly* set it via S_SELECTION (@keep) and
+ * it still fits -- e.g. v4l2-ctl re-issuing S_FMT during stream setup. When the
+ * client never set one (@keep false), S_FMT must grow it to the full frame:
+ * otherwise the initial 64x64 minimum-format default is kept forever (it "fits"
+ * any larger format), which both violates the V4L2 full-frame default and, on
+ * MT8195, fails mdp_frame_is_mm21_detile()'s full-frame-crop check -- forcing
+ * the codec readback onto the SCP detile path (KI-009, wedges on the
+ * cherry_scp_v2.0.26100 firmware) instead of the firmware-independent
+ * kernel-direct detile.
+ */
+static void mdp_default_or_keep_rect(struct v4l2_rect *r, u32 w, u32 h, bool keep)
+{
+	if (keep && r->width && r->height &&
+	    r->left + r->width <= w && r->top + r->height <= h)
+		return;
+	r->left = 0;
+	r->top = 0;
+	r->width = w;
+	r->height = h;
+}
+
 static int mdp_m2m_s_fmt_mplane(struct file *file, void *fh,
 				struct v4l2_format *f)
 {
@@ -333,19 +1096,17 @@ static int mdp_m2m_s_fmt_mplane(struct file *file, void *fh,
 
 	capture = ctx_get_frame(ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	if (V4L2_TYPE_IS_OUTPUT(f->type)) {
-		capture->crop.c.left = 0;
-		capture->crop.c.top = 0;
-		capture->crop.c.width = f->fmt.pix_mp.width;
-		capture->crop.c.height = f->fmt.pix_mp.height;
+		mdp_default_or_keep_rect(&capture->crop.c,
+					 f->fmt.pix_mp.width, f->fmt.pix_mp.height,
+					 capture->crop_set);
 		ctx->curr_param.colorspace = f->fmt.pix_mp.colorspace;
 		ctx->curr_param.ycbcr_enc = f->fmt.pix_mp.ycbcr_enc;
 		ctx->curr_param.quant = f->fmt.pix_mp.quantization;
 		ctx->curr_param.xfer_func = f->fmt.pix_mp.xfer_func;
 	} else {
-		capture->compose.left = 0;
-		capture->compose.top = 0;
-		capture->compose.width = f->fmt.pix_mp.width;
-		capture->compose.height = f->fmt.pix_mp.height;
+		mdp_default_or_keep_rect(&capture->compose,
+					 f->fmt.pix_mp.width, f->fmt.pix_mp.height,
+					 capture->compose_set);
 	}
 
 	return 0;
@@ -441,10 +1202,13 @@ static int mdp_m2m_s_selection(struct file *file, void *fh,
 		return ret;
 	capture = ctx_get_frame(ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 
-	if (mdp_target_is_crop(s->target))
+	if (mdp_target_is_crop(s->target)) {
 		capture->crop.c = r;
-	else
+		capture->crop_set = 1;
+	} else {
 		capture->compose = r;
+		capture->compose_set = 1;
+	}
 
 	s->r = r;
 
@@ -525,6 +1289,38 @@ static int mdp_m2m_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_ROTATE:
 		capture->rotation = ctrl->val;
 		break;
+	case V4L2_CID_MTK_MDP_CCM: {
+		/* Decode the s32[15] payload into the per-context CCM cfg. Layout:
+		 * [0..8] 3x3 coeffs (Q12, masked 0x1fff at HW-write time in
+		 * config_wrot_frame); [9..11] pre-add, [12..14] post-add -- each a
+		 * signed 9-bit offset packed <<0/<<10/<<20 into VIDO_MAT_PRE/POSTADD.
+		 * The control is "active" iff any element is non-zero (an all-zero
+		 * matrix is never a wanted transform, so it doubles as the unset
+		 * sentinel => built-in CSC). */
+		const s32 *v = ctrl->p_new.p_s32;
+		struct mdp_ccm_cfg cfg = {};
+		bool any = false;
+		int i;
+
+		for (i = 0; i < MDP_CCM_NELEMS; i++)
+			any |= (v[i] != 0);
+		for (i = 0; i < 9; i++)
+			cfg.coef[i] = v[i];
+		cfg.preadd  = ((u32)(v[9]  & 0x1ff))        |
+			      ((u32)(v[10] & 0x1ff) << 10)  |
+			      ((u32)(v[11] & 0x1ff) << 20);
+		cfg.postadd = ((u32)(v[12] & 0x1ff))        |
+			      ((u32)(v[13] & 0x1ff) << 10)  |
+			      ((u32)(v[14] & 0x1ff) << 20);
+		cfg.en = any;
+		ctx->ccm = cfg;
+		break;
+	}
+	case V4L2_CID_MTK_MDP_RSZ_COEFF_TABLE:
+		/* -1 => driver default (byte-identical); 0..27 selects a HW RSZ
+		 * coeff table (0=sharpest..6=softest on a downscale). */
+		ctx->rsz_table = ctrl->val;
+		break;
 	}
 
 	return 0;
@@ -546,6 +1342,44 @@ static int mdp_m2m_ctrls_create(struct mdp_m2m_ctx *ctx)
 	ctx->ctrls.rotate = v4l2_ctrl_new_std(&ctx->ctrl_handler,
 					      &mdp_m2m_ctrl_ops,
 					      V4L2_CID_ROTATE, 0, 270, 90, 0);
+
+	/* Private compound control: WROT programmable color-correction matrix.
+	 * s32[MDP_CCM_NELEMS] array; default all-zero => built-in CSC (opt-in). */
+	{
+		static const struct v4l2_ctrl_config ccm_cfg = {
+			.ops	= &mdp_m2m_ctrl_ops,
+			.id	= V4L2_CID_MTK_MDP_CCM,
+			.name	= "mtk_mdp_ccm",
+			.type	= V4L2_CTRL_TYPE_INTEGER,
+			.min	= -8192,
+			.max	= 8191,
+			.step	= 1,
+			.def	= 0,
+			.dims	= { MDP_CCM_NELEMS },
+		};
+
+		ctx->ctrls.ccm = v4l2_ctrl_new_custom(&ctx->ctrl_handler,
+						      &ccm_cfg, NULL);
+	}
+
+	/* Private control: mt8195 RSZ coefficient-table select (scaler sharpness/
+	 * anti-alias). -1 => driver default (byte-identical); 0..27 selects a HW
+	 * coeff table (0=sharpest..6=softest on a downscale, board-characterized). */
+	{
+		static const struct v4l2_ctrl_config rsz_tbl_cfg = {
+			.ops	= &mdp_m2m_ctrl_ops,
+			.id	= V4L2_CID_MTK_MDP_RSZ_COEFF_TABLE,
+			.name	= "mtk_mdp_rsz_coeff_table",
+			.type	= V4L2_CTRL_TYPE_INTEGER,
+			.min	= -1,
+			.max	= 27,
+			.step	= 1,
+			.def	= -1,
+		};
+
+		ctx->ctrls.rsz_table = v4l2_ctrl_new_custom(&ctx->ctrl_handler,
+							    &rsz_tbl_cfg, NULL);
+	}
 
 	if (ctx->ctrl_handler.error) {
 		int err = ctx->ctrl_handler.error;
@@ -581,6 +1415,7 @@ static int mdp_m2m_open(struct file *file)
 	if (ret < 0)
 		goto err_unlock_mutex;
 	ctx->id = ret;
+	ctx->rsz_table = -1;	/* default: driver-default RSZ coeff table */
 
 	ctx->mdp_dev = mdp;
 
@@ -647,6 +1482,7 @@ static int mdp_m2m_release(struct file *file)
 	struct device *dev = &mdp->pdev->dev;
 
 	mutex_lock(&mdp->m2m_lock);
+	mdp_ctx_reuse_invalidate(ctx);	/* free any cached reuse packet */
 	v4l2_m2m_ctx_release(ctx->m2m_ctx);
 	if (mdp_m2m_ctx_is_state_set(ctx, MDP_VPU_INIT))
 		mdp_vpu_put_locked(mdp);

@@ -10,6 +10,7 @@
 #include <dt-bindings/clock/mediatek,mt8365-clk.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/thermal/thermal.h>
 #include <dt-bindings/memory/mediatek,mt8365-larb-port.h>
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/power/mediatek,mt8365-power.h>
@@ -267,6 +268,26 @@
 		clock-output-names = "clk26m";
 	};
 
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-450000000 {
+			opp-hz = /bits/ 64 <450000000>;
+			opp-microvolt = <650000>;
+		};
+
+		opp-560000000 {
+			opp-hz = /bits/ 64 <560000000>;
+			opp-microvolt = <700000>;
+		};
+
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <800000>;
+		};
+	};
+
 	psci {
 		compatible = "arm,psci-1.0";
 		method = "smc";
@@ -398,7 +419,7 @@
 					mediatek,infracfg = <&infracfg>;
 				};
 
-				power-domain@MT8365_POWER_DOMAIN_MFG {
+				mfg: power-domain@MT8365_POWER_DOMAIN_MFG {
 					reg = <MT8365_POWER_DOMAIN_MFG>;
 					clocks = <&topckgen CLK_TOP_MFG_SEL>;
 					clock-names = "mfg";
@@ -450,6 +471,43 @@
 			#clock-cells = <1>;
 		};
 
+		auxadc: auxadc@11001000 {
+			compatible = "mediatek,mt8365-auxadc", "mediatek,mt8173-auxadc";
+			reg = <0 0x11001000 0 0x1000>;
+			clocks = <&infracfg CLK_IFR_AUXADC>;
+			clock-names = "main";
+			#io-channel-cells = <1>;
+		};
+
+		thermal: thermal-sensor@1100b000 {
+			compatible = "mediatek,mt8365-thermal";
+			reg = <0 0x1100b000 0 0x1000>;
+			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg CLK_IFR_THERM>,
+				 <&infracfg CLK_IFR_AUXADC>;
+			clock-names = "therm", "auxadc";
+			mediatek,auxadc = <&auxadc>;
+			mediatek,apmixedsys = <&apmixedsys>;
+			nvmem-cells = <&thermal_calibration>;
+			nvmem-cell-names = "calibration-data";
+			#thermal-sensor-cells = <1>;
+		};
+
+		efuse: efuse@11c50000 {
+			compatible = "mediatek,mt8365-efuse", "mediatek,efuse";
+			reg = <0 0x11c50000 0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			unique_id: unique-id@140 {
+				reg = <0x140 0x8>;
+			};
+
+			thermal_calibration: calib@180 {
+				reg = <0x180 0xc>;
+			};
+		};
+
 		pwrap: pwrap@1000d000 {
 			compatible = "mediatek,mt8365-pwrap";
 			reg = <0 0x1000d000 0 0x1000>;
@@ -495,10 +553,9 @@
 			#iommu-cells = <1>;
 		};
 
-		infracfg_nao: infracfg@1020e000 {
-			compatible = "mediatek,mt8365-infracfg", "syscon";
+		infracfg_nao: syscon@1020e000 {
+			compatible = "mediatek,mt8365-infracfg-nao", "syscon";
 			reg = <0 0x1020e000 0 0x1000>;
-			#clock-cells = <1>;
 		};
 
 		rng: rng@1020f000 {
@@ -735,6 +792,33 @@
 			clocks = <&clk26m>;
 			#clock-cells = <0>;
 			#phy-cells = <0>;
+		};
+
+		mfgcfg: clock-controller@13000000 {
+			compatible = "mediatek,mt8365-mfgcfg";
+			reg = <0 0x13000000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		/*
+		 * Mali-G52 MC1 (Bifrost). Uses the SoC-specific
+		 * "mediatek,mt8365-mali" compatible (panfrost binds via the
+		 * "arm,mali-bifrost" fallback) + the GPU OPP table for devfreq.
+		 * IRQs from the BSP gpu-mali.dtbo: job 203, mmu 202, gpu 201,
+		 * event 204. Enabled + supplied per board (see mt8365-pumpkin.dts).
+		 */
+		gpu: gpu@13040000 {
+			compatible = "mediatek,mt8365-mali", "arm,mali-bifrost";
+			reg = <0 0x13040000 0 0x4000>;
+			interrupts = <GIC_SPI 203 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 202 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 201 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 204 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-names = "job", "mmu", "gpu", "event";
+			clocks = <&mfgcfg CLK_MFG_BG3D>;
+			operating-points-v2 = <&gpu_opp_table>;
+			power-domains = <&spm MT8365_POWER_DOMAIN_MFG>;
+			status = "disabled";
 		};
 
 		u3phy: t-phy@11cc0000 {
@@ -1146,10 +1230,147 @@
 			mediatek,larb-id = <1>;
 		};
 
+		/*
+		 * Vendor (mtk-v5.10 BSP) proprietary-userspace (vpud) HW video
+		 * codec nodes for MT8365 (Genio 350). Driven by the ported
+		 * out-of-tree-style mtk-vcu / mtk-vcodec-mt8167 drivers
+		 * (CONFIG_VIDEO_MEDIATEK_VCU_MT8365 +
+		 * CONFIG_VIDEO_MEDIATEK_VCODEC_MT8167). NOT the mainline
+		 * mtk-vcodec binding. Addresses/phandles adapted to this
+		 * mt8365.dtsi (larb1/larb3, iommu, vdecsys/vencsys, spm power
+		 * domains). The VCU spans VDEC + VENC + VENC_LT register banks.
+		 */
+		vcu: vcu@16000000 {
+			compatible = "mediatek-vcu", "mediatek,mt8183-vcu";
+			mediatek,vcuid = <0>;
+			mediatek,vcuname = "vcu";
+			reg = <0 0x16000000 0 0x40000>,	/* VDEC_BASE */
+			      <0 0x17020000 0 0x10000>,	/* VENC_BASE */
+			      <0 0x19002000 0 0x1000>;	/* VENC_LT */
+			iommus = <&iommu M4U_PORT_HW_VDEC_MC_EXT>;
+		};
+
+		vcodec_dec: codec@16000000 {
+			/* No mt8183 fallback: that compatible is also matched by the
+			 * mainline mtk-vcodec; keep the g350 node vendor-only. */
+			compatible = "mediatek,mt8365-vcodec-dec",
+				     "syscon";
+			reg = <0 0x16000000 0 0x1000>,	/* VDEC_SYS */
+			      <0 0x16025000 0 0x1000>,	/* VDEC_MISC */
+			      <0 0x16020000 0 0x800>,	/* VDEC_VLD */
+			      <0 0x16020800 0 0x800>,	/* VDEC_TOP */
+			      <0 0x16021000 0 0x1000>,	/* VDEC_MC */
+			      <0 0x16022000 0 0x1000>,	/* VDEC_AVC_VLD */
+			      <0 0x16023000 0 0x1000>,	/* VDEC_AVC_MV */
+			      <0 0x16024000 0 0x1000>,	/* VDEC_PP */
+			      <0 0x16027800 0 0x800>,	/* VP8_VLD */
+			      <0 0x16026000 0 0x800>,	/* VP6_VD */
+			      <0 0x16026800 0 0x800>,	/* VP8_VLD2 */
+			      <0 0x16028000 0 0x400>,	/* HEVC_VLD (idx 11) */
+			      <0 0x16028400 0 0x400>;	/* VP9_VLD  (idx 12) */
+			/*
+			 * IMAGE_RESZ (0x16030000) is still omitted: it has no
+			 * enum slot in mtk_hw_reg_idx and no user. VP9_VLD is
+			 * mapped at idx 12 (VDEC_HWV) for the in-kernel VP9
+			 * backend vdec_vp9_mt8365_if.c; NUM_MAX_VDEC_REG_BASE
+			 * was raised 12 -> 13 in the same series.
+			 */
+			mediatek,larb = <&larb3>;
+			interrupts = <GIC_SPI 177 IRQ_TYPE_LEVEL_LOW>;
+			iommus = <&iommu M4U_PORT_HW_VDEC_MC_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_PP_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_PRED_RD_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_PRED_WR_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_PPWRAP_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_TILE_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_VLD_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_VLD2_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_AVC_MV_EXT>,
+				 <&iommu M4U_PORT_HW_VDEC_RG_CTRL_DMA_EXT>;
+			mediatek,vpu = <&vcu>;
+			power-domains = <&spm MT8365_POWER_DOMAIN_VDEC>;
+			clocks = <&vdecsys CLK_VDEC_VDEC>,
+				 <&vdecsys CLK_VDEC_LARB1>;
+			clock-names = "vdec_sel", "normal";
+			#clock-cells = <1>;
+		};
+
+		vcodec_enc: codec@17020000 {
+			/* vendor-only: no mt8183 fallback (mainline matches that). */
+			compatible = "mediatek,mt8365-vcodec-enc";
+			reg = <0 0x17020000 0 0x1000>,
+			      <0 0x17000000 0 0x1000>;
+			mediatek,larb = <&larb1>;
+			interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_LOW>;
+			iommus = <&iommu M4U_PORT_VENC_RCPU>,
+				 <&iommu M4U_PORT_VENC_REC>,
+				 <&iommu M4U_PORT_VENC_BSDMA>,
+				 <&iommu M4U_PORT_VENC_SV_COMV>,
+				 <&iommu M4U_PORT_VENC_RD_COMV>,
+				 <&iommu M4U_PORT_VENC_CUR_LUMA>,
+				 <&iommu M4U_PORT_VENC_CUR_CHROMA>,
+				 <&iommu M4U_PORT_VENC_REF_LUMA>,
+				 <&iommu M4U_PORT_VENC_REF_CHROMA>;
+			mediatek,vpu = <&vcu>;
+			power-domains = <&spm MT8365_POWER_DOMAIN_VENC>;
+			clocks = <&vencsys CLK_VENC>;
+			clock-names = "img_venc";
+			#clock-cells = <1>;
+		};
+
 		apu: syscon@19020000 {
 			compatible = "mediatek,mt8365-apu", "syscon";
 			reg = <0 0x19020000 0 0x1000>;
 			#clock-cells = <1>;
+		};
+
+		apu_core: syscon@19180000 {
+			compatible = "mediatek,mt8365-apu-core", "syscon";
+			reg = <0 0x19180000 0 0x1000>;
+		};
+
+		/*
+		 * Cadence Vision-P6 (VP6) DSP -- the MT8365 (Genio 350) "NPU"
+		 * (0.35 INT8 TOPS, MT8365 factsheet). Same VP6 IP family as the MT8183
+		 * (i500) dual-core IPU, but a SINGLE core here. Consumer node (paired
+		 * driver CONFIG_MTK_MT8183_VP6 + an mt8365 match, not yet landed):
+		 * reaches its core cfg block (apu_core @0x19180000: reset/doorbell/INFO
+		 * mailbox -- the SAME base as the mt8183 ipu_core0) and the APU
+		 * clock+EDMA syscon (apu @0x19020000) via regmap phandles, powers
+		 * MT8365_POWER_DOMAIN_APU, and would expose /dev/vp6-0. status="disabled":
+		 * no driver match + no firmware yet; harmless when unbound (mirrors how
+		 * the mt8183 vp6 nodes shipped disabled before firmware existed).
+		 *
+		 * reg base 0x19180000 + compatible lineage transcribed from the vendor
+		 * mtk-v5.10 DTS node vpu0@0x19100000 "mediatek,mt8365-rproc-apu"
+		 * reg=0x19180000. APU clock gates live in
+		 * the apu syscon (clk-mt8365-apu.c: bit0 IPU_CK / bit1 AXI / bit2 JTAG /
+		 * bit3 IF_CK / bit4 EDMA (the iDMA) / bit5 AHB). iommus: the VP6/EDMA
+		 * fetch through the M4U on larb0 ports 10 (APU_READ) / 11 (APU_WRITE)
+		 * (mediatek,mt8365-larb-port.h).
+		 *
+		 * interrupts + resets: the mt8365 VP6 core->host mailbox GIC SPI and the
+		 * APU GALS / subsystem reset lines are NOT in mainline DT and were not
+		 * recoverable off-board -- UNVERIFIED, needs the vendor DTS or the board.
+		 * Shipped without `interrupts`/`resets` (host->core doorbell direction
+		 * only), like the mt8183 vp6 nodes did until the SPI was confirmed.
+		 */
+		vp6: vp6-core {
+			compatible = "mediatek,mt8365-vp6";
+			power-domains = <&spm MT8365_POWER_DOMAIN_APU>;
+			clocks = <&apu CLK_APU_IPU_CK>,
+				 <&apu CLK_APU_AXI>,
+				 <&apu CLK_APU_JTAG>,
+				 <&apu CLK_APU_AHB>,
+				 <&apu CLK_APU_IF_CK>,
+				 <&apu CLK_APU_EDMA>;
+			clock-names = "ipu", "axi", "jtag", "ahb", "if", "edma";
+			iommus = <&iommu M4U_PORT_APU_READ>,
+				 <&iommu M4U_PORT_APU_WRITE>;
+			mediatek,core-index = <0>;
+			mediatek,apu-core = <&apu_core>;
+			mediatek,apu-syscon = <&apu>;
+			status = "disabled";
 		};
 
 		afe: audio-controller@11220000 {
@@ -1188,6 +1409,58 @@
 			power-domains = <&spm MT8365_POWER_DOMAIN_AUDIO>;
 			status = "disabled";
 		};
+
+		adsp: adsp@1d062000 {
+			compatible = "mediatek,mt8365-dsp";
+			/*
+			 * Cadence Tensilica HiFi 4 audio DSP (Xtensa core config
+			 * hifi4_Aquila_E2_PROD). Register bases are transcribed
+			 * from the open SOF mt8365 platform,
+			 * sof/src/platform/mt8365/include/platform/drivers/mt_reg_base.h:
+			 * DSP_REG_BASE 0x1d062000 (DSPCFG) and DSP_AUDIO_SRAM_BASE
+			 * 0x11221000 / DSP_AUDIO_SRAM_SIZE 0xa000 (on-chip audio
+			 * SRAM, immediately above the AFE at 0x11220000). The
+			 * AP<->DSP identity of the DSPCFG base is established by the
+			 * mt8186 (0x10680000) and mt8195 (0x10803000) precedents,
+			 * where the SOF-firmware DSP_REG_BASE equals the kernel
+			 * "cfg" reg; the mt8365 firmware maps the AP peripheral
+			 * window (DSP_SYS_REG_BASE 0x10000000) identity, placing the
+			 * AFE at its AP address 0x11220000 exactly as in this dtsi.
+			 * The firmware boots from the adsp_mem DRAM carveout
+			 * (DRAM_BASE 0x60000000, identity-mapped; host-shared window
+			 * at SRAM1_BASE 0x60800000) wired via memory-region on the
+			 * board. Host<->DSP IPC uses the in-DSPCFG SW-interrupt path
+			 * (DSP_RG_INT2CIRQ + the SRAM SW registers), not a hardware
+			 * mailbox, so there is no separate adsp-mbox node (unlike
+			 * mt8186/mt8195). Confirming the DSPCFG AP alias + the IPC
+			 * wiring on silicon is the board-gated bring-up step.
+			 */
+			reg = <0 0x1d062000 0 0x00001000>,
+			      <0 0x11221000 0 0x0000a000>;
+			reg-names = "cfg", "sram";
+			/*
+			 * The DSP driver (mt8365-clk.c, ported from MediaTek's
+			 * official Genio BSP mtk-v6.6) devm_clk_get()s all nine
+			 * DSP clocks by these names and clk_prepare_enable()s them
+			 * in probe before run(). CLK_TOP_DSPPLL (the DSP PLL) is
+			 * the load-bearing one: without it the DSP boots from SRAM
+			 * but faults on its first external-DDR (0x60000000) access.
+			 */
+			clocks = <&topckgen CLK_TOP_DSP_SEL>,
+				 <&topckgen CLK_TOP_CLK26M_D52>,
+				 <&topckgen CLK_TOP_SYS_26M_D2>,
+				 <&topckgen CLK_TOP_DSPPLL>,
+				 <&topckgen CLK_TOP_DSPPLL_D2>,
+				 <&topckgen CLK_TOP_DSPPLL_D4>,
+				 <&topckgen CLK_TOP_DSPPLL_D8>,
+				 <&topckgen CLK_TOP_DSP_26M>,
+				 <&topckgen CLK_TOP_DSP_32K>;
+			clock-names = "CLK_DSP_SEL", "CLK26M_CK", "AD_SYS_26M_D2",
+				      "DSPPLL_CK", "DSPPLL_D2", "DSPPLL_D4",
+				      "DSPPLL_D8", "PDN_DSP_26M", "PDN_DSP_32K";
+			power-domains = <&spm MT8365_POWER_DOMAIN_DSP>;
+			status = "disabled";
+		};
 	};
 
 	timer {
@@ -1211,5 +1484,34 @@
 		interrupts = <GIC_SPI 138 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&system_clk>;
 		clock-names = "clk13m";
+	};
+
+	thermal_zones: thermal-zones {
+		cpu_thermal: cpu-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&thermal 0>;
+
+			trips {
+				cpu_passive: cpu-passive {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_crit: cpu-crit {
+					temperature = <100000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
 	};
 };

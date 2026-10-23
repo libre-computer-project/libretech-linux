@@ -9,6 +9,7 @@
 #include <linux/mmc/sdio_func.h>
 #include <linux/module.h>
 #include <linux/iopoll.h>
+#include <linux/delay.h>
 
 #include "../sdio.h"
 #include "mt7615.h"
@@ -57,15 +58,32 @@ static int __mt7663s_mcu_drv_pmctrl(struct mt7615_dev *dev)
 	struct sdio_func *func = dev->mt76.sdio.func;
 	struct mt76_phy *mphy = &dev->mt76.phy;
 	struct mt76_connac_pm *pm = &dev->pm;
+	unsigned long timeout;
 	u32 status;
-	int ret;
+	int ret = -ETIMEDOUT;
 
 	sdio_claim_host(func);
 
-	sdio_writel(func, WHLPCR_FW_OWN_REQ_CLR, MCR_WHLPCR, NULL);
+	/* -110 fix: gen4m re-asserts the ownership request every 200 ms over a
+	 * ~2 s budget; mt76's single un-retried CLR write loses the SDIO
+	 * write-storm race, so the N9's FW_OWN poll (spins on WHLPCR bit 9,
+	 * FW_OWN_REQ_CLR) times out and the host sees -110. Re-write the request
+	 * every ~200 ms and poll ~1 ms in between until DRIVER_OWN or the budget. */
+	timeout = jiffies + msecs_to_jiffies(2048);
+	do {
+		int i;
 
-	ret = readx_poll_timeout(mt76s_read_pcr, &dev->mt76, status,
-				 status & WHLPCR_IS_DRIVER_OWN, 2000, 1000000);
+		sdio_writel(func, WHLPCR_FW_OWN_REQ_CLR, MCR_WHLPCR, NULL);
+		for (i = 0; i < 200; i++) {
+			status = mt76s_read_pcr(&dev->mt76);
+			if (status & WHLPCR_IS_DRIVER_OWN) {
+				ret = 0;
+				break;
+			}
+			usleep_range(900, 1000);
+		}
+	} while (ret && time_before(jiffies, timeout));
+
 	if (ret < 0) {
 		dev_err(dev->mt76.dev, "Cannot get ownership from device");
 	} else {
@@ -97,37 +115,14 @@ static int mt7663s_mcu_drv_pmctrl(struct mt7615_dev *dev)
 
 static int mt7663s_mcu_fw_pmctrl(struct mt7615_dev *dev)
 {
-	struct sdio_func *func = dev->mt76.sdio.func;
-	struct mt76_phy *mphy = &dev->mt76.phy;
-	struct mt76_connac_pm *pm = &dev->pm;
-	int ret = 0;
-	u32 status;
-
-	mutex_lock(&pm->mutex);
-
-	if (mt76_connac_skip_fw_pmctrl(mphy, pm))
-		goto out;
-
-	sdio_claim_host(func);
-
-	sdio_writel(func, WHLPCR_FW_OWN_REQ_SET, MCR_WHLPCR, NULL);
-
-	ret = readx_poll_timeout(mt76s_read_pcr, &dev->mt76, status,
-				 !(status & WHLPCR_IS_DRIVER_OWN), 2000, 1000000);
-	if (ret < 0) {
-		dev_err(dev->mt76.dev, "Cannot set ownership to device");
-		clear_bit(MT76_STATE_PM, &mphy->state);
-	} else {
-		pm->stats.last_doze_event = jiffies;
-		pm->stats.awake_time += pm->stats.last_doze_event -
-					pm->stats.last_wake_event;
-	}
-
-	sdio_release_host(func);
-out:
-	mutex_unlock(&pm->mutex);
-
-	return ret;
+	/* -110 fix: never hand SDIO bus ownership back to the firmware. Setting
+	 * FW_OWN (WHLPCR_FW_OWN_REQ_SET) arms the N9's FW_OWN poll loop; under a
+	 * TX write-storm mt76's re-acquire loses the handshake race and the
+	 * firmware times out -> -110. gen4m keeps the chip pinned in DRIVER_OWN;
+	 * do the same (trading a little idle power for a stable SDIO link).
+	 * MT76_STATE_PM is owned/cleared by the driver-own path, so leaving the
+	 * chip driver-own keeps the PM state machine consistent and deadlock-free. */
+	return 0;
 }
 
 int mt7663s_mcu_init(struct mt7615_dev *dev)

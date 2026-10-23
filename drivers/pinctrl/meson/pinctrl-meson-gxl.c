@@ -9,6 +9,7 @@
 #include <dt-bindings/gpio/meson-gxl-gpio.h>
 #include "pinctrl-meson.h"
 #include "pinctrl-meson8-pmx.h"
+#include <linux/firmware/meson/meson_sm.h>
 
 static const struct pinctrl_pin_desc meson_gxl_periphs_pins[] = {
 	MESON_PIN(GPIOZ_0),
@@ -411,8 +412,6 @@ static const struct meson_pmx_group meson_gxl_periphs_groups[] = {
 	GPIO_GROUP(GPIOCLK_0),
 	GPIO_GROUP(GPIOCLK_1),
 
-	GPIO_GROUP(GPIO_TEST_N),
-
 	/* Bank X */
 	GROUP(i2c_sda_d,	5,	5),
 	GROUP(i2c_sck_d,	5,	4),
@@ -543,6 +542,8 @@ static const struct meson_pmx_group meson_gxl_aobus_groups[] = {
 	GPIO_GROUP(GPIOAO_7),
 	GPIO_GROUP(GPIOAO_8),
 	GPIO_GROUP(GPIOAO_9),
+
+	GPIO_GROUP(GPIO_TEST_N),
 
 	/* bank AO */
 	GROUP(uart_tx_ao_b_0,	0,	26),
@@ -831,6 +832,9 @@ static const struct meson_bank meson_gxl_periphs_banks[] = {
 static const struct meson_bank meson_gxl_aobus_banks[] = {
 	/*   name    first      last      irq	pullen  pull    dir     out     in  */
 	BANK("AO",   GPIOAO_0,  GPIOAO_9, 0, 9, 0,  16, 0, 0,   0,  0,  0, 16,  1,  0),
+	/* This PIN Direction must be set using a SMC call, so dir reg offset is the sm call */
+	BANK_SMC("TEST", GPIO_TEST_N, GPIO_TEST_N,
+					 -1, -1, 0, 30,  0, 14, SM_TEST_N_DIR, 1, 0, 31, 1, 31),
 };
 
 static const struct meson_pinctrl_data meson_gxl_periphs_pinctrl_data = {

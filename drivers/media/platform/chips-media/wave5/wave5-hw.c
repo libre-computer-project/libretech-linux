@@ -1699,10 +1699,13 @@ static void wave5_set_enc_crop_info(u32 codec, struct enc_wave_param *param, int
 
 int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 {
-	u32 reg_val = 0, rot_mir_mode, fixed_cu_size_mode = 0x7;
+	u32 reg_val = 0, rot_mir_mode, cu_size_mode;
 	struct enc_info *p_enc_info = &inst->codec_info->enc_info;
 	struct enc_open_param *p_open_param = &p_enc_info->open_param;
 	struct enc_wave_param *p_param = &p_open_param->wave_param;
+
+	/* Use cu_size_mode from params, default to all CU sizes enabled */
+	cu_size_mode = p_param->cu_size_mode ? p_param->cu_size_mode : 0x7;
 
 	/*
 	 * OPT_COMMON:
@@ -1762,6 +1765,9 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 			(p_param->skip_intra_trans << 25) |
 			(p_param->strong_intra_smooth_enable << 27) |
 			(p_param->en_still_picture << 30);
+	else if (inst->std == W_AVC_ENC)
+		reg_val |= (p_param->constraint_set1_flag << 29);
+
 	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_SPS_PARAM, reg_val);
 
 	reg_val = (p_param->lossless_enable) |
@@ -1797,7 +1803,7 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 
 	reg_val = (p_param->rdo_skip << 2) |
 		(p_param->lambda_scaling_enable << 3) |
-		(fixed_cu_size_mode << 5) |
+		(cu_size_mode << 5) |
 		(p_param->intra_nx_n_enable << 8) |
 		(p_param->max_num_merge << 18);
 
@@ -1869,7 +1875,14 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_DEPENDENT_SLICE,
 			      p_param->depend_slice_mode_arg << 16 | p_param->depend_slice_mode);
 
-		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_NR_PARAM, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_NR_PARAM,
+			      (p_param->nr_y_enable) |
+			      (p_param->nr_cb_enable << 1) |
+			      (p_param->nr_cr_enable << 2) |
+			      (p_param->nr_noise_est_enable << 3) |
+			      (p_param->nr_noise_sigma_y << 4) |
+			      (p_param->nr_noise_sigma_cb << 12) |
+			      (p_param->nr_noise_sigma_cr << 20));
 
 		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_NR_WEIGHT,
 			      p_param->nr_intra_weight_y |
@@ -2202,7 +2215,22 @@ int wave5_vpu_encode(struct vpu_instance *inst, struct enc_param *option, u32 *f
 			      (option->code_option.encode_eos << 6) |
 			      (option->code_option.encode_eob << 7));
 
-	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_PIC_PARAM, 0);
+	/*
+	 * W5_CMD_ENC_PIC_PIC_PARAM register layout (from SDK):
+	 *   [0]     skipPicture
+	 *   [1]     forcePicQpEnable
+	 *   [7:2]   forcePicQpI
+	 *   [13:8]  forcePicQpP
+	 *   [19:14] forcePicQpB
+	 */
+	reg_val = 0;
+	if (option->force_pic_qp_enable) {
+		reg_val = BIT(1) |
+			((option->force_pic_qp_i & 0x3F) << 2) |
+			((option->force_pic_qp_p & 0x3F) << 8) |
+			((option->force_pic_qp_b & 0x3F) << 14);
+	}
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_PIC_PARAM, reg_val);
 
 	if (option->src_end_flag)
 		/* no more source images. */
@@ -2754,6 +2782,16 @@ int wave5_vpu_enc_check_open_param(struct vpu_instance *inst, struct enc_open_pa
 				"Invalid inter weight Y(%u) Cb(%u) Cr(%u) (valid: %u)\n",
 				param->nr_inter_weight_y, param->nr_inter_weight_cb,
 				param->nr_inter_weight_cr, MAX_INTER_WEIGHT);
+			return -EINVAL;
+		}
+
+		if (param->nr_noise_sigma_y > MAX_NOISE_SIGMA ||
+		    param->nr_noise_sigma_cb > MAX_NOISE_SIGMA ||
+		    param->nr_noise_sigma_cr > MAX_NOISE_SIGMA) {
+			dev_err(inst->dev->dev,
+				"Invalid noise sigma Y(%u) Cb(%u) Cr(%u) (valid: %u)\n",
+				param->nr_noise_sigma_y, param->nr_noise_sigma_cb,
+				param->nr_noise_sigma_cr, MAX_NOISE_SIGMA);
 			return -EINVAL;
 		}
 	}

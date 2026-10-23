@@ -122,4 +122,13 @@ static inline unsigned int irq_of_parse_and_map(struct device_node *dev,
 }
 #endif /* !CONFIG_OF */
 
+#if defined(CONFIG_OF_IRQ) && defined(CONFIG_OF_DYNAMIC)
+extern bool of_irq_mapping_owned(unsigned int virq);
+#else
+static inline bool of_irq_mapping_owned(unsigned int virq)
+{
+	return false;
+}
+#endif
+
 #endif /* __OF_IRQ_H */

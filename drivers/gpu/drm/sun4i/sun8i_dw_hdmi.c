@@ -83,6 +83,8 @@ static u32 sun8i_dw_hdmi_find_possible_crtcs(struct drm_device *drm,
 				of_node_put(remote_port);
 			}
 		}
+
+		of_node_put(port);
 	} else {
 		crtcs = drm_of_find_possible_crtcs(drm, node);
 	}
@@ -256,6 +258,10 @@ static const struct of_device_id sun8i_dw_hdmi_dt_ids[] = {
 	},
 	{
 		.compatible = "allwinner,sun50i-h6-dw-hdmi",
+		.data = &sun50i_h6_quirks,
+	},
+	{
+		.compatible = "allwinner,sun50i-h616-dw-hdmi",
 		.data = &sun50i_h6_quirks,
 	},
 	{ /* sentinel */ },

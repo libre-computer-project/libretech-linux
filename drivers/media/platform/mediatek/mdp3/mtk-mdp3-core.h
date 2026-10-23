@@ -101,6 +101,15 @@ struct mtk_mdp_driver_data {
 	unsigned int pipe_info_len;
 	const struct v4l2_rect *pp_criteria;
 	const u8 pp_used;
+	/*
+	 * The SCP/VPU on this SoC emits component inner-ids in the OLD compact
+	 * MDP-component numbering (RDMA2=4 .. WROT2=36) instead of the mt8195
+	 * numbering the driver enum + kernel-direct tables now use (RDMA2=10 ..
+	 * WROT2=55). Set true (mt8188/geralt SCP) to remap every SCP-returned
+	 * config component id compact->mt8195 in mdp_vpu_process before the path
+	 * build reverse-maps it. mt8195's own SCP already emits mt8195 numbering.
+	 */
+	const bool scp_comp_id_compact;
 };
 
 struct mdp_mm_subsys {
@@ -136,6 +145,23 @@ struct mdp_dev {
 	struct mutex				m2m_lock;
 	atomic_t				suspended;
 	refcount_t				job_count;
+
+	/* Per-job GCE (cmdq) watchdog. A wedged cmdq packet (a SOF/EOF event
+	 * that never arrives) otherwise leaves the completion callback un-fired
+	 * forever -- job_count never reaches 0, so the m2m job never finishes
+	 * and close()/v4l2-ctl D-state-blocks indefinitely (and the clk
+	 * prepare_lock cascade can take wifi down with it). timeout_work is
+	 * armed at submit and cancelled the instant the job completes; on expiry
+	 * it mbox_flush()es the wedged GCE thread (WARM_RESET), which re-injects
+	 * the rx_callback for the stuck packet(s) and drives the SAME completion
+	 * cleanup, so the job self-recovers and the box stays ssh-reachable.
+	 * timeout_chan[] snapshots the distinct in-flight GCE channels to flush.
+	 * job_done is the timer-vs-callback race winner: exactly one of
+	 * {last completion, timeout} owns finalisation. */
+	struct delayed_work			timeout_work;
+	struct mbox_chan			*timeout_chan[MDP_PP_MAX];
+	u8					timeout_nchan;
+	atomic_t				job_done;
 };
 
 struct mdp_pipe_info {

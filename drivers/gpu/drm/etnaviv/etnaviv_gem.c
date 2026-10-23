@@ -5,6 +5,8 @@
 
 #include <drm/drm_prime.h>
 #include <linux/dma-mapping.h>
+#include <linux/mm.h>
+#include <linux/moduleparam.h>
 #include <linux/shmem_fs.h>
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>
@@ -16,6 +18,66 @@
 
 static struct lock_class_key etnaviv_shm_lock_class;
 static struct lock_class_key etnaviv_userptr_lock_class;
+
+/*
+ * qi:N1440 -- physically contiguous backing for large NPU buffer objects.
+ *
+ * qi:N1439 established the mechanism and refuted the lever it was fused with.
+ * Mapping granularity cannot move a physical page: a 1 MiB PTE REQUIRES 1 MiB
+ * of physically contiguous backing, and once the backing IS contiguous the
+ * DRAM row/bank locality is already obtained at 4 KiB granularity, because
+ * etnaviv_context_map() splits every scatterlist run into SZ_4K PTEs whatever
+ * the run's physical extent.  So the whole DRAM-locality claim belongs to the
+ * ALLOCATOR, and none of it to pgsize.
+ *
+ * Our BOs are drm_gem_get_pages() shmem, i.e. order-0 pages picked out of the
+ * page cache in whatever physical order the buddy allocator hands them back.
+ * Galcore backs NPU memory on this same silicon out of physically contiguous
+ * 1 MiB units (_NonContiguous1MPagesAlloc is a LIST of alloc_pages_exact(1 MiB)
+ * blocks) and falls back to 4 KiB pages when it cannot form them.  This knob
+ * gives etnaviv the same shape, and the same documented fallback.
+ *
+ * npu_contig_min_kb = 0 (default) -- unchanged upstream behaviour, shmem.
+ *                   > 0          -- back every NON-CACHED BO of at least this
+ *                                   many KiB with order-8 (1 MiB) physically
+ *                                   contiguous blocks; on any block failing,
+ *                                   free what was taken and fall back to shmem
+ *                                   for that BO.
+ *
+ * CACHED BOs are excluded deliberately: etnaviv_gem_mmap_obj() shunts those to
+ * the object's own shmem file, so the CPU would see the shmem pages while the
+ * device saw ours.  ETNA_BO_WC and ETNA_BO_UNCACHED fault through
+ * etnaviv_gem_fault()/vmf_insert_pfn() off etnaviv_obj->pages and are safe.
+ * The person working set qi:N1439 censused is 13 GEM objects, every one
+ * ETNA_BO_WC.
+ */
+#define ETNAVIV_CONTIG_ORDER	8			/* 1 MiB at 4 KiB pages */
+#define ETNAVIV_CONTIG_PAGES	(1u << ETNAVIV_CONTIG_ORDER)
+
+static unsigned int npu_contig_min_kb;
+module_param_named(npu_contig_min_kb, npu_contig_min_kb, uint, 0644);
+MODULE_PARM_DESC(npu_contig_min_kb,
+	"0 = shmem order-0 backing (default, upstream); >0 = back every non-cached BO of at least this many KiB with physically contiguous 1 MiB blocks, falling back to shmem per BO when a block cannot be formed");
+
+/*
+ * The armed-ness witness, published by the kernel itself.  A patched module
+ * with the knob OFF must report hits=0; the stock module has no such file at
+ * all, which is the must-FIRE token.
+ */
+static unsigned int npu_contig_hits;
+module_param_named(npu_contig_hits, npu_contig_hits, uint, 0444);
+MODULE_PARM_DESC(npu_contig_hits,
+	"read-only: BOs given physically contiguous backing since load");
+
+static unsigned int npu_contig_misses;
+module_param_named(npu_contig_misses, npu_contig_misses, uint, 0444);
+MODULE_PARM_DESC(npu_contig_misses,
+	"read-only: BOs that fell back to shmem because a 1 MiB block could not be formed");
+
+static unsigned int npu_contig_blocks;
+module_param_named(npu_contig_blocks, npu_contig_blocks, uint, 0444);
+MODULE_PARM_DESC(npu_contig_blocks,
+	"read-only: 1 MiB blocks currently held by contiguously-backed BOs");
 
 static void etnaviv_gem_scatter_map(struct etnaviv_gem_object *etnaviv_obj)
 {
@@ -54,12 +116,142 @@ static void etnaviv_gem_scatterlist_unmap(struct etnaviv_gem_object *etnaviv_obj
 		dma_unmap_sgtable(dev->dev, sgt, DMA_BIDIRECTIONAL, 0);
 }
 
+/* qi:N1440 -- release contiguously-backed pages.  Every page was made an
+ * independent order-0 page by split_page(), so each is freed individually and
+ * the surplus tail of the last block was already returned at allocation time.
+ */
+static void etnaviv_gem_contig_put_pages(struct etnaviv_gem_object *etnaviv_obj)
+{
+	unsigned int npages = etnaviv_obj->base.size >> PAGE_SHIFT;
+	unsigned int i;
+
+	for (i = 0; i < npages; i++)
+		if (etnaviv_obj->pages[i])
+			__free_page(etnaviv_obj->pages[i]);
+
+	kvfree(etnaviv_obj->pages);
+	npu_contig_blocks -= etnaviv_obj->contig_blocks;
+	etnaviv_obj->contig_blocks = 0;
+	etnaviv_obj->contig = false;
+}
+
+/*
+ * qi:N1440 -- back this BO with order-8 (1 MiB) physically contiguous blocks.
+ * Returns 0 on success, a negative errno on any failure, in which case NOTHING
+ * is retained and the caller falls back to shmem for this BO -- galcore's own
+ * documented shape ("GPU page size will be 1M until the pool is out of memory
+ * and low-level to 4K pages").
+ *
+ * qi:N1541 -- the blocks are laid down at a VA PHASE: page i of the BO takes
+ * region page (i + phase), so the block boundaries fall on the softpin VA's
+ * 1 MiB boundaries rather than on the BO's offset 0.  With phase 0 this is
+ * qi:N1440's layout byte for byte.  The head of block 0 below the phase and
+ * the tail of the last block are returned at once.
+ *
+ * called with etnaviv_obj->lock held
+ */
+static int etnaviv_gem_contig_get_pages(struct etnaviv_gem_object *etnaviv_obj)
+{
+	struct drm_device *dev = etnaviv_obj->base.dev;
+	unsigned int npages = etnaviv_obj->base.size >> PAGE_SHIFT;
+	unsigned int phase = etnaviv_obj->contig_phase % ETNAVIV_CONTIG_PAGES;
+	unsigned int nblocks = DIV_ROUND_UP(npages + phase, ETNAVIV_CONTIG_PAGES);
+	unsigned int b, j, got = 0;
+	struct page **pages;
+
+	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL | __GFP_ZERO);
+	if (!pages)
+		return -ENOMEM;
+
+	for (b = 0; b < nblocks; b++) {
+		struct page *blk = alloc_pages(GFP_KERNEL | __GFP_ZERO |
+					       __GFP_NOWARN | __GFP_NORETRY,
+					       ETNAVIV_CONTIG_ORDER);
+
+		if (!blk) {
+			npu_contig_misses++;
+			dev_info(dev->dev,
+				 "npu_contig_min_kb=%u: order-%u block %u of %u FAILED for a %zu B BO, falling back to shmem\n",
+				 npu_contig_min_kb, ETNAVIV_CONTIG_ORDER,
+				 b, nblocks, etnaviv_obj->base.size);
+			for (j = 0; j < got; j++)
+				__free_page(pages[j]);
+			kvfree(pages);
+			return -ENOMEM;
+		}
+
+		/*
+		 * Make every page of the block an independent order-0 page so
+		 * it carries its own refcount and can be freed one at a time.
+		 * The block stays physically contiguous -- split_page() only
+		 * changes bookkeeping.
+		 */
+		split_page(blk, ETNAVIV_CONTIG_ORDER);
+
+		for (j = 0; j < ETNAVIV_CONTIG_PAGES; j++) {
+			unsigned int g = b * ETNAVIV_CONTIG_PAGES + j;
+
+			if (g >= phase && g - phase < npages) {
+				pages[g - phase] = blk + j;
+				got = g - phase + 1;
+			} else {
+				/* below the phase, or past the BO's end */
+				__free_page(blk + j);
+			}
+		}
+	}
+
+	etnaviv_obj->pages = pages;
+	etnaviv_obj->contig = true;
+	etnaviv_obj->contig_blocks = nblocks;
+	npu_contig_hits++;
+	npu_contig_blocks += nblocks;
+
+	dev_info(dev->dev,
+		 "npu_contig_min_kb=%u: %zu B BO backed by %u contiguous %u KiB block(s), first PA 0x%llx%s (phase %u pages, npu_mmu_large_pages=%u)\n",
+		 npu_contig_min_kb, etnaviv_obj->base.size, nblocks,
+		 (ETNAVIV_CONTIG_PAGES << PAGE_SHIFT) >> 10,
+		 ((unsigned long long)page_to_pfn(pages[0])) << PAGE_SHIFT,
+		 nblocks > 1 ? "" : " (single block)", phase,
+		 npu_mmu_large_pages);
+	if (nblocks > 1 && npages > ETNAVIV_CONTIG_PAGES - phase)
+		dev_info(dev->dev,
+			 "npu_contig_min_kb=%u:   block 1 PA 0x%llx, last page PA 0x%llx\n",
+			 npu_contig_min_kb,
+			 ((unsigned long long)page_to_pfn(pages[ETNAVIV_CONTIG_PAGES - phase])) << PAGE_SHIFT,
+			 ((unsigned long long)page_to_pfn(pages[npages - 1])) << PAGE_SHIFT);
+
+	return 0;
+}
+
 /* called with etnaviv_obj->lock held */
 static int etnaviv_gem_shmem_get_pages(struct etnaviv_gem_object *etnaviv_obj)
 {
 	struct drm_device *dev = etnaviv_obj->base.dev;
-	struct page **p = drm_gem_get_pages(&etnaviv_obj->base);
+	struct page **p;
+	size_t contig_min = 0;
 
+	/*
+	 * qi:N1440.  CACHED BOs are excluded: etnaviv_gem_mmap_obj() shunts
+	 * those to the object's own shmem file, so the CPU would see shmem
+	 * pages while the device saw ours.
+	 *
+	 * qi:N1541.  npu_mmu_large_pages implies the contiguous backing for
+	 * every BO of at least one large page -- a large PTE cannot exist
+	 * over scattered order-0 pages -- so the A/B stays one knob.
+	 */
+	if (npu_contig_min_kb)
+		contig_min = (size_t)npu_contig_min_kb * 1024;
+	else if (etnaviv_mmu_large_shift())
+		contig_min = 1ul << etnaviv_mmu_large_shift();
+
+	if (contig_min &&
+	    (etnaviv_obj->flags & ETNA_BO_CACHE_MASK) != ETNA_BO_CACHED &&
+	    etnaviv_obj->base.size >= contig_min &&
+	    etnaviv_gem_contig_get_pages(etnaviv_obj) == 0)
+		return 0;
+
+	p = drm_gem_get_pages(&etnaviv_obj->base);
 	if (IS_ERR(p)) {
 		dev_dbg(dev->dev, "could not get pages: %ld\n", PTR_ERR(p));
 		return PTR_ERR(p);
@@ -79,8 +271,11 @@ static void put_pages(struct etnaviv_gem_object *etnaviv_obj)
 		etnaviv_obj->sgt = NULL;
 	}
 	if (etnaviv_obj->pages) {
-		drm_gem_put_pages(&etnaviv_obj->base, etnaviv_obj->pages,
-				  true, false);
+		if (etnaviv_obj->contig)
+			etnaviv_gem_contig_put_pages(etnaviv_obj);
+		else
+			drm_gem_put_pages(&etnaviv_obj->base, etnaviv_obj->pages,
+					  true, false);
 
 		etnaviv_obj->pages = NULL;
 	}
@@ -274,6 +469,18 @@ struct etnaviv_vram_mapping *etnaviv_gem_mapping_get(
 			goto out;
 		}
 	}
+
+	/*
+	 * qi:N1541 -- the softpin VA is known here and the pages are not yet
+	 * allocated: record the VA's phase below one large page so the
+	 * contiguous allocator lays its blocks on the VA's large-page
+	 * boundaries.  A BO the CPU touched first already has pages and
+	 * keeps phase 0 (its large-page eligibility is then decided per page
+	 * at map time, never assumed).
+	 */
+	if (va && !etnaviv_obj->pages && etnaviv_mmu_large_shift())
+		etnaviv_obj->contig_phase =
+			(va & ((1ul << etnaviv_mmu_large_shift()) - 1)) >> PAGE_SHIFT;
 
 	pages = etnaviv_gem_get_pages(etnaviv_obj);
 	if (IS_ERR(pages)) {

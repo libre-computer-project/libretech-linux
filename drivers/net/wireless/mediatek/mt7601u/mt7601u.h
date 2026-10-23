@@ -189,6 +189,7 @@ struct mt7601u_dev {
 
 	u32 rxfilter;
 	u32 debugfs_reg;
+	u32 debugfs_mcu_reg;
 
 	u8 out_eps[8];
 	u8 in_eps[8];
@@ -325,6 +326,8 @@ static inline u32 mt76_clear(struct mt7601u_dev *dev, u32 offset, u32 val)
 
 int mt7601u_write_reg_pairs(struct mt7601u_dev *dev, u32 base,
 			    const struct mt76_reg_pair *data, int len);
+int mt7601u_mcu_reg_read(struct mt7601u_dev *dev, u32 addr,
+			 u32 *resp, int resp_words);
 int mt7601u_burst_write_regs(struct mt7601u_dev *dev, u32 offset,
 			     const u32 *data, int n);
 void mt7601u_addr_wr(struct mt7601u_dev *dev, const u32 offset, const u8 *addr);
@@ -354,12 +357,23 @@ int mt7601u_phy_get_rssi(struct mt7601u_dev *dev,
 void mt7601u_phy_con_cal_onoff(struct mt7601u_dev *dev,
 			       struct ieee80211_bss_conf *info);
 
+#if IS_ENABLED(CONFIG_MT7601U_RESEARCH)
+/* RF/baseband test modes -- LAB/SHIELDED-ENVIRONMENT ONLY (defined in phy.c).
+ * These EMIT on air; for RF characterization in a shielded chamber only.
+ */
+int mt7601u_rf_test_set_tx(struct mt7601u_dev *dev, u32 mode);
+void mt7601u_rf_test_set_power(struct mt7601u_dev *dev, u8 power);
+int mt7601u_rf_test_reg_wr(struct mt7601u_dev *dev, u32 packed);
+#endif /* CONFIG_MT7601U_RESEARCH */
+
 /* MAC */
 void mt7601u_mac_work(struct work_struct *work);
 void mt7601u_mac_set_protection(struct mt7601u_dev *dev, bool legacy_prot,
 				int ht_mode);
 void mt7601u_mac_set_short_preamble(struct mt7601u_dev *dev, bool short_preamb);
 void mt7601u_mac_config_tsf(struct mt7601u_dev *dev, bool enable, int interval);
+void mt7601u_mac_set_beacon(struct mt7601u_dev *dev, struct sk_buff *skb);
+void mt7601u_mac_set_beacon_enable(struct mt7601u_dev *dev, bool enable);
 void
 mt7601u_mac_wcid_setup(struct mt7601u_dev *dev, u8 idx, u8 vif_idx, u8 *mac);
 void mt7601u_mac_set_ampdu_factor(struct mt7601u_dev *dev);

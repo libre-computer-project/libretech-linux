@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/dts-v1/;
+
+#include "meson-g12b-a311d.dtsi"
+#include "meson-libretech-cottonwood-cm.dtsi"
+#include "meson-g12b-libretech-cottonwood-cm.dtsi"
+#include "meson-libretech-cottonwood-cm-rpi-cm-io.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
+#include "meson-libretech-ramoops.dtsi"
+
+/ {
+	compatible = "libretech,aml-a311d-cm-v01", "amlogic,a311d", "amlogic,g12b";
+	model = "Libre Computer AML-A311D-CM-V01 on RPi CM5-IO";
+};
+
+/ {
+	reserved-memory {
+		linux,cma {
+			/*
+			 * AML-A311D-CM-V01 comes in up to 4 GiB RAM variants.
+			 * U-Boot's meson_fixup_cma_size() writes min(this
+			 * value, 7/32 of detected RAM) here and forces
+			 * alloc-ranges to the first 1 GiB, so this value is the
+			 * binding clamp whenever it is the smaller term.
+			 *
+			 * 768 MiB, not the 896 MiB the 7/32 formula yields at
+			 * 4 GiB: the sub-1 GiB window is not 1 GiB wide.
+			 * secmon, ramoops and the kernel image leave ~820 MiB
+			 * of largest free run below 0x40000000, and 896 MiB was
+			 * measured failing on both A311D and S905D3. A failed
+			 * reservation costs the whole pool -- one pr_err, then
+			 * CONFIG_CMA_SIZE_MBYTES=128 -- so over-asking loses
+			 * 640 MiB rather than gaining 128.
+			 */
+			size = <0x0 0x30000000>;
+		};
+	};
+};

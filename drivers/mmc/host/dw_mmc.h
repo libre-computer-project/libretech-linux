@@ -128,6 +128,10 @@ struct dw_mci_dma_slave {
  * @cmd11_timer: Timer for SD3.0 voltage switch over scheme.
  * @cto_timer: Timer for broken command transfer over scheme.
  * @dto_timer: Timer for broken data transfer over scheme.
+ * @dto_tcbcnt: TCBCNT (bytes the CIU has moved) when @dto_timer was last
+ *	armed; the timer only fires the transfer when it has not advanced.
+ * @dto_interval: the interval @dto_timer was armed with, in jiffies, for
+ *	its re-arm while the transfer still progresses.
  *
  * Locking
  * =======
@@ -237,6 +241,8 @@ struct dw_mci {
 	struct timer_list       cmd11_timer;
 	struct timer_list       cto_timer;
 	struct timer_list       dto_timer;
+	u32			dto_tcbcnt;
+	unsigned long		dto_interval;
 
 #ifdef CONFIG_FAULT_INJECTION
 	struct fault_attr	fail_data_crc;
@@ -594,6 +600,10 @@ struct dw_mci_slot {
  * @set_ios: handle bus specific extensions.
  * @parse_dt: parse implementation specific device tree properties.
  * @execute_tuning: implementation specific tuning procedure.
+ * @lower_bus_clock: step the card clock down one rung within the current bus
+ *	mode after a persistent data-CRC storm (mmc_host_ops->lower_bus_clock);
+ *	return 0 if lowered (the core re-tunes at the new rate), <0 if the
+ *	ladder is exhausted so the core drops the bus grade instead.
  * @set_data_timeout: implementation specific timeout.
  * @get_drto_clks: implementation specific cycle count for data read timeout.
  * @hw_reset: implementation specific HW reset.
@@ -610,6 +620,7 @@ struct dw_mci_drv_data {
 	void		(*set_ios)(struct dw_mci *host, struct mmc_ios *ios);
 	int		(*parse_dt)(struct dw_mci *host);
 	int		(*execute_tuning)(struct dw_mci_slot *slot, u32 opcode);
+	int		(*lower_bus_clock)(struct dw_mci *host);
 	int		(*prepare_hs400_tuning)(struct dw_mci *host,
 						struct mmc_ios *ios);
 	int		(*switch_voltage)(struct mmc_host *mmc,

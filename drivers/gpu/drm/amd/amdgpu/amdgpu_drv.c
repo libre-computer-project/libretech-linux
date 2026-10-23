@@ -246,6 +246,7 @@ int amdgpu_damage_clips = -1; /* auto */
 int amdgpu_umsch_mm_fwlog;
 int amdgpu_rebar = -1; /* auto */
 int amdgpu_user_queue = -1;
+uint amdgpu_hdmi_hpd_debounce_delay_ms;
 
 DECLARE_DYNDBG_CLASSMAP(drm_debug_classes, DD_CLASS_TYPE_DISJOINT_BITS, 0,
 			"DRM_UT_CORE",
@@ -819,6 +820,53 @@ module_param_unsafe(halt_if_hws_hang, int, 0644);
 MODULE_PARM_DESC(halt_if_hws_hang, "Halt if HWS hang is detected (0 = off (default), 1 = on)");
 
 /**
+ * DOC: mes_hang_full_reset (int)
+ * On MES-scheduled devices (gfx11/gfx12) a userspace VM fault can wedge the MES
+ * scheduler, causing an add/remove/suspend/resume queue op to fail. By default
+ * (0) KFD contains such a failure to the faulting process(es): their queues are
+ * marked reset and a reset event is signalled to userspace, WITHOUT issuing a
+ * full-device GPU reset -- the host stays up and the GPU is left for a
+ * deliberate/deferred recovery. Setting 1 restores the legacy behaviour of
+ * escalating an MES-op failure straight to a full-device GPU reset, which has
+ * been observed to deadlock the host on resume (gfx1201/R9700).
+ */
+int amdgpu_mes_hang_full_reset;
+module_param_named_unsafe(mes_hang_full_reset, amdgpu_mes_hang_full_reset, int, 0644);
+MODULE_PARM_DESC(mes_hang_full_reset,
+	"Full-device GPU reset on MES scheduler hang (0 = contain to faulting process, keep host up (default); 1 = legacy full-device reset)");
+
+/**
+ * DOC: mes_hang_rearm (int)
+ * When KFD contains an MES scheduler hang (see mes_hang_full_reset) the device
+ * is left in a sticky halted state: dqm->sched_halt is set, so every queue op
+ * short-circuits, and the amdgpu module is pinned because a reload against a
+ * contained device was measured host-fatal on gfx1201/R9700. Nothing clears
+ * that state, so the documented recovery is a reboot.
+ *
+ * A device reset issued AFTER containment has torn the faulting process(es)
+ * down (e.g. the amdgpu_gpu_recover debugfs trigger) is a different situation
+ * from the reset-during-fault that containment declines, and has been observed
+ * to complete cleanly with the host up. Setting 1 makes KFD re-arm dispatch at
+ * the end of such a reset: kgd2kfd_post_reset() clears the containment halt and
+ * releases the module pin, so a new process can submit to the reprogrammed MES
+ * without a reboot.
+ *
+ * Re-arming additionally requires that a real HW reset was performed AND
+ * succeeded (kgd2kfd_post_reset()'s hw_reset_done). post_reset is also reached
+ * when the reset was skipped because the guilty job had already signalled, and
+ * from PCIe error recovery and SRIOV FLR, neither of which vouches for MES;
+ * clearing the halt there would leave dispatch pointed at a dead scheduler.
+ *
+ * Default 0 (off): re-arming is opt-in because the evidence base for
+ * reset-after-containment is small and because dropping the module pin
+ * re-opens the host-fatal reload path.
+ */
+int amdgpu_mes_hang_rearm;
+module_param_named_unsafe(mes_hang_rearm, amdgpu_mes_hang_rearm, int, 0644);
+MODULE_PARM_DESC(mes_hang_rearm,
+	"Re-arm KFD dispatch after a device reset on an MES-hang-contained device (0 = off, recovery is a reboot (default); 1 = clear the containment halt in post_reset)");
+
+/**
  * DOC: hws_gws_support(bool)
  * Assume that HWS supports GWS barriers regardless of what firmware version
  * check says. Default value: false (rely on MEC2 firmware version check).
@@ -1127,6 +1175,16 @@ module_param_named(rebar, amdgpu_rebar, int, 0444);
  */
 MODULE_PARM_DESC(user_queue, "Enable user queues (-1 = auto (default), 0 = disable, 1 = enable, 2 = enable UQs and disable KQs)");
 module_param_named(user_queue, amdgpu_user_queue, int, 0444);
+
+/*
+ * DOC: hdmi_hpd_debounce_delay_ms (uint)
+ * HDMI HPD disconnect debounce delay in milliseconds.
+ *
+ * Used to filter short disconnect->reconnect HPD toggles some HDMI sinks
+ * generate while entering/leaving power save. Set to 0 to disable by default.
+ */
+MODULE_PARM_DESC(hdmi_hpd_debounce_delay_ms, "HDMI HPD disconnect debounce delay in milliseconds (0 to disable (by default), 1500 is common)");
+module_param_named(hdmi_hpd_debounce_delay_ms, amdgpu_hdmi_hpd_debounce_delay_ms, uint, 0644);
 
 /* These devices are not supported by amdgpu.
  * They are supported by the mach64, r128, radeon drivers
@@ -2334,9 +2392,6 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 			return -ENODEV;
 	}
 
-	if (amdgpu_aspm == -1 && !pcie_aspm_enabled(pdev))
-		amdgpu_aspm = 0;
-
 	if (amdgpu_virtual_display ||
 	    amdgpu_device_asic_has_dc_support(pdev, flags & AMD_ASIC_MASK))
 		supports_atomic = true;
@@ -2531,6 +2586,7 @@ amdgpu_pci_remove(struct pci_dev *pdev)
 	if (adev->pm.rpm_mode != AMDGPU_RUNPM_NONE) {
 		pm_runtime_get_sync(dev->dev);
 		pm_runtime_forbid(dev->dev);
+		pm_runtime_dont_use_autosuspend(dev->dev);
 	}
 
 	amdgpu_driver_unload_kms(dev);
@@ -2634,6 +2690,14 @@ static int amdgpu_pmops_suspend_noirq(struct device *dev)
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
 	int r;
 
+	/*
+	 * A GPU parked by vga_switcheroo has no power and no PCIe link, so the
+	 * ASIC reset below would fail and abort the whole noirq suspend phase.
+	 * Bail out like amdgpu_device_prepare/suspend/resume() already do.
+	 */
+	if (drm_dev->switch_power_state == DRM_SWITCH_POWER_OFF)
+		return 0;
+
 	if (amdgpu_acpi_should_gpu_reset(adev)) {
 		amdgpu_device_lock_reset_domain(adev->reset_domain);
 		r = amdgpu_asic_reset(adev);
@@ -2675,8 +2739,12 @@ static int amdgpu_pmops_freeze(struct device *dev)
 	if (r)
 		return r;
 
-	if (amdgpu_acpi_should_gpu_reset(adev))
-		return amdgpu_asic_reset(adev);
+	if (amdgpu_acpi_should_gpu_reset(adev)) {
+		amdgpu_device_lock_reset_domain(adev->reset_domain);
+		r = amdgpu_asic_reset(adev);
+		amdgpu_device_unlock_reset_domain(adev->reset_domain);
+		return r;
+	}
 	return 0;
 }
 
@@ -2879,6 +2947,19 @@ static int amdgpu_pmops_runtime_suspend(struct device *dev)
 	return 0;
 }
 
+static void amdgpu_restore_umd_profile_pstate_after_runpm(struct amdgpu_device *adev)
+{
+	enum amd_dpm_forced_level level;
+	uint32_t profile_mode_mask = AMD_DPM_FORCED_LEVEL_PROFILE_STANDARD |
+		AMD_DPM_FORCED_LEVEL_PROFILE_MIN_SCLK |
+		AMD_DPM_FORCED_LEVEL_PROFILE_MIN_MCLK |
+		AMD_DPM_FORCED_LEVEL_PROFILE_PEAK;
+
+	level = amdgpu_dpm_get_performance_level(adev);
+	if (level & profile_mode_mask)
+		amdgpu_asic_update_umd_stable_pstate(adev, true);
+}
+
 static int amdgpu_pmops_runtime_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -2923,6 +3004,8 @@ static int amdgpu_pmops_runtime_resume(struct device *dev)
 
 	if (adev->pm.rpm_mode == AMDGPU_RUNPM_PX)
 		drm_dev->switch_power_state = DRM_SWITCH_POWER_ON;
+
+	amdgpu_restore_umd_profile_pstate_after_runpm(adev);
 	adev->in_runpm = false;
 	return 0;
 }
@@ -3158,7 +3241,6 @@ static int __init amdgpu_init(void)
 	if (r)
 		goto error_fence;
 
-	DRM_INFO("amdgpu kernel modesetting enabled.\n");
 	amdgpu_register_atpx_handler();
 	amdgpu_acpi_detect();
 
@@ -3191,6 +3273,14 @@ static void __exit amdgpu_exit(void)
 	amdgpu_userq_fence_slab_fini();
 	mmu_notifier_synchronize();
 	amdgpu_xcp_drv_release();
+
+	/*
+	 * Flush outstanding call_rcu() callbacks before the
+	 * module text is freed.  Otherwise a grace period elapsing after
+	 * unload invokes a callback in already-freed module memory and
+	 * faults in rcu_do_batch().
+	 */
+	rcu_barrier();
 }
 
 module_init(amdgpu_init);

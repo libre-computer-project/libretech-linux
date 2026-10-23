@@ -8,11 +8,14 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/devfreq.h>
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <linux/init.h>
+#include <linux/ktime.h>
 #include <linux/slab.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -28,6 +31,18 @@
 #include <linux/reset.h>
 
 #include "dmaengine.h"
+
+/*
+ * Bound on the DEVFREQ_PRECHANGE drain (below): how long a memory-clock
+ * change may wait for every channel thread to run its current request to
+ * DMAEND before the change is vetoed instead. A 1 MiB memcpy request drains
+ * in single-digit milliseconds; a cyclic transfer never drains and is vetoed
+ * at once. Writable at runtime so a test can force the veto path.
+ */
+static unsigned int quiesce_timeout_us = 20000;
+module_param(quiesce_timeout_us, uint, 0644);
+MODULE_PARM_DESC(quiesce_timeout_us,
+		 "max wait for the channel threads to stop before a memory-clock change is vetoed (us)");
 #define PL330_MAX_CHAN		8
 #define PL330_MAX_IRQS		32
 #define PL330_MAX_PERI		32
@@ -504,6 +519,26 @@ struct pl330_dmac {
 
 	struct reset_control	*rstc;
 	struct reset_control	*rstc_ocp;
+
+	/*
+	 * Quiescence for a memory-clock change. While @quiesced is set (under
+	 * @lock) _trigger() issues no DMAGO, so every channel thread runs the
+	 * request it is on to DMAEND and then stays STOPPED with the next one
+	 * hooked; the DEVFREQ_POSTCHANGE handler clears the flag and
+	 * re-triggers. Registered against the memory controller's devfreq
+	 * named by the optional "rockchip,dmc-devfreq" phandle.
+	 */
+	bool			quiesced;
+	struct devfreq		*dmc_devfreq;
+	struct notifier_block	dmc_nb;
+	struct {
+		unsigned long	changes;	/* PRECHANGE with old != new */
+		unsigned long	drained;	/* ...that waited on a busy thread */
+		unsigned long	suspended;	/* ...with the DMAC clock-gated */
+		unsigned long	vetoed;
+		unsigned int	max_wait_us;
+		unsigned int	max_busy;
+	} qstats;
 };
 
 static struct pl330_of_quirks {
@@ -1029,6 +1064,14 @@ static bool _trigger(struct pl330_thread *thrd)
 
 	/* Return if req is running */
 	if (idx == thrd->req_running)
+		return true;
+
+	/*
+	 * A memory-clock change is draining the DMAC: leave the request
+	 * hooked and the thread STOPPED. pl330_dmc_notifier() re-triggers on
+	 * DEVFREQ_POSTCHANGE.
+	 */
+	if (thrd->dmac->quiesced)
 		return true;
 
 	desc = req->desc;
@@ -2912,6 +2955,207 @@ static irqreturn_t pl330_irq_handler(int irq, void *data)
 		return IRQ_NONE;
 }
 
+/*
+ * Memory-clock change (devfreq transition on the memory controller named by
+ * "rockchip,dmc-devfreq"). The DMAC is an AXI master that fetches its own
+ * microcode and moves data in bursts straight to and from DRAM; a burst that
+ * meets the controller mid-retrain hangs the bus (measured on RK3399: a memcpy
+ * in flight during a DDR switch wedges the SoC, 2 of 2). PL330 has no pause --
+ * pl330_pause() is a DMAKILL -- so the only safe point is between requests:
+ *
+ *   PRECHANGE  set @quiesced so _trigger() issues no DMAGO, then wait, bounded
+ *              by quiesce_timeout_us, for every channel thread to reach
+ *              STOPPED (its request ran to DMAEND). A cyclic transfer never
+ *              stops, and a thread parked in WFP on a peripheral request would
+ *              burst the moment the peripheral asks, so neither counts as
+ *              quiescent: the change is VETOED (NOTIFY_BAD) and the memory
+ *              controller stays at its current rate. A clock-gated DMAC has
+ *              nothing running; the flag alone holds whatever starts next.
+ *   POSTCHANGE clear the flag and re-trigger every thread that hooked a
+ *              request meanwhile. Sent for a vetoed change too (with
+ *              old == new), so the flag never outlives a transition.
+ *
+ * Runs in the devfreq caller's process context, before the clock driver's
+ * stop_machine(), so it may sleep.
+ */
+static unsigned int pl330_busy_threads(struct pl330_dmac *pl330,
+				       unsigned int *cyclic)
+{
+	unsigned long flags;
+	unsigned int i, busy = 0;
+
+	*cyclic = 0;
+	spin_lock_irqsave(&pl330->lock, flags);
+	for (i = 0; i < pl330->pcfg.num_chan; i++) {
+		struct pl330_thread *thrd = &pl330->channels[i];
+
+		if (thrd->free)
+			continue;
+		if (_state(thrd) != PL330_STATE_STOPPED)
+			busy++;
+	}
+	for (i = 0; i < pl330->num_peripherals; i++) {
+		struct dma_pl330_chan *pch = &pl330->peripherals[i];
+
+		if (pch->thread && pch->cyclic && pch->active)
+			(*cyclic)++;
+	}
+	spin_unlock_irqrestore(&pl330->lock, flags);
+
+	return busy;
+}
+
+static int pl330_dmc_notifier(struct notifier_block *nb, unsigned long action,
+			      void *data)
+{
+	struct pl330_dmac *pl330 = container_of(nb, struct pl330_dmac, dmc_nb);
+	struct devfreq_freqs *freqs = data;
+	struct device *dev = pl330->ddma.dev;
+	unsigned int busy, busy0, cyclic, wait_us;
+	unsigned long flags;
+	ktime_t start;
+	int rpm, i;
+
+	switch (action) {
+	case DEVFREQ_PRECHANGE:
+		if (freqs->old == freqs->new)
+			return NOTIFY_DONE;
+
+		spin_lock_irqsave(&pl330->lock, flags);
+		pl330->quiesced = true;
+		spin_unlock_irqrestore(&pl330->lock, flags);
+		pl330->qstats.changes++;
+
+		/*
+		 * Runtime-suspended means clock-gated: no thread is running and
+		 * the registers must not be read. A channel that becomes active
+		 * from here on resumes the clock but is held by the flag before
+		 * its first DMAGO. (< 0 = runtime PM disabled: powered, drain.)
+		 */
+		rpm = pm_runtime_get_if_in_use(dev);
+		if (rpm == 0) {
+			pl330->qstats.suspended++;
+			dev_dbg(dev, "quiesce %lu -> %lu Hz: clock-gated, nothing to drain\n",
+				freqs->old, freqs->new);
+			return NOTIFY_OK;
+		}
+
+		start = ktime_get();
+		busy0 = busy = pl330_busy_threads(pl330, &cyclic);
+		while (busy && !cyclic) {
+			if (ktime_us_delta(ktime_get(), start) >= quiesce_timeout_us)
+				break;
+			usleep_range(20, 40);
+			busy = pl330_busy_threads(pl330, &cyclic);
+		}
+		wait_us = ktime_us_delta(ktime_get(), start);
+		if (rpm > 0)
+			pm_runtime_put_autosuspend(dev);
+
+		if (busy) {
+			pl330->qstats.vetoed++;
+			dev_warn_ratelimited(dev, "quiesce %lu -> %lu Hz VETOED: %u of %u threads still busy%s after %u us (bound %u us)\n",
+					     freqs->old, freqs->new, busy,
+					     pl330->pcfg.num_chan,
+					     cyclic ? ", cyclic transfer active" : "",
+					     wait_us, quiesce_timeout_us);
+			/* the POSTCHANGE for the refused change clears the flag */
+			return NOTIFY_BAD;
+		}
+
+		if (busy0)
+			pl330->qstats.drained++;
+		if (wait_us > pl330->qstats.max_wait_us)
+			pl330->qstats.max_wait_us = wait_us;
+		if (busy0 > pl330->qstats.max_busy)
+			pl330->qstats.max_busy = busy0;
+		dev_dbg(dev, "quiesced %lu -> %lu Hz: %u threads busy, drained in %u us\n",
+			freqs->old, freqs->new, busy0, wait_us);
+		return NOTIFY_OK;
+
+	case DEVFREQ_POSTCHANGE:
+		rpm = pm_runtime_get_if_in_use(dev);
+		spin_lock_irqsave(&pl330->lock, flags);
+		if (!pl330->quiesced) {
+			spin_unlock_irqrestore(&pl330->lock, flags);
+			if (rpm > 0)
+				pm_runtime_put_autosuspend(dev);
+			return NOTIFY_DONE;
+		}
+		pl330->quiesced = false;
+		/* clock-gated: nothing hooked a request while held */
+		if (rpm != 0)
+			for (i = 0; i < pl330->pcfg.num_chan; i++)
+				if (!pl330->channels[i].free)
+					pl330_start_thread(&pl330->channels[i]);
+		spin_unlock_irqrestore(&pl330->lock, flags);
+		if (rpm > 0)
+			pm_runtime_put_autosuspend(dev);
+		return NOTIFY_OK;
+	}
+
+	return NOTIFY_DONE;
+}
+
+/*
+ * Resolve "rockchip,dmc-devfreq" at the top of probe, so a memory controller
+ * whose devfreq has not registered yet defers this DMAC (and its clients)
+ * instead of leaving it undrained; the notifier itself is registered at the
+ * end of probe, once the threads exist.
+ */
+static int pl330_dmc_devfreq_lookup(struct pl330_dmac *pl330)
+{
+	struct device *dev = pl330->ddma.dev;
+	struct devfreq *df;
+
+	if (!of_property_present(dev->of_node, "rockchip,dmc-devfreq"))
+		return 0;
+	if (!IS_ENABLED(CONFIG_PM_DEVFREQ)) {
+		dev_warn(dev, "rockchip,dmc-devfreq ignored: CONFIG_PM_DEVFREQ is off, no memory-clock changes to drain for\n");
+		return 0;
+	}
+
+	df = devfreq_get_devfreq_by_phandle(dev, "rockchip,dmc-devfreq", 0);
+	if (IS_ERR(df)) {
+		if (PTR_ERR(df) == -ENODEV)
+			return dev_err_probe(dev, -EPROBE_DEFER,
+					     "memory controller devfreq not registered yet\n");
+		return PTR_ERR(df);
+	}
+	pl330->dmc_devfreq = df;
+	return 0;
+}
+
+static int pl330_dmc_notifier_register(struct pl330_dmac *pl330)
+{
+	struct devfreq *df = pl330->dmc_devfreq;
+	int ret;
+
+	if (!df)
+		return 0;
+
+	pl330->dmc_nb.notifier_call = pl330_dmc_notifier;
+	ret = devfreq_register_notifier(df, &pl330->dmc_nb,
+					DEVFREQ_TRANSITION_NOTIFIER);
+	if (ret) {
+		pl330->dmc_devfreq = NULL;
+		return ret;
+	}
+	dev_info(pl330->ddma.dev,
+		 "draining for memory-clock changes of %s (bound %u us)\n",
+		 dev_name(df->dev.parent), quiesce_timeout_us);
+	return 0;
+}
+
+static void pl330_dmc_notifier_unregister(struct pl330_dmac *pl330)
+{
+	if (!pl330->dmc_devfreq || !pl330->dmc_nb.notifier_call)
+		return;
+	devfreq_unregister_notifier(pl330->dmc_devfreq, &pl330->dmc_nb,
+				    DEVFREQ_TRANSITION_NOTIFIER);
+	pl330->dmc_devfreq = NULL;
+}
+
 #define PL330_DMA_BUSWIDTHS \
 	BIT(DMA_SLAVE_BUSWIDTH_UNDEFINED) | \
 	BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) | \
@@ -2950,6 +3194,13 @@ static int pl330_debugfs_show(struct seq_file *s, void *data)
 		else
 			seq_printf(s, "%d\n", found);
 	}
+
+	if (pl330->dmc_devfreq)
+		seq_printf(s, "memory-clock quiesce: changes %lu drained %lu suspended %lu vetoed %lu max_wait_us %u max_busy %u bound_us %u\n",
+			   pl330->qstats.changes, pl330->qstats.drained,
+			   pl330->qstats.suspended, pl330->qstats.vetoed,
+			   pl330->qstats.max_wait_us, pl330->qstats.max_busy,
+			   quiesce_timeout_us);
 
 	return 0;
 }
@@ -3032,6 +3283,10 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 	for (i = 0; i < ARRAY_SIZE(of_quirks); i++)
 		if (of_property_read_bool(np, of_quirks[i].quirk))
 			pl330->quirks |= of_quirks[i].id;
+
+	ret = pl330_dmc_devfreq_lookup(pl330);
+	if (ret)
+		return ret;
 
 	res = &adev->res;
 	pl330->base = devm_ioremap_resource(&adev->dev, res);
@@ -3173,6 +3428,11 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 		pcfg->data_buf_dep, pcfg->data_bus_width / 8, pcfg->num_chan,
 		pcfg->num_peri, pcfg->num_events);
 
+	ret = pl330_dmc_notifier_register(pl330);
+	if (ret)
+		dev_warn(&adev->dev, "not draining for memory-clock changes: %d\n",
+			 ret);
+
 	pm_runtime_irq_safe(&adev->dev);
 	pm_runtime_use_autosuspend(&adev->dev);
 	pm_runtime_set_autosuspend_delay(&adev->dev, PL330_AUTOSUSPEND_DELAY);
@@ -3212,6 +3472,8 @@ static void pl330_remove(struct amba_device *adev)
 	int i, irq;
 
 	pm_runtime_get_noresume(pl330->ddma.dev);
+
+	pl330_dmc_notifier_unregister(pl330);
 
 	if (adev->dev.of_node)
 		of_dma_controller_free(adev->dev.of_node);

@@ -304,12 +304,19 @@ static irqreturn_t mtk_jpegenc_hw_irq_handler(int irq, void *priv)
 	buf_state = VB2_BUF_STATE_DONE;
 	v4l2_m2m_buf_done(src_buf, buf_state);
 	mtk_jpegenc_put_buf(jpeg);
-	pm_runtime_put(ctx->jpeg->dev);
+	pm_runtime_put(jpeg->dev);
 	clk_disable_unprepare(jpeg->venc_clk.clks->clk);
 
 	jpeg->hw_state = MTK_JPEG_HW_IDLE;
-	wake_up(&master_jpeg->hw_wq);
+	/*
+	 * Increment hw_rdy BEFORE waking the worker to avoid a lost wakeup:
+	 * mtk_jpegenc_worker() re-checks hw_rdy when woken, so a wake that
+	 * precedes the increment is missed (the worker sees 0 and sleeps
+	 * again, and the later inc issues no further wake). Match the correct
+	 * order already used by mtk_jpegenc_timeout_work().
+	 */
 	atomic_inc(&master_jpeg->hw_rdy);
+	wake_up(&master_jpeg->hw_wq);
 
 	return IRQ_HANDLED;
 }

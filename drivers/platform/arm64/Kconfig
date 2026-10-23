@@ -90,4 +90,20 @@ config EC_LENOVO_THINKPAD_T14S
 
 	  Say M or Y here to include this support.
 
+config EC_ASUS_VIVOBOOK_S15
+	tristate "ASUS Vivobook S15 Embedded Controller driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on I2C
+	depends on HWMON || HWMON=n
+	depends on THERMAL || THERMAL=n
+	select ACPI_PLATFORM_PROFILE
+	help
+	  Driver for the Embedded Controller in the ASUS Vivobook S15
+	  (S5507QA) with Qualcomm Snapdragon X Elite (X1E80100). The EC
+	  communicates over I2C using a 2-byte-address protocol and provides
+	  fan RPM reporting and profile-based fan speed control (silent,
+	  balanced, performance, turbo).
+
+	  Say M or Y here to include this support.
+
 endif # ARM64_PLATFORM_DEVICES

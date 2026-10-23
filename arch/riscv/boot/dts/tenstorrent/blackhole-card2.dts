@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/dts-v1/;
+
+#include "blackhole.dtsi"
+
+/ {
+	model = "Tenstorrent Blackhole";
+	compatible = "tenstorrent,blackhole-card", "tenstorrent,blackhole";
+
+	/*
+	 * L2CPU2 and L2CPU3 SHARE one DRAM controller (bank 7). tt-metal's
+	 * dram_view_size is one scalar for all eight banks, so the guest
+	 * ceiling is L2CPU_GUEST_BASE = 0xE0000000 on this controller too.
+	 * The 512 MiB above that is split: cluster 2 takes the lower 256 MiB
+	 * (this file), cluster 3 the upper 256 MiB (blackhole-card3.dts).
+	 * They cannot each take 512 MiB without overlapping each other.
+	 */
+	memory@400110000000 {
+		device_type = "memory";
+		reg = <0x4001 0x10000000 0x0 0x10000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		virtio_devices: memory@40011fa00000 {
+			reg = <0x4001 0x1fa00000 0x00 0x600000>;
+			no-map;
+		};
+	};
+
+	virtio_net_0@40011fc00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x1fc00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 32>;
+	};
+
+	virtio_blk_0@40011fe00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x1fe00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 33>;
+	};
+
+	virtio_blk_1@40011fa00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x1fa00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 31>;
+	};
+};

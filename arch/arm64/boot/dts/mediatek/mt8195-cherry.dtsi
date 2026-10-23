@@ -685,10 +685,18 @@
 &mmc1 {
 	status = "okay";
 
+	assigned-clocks = <&topckgen CLK_TOP_MSDC30_1>;
+	assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_D6_D2>;
 	bus-width = <4>;
 	cap-sd-highspeed;
 	cd-gpios = <&pio 54 GPIO_ACTIVE_LOW>;
-	max-frequency = <200000000>;
+	/*
+	 * Run SDR104 at the full 208 MHz msdc30_1 source (univpll_d6_d2), up from the
+	 * 192 MHz msdcpll_d2 default. The mtk-sd CRC-storm clock ladder backstops the
+	 * tighter 208 eye: a marginal card falls back 208->192->182->156 instead of
+	 * failing.
+	 */
+	max-frequency = <208000000>;
 	no-mmc;
 	no-sdio;
 	pinctrl-names = "default", "state_uhs";

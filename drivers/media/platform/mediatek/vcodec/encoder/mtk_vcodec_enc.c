@@ -508,6 +508,23 @@ static int vidioc_venc_s_fmt_out(struct file *file, void *priv,
 	ctx->quantization = f->fmt.pix_mp.quantization;
 	ctx->xfer_func = f->fmt.pix_mp.xfer_func;
 
+	/*
+	 * Scale the coded (CAPTURE) bitstream buffer with the encode resolution.
+	 * The DST sizeimage is initialised once to MTK_VENC_MIN_W * MTK_VENC_MIN_H
+	 * (160 * 128 = 20480) and is otherwise only changed by an explicit CAPTURE
+	 * S_FMT, so a client that just sets the source resolution keeps the 20 KB
+	 * default at any resolution. A larger frame (e.g. a CAVLC H.264 Baseline
+	 * I-frame at 1080p, which is bigger than the CABAC High one) then overflows
+	 * the buffer mid-encode and the VENC firmware raises
+	 * MTK_VENC_IRQ_STATUS_DRAM instead of _FRM, which the driver reports as
+	 * "irq_status=8 failed" (-EIO) with only the SPS/PPS emitted. Size the coded
+	 * buffer at one byte per pixel, which bounds any single compressed
+	 * H.264/HEVC frame (and matches what userspace VA-API backends request).
+	 */
+	ctx->q_data[MTK_Q_DATA_DST].sizeimage[0] =
+		max_t(u32, ctx->q_data[MTK_Q_DATA_DST].sizeimage[0],
+		      q_data->coded_width * q_data->coded_height);
+
 	for (i = 0; i < f->fmt.pix_mp.num_planes; i++) {
 		struct v4l2_plane_pix_format *plane_fmt;
 
@@ -864,7 +881,7 @@ static void vb2ops_venc_buf_queue(struct vb2_buffer *vb)
 static int vb2ops_venc_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct mtk_vcodec_enc_ctx *ctx = vb2_get_drv_priv(q);
-	struct venc_enc_param param;
+	struct venc_enc_param param = { };
 	int ret;
 	int i;
 
@@ -1018,7 +1035,7 @@ static int mtk_venc_encode_header(void *priv)
 	int ret;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	struct mtk_vcodec_mem bs_buf;
-	struct venc_done_result enc_result;
+	struct venc_done_result enc_result = { };
 
 	dst_buf = v4l2_m2m_dst_buf_remove(ctx->m2m_ctx);
 	if (!dst_buf) {
@@ -1139,7 +1156,7 @@ static void mtk_venc_worker(struct work_struct *work)
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	struct venc_frm_buf frm_buf;
 	struct mtk_vcodec_mem bs_buf;
-	struct venc_done_result enc_result;
+	struct venc_done_result enc_result = { };
 	int ret, i;
 
 	/* check dst_buf, dst_buf may be removed in device_run

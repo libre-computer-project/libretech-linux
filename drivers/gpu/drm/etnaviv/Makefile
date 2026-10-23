@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 etnaviv-y := \
 	etnaviv_buffer.o \
+	etnaviv_buffer_v8_qi.o \
+	etnaviv_buffer_v8_pico.o \
 	etnaviv_cmd_parser.o \
 	etnaviv_cmdbuf.o \
 	etnaviv_drv.o \

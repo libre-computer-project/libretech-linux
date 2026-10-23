@@ -8,9 +8,29 @@
 
 #include "meson-gxl-s905d.dtsi"
 #include "meson-gx-libretech-pc.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "libretech,aml-s905d-pc", "amlogic,s905d",
 		     "amlogic,meson-gxl";
 	model = "Libre Computer AML-S905D-PC";
+};
+
+/ {
+	reserved-memory {
+		linux,cma {
+			/*
+			 * 384 MiB. NOT 7/32 of RAM (448 MiB at 2 GiB): what
+			 * binds is the largest CONTIGUOUS run under the 1 GiB
+			 * alloc-ranges ceiling u-boot writes, and the KASLR'd
+			 * kernel image lands inside it. hwrom@0 + secmon@5000000
+			 * + ramoops@7400000 leave a 904 MiB run at 4 MiB
+			 * alignment; a ~72 MiB image at the worst point halves
+			 * it to 416 MiB, which is the largest request satisfiable
+			 * on EVERY boot. 448 exceeds it and falls silently to the
+			 * 128 MiB Kconfig default on a minority of boots.
+			 */
+			size = <0x0 0x18000000>;
+		};
+	};
 };

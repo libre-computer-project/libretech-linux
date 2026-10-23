@@ -6,20 +6,32 @@
 /dts-v1/;
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/pwm/pwm.h>
+#include <dt-bindings/usb/pd.h>
 #include "rk3399.dtsi"
 
 / {
-	model = "Firefly ROC-RK3399-PC Board";
-	compatible = "firefly,roc-rk3399-pc", "rockchip,rk3399";
+	model = "Libre Computer ROC-RK3399-PC";
+	compatible = "libre-computer,roc-rk3399-pc", "firefly,roc-rk3399-pc", "rockchip,rk3399";
 
 	aliases {
 		ethernet0 = &gmac;
-		mmc0 = &sdmmc;
-		mmc1 = &sdhci;
+		/*
+		 * eMMC first, SD second. The MMC index is a priority order --
+		 * the on-board eMMC is the primary boot medium and the SD slot
+		 * is the removable one, so &sdhci is mmc0 and &sdmmc is mmc1.
+		 *
+		 * This is what rk3399-u-boot.dtsi has always said for the whole
+		 * RK3399 family, so before this the two trees described the
+		 * same two controllers with opposite numbers.
+		 */
+		mmc0 = &sdhci;
+		mmc1 = &sdmmc;
+		/* J15 SDIO0. The index matches rk3399-roc-pc-mezzanine.dts. */
+		mmc2 = &sdio0;
 	};
 
 	chosen {
-		stdout-path = "serial2:1500000n8";
+		stdout-path = "serial2:115200n8";
 	};
 
 	backlight: backlight {
@@ -32,6 +44,91 @@
 		clock-frequency = <125000000>;
 		clock-output-names = "clkin_gmac";
 		#clock-cells = <0>;
+	};
+
+	/*
+	 * SCMI (ARM DEN 0056), served by the Libre Computer BL31 from the
+	 * SoC's Cortex-M0 and reached by SMC 0x82000010 (RK_SIP_SCMI_AGENT0),
+	 * the id every other Rockchip SoC upstream uses for arm,scmi-smc.
+	 * The server is board firmware, not silicon, so the agent lives in
+	 * the board dtsi rather than rk3399.dtsi. Every consumer stays on
+	 * &cru; the protocols are the ten read-mostly clocks and four reset
+	 * domains of the perilp M0 the firmware exposes.
+	 *
+	 * Buffer at 0x100000, the first non-secure DRAM page: TZRAM is
+	 * [0, 1 MiB) and BL31 lives at 0x40000 inside it. It is NOT in
+	 * PMUSRAM, which would be the always-on choice, because PMUSRAM is
+	 * secure-only on this SoC (MT_SECURE + SGRF_PMUSRAM_S) and an SMC
+	 * against a buffer there hangs U-Boot before it relocates the kernel.
+	 *
+	 * No reserved-memory node for the buffer, deliberately: U-Boot's
+	 * dram_init_banksize() starts /memory at 0x200000 ("Reserve 2M for
+	 * ATF bl31"), so [0, 2 MiB) is already outside the kernel's view and
+	 * a reservation there only reports a region the kernel never had.
+	 */
+	scmi_shmem: shmem@100000 {
+		compatible = "arm,scmi-shmem";
+		reg = <0x0 0x00100000 0x0 0x100>;
+	};
+
+	/*
+	 * mailbox1 is pmum0's doorbell (TRM 1.4). It carries no data -- the
+	 * SCMI message is in scmi_shmem -- but its pclk phandle here is what
+	 * keeps pclk_mailbox_pmu out of clk_disable_unused, without which the
+	 * doorbell would never reach the server.
+	 */
+	mbox1: mailbox@ff390000 {
+		compatible = "rockchip,rk3399-mailbox";
+		reg = <0x0 0xff390000 0x0 0x1000>;
+		interrupts = <GIC_SPI 140 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 141 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 142 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 143 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&pmucru PCLK_MAILBOX_PMU>;
+		clock-names = "pclk_mailbox";
+		#mbox-cells = <1>;
+	};
+
+	/*
+	 * I2C0 stays with Linux -- the M0 asks instead of taking. When the
+	 * M0 SCMI server needs an RK808 register for a CPU OPP voltage it
+	 * posts the request to this page and rings mailbox1 channel 1;
+	 * drivers/soc/rockchip/rockchip-m0-i2c-offload.c runs the
+	 * transfer and answers. Same addressing as scmi_shmem above:
+	 * [0, 2 MiB) is already outside the kernel's /memory, so no
+	 * reserved-memory node, deliberately.
+	 */
+	m0_i2c_offload: m0-i2c-offload@101000 {
+		compatible = "rockchip,rk3399-m0-i2c-offload";
+		reg = <0x0 0x00101000 0x0 0x40>;
+		mboxes = <&mbox1 1>;
+		rockchip,pwrctrl = <&rk808>;
+	};
+
+	firmware {
+		scmi: scmi {
+			compatible = "arm,scmi";
+			mboxes = <&mbox1 0>;
+			shmem = <&scmi_shmem>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			scmi_clk: protocol@14 {
+				reg = <0x14>;
+				#clock-cells = <1>;
+			};
+
+			/* M0 TSADC reads: sensor 0 SoC/CPU, sensor 1 GPU */
+			scmi_sensor: protocol@15 {
+				reg = <0x15>;
+				#thermal-sensor-cells = <1>;
+			};
+
+			scmi_reset: protocol@16 {
+				reg = <0x16>;
+				#reset-cells = <1>;
+			};
+		};
 	};
 
 	adc-keys {
@@ -76,24 +173,24 @@
 		pinctrl-0 = <&work_led_pin>, <&diy_led_pin>, <&yellow_led_pin>;
 
 		work_led: led-0 {
-			label = "green:work";
+			label = "libre-computer:green";
 			gpios = <&gpio2 RK_PD3 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 			linux,default-trigger = "heartbeat";
 		};
 
 		diy_led: led-1 {
-			label = "red:diy";
+			label = "libre-computer:red";
 			gpios = <&gpio0 RK_PB5 GPIO_ACTIVE_HIGH>;
-			default-state = "off";
-			linux,default-trigger = "mmc2";
+			default-state = "on";
 		};
 
 		yellow_led: led-2 {
-			label = "yellow:yellow-led";
+			label = "libre-computer:yellow";
 			gpios = <&gpio0 RK_PA2 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
-			linux,default-trigger = "mmc1";
+			linux,default-trigger = "disk-activity";
+			panic-indicator;
 		};
 	};
 
@@ -113,6 +210,23 @@
 		reset-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_LOW>;
 	};
 
+	sound-dit {
+		compatible = "audio-graph-card";
+		label = "SPDIF";
+		dais = <&spdif_p0>;
+	};
+
+	spdif-dit {
+		compatible = "linux,spdif-dit";
+		#sound-dai-cells = <0>;
+
+		port {
+			dit_p0_0: endpoint {
+				remote-endpoint = <&spdif_p0_0>;
+			};
+		};
+	};
+
 	vcc_vbus_typec0: regulator-vcc-vbus-typec0 {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_vbus_typec0";
@@ -130,16 +244,15 @@
 		vin-supply = <&dc_12v>;
 	};
 
-	/* switched by pmic_sleep */
-	vcc1v8_s3: vcca1v8_s3: regulator-vcc1v8-s3 {
-		compatible = "regulator-fixed";
-		regulator-name = "vcc1v8_s3";
-		regulator-always-on;
-		regulator-boot-on;
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		vin-supply = <&vcc_1v8>;
-	};
+	/*
+	 * No vcc1v8_s3 / vcca1v8_s3 rail. The schematic has no such net on
+	 * any revision: the only "VCC1V8_S3" is on the reference power-domain
+	 * map (sheet 3), and the circuit sheets wire that domain (APIO3,
+	 * sheet 14 APIO3_VDD_1V8) straight to VCC_1V8, RK808 BUCK4. The rail
+	 * this node used to stand in for -- the SARADC reference -- is
+	 * VCCA_1V8, RK808 LDO3 (sheet 11 ADC_AVDD, sheet 16 VLDO3), i.e.
+	 * vcc1v8_pmu, which &saradc names directly.
+	 */
 
 	vcc3v0_sd: regulator-vcc3v0-sd {
 		compatible = "regulator-fixed";
@@ -182,6 +295,15 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&vcc5v0_host_en &hub_rst>;
 		regulator-name = "vcc5v0_host";
+		/*
+		 * The bootloader turns this rail on: USB is a boot source,
+		 * and applying the &hub_rst group above is what releases
+		 * the USB 3.0 hub from reset. Saying so here keeps the
+		 * fixed-regulator driver from requesting GPIO1_A0 as
+		 * OUT_LOW at probe and dropping the host ports' 5 V until
+		 * the USB PHYs re-enable it.
+		 */
+		regulator-boot-on;
 		vin-supply = <&vcc_sys>;
 	};
 
@@ -192,7 +314,18 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&vcc_vbus_typec1_en>;
 		regulator-name = "vcc_vbus_typec1";
-		regulator-always-on;
+		/*
+		 * Deliberately NOT regulator-always-on. This is a Type-C
+		 * source port's VBUS, so it belongs to the port manager:
+		 * TCPM sequences it as part of attach, and pinning it on
+		 * stalls the state machine in SRC_ATTACH_WAIT -- CC1 reads
+		 * Rd and the transition to SRC_ATTACHED never completes,
+		 * because that step is "now turn VBUS on" and there is
+		 * nothing left to turn on.
+		 *
+		 * It is fed from vcc_sys and switched by GPIO1_B5, which is
+		 * exactly what fusb1's vbus-supply needs to drive.
+		 */
 		vin-supply = <&vcc_sys>;
 	};
 
@@ -218,6 +351,62 @@
 		regulator-min-microvolt = <450000>;
 		regulator-max-microvolt = <1400000>;
 		pwm-supply = <&vcc3v3_sys>;
+	};
+
+	/*
+	 * The LPDDR4 DFS set points, every one a rate BL31's dfs.c
+	 * ddr_set_rate() reached from 800 MHz and back with a two-sided
+	 * 512 MiB memory check clean on both legs, on its JESD209-4 latency
+	 * (928 RL20/WL10 ... 200 RL6/WL4). 800 MHz is the TPL-trained boot
+	 * set point. Every entry carries the boot vdd_center; no rate has been
+	 * measured at any other voltage, so none is lowered here.
+	 *
+	 * The table REQUIRES a BL31 that generates the PI's per-frequency F2
+	 * fields (LBS atf master ca4ce2c2e and later): on the earlier firmware
+	 * controller index 0 was retrained against the loader's 400 MHz
+	 * latencies, and 928 and 200 wedged mid-print with no console or
+	 * watchdog path out. The measured set is the ROC-RK3399-PC V1.2A
+	 * (single-rank per channel); the V1.0 two-rank package is unmeasured.
+	 */
+	dmc_opp_table: opp-table-3 {
+		compatible = "operating-points-v2";
+
+		opp00 {
+			opp-hz = /bits/ 64 <200000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp01 {
+			opp-hz = /bits/ 64 <300000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp02 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp03 {
+			opp-hz = /bits/ 64 <528000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp04 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp05 {
+			opp-hz = /bits/ 64 <666000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp06 {
+			opp-hz = /bits/ 64 <732000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp07 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
+		opp08 {
+			opp-hz = /bits/ 64 <928000000>;
+			opp-microvolt = <900000 900000 925000>;
+		};
 	};
 };
 
@@ -245,6 +434,51 @@
 	cpu-supply = <&vdd_cpu_b>;
 };
 
+&dfi {
+	status = "okay";
+};
+
+/*
+ * The PL330 DMACs are AXI masters on PERILP, the one interconnect segment a
+ * DRAM frequency change cannot idle (it carries the SRAM the switch runs
+ * from); a transfer in flight during a switch hangs the SoC. Each DMAC drains
+ * itself on the dmc devfreq's PRECHANGE and vetoes a change it cannot drain
+ * for -- see drivers/dma/pl330.c pl330_dmc_notifier().
+ */
+&dmac_bus {
+	rockchip,dmc-devfreq = <&dmc>;
+};
+
+&dmac_peri {
+	rockchip,dmc-devfreq = <&dmc>;
+};
+
+/*
+ * A frequency change goes clk_set_rate(SCLK_DDRC) -> SMC ROCKCHIP_SIP_DRAM_FREQ
+ * -> BL31 ddr_set_rate(), preceded by DRAM_SET_ODT_PD carrying the idle timers
+ * below and the ODT enable, which the driver drops below lpddr4_odt_dis_freq.
+ * The rates dmc_opp_table may cite, and the BL31 it needs, are stated there.
+ */
+&dmc {
+	status = "okay";
+	center-supply = <&vdd_center>;
+	operating-points-v2 = <&dmc_opp_table>;
+
+	rockchip,pd-idle-ns = <160>;
+	rockchip,sr-idle-ns = <10240>;
+	rockchip,sr-mc-gate-idle-ns = <40960>;
+	rockchip,srpd-lite-idle-ns = <61440>;
+	rockchip,standby-idle-ns = <81920>;
+
+	rockchip,ddr3_odt_dis_freq = <666000000>;
+	rockchip,lpddr3_odt_dis_freq = <666000000>;
+	rockchip,lpddr4_odt_dis_freq = <666000000>;
+
+	rockchip,sr-mc-gate-idle-dis-freq-hz = <1000000000>;
+	rockchip,srpd-lite-idle-dis-freq-hz = <0>;
+	rockchip,standby-idle-dis-freq-hz = <928000000>;
+};
+
 &emmc_phy {
 	status = "okay";
 };
@@ -263,6 +497,23 @@
 	tx_delay = <0x28>;
 	rx_delay = <0x11>;
 	status = "okay";
+};
+
+/*
+ * The 14 PMU-domain lines, named by their schematic nets (sheet 7 "RK3399
+ * PMU Controler", identical on V1.0, V1.1-A and V1.2A). GPIO0_A1 and
+ * GPIO0_B4 carry no on-board function: on V1.0 and V1.1-A they go to the
+ * expansion header, J20 pins 25 and 26, under their own names. V1.2A rewires
+ * both to the eDP touch panel -- rk3399-roc-pc-v1.2.dts overrides these two.
+ */
+&gpio0 {
+	gpio-line-names =
+		/* GPIO0_A0..A7 */
+		"RTC_CLKO_SOC", "GPIO0_A1", "YELLOW_LED", "WIFI_HOST_WAKE_L",
+		"BT_HOST_WAKE_L", "PWR_KEY_L", "IR_INT", "SDMMC0_DET_L",
+		/* GPIO0_B0..B5 */
+		"MIPI_RST", "BT_REG_ON_H", "WIFI_REG_ON_H", "EFUSE_VQPS_EN_H",
+		"GPIO0_B4", "DIY_LED";
 };
 
 &gpu {
@@ -524,6 +775,15 @@
 };
 
 &i2c4 {
+	/*
+	 * 400 kHz, not the 100 kHz default: the FUSB302 interrupt handler
+	 * reads several registers per interrupt, and at 100 kHz it held the
+	 * chip for ~8 ms per BC_LVL interrupt during PD traffic. A Request
+	 * queued behind it left ~16 ms after the source's capabilities and a
+	 * PD monitor hard-reset the port at its sender-response timeout,
+	 * every time. 2.3 kOhm pull-ups (R81/R83); the FUSB302 takes 1 MHz.
+	 */
+	clock-frequency = <400000>;
 	i2c-scl-rising-time-ns = <600>;
 	i2c-scl-falling-time-ns = <20>;
 	status = "okay";
@@ -537,10 +797,150 @@
 		pinctrl-0 = <&fusb1_int>;
 		vbus-supply = <&vcc_vbus_typec1>;
 		status = "okay";
+
+		usb_con1: connector {
+			compatible = "usb-c-connector";
+			/*
+			 * "dual", not "host". This property is the connector's
+			 * Type-C DATA role capability, not the dwc3 dr_mode.
+			 *
+			 * "host" sets typec_caps.data = TYPEC_PORT_DFP, and
+			 * tcpm_data_role_for_sink() then hands TYPEC_HOST to
+			 * tcpm_set_roles() on every sink attach -- so a port
+			 * that has just attached as a SINK is recorded as a
+			 * DFP. When the partner (a source, therefore a DFP)
+			 * sends its first PD message, PD_HEADER_DATA_ROLE
+			 * matches port->data_role and tcpm_pd_rx_handler()
+			 * declares "Data role mismatch, initiating error
+			 * recovery". PORT_RESET, re-toggle, re-attach, same
+			 * mismatch -- an unbounded ~0.55 s loop that never
+			 * reaches a PD contract, so DISCOVER_SVIDS and DP
+			 * alt mode never happen.
+			 *
+			 * With "dual" the sink attach takes TYPEC_DEVICE, the
+			 * header bit disagrees with the partner's, and the
+			 * contract completes. Every in-tree board carrying the
+			 * 0x00001c46 DP VDO (qrb5165-rb5, sm8150-hdk,
+			 * mt8395-genio-1200-evk) declares "dual" likewise.
+			 */
+			data-role = "dual";
+			label = "USB-C1";
+			op-sink-microwatt = <1000000>;
+			power-role = "dual";
+			/*
+			 * The board does not draw its power through this
+			 * receptacle -- Type-C0 is the PD inlet feeding the
+			 * MP8859 -- so TCPM may present CC Open here.
+			 *
+			 * That is what makes error recovery an actual
+			 * electrical detach. tcpm_state_machine()'s PORT_RESET
+			 * gates on this: with self-powered it drives
+			 * TYPEC_CC_OPEN, and without it it drives Rd/Rp, so the
+			 * partner never sees a disconnect, keeps its protocol
+			 * state and data role, and is re-offered the same
+			 * conditions that failed. Nothing bounds the retry.
+			 *
+			 * Measured on the U-Boot side of this exact port, where
+			 * the same predicate and the same missing property
+			 * produced the same burst: adding it took DisplayPort
+			 * link-up from 6-of-7 boots to 10-of-10, the PD
+			 * "data role mismatch, initiating error recovery"
+			 * lines from 4-5 per boot to 1-2, and settle time from
+			 * ~13 s to ~8 s.
+			 *
+			 * NOT on usb_con0, deliberately: the board IS powered
+			 * through that one, so opening its CC lines during a
+			 * reset would cut the supply it is sitting on.
+			 */
+			self-powered;
+			sink-pdos =
+				<PDO_FIXED(5000, 2500, PDO_FIXED_USB_COMM)>;
+			source-pdos =
+				<PDO_FIXED(5000, 1400, PDO_FIXED_USB_COMM)>;
+			try-power-role = "sink";
+
+			/*
+			 * Declare that this port speaks DisplayPort alt mode.
+			 * Without it the port registers no alt mode, and
+			 * dp_altmode_probe() -- which matches the partner's
+			 * pin assignments against THIS port's DP VDO -- has
+			 * nothing to match, so the DisplayPort driver never
+			 * binds and ENTER_MODE is never sent. Measured: the
+			 * partner advertises SVID ff01 and DISCOVER_MODES
+			 * completes, then nothing happens.
+			 *
+			 * The VDO is derived, not permissive. Field by field:
+			 * capability 2 (DFP_D -- cdn-dp is source-only, there
+			 * is no sink path in the driver), signalling 1 (the
+			 * single DPAM 1.0b "DP signalling" value; the rate is
+			 * clamped to HBR2 over DPCD by CDN_DP_MAX_LINK_RATE),
+			 * receptacle 1, and DFP_D pin assignments 0x1c = C|D|E.
+			 *
+			 * C|D|E is a closed enumeration in the PHY, not a
+			 * guess: rk_typec_mux_set() handles TYPEC_DP_STATE_C
+			 * and _E as 4-lane DP and _D as 2-lane DP + USB3, and
+			 * drops F, A and B to default: -- MODE_DFP_USB with
+			 * dp_lanes = 0, i.e. no DP at all.
+			 *
+			 * Advertising everything (0xffffffff, which is what
+			 * the Rockchip boards in-tree do) is not merely untidy.
+			 * Because DP_CAP_RECEPTACLE is set, it claims F as
+			 * well, and against a partner offering both D and F the
+			 * multi-function mask in dp_altmode_configure() leaves
+			 * two bits set; dp_altmode_notify() then takes
+			 * get_count_order(0x28) = 6, past TYPEC_DP_STATE_F, and
+			 * the mux falls through to USB-only. With 0x1c every
+			 * reachable outcome is a single bit the mux handles.
+			 *
+			 * 0x00001c46 is also what qrb5165-rb5, sm8150-hdk and
+			 * mt8395-genio-1200-evk ship -- every in-tree board
+			 * that encodes a real value converges here.
+			 */
+			altmodes {
+				displayport {
+					svid = /bits/ 16 <0xff01>;
+					vdo = <0x00001c46>;
+				};
+			};
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					usb_con1_hs: endpoint {
+						remote-endpoint =
+							<&u2phy1_typec_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					usb_con1_ss: endpoint {
+						remote-endpoint =
+							<&tcphy1_typec_ss>;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+
+					usb_con1_dp: endpoint {
+						remote-endpoint =
+							<&tcphy1_typec_dp>;
+					};
+				};
+			};
+		};
 	};
 };
 
 &i2c7 {
+	/* 400 kHz for the FUSB302's PD latency, as &i2c4 */
+	clock-frequency = <400000>;
 	i2c-scl-rising-time-ns = <600>;
 	i2c-scl-falling-time-ns = <20>;
 	status = "okay";
@@ -554,6 +954,125 @@
 		pinctrl-0 = <&fusb0_int>;
 		vbus-supply = <&vcc_vbus_typec0>;
 		status = "okay";
+
+		/*
+		 * The data role TCPM negotiates on this port drives the rear
+		 * dwc3 through its role switch. Without it the dwc3 sat in
+		 * dr_mode "otg" with no ID pin and latched HOST, and that xHCI
+		 * refused every system suspend (-110 halt timeout, B121). The
+		 * board is always a sink here, so the role is device unless a
+		 * partner swaps data roles over PD.
+		 */
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				fusb0_role_sw: endpoint {
+					remote-endpoint = <&dwc3_0_role_switch>;
+				};
+			};
+		};
+
+		/*
+		 * Type-C0 is this board's power input: VBUS_TYPEC0 feeds the
+		 * MP8859 buck-boost that makes DC_12V. So it is a sink, not a
+		 * dual-role port -- vcc_vbus_typec0 is a fixed always-on
+		 * regulator with no enable GPIO, i.e. a placeholder for VBUS
+		 * arriving, and nothing on this port can actually source it.
+		 * (Type-C1 is the one that can: vcc_vbus_typec1 has an enable
+		 * GPIO and vin-supply = <&vcc_sys>.)
+		 *
+		 * The sink list stops at 15 V because the MP8859 accepts
+		 * 5-15 V in; a 20 V contract would put it outside its input
+		 * range. Advertising only 5 V/2.5 A capped the whole board at
+		 * 12.5 W, against a 12 V/3 A barrel jack and 802.3at PoE+.
+		 */
+		usb_con0: connector {
+			compatible = "usb-c-connector";
+			/*
+			 * "dual", not "host" -- the same property, the same
+			 * mechanism and the same fix as usb_con1 in
+			 * 5e701b29dfe5f. "host" sets typec_caps.data to
+			 * TYPEC_PORT_DFP, so tcpm_data_role_for_sink() hands
+			 * TYPEC_HOST to the tcpm_set_roles() inside
+			 * tcpm_snk_attach() on every sink attach. The partner
+			 * is a source and therefore a DFP, both ends claim
+			 * DFP, and tcpm_pd_rx_handler() declares "Data role
+			 * mismatch, initiating error recovery" before any
+			 * contract exists.
+			 *
+			 * It is worse here than it was on usb_con1, not
+			 * better. This port has no self-powered -- deliberately,
+			 * because the board draws its own supply through it --
+			 * so PORT_RESET re-presents Rd instead of CC Open. The
+			 * partner never sees a disconnect, so the loop runs
+			 * silently rather than visibly, and no PD contract is
+			 * ever reached on the port that feeds the MP8859.
+			 *
+			 * U-Boot's rk3399-roc-pc-u-boot.dtsi has said "dual"
+			 * here all along; this line was the divergence.
+			 */
+			data-role = "dual";
+			label = "USB-C0";
+			op-sink-microwatt = <15000000>;
+			power-role = "sink";
+			sink-pdos =
+				<PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)>,
+				<PDO_FIXED(9000, 3000, 0)>,
+				<PDO_FIXED(12000, 3000, 0)>,
+				<PDO_FIXED(15000, 3000, 0)>;
+
+			/*
+			 * The same DisplayPort alt mode as usb_con1, for the
+			 * same reason: this port routes all four SuperSpeed
+			 * pairs and its AUX pair to tcphy0, and cdn_dp names
+			 * both PHYs, so it is DP-capable in hardware and
+			 * declared nothing. The VDO derivation is usb_con1's
+			 * comment; 0x00001c46 is the same closed C|D|E set the
+			 * PHY mux handles on either port.
+			 */
+			altmodes {
+				displayport {
+					svid = /bits/ 16 <0xff01>;
+					vdo = <0x00001c46>;
+				};
+			};
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					usb_con0_hs: endpoint {
+						remote-endpoint =
+							<&u2phy0_typec_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					usb_con0_ss: endpoint {
+						remote-endpoint =
+							<&tcphy0_typec_ss>;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+
+					usb_con0_dp: endpoint {
+						remote-endpoint =
+							<&tcphy0_typec_dp>;
+					};
+				};
+			};
+		};
 	};
 
 	mp8859: regulator@66 {
@@ -659,6 +1178,17 @@
 		};
 	};
 
+	/*
+	 * PERST# for the PCIe connector. GPIO4_D1 is J12 pin 5 on this
+	 * board. The slot 3.3 V load-switch enable (GPIO1_C1) is on the
+	 * mezzanine and stays in rk3399-roc-pc-mezzanine.dts.
+	 */
+	pcie {
+		pcie_perst: pcie-perst {
+			rockchip,pins = <4 RK_PD1 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
 	pmic {
 		pmic_int_l: pmic-int-l {
 			rockchip,pins = <1 RK_PC5 RK_FUNC_GPIO &pcfg_pull_up>;
@@ -705,7 +1235,13 @@
 };
 
 &saradc {
-	vref-supply = <&vcca1v8_s3>;
+	/*
+	 * ADC_AVDD is VCCA_1V8 (schematic sheet 11, ball AC24), which is RK808
+	 * LDO3 (sheet 16 VLDO3) -- the same rail that feeds PMUIO1 and the
+	 * PLLs (sheet 7). Not a BUCK4-derived rail; see the note where the
+	 * phantom vcc1v8_s3 regulator used to be.
+	 */
+	vref-supply = <&vcc1v8_pmu>;
 	status = "okay";
 };
 
@@ -715,6 +1251,8 @@
 	cd-gpios = <&gpio0 RK_PA7 GPIO_ACTIVE_LOW>;
 	disable-wp;
 	max-frequency = <150000000>;
+	/* fork-only ceiling, guarded by the dw_mmc-rockchip fallback ladder */
+	max-frequency-tuned = <200000000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdmmc_clk &sdmmc_cmd &sdmmc_bus4>;
 	sd-uhs-sdr104;
@@ -725,8 +1263,78 @@
 
 &sdhci {
 	bus-width = <8>;
+	/*
+	 * The eMMC's VCCQ is 1.8 V and only 1.8 V. Schematic sheet 18: J11
+	 * pins 13/15/17/19/21/23 are one net off RK808 BUCK4, with no 3.3 V
+	 * option and no level shifting anywhere in the path. VCC (pins
+	 * 1..11) is separately 3.3 V from VSW1.
+	 *
+	 * Without these the node describes a part whose I/O rail can be
+	 * either, so the MMC core never offers a 1.8 V mode and the link is
+	 * capped at HS/DDR52 by omission rather than by the hardware.
+	 */
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
 	non-removable;
 	status = "okay";
+};
+
+/*
+ * J21 on this board carries PCIE_TX0-3, PCIE_RX0-3 and PCIE_REF_CLK.
+ * The M.2 M-key socket is the mezzanine that mates with J21; the
+ * controller stays enabled with nothing attached. vpcie1v8 / vpcie0v9
+ * are the SoC PCIe balls (sheet 11, VCCA_1V8 and VCCA_0V9). The slot
+ * 3.3 V switch is on the mezzanine, and the host driver takes
+ * vpcie3v3 as optional.
+ */
+&pcie_phy {
+	status = "okay";
+};
+
+&pcie0 {
+	ep-gpios = <&gpio4 RK_PD1 GPIO_ACTIVE_HIGH>;
+	num-lanes = <4>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie_perst>;
+	vpcie1v8-supply = <&vcc1v8_pmu>;
+	vpcie0v9-supply = <&vcca_0v9>;
+	status = "okay";
+};
+
+/*
+ * J15 pins 3-8 are SDIO0. APIO3 (wifi/bt_gpio2cd) is 1.8 V only, so
+ * vqmmc is vcc_1v8. Pins 17-18 present VCC3V3_SYS. The mezzanine
+ * overrides vmmc with its NGFF 3.3 V switch when that board is described.
+ */
+&sdio0 {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	mmc-pwrseq = <&sdio_pwrseq>;
+	non-removable;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio0_bus4 &sdio0_cmd &sdio0_clk>;
+	sd-uhs-sdr104;
+	vmmc-supply = <&vcc3v3_sys>;
+	vqmmc-supply = <&vcc_1v8>;
+	status = "okay";
+};
+
+/*
+ * J20 pin 11 is SPDIF_TX, GPIO3_C0 (spdif_txb). The default mux is
+ * GPIO4_C5, which this header does not use. RGMII does not claim
+ * GPIO3_C0. The optical jack is on the mezzanine; the pin is on this board.
+ */
+&spdif {
+	pinctrl-0 = <&spdif_bus_1>;
+	status = "okay";
+
+	spdif_p0: port {
+		spdif_p0_0: endpoint {
+			remote-endpoint = <&dit_p0_0>;
+		};
+	};
 };
 
 &spi1 {
@@ -740,12 +1348,63 @@
 	};
 };
 
-&tcphy0 {
+&cdn_dp {
 	status = "okay";
+};
+
+&tcphy0 {
+	/*
+	 * Measured on a V1.2 board with a DP monitor on Type-C0 (CC reading a
+	 * normal plug): the link trains only with the lanes muxed for the
+	 * reversed orientation and AUX polarity set for the normal one.
+	 * Type-C1 trains with the plain CC orientation.
+	 */
+	libretech,typec-orientation-inverted;
+	status = "okay";
+};
+
+&tcphy0_dp {
+	mode-switch;
+
+	port {
+		tcphy0_typec_dp: endpoint {
+			remote-endpoint = <&usb_con0_dp>;
+		};
+	};
+};
+
+&tcphy0_usb3 {
+	orientation-switch;
+
+	port {
+		tcphy0_typec_ss: endpoint {
+			remote-endpoint = <&usb_con0_ss>;
+		};
+	};
 };
 
 &tcphy1 {
 	status = "okay";
+};
+
+&tcphy1_dp {
+	mode-switch;
+
+	port {
+		tcphy1_typec_dp: endpoint {
+			remote-endpoint = <&usb_con1_dp>;
+		};
+	};
+};
+
+&tcphy1_usb3 {
+	orientation-switch;
+
+	port {
+		tcphy1_typec_ss: endpoint {
+			remote-endpoint = <&usb_con1_ss>;
+		};
+	};
 };
 
 &tsadc {
@@ -768,19 +1427,42 @@
 		phy-supply = <&vcc5v0_host>;
 		status = "okay";
 	};
+
+	port {
+		u2phy0_typec_hs: endpoint {
+			remote-endpoint = <&usb_con0_hs>;
+		};
+	};
 };
 
 &u2phy1 {
 	status = "okay";
 
 	u2phy1_otg: otg-port {
-		phy-supply = <&vcc_vbus_typec1>;
+		/*
+		 * No phy-supply here, deliberately. vcc_vbus_typec1 is this
+		 * Type-C port's VBUS and belongs to the port manager: fusb1
+		 * already claims it as vbus-supply, and TCPM sequences it as
+		 * part of attach.
+		 *
+		 * Naming it here too gives the rail two owners, and the USB2
+		 * PHY switches it on at probe with no regard for Type-C state.
+		 * TCPM then waits forever in SRC_ATTACH_WAIT, because
+		 * SRC_ATTACH_WAIT -> SRC_ATTACHED is gated on
+		 * port->vbus_vsafe0v and VBUS is never allowed to fall.
+		 */
 		status = "okay";
 	};
 
 	u2phy1_host: host-port {
 		phy-supply = <&vcc5v0_host>;
 		status = "okay";
+	};
+
+	port {
+		u2phy1_typec_hs: endpoint {
+			remote-endpoint = <&usb_con1_hs>;
+		};
 	};
 };
 
@@ -815,7 +1497,14 @@
 };
 
 &usbdrd_dwc3_0 {
+	usb-role-switch;
 	status = "okay";
+
+	port {
+		dwc3_0_role_switch: endpoint {
+			remote-endpoint = <&fusb0_role_sw>;
+		};
+	};
 };
 
 &usbdrd3_1 {

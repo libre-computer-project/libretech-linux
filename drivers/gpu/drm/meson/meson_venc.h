@@ -65,7 +65,7 @@ void meson_venci_cvbs_mode_set(struct meson_drm *priv,
 			       struct meson_cvbs_enci_mode *mode);
 void meson_venc_hdmi_mode_set(struct meson_drm *priv, int vic,
 			      unsigned int ycrcb_map,
-			      bool yuv420_mode,
+			      bool yuv420_mode, bool yuv422_mode,
 			      const struct drm_display_mode *mode);
 void meson_venc_mipi_dsi_mode_set(struct meson_drm *priv,
 				  const struct drm_display_mode *mode);
