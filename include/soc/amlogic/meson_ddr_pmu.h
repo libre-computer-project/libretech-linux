@@ -44,6 +44,14 @@ struct dmc_hw_info {
 			   struct dmc_counter *counter);
 	void (*get_counters)(struct dmc_info *info,
 			     struct dmc_counter *counter);
+	/*
+	 * Stop counting, read the counter registers into @drained and zero
+	 * them, without disturbing the axi-port filter registers. Returns the
+	 * residue the hardware was still holding, so the caller can fold it
+	 * into its running total instead of losing it.
+	 */
+	void (*clear_counters)(struct dmc_info *info,
+			       struct dmc_counter *drained);
 
 	int dmc_nr;			/* The number of dmc controller */
 	int chann_nr;			/* The number of dmc bandwidth monitor channels */

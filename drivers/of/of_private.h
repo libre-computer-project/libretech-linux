@@ -219,4 +219,13 @@ static inline bool is_pseudo_property(const char *prop_name)
 int __of_address_resource_bounds(struct resource *r, u64 start, u64 size);
 #endif
 
+#if defined(CONFIG_OF_OVERLAY)
+extern int of_overlay_init(void);
+#else
+static inline int of_overlay_init(void)
+{
+	return 0;
+}
+#endif
+
 #endif /* _LINUX_OF_PRIVATE_H */

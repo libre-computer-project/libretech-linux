@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2018 Amlogic, Inc. All rights reserved.
+ *
+ * G12A / G12B / SM1 firmware reservations for the VENDOR boot chain
+ * (Amlogic BL2 + BL31 at 0x05000000). A board .dts includes exactly one of
+ * this file or meson-g12-libre-firmware.dtsi, after its SoC .dtsi.
+ */
+
+/ {
+	reserved-memory {
+		/* 3 MiB reserved for ARM Trusted Firmware (BL31) */
+		secmon_reserved: secmon@5000000 {
+			reg = <0x0 0x05000000 0x0 0x300000>;
+			no-map;
+		};
+
+		/*
+		 * 32 MiB reserved for ARM Trusted Firmware (BL32)
+		 *
+		 * Commented out because no BL32 exists on this chain, matching
+		 * what meson-gx.dtsi already does for GXL. Nothing produces one:
+		 * LBS builds every Amlogic board with LBS_OPTEE=0 and asks TF-A
+		 * for ATF_TARGET=bl31 only; plat/amlogic/g12a/platform.mk
+		 * declares no SPD and no BL32_SOURCES; the binman FIT carries
+		 * u-boot/atf/scp/fdt and no TEE image; spl_atf.c passes
+		 * bl32_entry = 0 because no `os = "tee"` node exists; and
+		 * g12a_bl31_setup.c returns NULL when bl32_image_ep_info.pc is 0.
+		 * Nothing consumes one either -- there is no memory-region
+		 * property anywhere in the arm64 Amlogic DTS tree.
+		 *
+		 * Deleting it is safe even if a chain DOES load a BL32: unlike
+		 * GXL, U-Boot adds no unconditional low reservation on G12, and
+		 * board-g12a.c:53 adds the BL32 zone from AO_SEC_GP_CFG4 /
+		 * AO_SEC_GP_CFG3[15:0] whenever they are non-zero. A real BL32 is
+		 * therefore still reserved, dynamically and correctly sized; this
+		 * static node was only ever covering the case where none exists.
+		 *
+		 * Restoring it is a one-line uncomment if OP-TEE is ever enabled
+		 * -- but size it to the build rather than inheriting 32 MiB.
+		 *
+		secmon_reserved_bl32: secmon@5300000 {
+			reg = <0x0 0x05300000 0x0 0x2000000>;
+			no-map;
+		};
+		 */
+	};
+};

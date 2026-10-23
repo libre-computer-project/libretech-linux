@@ -1103,7 +1103,21 @@ drm_atomic_bridge_chain_select_bus_fmts(struct drm_bridge *bridge,
 			out_bus_fmts[0] = MEDIA_BUS_FMT_FIXED;
 	}
 
+	ret = -ENOTSUPP;
 	for (i = 0; i < num_out_bus_fmts; i++) {
+		/*
+		 * Debug/test override (per-connector "force_bus_format" debugfs):
+		 * pin the negotiated wire encoding to one format from the list the
+		 * last bridge offered. 0 = auto / no override. If the forced format
+		 * is not in the offered list, negotiation fails honestly (the sink +
+		 * max-bpc cannot produce it -- widen with "edid_override" / "max
+		 * bpc"). Vendor-agnostic: works for any bridge-based pipeline. Not
+		 * UAPI.
+		 */
+		if (conn->force_bus_format &&
+		    out_bus_fmts[i] != conn->force_bus_format)
+			continue;
+
 		ret = select_bus_fmt_recursive(bridge, last_bridge, crtc_state,
 					       conn_state, out_bus_fmts[i]);
 		if (ret != -ENOTSUPP)

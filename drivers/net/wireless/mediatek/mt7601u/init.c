@@ -68,15 +68,26 @@ static void mt7601u_chip_onoff(struct mt7601u_dev *dev, bool enable, bool reset)
 		val |= MT_WLAN_FUN_CTRL_GPIO_OUT_EN;
 		val &= ~MT_WLAN_FUN_CTRL_FRC_WL_ANT_SEL;
 
-		if (val & MT_WLAN_FUN_CTRL_WLAN_EN) {
-			val |= (MT_WLAN_FUN_CTRL_WLAN_RESET |
-				MT_WLAN_FUN_CTRL_WLAN_RESET_RF);
-			mt7601u_wr(dev, MT_WLAN_FUN_CTRL, val);
-			udelay(20);
+		/*
+		 * Force WLAN_EN on before pulsing the reset. On a warm reboot the
+		 * USB bus reset in mt7601u_probe() can leave WLAN_EN clear in
+		 * WLAN_FUN_CTRL while the WLAN core / MCU keep running from the
+		 * dongle's retained VBUS. The original "reset only if WLAN_EN is
+		 * already set" test then skipped the reset entirely, leaving the
+		 * MCU live during the firmware re-upload (DMA into IMEM under a
+		 * running CPU -> hang) and the RF un-reset. Always assert WLAN_EN
+		 * so the WLAN_RESET | WLAN_RESET_RF pulse takes effect; on a cold
+		 * boot this just powers then immediately resets the core, matching
+		 * the vendor driver and harmless on an already-clean chip.
+		 */
+		val |= MT_WLAN_FUN_CTRL_WLAN_EN;
+		val |= (MT_WLAN_FUN_CTRL_WLAN_RESET |
+			MT_WLAN_FUN_CTRL_WLAN_RESET_RF);
+		mt7601u_wr(dev, MT_WLAN_FUN_CTRL, val);
+		udelay(20);
 
-			val &= ~(MT_WLAN_FUN_CTRL_WLAN_RESET |
-				 MT_WLAN_FUN_CTRL_WLAN_RESET_RF);
-		}
+		val &= ~(MT_WLAN_FUN_CTRL_WLAN_RESET |
+			 MT_WLAN_FUN_CTRL_WLAN_RESET_RF);
 	}
 
 	mt7601u_wr(dev, MT_WLAN_FUN_CTRL, val);
@@ -163,6 +174,13 @@ static int mt7601u_write_mac_initvals(struct mt7601u_dev *dev)
 		return ret;
 
 	mt76_init_beacon_offsets(dev);
+
+	/* Beacon slots are all bypassed until a beacon is actually loaded. The
+	 * hardware walks its 16 slots at each TBTT; without a bypass mask it can
+	 * transmit from slots that were never written. mt76x02_init_beacon_config()
+	 * does the same on the descendant part. Never written here before because
+	 * BEACON_TX was never enabled. */
+	mt7601u_wr(dev, MT_BCN_BYPASS_MASK, 0xffff);
 
 	mt7601u_wr(dev, MT_AUX_CLK_CFG, 0);
 
@@ -327,7 +345,13 @@ int mt7601u_init_hardware(struct mt7601u_dev *dev)
 
 	dev->beacon_offsets = beacon_offsets;
 
-	mt7601u_chip_onoff(dev, true, false);
+	/* reset=true: pulse WLAN_RESET|WLAN_RESET_RF, which only fires when WLAN_EN is
+	 * already set -- i.e. a WARM reboot, where the USB dongle kept VBUS and the WLAN
+	 * core / RF / MCU are still running the previous boot's stale state. Without this
+	 * the chip is never reset on a warm reboot and Wi-Fi comes up wedged (off-network,
+	 * no association); a cold power-cycle was the only recovery. Harmless on cold boot
+	 * (WLAN_EN clear -> the reset pulse is skipped). */
+	mt7601u_chip_onoff(dev, true, true);
 
 	ret = mt7601u_wait_asic_ready(dev);
 	if (ret)
@@ -609,7 +633,9 @@ int mt7601u_register_device(struct mt7601u_dev *dev)
 	SET_IEEE80211_PERM_ADDR(hw, dev->macaddr);
 
 	wiphy->features |= NL80211_FEATURE_ACTIVE_MONITOR;
-	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
+				 BIT(NL80211_IFTYPE_AP) |
+				 BIT(NL80211_IFTYPE_MONITOR);
 	wiphy->flags |= WIPHY_FLAG_SUPPORTS_TDLS;
 
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);

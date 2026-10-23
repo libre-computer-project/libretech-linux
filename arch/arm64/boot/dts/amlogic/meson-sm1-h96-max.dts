@@ -8,6 +8,7 @@
 
 #include "meson-sm1-ac2xx.dtsi"
 #include <dt-bindings/sound/meson-g12a-tohdmitx.h>
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "haochuangyi,h96-max", "amlogic,sm1";

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MEDIATEK_VCU_MT8395
+	tristate "Mediatek VCU for MT8188/MT8370/MT8195 vendor vcodec (mt8395, Genio 510)"
+	depends on VIDEO_DEV
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	    Vendor MT8188/MT8370/MT8195 (mt8395 generation) VCU / /dev/vcu
+	    provider. Imported from the mtk-vcu-driver repo (branch
+	    mtk-v6.6-mt8395). Provides the char device the proprietary
+	    userspace video codec daemon (vpud) opens, and the VCU
+	    communication channel used by the mtk-vcodec-mt8395 V4L2 driver.
+
+	    This builds the mtk-vcu-mt8395 module.
+
+	    Named CONFIG_VIDEO_MEDIATEK_VCU_MT8395 (distinct from the mt8365
+	    vendor VCU CONFIG_VIDEO_MEDIATEK_VCU_MT8365 and from mainline's
+	    CONFIG_VIDEO_MEDIATEK_VPU) so all three coexist.
+
+	    To compile this driver as a module, choose M here: the module
+	    will be called mtk-vcu-mt8395.

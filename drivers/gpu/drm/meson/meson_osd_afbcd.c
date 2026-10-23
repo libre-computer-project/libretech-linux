@@ -215,6 +215,13 @@ static int meson_g12a_afbcd_pixel_fmt(u64 modifier, uint32_t format)
 	case DRM_FORMAT_XBGR8888:
 	case DRM_FORMAT_ABGR8888:
 		return MAFBC_FMT_RGBA8888;
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_BGRX8888:
+		if (modifier & AFBC_FORMAT_MOD_YTR)
+			return -EINVAL;
+		return MAFBC_FMT_RGBA8888;
 	case DRM_FORMAT_RGB888:
 		/* YTR is forbidden for non XBGR formats */
 		if (modifier & AFBC_FORMAT_MOD_YTR)
@@ -239,6 +246,10 @@ static int meson_g12a_afbcd_bpp(uint32_t format)
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XBGR8888:
 	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_BGRX8888:
 		return 32;
 	case DRM_FORMAT_RGB888:
 		return 24;
@@ -258,6 +269,10 @@ static int meson_g12a_afbcd_fmt_to_blk_mode(u64 modifier, uint32_t format)
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XBGR8888:
 	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_BGRX8888:
 		return OSD_MALI_COLOR_MODE_RGBA8888;
 	case DRM_FORMAT_RGB888:
 		return OSD_MALI_COLOR_MODE_RGB888;

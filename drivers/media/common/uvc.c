@@ -25,6 +25,10 @@ static const struct uvc_format_desc uvc_fmts[] = {
 		.fcc		= V4L2_PIX_FMT_NV12,
 	},
 	{
+		.guid		= UVC_GUID_FORMAT_P010,
+		.fcc		= V4L2_PIX_FMT_P010,
+	},
+	{
 		.guid		= UVC_GUID_FORMAT_MJPEG,
 		.fcc		= V4L2_PIX_FMT_MJPEG,
 	},

@@ -25,6 +25,12 @@ struct lima_fence {
 static struct kmem_cache *lima_fence_slab;
 static int lima_fence_slab_refcnt;
 
+/* BO array pools for common submit sizes (avoid per-submit kmalloc) */
+#define LIMA_BO_POOL_16  16
+#define LIMA_BO_POOL_32  32
+static struct kmem_cache *lima_bo_array_slab_16;
+static struct kmem_cache *lima_bo_array_slab_32;
+
 int lima_sched_slab_init(void)
 {
 	if (!lima_fence_slab) {
@@ -33,6 +39,28 @@ int lima_sched_slab_init(void)
 			SLAB_HWCACHE_ALIGN, NULL);
 		if (!lima_fence_slab)
 			return -ENOMEM;
+
+		lima_bo_array_slab_16 = kmem_cache_create(
+			"lima_bo_array_16",
+			sizeof(struct lima_bo *) * LIMA_BO_POOL_16, 0,
+			SLAB_HWCACHE_ALIGN, NULL);
+		if (!lima_bo_array_slab_16) {
+			kmem_cache_destroy(lima_fence_slab);
+			lima_fence_slab = NULL;
+			return -ENOMEM;
+		}
+
+		lima_bo_array_slab_32 = kmem_cache_create(
+			"lima_bo_array_32",
+			sizeof(struct lima_bo *) * LIMA_BO_POOL_32, 0,
+			SLAB_HWCACHE_ALIGN, NULL);
+		if (!lima_bo_array_slab_32) {
+			kmem_cache_destroy(lima_bo_array_slab_16);
+			lima_bo_array_slab_16 = NULL;
+			kmem_cache_destroy(lima_fence_slab);
+			lima_fence_slab = NULL;
+			return -ENOMEM;
+		}
 	}
 
 	lima_fence_slab_refcnt++;
@@ -42,6 +70,10 @@ int lima_sched_slab_init(void)
 void lima_sched_slab_fini(void)
 {
 	if (!--lima_fence_slab_refcnt) {
+		kmem_cache_destroy(lima_bo_array_slab_32);
+		lima_bo_array_slab_32 = NULL;
+		kmem_cache_destroy(lima_bo_array_slab_16);
+		lima_bo_array_slab_16 = NULL;
 		kmem_cache_destroy(lima_fence_slab);
 		lima_fence_slab = NULL;
 	}
@@ -110,6 +142,21 @@ static inline struct lima_sched_pipe *to_lima_pipe(struct drm_gpu_scheduler *sch
 	return container_of(sched, struct lima_sched_pipe, base);
 }
 
+static void lima_sched_task_free_bos(struct lima_sched_task *task)
+{
+	switch (task->bos_pool_cap) {
+	case LIMA_BO_POOL_16:
+		kmem_cache_free(lima_bo_array_slab_16, task->bos);
+		break;
+	case LIMA_BO_POOL_32:
+		kmem_cache_free(lima_bo_array_slab_32, task->bos);
+		break;
+	default:
+		kfree(task->bos);
+		break;
+	}
+}
+
 int lima_sched_task_init(struct lima_sched_task *task,
 			 struct lima_sched_context *context,
 			 struct lima_bo **bos, int num_bos,
@@ -118,9 +165,20 @@ int lima_sched_task_init(struct lima_sched_task *task,
 {
 	int err, i;
 
-	task->bos = kmemdup(bos, sizeof(*bos) * num_bos, GFP_KERNEL);
+	/* Use pooled allocation for common BO counts (5-20 typical) */
+	if (num_bos <= LIMA_BO_POOL_16) {
+		task->bos = kmem_cache_alloc(lima_bo_array_slab_16, GFP_KERNEL);
+		task->bos_pool_cap = LIMA_BO_POOL_16;
+	} else if (num_bos <= LIMA_BO_POOL_32) {
+		task->bos = kmem_cache_alloc(lima_bo_array_slab_32, GFP_KERNEL);
+		task->bos_pool_cap = LIMA_BO_POOL_32;
+	} else {
+		task->bos = kmalloc_array(num_bos, sizeof(*bos), GFP_KERNEL);
+		task->bos_pool_cap = 0;
+	}
 	if (!task->bos)
 		return -ENOMEM;
+	memcpy(task->bos, bos, sizeof(*bos) * num_bos);
 
 	for (i = 0; i < num_bos; i++)
 		drm_gem_object_get(&bos[i]->base.base);
@@ -128,7 +186,7 @@ int lima_sched_task_init(struct lima_sched_task *task,
 	err = drm_sched_job_init(&task->base, &context->base, 1, vm,
 				 drm_client_id);
 	if (err) {
-		kfree(task->bos);
+		lima_sched_task_free_bos(task);
 		return err;
 	}
 
@@ -149,19 +207,21 @@ void lima_sched_task_fini(struct lima_sched_task *task)
 	if (task->bos) {
 		for (i = 0; i < task->num_bos; i++)
 			drm_gem_object_put(&task->bos[i]->base.base);
-		kfree(task->bos);
+		lima_sched_task_free_bos(task);
 	}
 
 	lima_vm_put(task->vm);
 }
 
 int lima_sched_context_init(struct lima_sched_pipe *pipe,
-			    struct lima_sched_context *context)
+			    struct lima_sched_context *context,
+			    u32 priority)
 {
 	struct drm_gpu_scheduler *sched = &pipe->base;
+	enum drm_sched_priority prio = priority ?
+		DRM_SCHED_PRIORITY_HIGH : DRM_SCHED_PRIORITY_NORMAL;
 
-	return drm_sched_entity_init(&context->base, DRM_SCHED_PRIORITY_NORMAL,
-				     &sched, 1, NULL);
+	return drm_sched_entity_init(&context->base, prio, &sched, 1, NULL);
 }
 
 void lima_sched_context_fini(struct lima_sched_pipe *pipe,

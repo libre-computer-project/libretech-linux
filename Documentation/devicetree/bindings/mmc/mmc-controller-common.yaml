@@ -93,6 +93,20 @@ properties:
     minimum: 400000
     maximum: 384000000
 
+  max-frequency-tuned:
+    description: |
+      DOWNSTREAM-ONLY (not in mainline). A higher maximum frequency than
+      max-frequency that a host whose driver implements a CRC-storm
+      speed-downgrade ladder (mmc_host_ops->lower_bus_clock + the SD
+      grade-drop) may attempt: a good device runs at this rate while a
+      poorer-signal one is stepped/graded down at runtime instead of failing.
+      max-frequency stays the upstream-safe ceiling (a kernel without the
+      ladder, or upstream, ignores this property and uses max-frequency).
+      Only set it for a slot on such a host.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 400000
+    maximum: 384000000
+
   max-sd-hs-hz:
     description: |
       Maximum frequency (in Hz) to be used for SD cards operating in

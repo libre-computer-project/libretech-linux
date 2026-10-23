@@ -58,7 +58,7 @@ static void iio_dmaengine_buffer_block_done(void *data,
 	iio_dma_buffer_block_done(block);
 }
 
-static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
+int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	struct iio_dma_buffer_block *block)
 {
 	struct dmaengine_buffer *dmaengine_buffer =
@@ -81,11 +81,54 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	else
 		dma_dir = DMA_MEM_TO_DEV;
 
-	if (block->sg_table) {
-		sgl = block->sg_table->sgl;
-		nents = sg_nents_for_len(sgl, block->bytes_used);
-		if (nents < 0)
-			return nents;
+	if (block->cyclic) {
+		dma_addr_t cyclic_addr;
+		size_t cyclic_len;
+
+		/*
+		 * dmaengine_prep_dma_cyclic() describes ONE physically
+		 * contiguous region, so a scattered DMABUF cannot be replayed
+		 * cyclically. Reject it here rather than silently transmitting
+		 * only its first fragment forever. A CMA-heap DMABUF is
+		 * contiguous and maps to a single entry.
+		 */
+		if (block->sg_table) {
+			sgl = block->sg_table->sgl;
+			nents = sg_nents_for_len(sgl, block->bytes_used);
+			if (nents < 0)
+				return nents;
+			if (nents != 1)
+				return -EINVAL;
+
+			cyclic_addr = sg_dma_address(sgl);
+			cyclic_len = min_t(size_t, sg_dma_len(sgl),
+					   block->bytes_used);
+		} else {
+			cyclic_addr = block->phys_addr;
+			cyclic_len = block->bytes_used;
+		}
+
+		cyclic_len = round_down(min(cyclic_len, max_size),
+					dmaengine_buffer->align);
+		if (!cyclic_len)
+			return -EINVAL;
+
+		/*
+		 * One period per buffer: the whole block is replayed as a
+		 * single repeating segment, which is what a DMAC with hardware
+		 * cyclic support can then run with no interrupt at all.
+		 */
+		desc = dmaengine_prep_dma_cyclic(dmaengine_buffer->chan,
+						 cyclic_addr, cyclic_len,
+						 cyclic_len, dma_dir, 0);
+	} else if (block->sg_table) {
+		/*
+		 * Only the first sgt->nents entries carry a valid
+		 * sg_dma_address()/sg_dma_len() pair as mapping the table may
+		 * have coalesced entries, in which case nents is smaller than
+		 * orig_nents.
+		 */
+		nents = block->sg_table->nents;
 
 		vecs = kmalloc_array(nents, sizeof(*vecs), GFP_ATOMIC);
 		if (!vecs)
@@ -93,13 +136,16 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 
 		len_total = block->bytes_used;
 
-		for (i = 0; i < nents; i++) {
+		sgl = block->sg_table->sgl;
+		for (i = 0; i < nents && len_total; i++) {
 			vecs[i].addr = sg_dma_address(sgl);
 			vecs[i].len = min(sg_dma_len(sgl), len_total);
 			len_total -= vecs[i].len;
 
 			sgl = sg_next(sgl);
 		}
+
+		nents = i;
 
 		desc = dmaengine_prep_peripheral_dma_vec(dmaengine_buffer->chan,
 							 vecs, nents, dma_dir,
@@ -124,8 +170,21 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	if (!desc)
 		return -ENOMEM;
 
-	desc->callback_result = iio_dmaengine_buffer_block_done;
-	desc->callback_param = block;
+	/*
+	 * A cyclic transfer never finishes, so it must NOT carry the completion
+	 * callback: dmaengine invokes that once per period (virt-dma's
+	 * vchan_cyclic_callback()), and iio_dmaengine_buffer_block_done() would
+	 * then list_del() and release a block the DMA is still replaying.
+	 * The block stays on the active list and is handed back exactly once,
+	 * when the buffer is disabled -- iio_dmaengine_buffer_abort() terminates
+	 * the channel and iio_dma_buffer_block_list_abort() completes the block
+	 * and signals its fence with -EINTR. Leaving tx.callback NULL is also
+	 * what lets axi-dmac drop into its interrupt-free hardware cyclic mode.
+	 */
+	if (!block->cyclic) {
+		desc->callback_result = iio_dmaengine_buffer_block_done;
+		desc->callback_param = block;
+	}
 
 	cookie = dmaengine_submit(desc);
 	if (dma_submit_error(cookie))
@@ -139,8 +198,9 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 
 	return 0;
 }
+EXPORT_SYMBOL_NS_GPL(iio_dmaengine_buffer_submit_block, "IIO_DMAENGINE_BUFFER");
 
-static void iio_dmaengine_buffer_abort(struct iio_dma_buffer_queue *queue)
+void iio_dmaengine_buffer_abort(struct iio_dma_buffer_queue *queue)
 {
 	struct dmaengine_buffer *dmaengine_buffer =
 		iio_buffer_to_dmaengine_buffer(&queue->buffer);
@@ -148,6 +208,7 @@ static void iio_dmaengine_buffer_abort(struct iio_dma_buffer_queue *queue)
 	dmaengine_terminate_sync(dmaengine_buffer->chan);
 	iio_dma_buffer_block_list_abort(queue, &dmaengine_buffer->active);
 }
+EXPORT_SYMBOL_NS_GPL(iio_dmaengine_buffer_abort, "IIO_DMAENGINE_BUFFER");
 
 static void iio_dmaengine_buffer_release(struct iio_buffer *buf)
 {
@@ -418,6 +479,70 @@ int devm_iio_dmaengine_buffer_setup_with_handle(struct device *dev,
 					buffer);
 }
 EXPORT_SYMBOL_NS_GPL(devm_iio_dmaengine_buffer_setup_with_handle,
+		     "IIO_DMAENGINE_BUFFER");
+
+/**
+ * iio_dmaengine_buffer_setup_with_ops() - Setup a DMA buffer with custom ops
+ * @dev: DMA channel consumer device
+ * @indio_dev: IIO device to which to attach this buffer.
+ * @channel: DMA channel name, typically "rx" or "tx".
+ * @dir: Direction of buffer (in or out)
+ * @ops: custom DMA buffer callbacks, or NULL for the default ops
+ * @driver_data: opaque pointer stored on the queue for use by @ops callbacks
+ *
+ * Like iio_dmaengine_buffer_setup_ext() but lets the caller override the
+ * DMA buffer submit/abort callbacks and attach private data (used e.g. by
+ * the AXI-DDS DAC path to program the PL DDR FIFO before each transfer).
+ */
+static struct iio_buffer *
+iio_dmaengine_buffer_setup_with_ops(struct device *dev,
+				    struct iio_dev *indio_dev,
+				    const char *channel,
+				    enum iio_buffer_direction dir,
+				    const struct iio_dma_buffer_ops *ops,
+				    void *driver_data)
+{
+	struct dmaengine_buffer *dmaengine_buffer;
+	struct dma_chan *chan;
+	struct iio_buffer *buffer;
+
+	chan = dma_request_chan(dev, channel);
+	if (IS_ERR(chan))
+		return ERR_CAST(chan);
+
+	buffer = __iio_dmaengine_buffer_setup_ext(indio_dev, chan, dir);
+	if (IS_ERR(buffer)) {
+		dma_release_channel(chan);
+		return buffer;
+	}
+
+	if (ops) {
+		dmaengine_buffer = iio_buffer_to_dmaengine_buffer(buffer);
+		dmaengine_buffer->queue.ops = ops;
+		dmaengine_buffer->queue.driver_data = driver_data;
+	}
+
+	return buffer;
+}
+
+int devm_iio_dmaengine_buffer_setup_with_ops(struct device *dev,
+					     struct iio_dev *indio_dev,
+					     const char *channel,
+					     enum iio_buffer_direction dir,
+					     const struct iio_dma_buffer_ops *ops,
+					     void *driver_data)
+{
+	struct iio_buffer *buffer;
+
+	buffer = iio_dmaengine_buffer_setup_with_ops(dev, indio_dev, channel,
+						     dir, ops, driver_data);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+
+	return devm_add_action_or_reset(dev, devm_iio_dmaengine_buffer_teardown,
+					buffer);
+}
+EXPORT_SYMBOL_NS_GPL(devm_iio_dmaengine_buffer_setup_with_ops,
 		     "IIO_DMAENGINE_BUFFER");
 
 MODULE_AUTHOR("Lars-Peter Clausen <lars@metafoo.de>");

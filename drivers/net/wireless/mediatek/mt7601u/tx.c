@@ -7,6 +7,23 @@
 #include "mt7601u.h"
 #include "trace.h"
 
+#if IS_ENABLED(CONFIG_MT7601U_RESEARCH)
+#include <linux/moduleparam.h>
+
+/* Per-session TX-power delta written into TXWI CTL_TX_POWER_ADJ (4-bit signed)
+ * for mac80211-injected (radiotap) frames.  mac80211 does not plumb per-packet
+ * radiotap TX power (IEEE80211_RADIOTAP_DBM_TX_POWER) into ieee80211_tx_info,
+ * so expose it as a runtime knob instead:
+ *   /sys/module/mt7601u/parameters/inject_power_adj   (range -8..7)
+ * 0 (default) leaves the channel's configured TX power unchanged.
+ * Lab / shielded-environment use only -- adjusting TX power is RF-regulated.
+ */
+static int inject_power_adj;
+module_param(inject_power_adj, int, 0644);
+MODULE_PARM_DESC(inject_power_adj,
+		 "TXWI CTL_TX_POWER_ADJ (-8..7) for injected frames; 0 = no change");
+#endif /* CONFIG_MT7601U_RESEARCH */
+
 enum mt76_txq_id {
 	MT_TXQ_VO = IEEE80211_AC_VO,
 	MT_TXQ_VI = IEEE80211_AC_VI,
@@ -142,6 +159,45 @@ mt7601u_push_txwi(struct mt7601u_dev *dev, struct sk_buff *skb,
 
 	txwi = skb_push(skb, sizeof(struct mt76_txwi));
 	memset(txwi, 0, sizeof(*txwi));
+
+#if IS_ENABLED(CONFIG_MT7601U_RESEARCH)
+	/* Packet-injection path: a raw frame handed down from a monitor vif
+	 * with a radiotap TX header (IEEE80211_TX_CTL_INJECTED).  Build the
+	 * TXWI straight from the mac80211-supplied rate and bypass the per-STA
+	 * rate table, A-MPDU setup and retry-pktid accounting used for managed
+	 * traffic.
+	 */
+	if (info->flags & IEEE80211_TX_CTL_INJECTED) {
+		rate_ctl = 0;
+		if (rate->idx >= 0 && rate->count)
+			rate_ctl = mt76_mac_tx_rate_val(dev, rate, &nss);
+		txwi->rate_ctl = cpu_to_le16(rate_ctl);
+
+		/* Transmit exactly at the requested rate -- no rate fallback. */
+		txwi->flags = cpu_to_le16(MT_TXWI_FLAGS_NO_RATE_FALLBACK);
+
+		/* Raw injection: never request an ACK (leave ACK_CTL_REQ clear).
+		 * MT_TXWI_ACK_CTL_NSEQ gates HARDWARE sequence-number insertion
+		 * (cf. the managed path below + IEEE80211_TX_CTL_ASSIGN_SEQ), so
+		 * set it only when mac80211 asks HW to assign the seqno; this
+		 * honours the radiotap NOSEQNO flag and preserves a
+		 * caller-supplied sequence number.
+		 */
+		if (info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)
+			txwi->ack_ctl = MT_TXWI_ACK_CTL_NSEQ;
+
+		/* Optional per-session TX-power delta (see inject_power_adj). */
+		if (inject_power_adj)
+			txwi->ctl = cpu_to_le16(
+				FIELD_PREP(MT_TXWI_CTL_TX_POWER_ADJ,
+					   clamp(inject_power_adj, -8, 7) & 0xf));
+
+		txwi->wcid = wcid->idx;
+		txwi->len_ctl = cpu_to_le16(pkt_len);
+
+		return txwi;
+	}
+#endif /* CONFIG_MT7601U_RESEARCH */
 
 	if (!wcid->tx_rate_set)
 		ieee80211_get_tx_rates(info->control.vif, sta, skb,

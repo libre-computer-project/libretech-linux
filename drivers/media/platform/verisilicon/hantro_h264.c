@@ -445,23 +445,31 @@ int hantro_h264_dec_prepare_run(struct hantro_ctx *ctx)
 
 	ctrls->scaling =
 		hantro_get_ctrl(ctx, V4L2_CID_STATELESS_H264_SCALING_MATRIX);
-	if (WARN_ON(!ctrls->scaling))
+	if (WARN_ON(!ctrls->scaling)) {
+		hantro_abort_prepare_run(ctx);
 		return -EINVAL;
+	}
 
 	ctrls->decode =
 		hantro_get_ctrl(ctx, V4L2_CID_STATELESS_H264_DECODE_PARAMS);
-	if (WARN_ON(!ctrls->decode))
+	if (WARN_ON(!ctrls->decode)) {
+		hantro_abort_prepare_run(ctx);
 		return -EINVAL;
+	}
 
 	ctrls->sps =
 		hantro_get_ctrl(ctx, V4L2_CID_STATELESS_H264_SPS);
-	if (WARN_ON(!ctrls->sps))
+	if (WARN_ON(!ctrls->sps)) {
+		hantro_abort_prepare_run(ctx);
 		return -EINVAL;
+	}
 
 	ctrls->pps =
 		hantro_get_ctrl(ctx, V4L2_CID_STATELESS_H264_PPS);
-	if (WARN_ON(!ctrls->pps))
+	if (WARN_ON(!ctrls->pps)) {
+		hantro_abort_prepare_run(ctx);
 		return -EINVAL;
+	}
 
 	/* Update the DPB with new refs. */
 	update_dpb(ctx);

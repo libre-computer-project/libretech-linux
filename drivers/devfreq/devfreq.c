@@ -318,17 +318,31 @@ static struct devfreq_governor *try_then_request_governor(const char *name)
 	return governor;
 }
 
+/*
+ * A DEVFREQ_PRECHANGE notifier may VETO the transition by returning
+ * NOTIFY_BAD (or any NOTIFY_STOP_MASK value): the chain stops there, the
+ * veto is returned as an errno, and devfreq_set_target() sends every
+ * registered notifier a DEVFREQ_POSTCHANGE for the frequency it is still at
+ * so that whatever the earlier notifiers armed for the change is torn down
+ * again. A bus master that must be quiescent while the frequency changes
+ * (the PL330 DMACs on the RK3399 DMC, whose transfers cannot be paused
+ * without being killed) drains itself in PRECHANGE and vetoes when it cannot
+ * drain within its bound -- the device then simply stays at its current rate
+ * instead of switching under a transfer in flight. POSTCHANGE cannot veto.
+ */
 static int devfreq_notify_transition(struct devfreq *devfreq,
 		struct devfreq_freqs *freqs, unsigned int state)
 {
+	int ret;
+
 	if (!devfreq)
 		return -EINVAL;
 
 	switch (state) {
 	case DEVFREQ_PRECHANGE:
-		srcu_notifier_call_chain(&devfreq->transition_notifier_list,
+		ret = srcu_notifier_call_chain(&devfreq->transition_notifier_list,
 				DEVFREQ_PRECHANGE, freqs);
-		break;
+		return notifier_to_errno(ret);
 
 	case DEVFREQ_POSTCHANGE:
 		srcu_notifier_call_chain(&devfreq->transition_notifier_list,
@@ -355,9 +369,10 @@ static int devfreq_set_target(struct devfreq *devfreq, unsigned long new_freq,
 
 	freqs.old = cur_freq;
 	freqs.new = new_freq;
-	devfreq_notify_transition(devfreq, &freqs, DEVFREQ_PRECHANGE);
-
-	err = devfreq->profile->target(devfreq->dev.parent, &new_freq, flags);
+	err = devfreq_notify_transition(devfreq, &freqs, DEVFREQ_PRECHANGE);
+	if (!err)
+		err = devfreq->profile->target(devfreq->dev.parent, &new_freq,
+					       flags);
 	if (err) {
 		freqs.new = cur_freq;
 		devfreq_notify_transition(devfreq, &freqs, DEVFREQ_POSTCHANGE);

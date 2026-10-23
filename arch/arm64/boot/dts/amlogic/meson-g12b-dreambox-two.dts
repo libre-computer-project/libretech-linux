@@ -6,6 +6,7 @@
 /dts-v1/;
 
 #include "meson-g12b-dreambox.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "dream,dreambox-two", "amlogic,s922x", "amlogic,g12b";

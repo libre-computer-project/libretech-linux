@@ -328,8 +328,18 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 		xhci->quirks |= XHCI_RESET_ON_RESUME;
 	}
 
-	if (pdev->vendor == PCI_VENDOR_ID_AMD && pdev->device == 0x43f7)
+	if (pdev->vendor == PCI_VENDOR_ID_AMD && pdev->device == 0x43f7) {
 		xhci->quirks |= XHCI_DEFAULT_PM_RUNTIME_ALLOW;
+		/*
+		 * The AMD 600 Series Chipset xHC fails the save/restore
+		 * handshake on every S3 resume: USBSTS reports STS_SRE |
+		 * STS_HALT (0x401), so xhci_resume() declares power_lost and
+		 * reinitialises the controller anyway, logging "invalid
+		 * context state" warnings along the way. Reset on resume
+		 * instead of relying on that error path.
+		 */
+		xhci->quirks |= XHCI_RESET_ON_RESUME;
+	}
 
 	if ((pdev->vendor == PCI_VENDOR_ID_AMD) &&
 		((pdev->device == PCI_DEVICE_ID_AMD_PROMONTORYA_4) ||
@@ -341,6 +351,18 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 	if (pdev->vendor == PCI_VENDOR_ID_AMD &&
 		pdev->device == PCI_DEVICE_ID_AMD_RENOIR_XHCI)
 		xhci->quirks |= XHCI_BROKEN_D3COLD_S2I;
+
+	/*
+	 * AMD 0x14c9 xHCI: D3cold is broken — once the controller enters D3cold
+	 * (e.g. runtime-PM-suspended while driverless, or s2idle) it cannot
+	 * return to D0 ("Unable to change power state from D3cold to D0, device
+	 * inaccessible"), taking the controller and its USB buses down until a
+	 * cold boot. Disable D3cold at probe so the core keeps it at (resumable)
+	 * D3hot. Covers the runtime-PM path the s2idle-only XHCI_BROKEN_D3COLD_S2I
+	 * quirk misses.
+	 */
+	if (pdev->vendor == PCI_VENDOR_ID_AMD && pdev->device == 0x14c9)
+		pci_d3cold_disable(pdev);
 
 	if (pdev->vendor == PCI_VENDOR_ID_INTEL) {
 		xhci->quirks |= XHCI_LPM_SUPPORT;
@@ -448,6 +470,7 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 	if (pdev->vendor == PCI_VENDOR_ID_VIA && pdev->device == PCI_DEVICE_ID_VIA_VL805) {
 		xhci->quirks |= XHCI_LPM_SUPPORT;
 		xhci->quirks |= XHCI_TRB_OVERFETCH;
+		xhci->dma_mask_bits = 36;
 	}
 
 	if (pdev->vendor == PCI_VENDOR_ID_ASMEDIA &&
@@ -896,9 +919,9 @@ static int xhci_pci_poweroff_late(struct usb_hcd *hcd, bool do_wakeup)
 	if (!(xhci->quirks & XHCI_RESET_TO_DEFAULT))
 		return 0;
 
-	for (i = 0; i < HCS_MAX_PORTS(xhci->hcs_params1); i++) {
+	for (i = 0; i < xhci->max_ports; i++) {
 		port = &xhci->hw_ports[i];
-		portsc = readl(port->addr);
+		portsc = xhci_portsc_readl(port);
 
 		if ((portsc & PORT_PLS_MASK) != XDEV_U3)
 			continue;
@@ -919,7 +942,7 @@ static int xhci_pci_poweroff_late(struct usb_hcd *hcd, bool do_wakeup)
 		xhci_dbg(xhci, "port %d-%d in U3 without wakeup, disable it\n",
 			 port->rhub->hcd->self.busnum, port->hcd_portnum + 1);
 		portsc = xhci_port_state_to_neutral(portsc);
-		writel(portsc | PORT_PE, port->addr);
+		xhci_portsc_writel(port, portsc | PORT_PE);
 	}
 
 	return 0;

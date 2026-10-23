@@ -1,0 +1,547 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * MediaTek MT8195 (== MT8395 / Genio-1200 die) APUSYS (MDLA 2.0 + 2x VP6 NPU)
+ * device-tree nodes.
+ *
+ * Ported from the MT8395 BSP overlay
+ * (meta-mediatek-bsp/recipes-kernel/dtbo/v6/mt8395/apusys.dts, BSP kernel
+ * 6.6) to drive the out-of-tree mtk-apusys-driver (apusys_rv 2.0,
+ * mt8195_plat). MT8395 is the SAME silicon die as MT8195, so the APU/MDLA
+ * register layout, reg windows and GIC IRQs are identical -- the addresses
+ * and IRQs below are copied VERBATIM from the BSP overlay.
+ *
+ * Conversion from the BSP overlay (/plugin/ + fragment@0/target-path="/soc")
+ * to the mainline include form (&{/soc}) mirrors the existing
+ * mt8188-apusys.dtsi precedent (topic/lc618-apudt).
+ *
+ * Dependencies satisfied from mainline mt8195.dtsi / mt8195-cherry.dtsi:
+ *   - topckgen (CLK_TOP_DSP..DSP7 + divider clocks) and apusys_pll
+ *     (CLK_APUSYS_PLL_*) -- all in dt-bindings/clock/mt8195-clk.h.
+ *   - infracfg_ao (CLK_INFRA_AO_DEBUGSYS).
+ *   - the mt6359 PMIC regulators vproc1 / vproc2 / vsram_md
+ *     (mt8195-cherry.dtsi #includes mt6359.dtsi).
+ *
+ * SUBSTRATE GAPS (vs the BSP) -- see commit message + the bringup plan:
+ *   - dt-bindings/memory/mt8195-memory-port.h has NO IOMMU_PORT_APU_* macros
+ *     in mainline 6.18, so the per-master IOMMU fwspec ids below are written
+ *     as LITERAL values (matching the mt8188-apusys.dtsi precedent + the
+ *     mtk_iommu.c mt8195_data_apu region masks):
+ *         IOMMU_PORT_APU_DATA -> 0x340  (larb26 port0)
+ *         IOMMU_PORT_APU_VPU  -> 0x343  (larb26 port3, VLM window the VP6 uses)
+ *         IOMMU_PORT_APU_VLM  -> 0x341  (larb26 port1)
+ *         (apu_iommu1 DATA)   -> 0x360  (larb27 port0)
+ *   - the apu_iommu0/1 nodes use compatible "mediatek,mt8195-iommu-apu",
+ *     matched by the mt8195_data_apu plat data added to drivers/iommu/
+ *     mtk_iommu.c in this series. Without that, they instantiate as bare
+ *     platform devices with no IOVA translation.
+ *   - mt8195-power.h has NO APU power domain; the BSP node tree drives power
+ *     through apu_top_3 (regulators + apusys_pll), not a power-domain phandle,
+ *     so this is not needed for the DT (noted for the driver/TF-A layer).
+ *
+ * NS-BOOT NOTE: F_SECURE_BOOT is cleared in the out-of-tree mt8195 platdata
+ * (separate driver work, NOT this kernel DT); these nodes are the non-secure
+ * direct-MMIO bringup substrate.
+ */
+
+#include <dt-bindings/clock/mt8195-clk.h>
+
+&{/soc} {
+	apu_conn: syscon@19020000 {
+		compatible = "mediatek,mt8195-apu_conn", "syscon";
+		reg = <0 0x19020000 0 0x1000>;
+	};
+
+	apusys_reviser@19021000 {
+		compatible = "mediatek, rv-reviser";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		reg = <0 0x19021000 0 0x1000>,		/* apu_sctrl_reviser */
+		      <0 0x1d800000 0 0x400000>,	/* VLM */
+		      <0 0x1d000000 0 0x100000>,	/* TCM */
+		      <0 0x19001000 0 0x1000>;		/* apusys int */
+		interrupts = <GIC_SPI 439 IRQ_TYPE_LEVEL_HIGH 0>;
+		default-dram = <0x1 0x01 0x88000000>;
+		dma-ranges = <0x0 0x0 0x0 0x40000000 0x1 0x0>;
+		boundary = <0x0>;
+		iommus = <&iommu_apu0 0x340>;		/* IOMMU_PORT_APU_DATA */
+	};
+
+	apu_conn1: syscon@19024000 {
+		compatible = "mediatek,mt8195-apu_conn1", "syscon";
+		reg = <0 0x19024000 0 0x1000>;
+	};
+
+	apu_vcore: syscon@19029000 {
+		compatible = "mediatek,mt8195-apu_vcore", "syscon";
+		reg = <0 0x19029000 0 0x1000>;
+	};
+
+	apu0: syscon@19030000 {
+		compatible = "mediatek,mt8195-apu0", "syscon";
+		reg = <0 0x19030000 0 0x1000>;
+	};
+
+	vpu_core0: vpu_core0@19030000 {
+		compatible = "mediatek,mt8195-vpu_core0";
+		/*
+		 * #address-cells / #size-cells REQUIRED on every dma-ranges
+		 * node: 6.18's of_dma_get_max_cpu_address() (bootmem_init)
+		 * reads the node's own cell counts; missing them NULL-derefs +
+		 * panics. Same fix mt8188-apusys.dtsi carries.
+		 */
+		#address-cells = <2>;
+		#size-cells = <2>;
+		reg = <0 0x19030000 0 0x1000>,
+		      <0 0x1d400000 0 0x40000>,
+		      <0 0x1d440000 0 0x30000>,
+		      <0 0x0d190000 0 0x4000>;
+		interrupts = <GIC_SPI 452 IRQ_TYPE_LEVEL_HIGH 0>;
+		id = <0>;
+		reset-vector = <0x7da00000 0x00100000 0x0>;
+		main-prog = <0x7db00000 0x00300000 0x100000>;
+		kernel-lib = <0x7de00000 0x00500000 0xffffffff>;
+		work-buf = <0x0 0x12000 0xffffffff>;
+		iommus = <&iommu_apu0 0x343>;		/* IOMMU_PORT_APU_VPU */
+		dma-ranges = <0x0 0x20000000 0x0 0x40000000 0x0 0xe0000000>;
+		#cooling-cells = <2>;
+		memory-region = <&vpu_mem>;
+
+		firmware-name = "mediatek/mt8195/cam_vpu1.img",
+				"mediatek/mt8195/cam_vpu2.img",
+				"mediatek/mt8195/cam_vpu3.img";
+	};
+
+	apu1: syscon@19031000 {
+		compatible = "mediatek,mt8195-apu1", "syscon";
+		reg = <0 0x19031000 0 0x1000>;
+	};
+
+	vpu_core1: vpu_core1@19031000 {
+		compatible = "mediatek,mt8195-vpu_core1";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		reg = <0 0x19031000 0 0x1000>,
+		      <0 0x1d500000 0 0x40000>,
+		      <0 0x1d540000 0 0x30000>,
+		      <0 0x0d194000 0 0x4000>;
+		interrupts = <GIC_SPI 453 IRQ_TYPE_LEVEL_HIGH 0>;
+		id = <1>;
+		reset-vector = <0x7e300000 0x00100000 0x400000>;
+		main-prog = <0x7e400000 0x00300000 0x500000>;
+		kernel-lib = <0x7e700000 0x00500000 0xffffffff>;
+		work-buf = <0x0 0x12000 0xffffffff>;
+		dma-ranges = <0x0 0x20000000 0x0 0x40000000 0x0 0xe0000000>;
+		iommus = <&iommu_apu1 0x343>;		/* IOMMU_PORT_APU_VPU */
+		#cooling-cells = <2>;
+		memory-region = <&vpu_mem>;
+	};
+
+	apu_mdla0: syscon@19034000 {
+		compatible = "mediatek,mt8195-apu_mdla0", "syscon";
+		reg = <0 0x19034000 0 0x1000>;
+	};
+
+	apu_mdla1: syscon@19038000 {
+		compatible = "mediatek,mt8195-apu_mdla1", "syscon";
+		reg = <0 0x19038000 0 0x1000>;
+	};
+
+	mtk_mdla: mtk_mdla {
+		compatible = "mediatek, mdla-rv";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		core_num = <2>;
+		version = <0x81950200>;
+		dma-ranges = <0x0 0x0 0x0 0x40000000 0x1 0x0>;
+		iommus = <&iommu_apu0 0x340>;		/* IOMMU_PORT_APU_DATA */
+		status = "okay";
+	};
+
+	apusys_mnoc@1906e000 {
+		compatible = "mediatek,apusys_mnoc";
+		reg = <0 0x1906e000 0 0x6000>,		/* mnoc reg */
+		      <0 0x19001000 0 0x1000>,		/* apusys int */
+		      <0 0x19020000 0 0x1000>;		/* apu_conn_config */
+		interrupts = <GIC_SPI 439 IRQ_TYPE_LEVEL_HIGH 0>;
+	};
+
+	apu_pcu: syscon@190f1000 {
+		compatible = "mediatek,mt8195-apu_pcu", "syscon";
+		reg = <0 0x190f1000 0 0x1000>;
+	};
+
+	apu_ao_ctrl: syscon@190f2000 {
+		compatible = "mediatek,mt8195-apu_ao_ctrl", "syscon";
+		reg = <0 0x190f2000 0 0x1000>;
+	};
+
+	apu_acc: syscon@190f4000 {
+		compatible = "mediatek,mt8195-apu_acc", "syscon";
+		reg = <0 0x190f4000 0 0x100>;
+	};
+
+	apu_top_3: apu_top_3 {
+		compatible = "mt8195,apu_top_3";
+		clocks = <&apusys_pll CLK_APUSYS_PLL_APUPLL>,
+			 <&apusys_pll CLK_APUSYS_PLL_NPUPLL>,
+			 <&apusys_pll CLK_APUSYS_PLL_APUPLL1>,
+			 <&apusys_pll CLK_APUSYS_PLL_APUPLL2>,
+			 <&topckgen CLK_TOP_DSP>,
+			 <&topckgen CLK_TOP_DSP1>,
+			 <&topckgen CLK_TOP_DSP2>,
+			 <&topckgen CLK_TOP_DSP4>,
+			 <&topckgen CLK_TOP_DSP5>,
+			 <&topckgen CLK_TOP_DSP7>,
+			 <&topckgen CLK_TOP_MAINPLL_D4_D2>,
+			 <&topckgen CLK_TOP_UNIVPLL_D4_D2>,
+			 <&topckgen CLK_TOP_UNIVPLL_D6_D2>,
+			 <&infracfg_ao CLK_INFRA_AO_DEBUGSYS>;
+		clock-names = "clk_apupll_apupll",
+			      "clk_apupll_npupll",
+			      "clk_apupll_apupll1",
+			      "clk_apupll_apupll2",
+			      "clk_top_dsp_sel",
+			      "clk_top_dsp1_sel",
+			      "clk_top_dsp2_sel",
+			      "clk_top_dsp4_sel",
+			      "clk_top_dsp5_sel",
+			      "clk_top_ipu_if_sel",
+			      "clk_top_mainpll_d4_d2",
+			      "clk_top_univpll_d4_d2",
+			      "clk_top_univpll_d6_d2",
+			      "clk_infra_ao_debugsys";
+		reg = <0 0x10006000 0 0x1000>,		/* sys_spm */
+		      <0 0x19020000 0 0x1000>,		/* apu_conn */
+		      <0 0x19024000 0 0x1000>,		/* apu_conn1 */
+		      <0 0x19029000 0 0x1000>,		/* apu_vcore */
+		      <0 0x19000000 0 0x1000>,		/* apu_md32_mbox */
+		      <0 0x190f0000 0 0x1000>,		/* apu_rpc */
+		      <0 0x190f1000 0 0x1000>,		/* apu_pcu */
+		      <0 0x190f2000 0 0x1000>,		/* apu_ao_ctl */
+		      <0 0x190f3000 0 0x1000>,		/* apu_pll */
+		      <0 0x190f4000 0 0x1000>,		/* apu_acc */
+		      <0 0x19030000 0 0x1000>,		/* apu_vpu0 */
+		      <0 0x19031000 0 0x1000>,		/* apu_vpu1 */
+		      <0 0x19034000 0 0x1000>,		/* apu_mdla0 */
+		      <0 0x19038000 0 0x1000>;		/* apu_mdla1 */
+		reg-names = "sys_spm",
+			    "apu_conn",
+			    "apu_conn1",
+			    "apu_vcore",
+			    "apu_md32_mbox",
+			    "apu_rpc",
+			    "apu_pcu",
+			    "apu_ao_ctl",
+			    "apu_pll",
+			    "apu_acc",
+			    "apu_vpu0",
+			    "apu_vpu1",
+			    "apu_mdla0",
+			    "apu_mdla1";
+		consumer = <&iommu_apu0>, <&iommu_apu1>;
+
+		vapu-supply = <&mt6359_vproc1_buck_reg>;
+		vmdla-supply = <&mt6359_vproc2_buck_reg>;
+		vsram-supply = <&mt6359_vsram_md_ldo_reg>;
+
+		operating-points-v2 = <&opp_table_apu_conn>,
+				      <&opp_table_apu_rv>,
+				      <&opp_table_vpu>,
+				      <&opp_table_dla>;
+
+		status = "okay";
+	};
+
+	mdla_devfreq: mdla_devfreq {
+		compatible = "mediatek,mt8195-mdla-devfreq";
+		#cooling-cells = <2>;
+		dynamic-power-coefficient = <1667>;
+		power_table = <581>, <448>, <320>, <208>, <127>, <96>;
+		status = "okay";
+	};
+
+	vpu_devfreq: vpu_devfreq {
+		compatible = "mediatek,mt8195-vpu-devfreq";
+		#cooling-cells = <2>;
+		dynamic-power-coefficient = <1667>;
+		power_table = <493>, <402>, <295>, <200>, <119>, <87>;
+		status = "okay";
+	};
+
+	apusys_sw_logger: apusys_sw_logger {
+		compatible = "mediatek,apusys_sw_logger";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		reg = <0 0x19000000 0 0x1000>;
+		reg-names = "apu_mbox";
+		dma-ranges = <0x0 0x0 0x0 0x40000000 0x1 0x0>;
+		iommus = <&iommu_apu1 0x360>;		/* apu_iommu1 DATA */
+	};
+
+	apusys_rv: apusys_rv@19001000 {
+		compatible = "mediatek,mt8195-apusys_rv";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		memory-region = <&apu_mem>;
+		reg = <0 0x19000000 0 0x1000>,
+		      <0 0x19001000 0 0x1000>,
+		      <0 0x19002000 0 0x10>,
+		      <0 0x19021000 0 0x1000>,
+		      <0 0x190f2000 0 0x1000>,
+		      <0 0x1df00000 0 0x20000>,
+		      <0 0x0d19c000 0 0x10000>;
+
+		reg-names = "apu_mbox",
+			    "md32_sysctrl",
+			    "apu_wdt",
+			    "apu_sctrl_reviser",
+			    "apu_ao_ctl",
+			    "md32_tcm",
+			    "md32_debug_apb";
+
+		mediatek,apusys_power = <&apu_top_3>;
+		firmware-name = "mediatek/mt8195/apusys.sig.img";
+
+		apu_iommu0 = <&iommu_apu0>;
+		apu_iommu1 = <&iommu_apu1>;
+
+		dma-ranges = <0x0 0x0 0x0 0x40000000 0x1 0x0>;
+		iommus = <&iommu_apu0 0x340>;		/* IOMMU_PORT_APU_DATA */
+
+		interrupts = <GIC_SPI 425 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 436 IRQ_TYPE_LEVEL_HIGH 0>;
+
+		interrupt-names = "apu_wdt",
+				  "mbox0_irq";
+
+		up_code_buf_sz = <0x100000>;
+		up_coredump_buf_sz = <0x180000>;
+		regdump_buf_sz = <0x10000>;
+		mdla_coredump_buf_sz = <0x0>;
+		mvpu_coredump_buf_sz = <0x0>;
+		mvpu_sec_coredump_buf_sz = <0x0>;
+
+		status = "okay";
+
+		apu_ctrl {
+			compatible = "mediatek,apu-ctrl-rpmsg";
+			mtk,rpmsg-name = "apu-ctrl-rpmsg";
+		};
+
+		apu_top_rpmsg {
+			compatible = "mediatek,aputop-rpmsg";
+			mtk,rpmsg-name = "apu_top_3_rpmsg";
+		};
+
+		apu_mdw {
+			compatible = "mediatek,apu-mdw-rpmsg";
+			mtk,rpmsg-name = "apu-mdw-rpmsg";
+		};
+
+		apu_reviser {
+			compatible = "mediatek,apu-reviser-rpmsg";
+			mtk,rpmsg-name = "apu-reviser-rpmsg";
+		};
+
+		apu_edma {
+			compatible = "mediatek,apu-edma-rpmsg";
+			mtk,rpmsg-name = "apu-edma-rpmsg";
+		};
+
+		apu_mnoc {
+			compatible = "mediatek,apu-mnoc-rpmsg";
+			mtk,rpmsg-name = "apu-mnoc-rpmsg";
+		};
+
+		mdla_tx_rpmsg {
+			compatible = "mediatek,mdla-tx-rpmsg";
+			mtk,rpmsg-name = "mdla-tx-rpmsg";
+		};
+
+		mdla_rx_rpmsg {
+			compatible = "mediatek,mdla-rx-rpmsg";
+			mtk,rpmsg-name = "mdla-rx-rpmsg";
+		};
+	};
+
+	mtk_apu_mem_code: mtk_apu_mem_code {
+		compatible = "mediatek, apu_mem_code";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		type = <1>;
+		mask = /bits/ 64 <0x00000003ffffffff>;
+		dma-ranges = <0x0 0x0 0x0 0x40000000 0x1 0x0>;
+		iommus = <&iommu_apu0 0x340>;		/* IOMMU_PORT_APU_DATA */
+	};
+
+	mtk_apu_mem_data: mtk_apu_mem_data {
+		compatible = "mediatek, apu_mem_data";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		type = <2>;
+		mask = /bits/ 64 <0x00000003ffffffff>;
+		dma-ranges = <0x0 0x8000000 0x0 0x40000000 0x0 0x8000000>;
+		iommus = <&iommu_apu0 0x341>;		/* IOMMU_PORT_APU_VLM */
+	};
+
+	iommu_apu0: iommu@19010000 {
+		compatible = "mediatek,mt8195-iommu-apu";
+		reg = <0 0x19010000 0 0x5000>;
+		interrupts = <GIC_SPI 426 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 427 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 428 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 429 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 430 IRQ_TYPE_LEVEL_HIGH 0>;
+		#iommu-cells = <1>;
+		mediatek,apu_power = <&apusys_rv>;
+	};
+
+	iommu_apu1: iommu@19015000 {
+		compatible = "mediatek,mt8195-iommu-apu";
+		reg = <0 0x19015000 0 0x5000>;
+		interrupts = <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 432 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 433 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 434 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 435 IRQ_TYPE_LEVEL_HIGH 0>;
+		#iommu-cells = <1>;
+		mediatek,apu_power = <&apusys_rv>;
+	};
+
+	opp_table_apu_conn: opp-table-apu-conn {
+		compatible = "operating-points-v2";
+
+		opp-0 {
+			opp-hz = /bits/ 64 <728000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-1 {
+			opp-hz = /bits/ 64 <624000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-2 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-3 {
+			opp-hz = /bits/ 64 <312000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-4 {
+			opp-hz = /bits/ 64 <238000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-5 {
+			opp-hz = /bits/ 64 <208000000>;
+			opp-microvolt = <575000>;
+		};
+	};
+
+	opp_table_apu_rv: opp-table-apu-rv {
+		compatible = "operating-points-v2";
+
+		opp-0 {
+			opp-hz = /bits/ 64 <728000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-1 {
+			opp-hz = /bits/ 64 <624000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-2 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-3 {
+			opp-hz = /bits/ 64 <312000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-4 {
+			opp-hz = /bits/ 64 <238000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-5 {
+			opp-hz = /bits/ 64 <208000000>;
+			opp-microvolt = <575000>;
+		};
+	};
+
+	opp_table_vpu: opp-table-vpu {
+		compatible = "operating-points-v2";
+
+		opp-0 {
+			opp-hz = /bits/ 64 <832000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-1 {
+			opp-hz = /bits/ 64 <728000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-2 {
+			opp-hz = /bits/ 64 <624000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-3 {
+			opp-hz = /bits/ 64 <525000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-4 {
+			opp-hz = /bits/ 64 <358000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-5 {
+			opp-hz = /bits/ 64 <275000000>;
+			opp-microvolt = <575000>;
+		};
+	};
+
+	opp_table_dla: opp-table-dla {
+		compatible = "operating-points-v2";
+
+		opp-0 {
+			opp-hz = /bits/ 64 <960000000>;
+			opp-microvolt = <800000>;
+		};
+		opp-1 {
+			opp-hz = /bits/ 64 <832000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-2 {
+			opp-hz = /bits/ 64 <688000000>;
+			opp-microvolt = <700000>;
+		};
+		opp-3 {
+			opp-hz = /bits/ 64 <546000000>;
+			opp-microvolt = <650000>;
+		};
+		opp-4 {
+			opp-hz = /bits/ 64 <385000000>;
+			opp-microvolt = <600000>;
+		};
+		opp-5 {
+			opp-hz = /bits/ 64 <312000000>;
+			opp-microvolt = <575000>;
+		};
+	};
+};
+
+/*
+ * APU / VP6 firmware carveouts. Mainline mt8195-cherry.dtsi does NOT define
+ * apu_mem / vpu_mem (the BSP got them from the genio common dtsi), so they are
+ * added here into the existing &reserved_memory container (which already
+ * declares #address-cells=<2>/#size-cells=<2>/ranges). Sizes + bases copied
+ * from mt8390-genio-common.dtsi (20 MB each); 0x55000000 / 0x57000000 are free
+ * in the cherry reserved-memory map (scp_mem ends at 0x52900000, adsp_mem
+ * starts at 0x60000000).
+ */
+&reserved_memory {
+	apu_mem: memory@55000000 {
+		compatible = "shared-dma-pool";
+		reg = <0 0x55000000 0 0x1400000>;	/* 20 MB */
+	};
+
+	vpu_mem: memory@57000000 {
+		compatible = "shared-dma-pool";
+		reg = <0 0x57000000 0 0x1400000>;	/* 20 MB */
+	};
+};

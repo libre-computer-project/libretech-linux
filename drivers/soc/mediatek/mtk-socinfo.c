@@ -46,6 +46,7 @@ static struct socinfo_data socinfo_data_table[] = {
 	MTK_SOCINFO_ENTRY("MT8173", "MT8173V/AC", "MT8173", 0x6CA20004, 0x10000000),
 	MTK_SOCINFO_ENTRY("MT8183", "MT8183V/AZA", "Kompanio 500", 0x00010043, 0x00000840),
 	MTK_SOCINFO_ENTRY("MT8183", "MT8183V/AZA", "Kompanio 500", 0x00010043, 0x00000940),
+	MTK_SOCINFO_ENTRY("MT8385", "MT8385V/AZA", "Genio 500", 0x00110042, 0x00000840),
 	MTK_SOCINFO_ENTRY("MT8186", "MT8186GV/AZA", "Kompanio 520", 0x81861001, CELL_NOT_USED),
 	MTK_SOCINFO_ENTRY("MT8186T", "MT8186TV/AZA", "Kompanio 528", 0x81862001, CELL_NOT_USED),
 	MTK_SOCINFO_ENTRY("MT8188", "MT8188GV/AZA", "Kompanio 838", 0x81880000, 0x00000010),
@@ -62,6 +63,45 @@ static struct socinfo_data socinfo_data_table[] = {
 	MTK_SOCINFO_ENTRY("MT8395", "MT8395AV/ZA", "Genio 1200", 0x83950800, CELL_NOT_USED),
 };
 
+#define MTK_UNIQUE_ID_SIZE	8
+
+/*
+ * serial_number: the die's unique id (HRID), the efuse cell "unique-id"
+ * (8 bytes, at 0x140 on the parts that carry it), as 16 lowercase hex -- the
+ * board serial# U-Boot sets from the same bytes (mtk_setup_serial).  NULL
+ * when the efuse has no such cell or it reads blank (all 0 or all 1).
+ */
+static char *mtk_socinfo_serial(struct device *dev)
+{
+	struct device_node *np, *nvmem_node = dev->parent->of_node;
+	u8 id[MTK_UNIQUE_ID_SIZE], ones[MTK_UNIQUE_ID_SIZE];
+	struct nvmem_device *nvmemp;
+	char *serial = NULL;
+	u32 reg[2];
+	int ret;
+
+	np = of_get_child_by_name(nvmem_node, "unique-id");
+	if (!np)
+		return NULL;
+	ret = of_property_read_u32_array(np, "reg", reg, 2);
+	of_node_put(np);
+	if (ret || reg[1] != MTK_UNIQUE_ID_SIZE)
+		return NULL;
+
+	nvmemp = nvmem_device_find(nvmem_node, device_match_of_node);
+	if (IS_ERR(nvmemp))
+		return NULL;
+	ret = nvmem_device_read(nvmemp, reg[0], sizeof(id), id);
+	nvmem_device_put(nvmemp);
+
+	memset(ones, 0xff, sizeof(ones));
+	if (ret == sizeof(id) && memchr_inv(id, 0, sizeof(id)) &&
+	    memcmp(id, ones, sizeof(id)))
+		serial = devm_kasprintf(dev, GFP_KERNEL, "%*phN",
+					MTK_UNIQUE_ID_SIZE, id);
+	return serial;
+}
+
 static int mtk_socinfo_create_socinfo_node(struct mtk_socinfo *mtk_socinfop)
 {
 	struct soc_device_attribute *attrs;
@@ -72,13 +112,17 @@ static int mtk_socinfo_create_socinfo_node(struct mtk_socinfo *mtk_socinfop)
 	if (!attrs)
 		return -ENOMEM;
 
-	if (data->marketing_name != NULL && data->marketing_name[0] != '\0')
+	/* a part missing from the table still gets soc0, with its serial */
+	if (data && data->marketing_name != NULL && data->marketing_name[0] != '\0')
 		attrs->family = devm_kasprintf(mtk_socinfop->dev, GFP_KERNEL, "MediaTek %s",
 					       data->marketing_name);
 	else
 		attrs->family = soc_manufacturer;
 
-	attrs->soc_id = data->soc_name;
+	attrs->soc_id = data ? data->soc_name : NULL;
+	attrs->serial_number = mtk_socinfo_serial(mtk_socinfop->dev);
+	if (!data && !attrs->serial_number)
+		return -ENOENT;
 	/*
 	 * The "machine" field will be populated automatically with the model
 	 * name from board DTS (if available).
@@ -88,7 +132,8 @@ static int mtk_socinfo_create_socinfo_node(struct mtk_socinfo *mtk_socinfop)
 	if (IS_ERR(mtk_socinfop->soc_dev))
 		return PTR_ERR(mtk_socinfop->soc_dev);
 
-	dev_info(mtk_socinfop->dev, "%s (%s) SoC detected.\n", attrs->family, attrs->soc_id);
+	dev_info(mtk_socinfop->dev, "%s (%s) SoC detected.\n", attrs->family,
+		 attrs->soc_id ? attrs->soc_id : "unknown part");
 	return 0;
 }
 
@@ -177,7 +222,7 @@ static int mtk_socinfo_probe(struct platform_device *pdev)
 	mtk_socinfop->dev = &pdev->dev;
 
 	ret = mtk_socinfo_get_socinfo_data(mtk_socinfop);
-	if (ret < 0)
+	if (ret < 0 && ret != -ENOENT)
 		return dev_err_probe(mtk_socinfop->dev, ret, "Failed to get socinfo data\n");
 
 	ret = mtk_socinfo_create_socinfo_node(mtk_socinfop);

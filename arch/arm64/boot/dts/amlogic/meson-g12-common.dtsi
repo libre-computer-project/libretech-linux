@@ -10,6 +10,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/amlogic,meson-g12a-gpio-intc.h>
+#include <dt-bindings/power/meson-g12a-power.h>
 #include <dt-bindings/reset/amlogic,meson-g12a-reset.h>
 #include <dt-bindings/thermal/thermal.h>
 
@@ -19,9 +20,10 @@
 	#size-cells = <2>;
 
 	aliases {
-		mmc0 = &sd_emmc_b; /* SD card */
-		mmc1 = &sd_emmc_c; /* eMMC */
+		mmc0 = &sd_emmc_c; /* eMMC */
+		mmc1 = &sd_emmc_b; /* SD card */
 		mmc2 = &sd_emmc_a; /* SDIO */
+		rtc1 = &vrtc;
 	};
 
 	chosen {
@@ -64,31 +66,24 @@
 
 		opp-124999998 {
 			opp-hz = /bits/ 64 <124999998>;
-			opp-microvolt = <800000>;
 		};
 		opp-249999996 {
 			opp-hz = /bits/ 64 <249999996>;
-			opp-microvolt = <800000>;
 		};
 		opp-285714281 {
 			opp-hz = /bits/ 64 <285714281>;
-			opp-microvolt = <800000>;
 		};
 		opp-399999994 {
 			opp-hz = /bits/ 64 <399999994>;
-			opp-microvolt = <800000>;
 		};
 		opp-499999992 {
 			opp-hz = /bits/ 64 <499999992>;
-			opp-microvolt = <800000>;
 		};
 		opp-666666656 {
 			opp-hz = /bits/ 64 <666666656>;
-			opp-microvolt = <800000>;
 		};
 		opp-799999987 {
 			opp-hz = /bits/ 64 <799999987>;
-			opp-microvolt = <800000>;
 		};
 	};
 
@@ -102,23 +97,19 @@
 		#size-cells = <2>;
 		ranges;
 
-		/* 3 MiB reserved for ARM Trusted Firmware (BL31) */
-		secmon_reserved: secmon@5000000 {
-			reg = <0x0 0x05000000 0x0 0x300000>;
-			no-map;
-		};
-
-		/* 32 MiB reserved for ARM Trusted Firmware (BL32) */
-		secmon_reserved_bl32: secmon@5300000 {
-			reg = <0x0 0x05300000 0x0 0x2000000>;
-			no-map;
-		};
+		/*
+		 * The firmware's own reservations are not declared here: the
+		 * vendor and the libre chains place them differently, so each
+		 * board .dts includes exactly one of
+		 * meson-g12-vendor-firmware.dtsi or meson-g12-libre-firmware.dtsi.
+		 */
 
 		linux,cma {
 			compatible = "shared-dma-pool";
 			reusable;
-			size = <0x0 0x10000000>;
+			size = <0x0 0x40000000>;
 			alignment = <0x0 0x400000>;
+			alloc-ranges = <0x0 0x00000000 0x0 0x40000000>;
 			linux,cma-default;
 		};
 	};
@@ -138,7 +129,7 @@
 			reg = <0x0 0xfc000000 0x0 0x400000>,
 			      <0x0 0xff648000 0x0 0x2000>,
 			      <0x0 0xfc400000 0x0 0x200000>;
-			reg-names = "elbi", "cfg", "config";
+			reg-names = "dbi", "cfg", "config";
 			interrupts = <GIC_SPI 221 IRQ_TYPE_LEVEL_HIGH>;
 			#interrupt-cells = <1>;
 			interrupt-map-mask = <0 0 0 0>;
@@ -247,6 +238,7 @@
 					reg = <0x0 0x218 0x0 0x4>;
 					clocks = <&clkc CLKID_RNG0>;
 					clock-names = "core";
+					quality = <1000>;
 				};
 			};
 
@@ -500,7 +492,7 @@
 						mux {
 							groups = "i2c2_sda_x";
 							function = "i2c2";
-							bias-disable;
+							bias-pull-up;
 							drive-strength-microamp = <3000>;
 						};
 					};
@@ -509,7 +501,7 @@
 						mux {
 							groups = "i2c2_sck_x";
 							function = "i2c2";
-							bias-disable;
+							bias-pull-up;
 							drive-strength-microamp = <3000>;
 						};
 					};
@@ -1674,10 +1666,22 @@
 						#phy-cells = <0>;
 						status = "disabled";
 					};
+
+					csi_analog_dphy: phy-csi {
+						compatible = "amlogic,g12a-mipi-csi-dphy-analog";
+						#phy-cells = <0>;
+						status = "disabled";
+					};
 				};
 			};
 
-			mipi_dphy: phy@44000 {
+			crypto: crypto@3e000 {
+			compatible = "amlogic,g12a-crypto";
+			reg = <0x0 0x3e000 0x0 0x48>;
+			interrupts = <GIC_SPI 180 IRQ_TYPE_EDGE_RISING>;
+		};
+
+		mipi_dphy: phy@44000 {
 				compatible = "amlogic,axg-mipi-dphy";
 				reg = <0x0 0x44000 0x0 0x2000>;
 				clocks = <&clkc CLKID_MIPI_DSI_PHY>;
@@ -1778,7 +1782,7 @@
 					mux {
 						groups = "i2c_ao_sck";
 						function = "i2c_ao";
-						bias-disable;
+						bias-pull-up;
 						drive-strength-microamp = <3000>;
 					};
 				};
@@ -1787,7 +1791,7 @@
 					mux {
 						groups = "i2c_ao_sda";
 						function = "i2c_ao";
-						bias-disable;
+						bias-pull-up;
 						drive-strength-microamp = <3000>;
 					};
 				};
@@ -2141,8 +2145,9 @@
 			      <0x0 0xffd0e180 0x0 0xe4>;
 			reg-names = "dos", "esparser";
 			interrupts = <GIC_SPI 44 IRQ_TYPE_EDGE_RISING>,
-				     <GIC_SPI 32 IRQ_TYPE_EDGE_RISING>;
-			interrupt-names = "vdec", "esparser";
+				     <GIC_SPI 32 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 45 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "vdec", "esparser", "hcodec";
 
 			amlogic,ao-sysctrl = <&rti>;
 			amlogic,canvas = <&canvas>;
@@ -2151,22 +2156,38 @@
 				 <&clkc CLKID_DOS>,
 				 <&clkc CLKID_VDEC_1>,
 				 <&clkc CLKID_VDEC_HEVC>,
-				 <&clkc CLKID_VDEC_HEVCF>;
+				 <&clkc CLKID_VDEC_HEVCF>,
+				 <&clkc CLKID_VDEC_HCODEC>,
+				 <&clkc CLKID_FCLK_DIV2P5>,
+				 <&clkc CLKID_GP0_PLL>;
 			clock-names = "dos_parser", "dos", "vdec_1",
-				      "vdec_hevc", "vdec_hevcf";
-			resets = <&reset RESET_PARSER>;
-			reset-names = "esparser";
+				      "vdec_hevc", "vdec_hevcf",
+				      "hcodec", "fclk_div2p5",
+				      "gp0_pll";
+			resets = <&reset RESET_PARSER>,
+				 <&reset RESET_HEVCF_DMC_PIPL>;
+			reset-names = "esparser", "hevcf_dmc_pipl";
+			#cooling-cells = <2>;
 		};
 
 		vpu: vpu@ff900000 {
 			compatible = "amlogic,meson-g12a-vpu";
-			reg = <0x0 0xff900000 0x0 0x100000>,
+			/*
+			 * VPU region MUST stay 0x40000 (256KB), NOT upstream's
+			 * 0x100000 (1MB): 1MB overruns the GE2D MMIO at
+			 * 0xff940000, so GE2D probe fails with -EBUSY. Local fix
+			 * 55b1d476c8a2 (also adds the GE2D node, absent upstream).
+			 * Do NOT revert on an upstream DTS resync. Keep in sync
+			 * with the U-Boot DTS.
+			 */
+			reg = <0x0 0xff900000 0x0 0x40000>,
 			      <0x0 0xff63c000 0x0 0x1000>;
 			reg-names = "vpu", "hhi";
 			interrupts = <GIC_SPI 3 IRQ_TYPE_EDGE_RISING>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			amlogic,canvas = <&canvas>;
+			amlogic,ge2d = <&ge2d>;
 
 			/* CVBS VDAC output port */
 			cvbs_vdac_port: port@0 {
@@ -2190,6 +2211,16 @@
 					remote-endpoint = <&mipi_dsi_in>;
 				};
 			};
+		};
+
+		ge2d: ge2d@ff940000 {
+			compatible = "amlogic,g12a-ge2d";
+			reg = <0x0 0xff940000 0x0 0x10000>;
+			interrupts = <GIC_SPI 146 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&clkc CLKID_VAPB>;
+			resets = <&reset RESET_GE2D>;
+			amlogic,canvas = <&canvas>;
+			#cooling-cells = <2>;
 		};
 
 		gic: interrupt-controller@ffc01000 {
@@ -2431,6 +2462,9 @@
 				 <&clkc CLKID_FCLK_DIV2>;
 			clock-names = "core", "clkin0", "clkin1";
 			resets = <&reset RESET_SD_EMMC_A>;
+
+			assigned-clocks = <&clkc CLKID_SD_EMMC_A_CLK0>;
+			assigned-clock-rates = <24000000>;
 		};
 
 		sd_emmc_b: mmc@ffe05000 {
@@ -2443,6 +2477,9 @@
 				 <&clkc CLKID_FCLK_DIV2>;
 			clock-names = "core", "clkin0", "clkin1";
 			resets = <&reset RESET_SD_EMMC_B>;
+
+			assigned-clocks = <&clkc CLKID_SD_EMMC_B_CLK0>;
+			assigned-clock-rates = <24000000>;
 		};
 
 		sd_emmc_c: mmc@ffe07000 {
@@ -2455,6 +2492,9 @@
 				 <&clkc CLKID_FCLK_DIV2>;
 			clock-names = "core", "clkin0", "clkin1";
 			resets = <&reset RESET_SD_EMMC_C>;
+
+			assigned-clocks = <&clkc CLKID_SD_EMMC_C_CLK0>;
+			assigned-clock-rates = <24000000>;
 		};
 
 		usb: usb@ffe09000 {
@@ -2540,6 +2580,18 @@
 					type = "critical";
 				};
 			};
+
+			cooling-maps {
+				map_vdec {
+					trip = <&cpu_hot>;
+					cooling-device = <&vdec THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map_ge2d {
+					trip = <&cpu_hot>;
+					cooling-device = <&ge2d THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
 		};
 
 		ddr_thermal: ddr-thermal {
@@ -2593,7 +2645,6 @@
 	npu: npu@ff100000 {
 		compatible = "vivante,gc";
 		reg = <0x0 0xff100000 0x0 0x20000>;
-		interrupts = <0 147 4>;
 		clocks = <&clkc CLKID_NNA_CORE_CLK>,
 			 <&clkc CLKID_NNA_AXI_CLK>;
 		clock-names = "core", "bus";
@@ -2601,6 +2652,7 @@
 				  <&clkc CLKID_NNA_AXI_CLK>;
 		assigned-clock-rates = <800000000>, <800000000>;
 		resets = <&reset RESET_NNA>;
+		power-domains = <&pwrc PWRC_G12A_NNA_ID>;
 		status = "disabled";
 	};
 };

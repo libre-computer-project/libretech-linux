@@ -424,6 +424,16 @@ static const struct snd_soc_dapm_route mt8183_memif_routes[] = {
 
 static const struct snd_soc_component_driver mt8183_afe_pcm_dai_component = {
 	.name = "mt8183-afe-pcm-dai",
+	/*
+	 * This DAI component and mtk_afe_pcm_platform both register on the same
+	 * AFE device, so snd_soc_component_initialize() auto-names both from
+	 * dev_name() (the driver .name is not used for component->name). The two
+	 * identical names collide in the card's debugfs root ("... already
+	 * exists"), also duplicating the DAPM Playback/Capture nodes. Give this
+	 * component a debugfs prefix so its debugfs subtree is distinct, mirroring
+	 * soc-generic-dmaengine-pcm.c (debugfs_prefix = "dma").
+	 */
+	.debugfs_prefix = "cpu-dai",
 };
 
 #define MT8183_MEMIF_BASE(_id, _en_reg, _fs_reg, _mono_reg)    \
@@ -718,6 +728,20 @@ static int mt8183_afe_runtime_resume(struct device *dev)
 	regcache_cache_only(afe->regmap, false);
 	regcache_sync(afe->regmap);
 
+	/*
+	 * regcache_sync() above writes back the AUDIO_TOP_CON0 value cached
+	 * while the AFE was runtime-suspended, in which the aud_afe gate
+	 * (CON0 bit 2 -- an active-low power-down bit owned by the audiosys
+	 * clock driver) reads as powered down. That clobbers the gate that
+	 * mt8183_afe_enable_clock() just enabled, leaving the AFE DMA engine
+	 * unclocked: the memif cursor never advances, no period IRQ fires, and
+	 * the first write returns -EIO. Re-clear the aud_afe power-down bit so
+	 * the engine clock the clk framework already reference-counted actually
+	 * runs. (DAPM clock supplies such as aud_dac are enabled per-stream
+	 * after this point, so they are not affected by the stale sync.)
+	 */
+	regmap_update_bits(afe->regmap, AUDIO_TOP_CON0, 0x1 << 2, 0);
+
 	/* enable audio sys DCM for power saving */
 	regmap_update_bits(afe->regmap, AUDIO_TOP_CON0, 0x1 << 29, 0x1 << 29);
 
@@ -766,6 +790,11 @@ static const dai_register_cb dai_register_cbs[] = {
 	mt8183_dai_memif_register,
 };
 
+static void mt8183_afe_release_reserved_mem(void *data)
+{
+	of_reserved_mem_device_release(data);
+}
+
 static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 {
 	struct mtk_base_afe *afe;
@@ -794,6 +823,12 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_info(dev, "no reserved memory found, pre-allocating buffers instead\n");
 		afe->preallocate_buffers = true;
+	} else {
+		ret = devm_add_action_or_reset(dev,
+					       mt8183_afe_release_reserved_mem,
+					       dev);
+		if (ret)
+			return ret;
 	}
 
 	/* initial audio related clock */
@@ -833,16 +868,20 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* enable clock for regcache get default value from hw */
 	afe_priv->pm_runtime_bypass_reg_ctl = true;
-	pm_runtime_get_sync(dev);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret) {
+		afe_priv->pm_runtime_bypass_reg_ctl = false;
+		goto err_pm_disable;
+	}
 
 	ret = regmap_reinit_cache(afe->regmap, &mt8183_afe_regmap_config);
+	pm_runtime_put_sync(dev);
+	afe_priv->pm_runtime_bypass_reg_ctl = false;
+
 	if (ret) {
 		dev_err(dev, "regmap_reinit_cache fail, ret %d\n", ret);
 		goto err_pm_disable;
 	}
-
-	pm_runtime_put_sync(dev);
-	afe_priv->pm_runtime_bypass_reg_ctl = false;
 
 	regcache_cache_only(afe->regmap, true);
 	regcache_mark_dirty(afe->regmap);

@@ -93,7 +93,8 @@ hantro_g1_mpeg2_dec_set_buffers(struct hantro_dev *vpu, struct hantro_ctx *ctx,
 				struct vb2_buffer *src_buf,
 				struct vb2_buffer *dst_buf,
 				const struct v4l2_ctrl_mpeg2_sequence *seq,
-				const struct v4l2_ctrl_mpeg2_picture *pic)
+				const struct v4l2_ctrl_mpeg2_picture *pic,
+				const struct hantro_mpeg2_field_order *order)
 {
 	dma_addr_t forward_addr = 0, backward_addr = 0;
 	dma_addr_t current_addr, addr;
@@ -123,13 +124,15 @@ hantro_g1_mpeg2_dec_set_buffers(struct hantro_dev *vpu, struct hantro_ctx *ctx,
 	if (!backward_addr)
 		backward_addr = current_addr;
 
-	/* Set forward ref frame (top/bottom field) */
+	/*
+	 * Set forward ref frame (top/bottom field). The second field of a
+	 * P frame predicts from the first field of its own frame, which is
+	 * already in the current buffer; everything else predicts from the
+	 * forward reference frame.
+	 */
 	if (pic->picture_structure == V4L2_MPEG2_PIC_FRAME ||
 	    pic->picture_coding_type == V4L2_MPEG2_PIC_CODING_TYPE_B ||
-	    (pic->picture_structure == V4L2_MPEG2_PIC_TOP_FIELD &&
-	     pic->flags & V4L2_MPEG2_PIC_FLAG_TOP_FIELD_FIRST) ||
-	    (pic->picture_structure == V4L2_MPEG2_PIC_BOTTOM_FIELD &&
-	     !(pic->flags & V4L2_MPEG2_PIC_FLAG_TOP_FIELD_FIRST))) {
+	    !order->second_field) {
 		vdpu_write_relaxed(vpu, forward_addr, G1_REG_REFER0_BASE);
 		vdpu_write_relaxed(vpu, forward_addr, G1_REG_REFER1_BASE);
 	} else if (pic->picture_structure == V4L2_MPEG2_PIC_TOP_FIELD) {
@@ -151,6 +154,7 @@ int hantro_g1_mpeg2_dec_run(struct hantro_ctx *ctx)
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	const struct v4l2_ctrl_mpeg2_sequence *seq;
 	const struct v4l2_ctrl_mpeg2_picture *pic;
+	struct hantro_mpeg2_field_order order;
 	u32 reg;
 
 	src_buf = hantro_get_src_buf(ctx);
@@ -163,6 +167,7 @@ int hantro_g1_mpeg2_dec_run(struct hantro_ctx *ctx)
 			      V4L2_CID_STATELESS_MPEG2_SEQUENCE);
 	pic = hantro_get_ctrl(ctx,
 			      V4L2_CID_STATELESS_MPEG2_PICTURE);
+	hantro_mpeg2_dec_field_order(ctx, pic, &dst_buf->vb2_buf, &order);
 
 	reg = G1_REG_DEC_AXI_RD_ID(0) |
 	      G1_REG_DEC_TIMEOUT_E(1) |
@@ -196,7 +201,7 @@ int hantro_g1_mpeg2_dec_run(struct hantro_ctx *ctx)
 	reg = G1_REG_PIC_MB_WIDTH(MB_WIDTH(ctx->dst_fmt.width)) |
 	      G1_REG_PIC_MB_HEIGHT_P(MB_HEIGHT(ctx->dst_fmt.height)) |
 	      G1_REG_ALT_SCAN_E(pic->flags & V4L2_MPEG2_PIC_FLAG_ALT_SCAN) |
-	      G1_REG_TOPFIELDFIRST_E(pic->flags & V4L2_MPEG2_PIC_FLAG_TOP_FIELD_FIRST);
+	      G1_REG_TOPFIELDFIRST_E(order.top_field_first);
 	vdpu_write_relaxed(vpu, reg, G1_SWREG(4));
 
 	reg = G1_REG_STRM_START_BIT(0) |
@@ -230,7 +235,7 @@ int hantro_g1_mpeg2_dec_run(struct hantro_ctx *ctx)
 	hantro_g1_mpeg2_dec_set_quantisation(vpu, ctx);
 	hantro_g1_mpeg2_dec_set_buffers(vpu, ctx, &src_buf->vb2_buf,
 					&dst_buf->vb2_buf,
-					seq, pic);
+					seq, pic, &order);
 
 	hantro_end_prepare_run(ctx);
 

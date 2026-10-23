@@ -11,6 +11,7 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
@@ -1130,6 +1131,14 @@ static int rk3x_i2c_xfer_common(struct i2c_adapter *adap,
 
 	spin_unlock_irqrestore(&i2c->lock, flags);
 
+	/*
+	 * A mid-transfer timeout leaves the controller's state machine stuck.
+	 * Recover it (out of the lock, clocks now off) so the bus is usable
+	 * for the next transfer instead of staying dead for the rest of boot.
+	 */
+	if (ret == -ETIMEDOUT)
+		i2c_recover_bus(adap);
+
 	return ret < 0 ? ret : num;
 }
 
@@ -1144,6 +1153,58 @@ static int rk3x_i2c_xfer_polling(struct i2c_adapter *adap,
 {
 	return rk3x_i2c_xfer_common(adap, msgs, num, true);
 }
+
+/**
+ * rk3x_i2c_recover_bus - Reset the controller to release a wedged bus
+ * @adap: target I2C adapter
+ *
+ * A transfer whose completion IRQ is starved (for example by a long console
+ * stall) times out mid-transfer. The timeout path only forces a STOP but
+ * leaves the controller enabled, so its internal state machine stays stuck
+ * and every subsequent transfer times out for the rest of the boot - on the
+ * RK3399 PMIC bus (I2C0) that kills DVFS. Toggling REG_CON_EN low resets the
+ * state machine and releases SCL/SDA; the tuning bits and REG_CLKDIV are
+ * preserved so the timings survive the reset. This touches only this
+ * controller instance, not any other I2C bus.
+ *
+ * Return: 0 (the controller reset cannot fail).
+ */
+static int rk3x_i2c_recover_bus(struct i2c_adapter *adap)
+{
+	struct rk3x_i2c *i2c = (struct rk3x_i2c *)adap->algo_data;
+	unsigned long flags;
+	u32 val;
+
+	spin_lock_irqsave(&i2c->lock, flags);
+	clk_enable(i2c->clk);
+	clk_enable(i2c->pclk);
+
+	/* Mask interrupts and issue a STOP to close any dangling transfer. */
+	i2c_writel(i2c, 0, REG_IEN);
+	val = i2c_readl(i2c, REG_CON) & REG_CON_TUNING_MASK;
+	i2c_writel(i2c, val | REG_CON_EN | REG_CON_STOP, REG_CON);
+	udelay(10);
+
+	/* Drop REG_CON_EN to reset the state machine, keep the tuning bits. */
+	i2c_writel(i2c, i2c_readl(i2c, REG_CON) & REG_CON_TUNING_MASK, REG_CON);
+	rk3x_i2c_clean_ipd(i2c);
+
+	i2c->state = STATE_IDLE;
+	i2c->busy = false;
+
+	clk_disable(i2c->pclk);
+	clk_disable(i2c->clk);
+	spin_unlock_irqrestore(&i2c->lock, flags);
+
+	dev_warn(i2c->dev,
+		 "bus recovered: controller reset after transfer timeout\n");
+
+	return 0;
+}
+
+static struct i2c_bus_recovery_info rk3x_i2c_bus_recovery_info = {
+	.recover_bus = rk3x_i2c_recover_bus,
+};
 
 static __maybe_unused int rk3x_i2c_resume(struct device *dev)
 {
@@ -1261,6 +1322,7 @@ static int rk3x_i2c_probe(struct platform_device *pdev)
 	i2c->adap.dev.of_node = np;
 	i2c->adap.algo_data = i2c;
 	i2c->adap.dev.parent = &pdev->dev;
+	i2c->adap.bus_recovery_info = &rk3x_i2c_bus_recovery_info;
 
 	i2c->dev = &pdev->dev;
 

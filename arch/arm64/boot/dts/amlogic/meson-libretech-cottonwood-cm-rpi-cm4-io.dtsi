@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Libre Computer Cottonwood CM on RPi CM4-IO carrier board
+ *
+ * CM4-IO-specific hardware not present on CM5-IO:
+ * - CVBS composite video connector (pin 111 = VDAC_COMP)
+ *   CM5-IO repurposes pin 111 for VBUS_EN, so no CVBS.
+ * - PCF85063AT RTC at I2C 0x51 (connector pins 80/82, GPIOA_14/A_15, i2c3)
+ * - EMC2301 fan controller at I2C 0x2f (same bus)
+ * - 12V barrel jack power input (carrier steps down to 5V)
+ */
+
+/ {
+	/* TOFIX: handle CVBS_DET on SARADC channel 0 */
+	cvbs-connector {
+		compatible = "composite-video-connector";
+
+		port {
+			cvbs_connector_in: endpoint {
+				remote-endpoint = <&cvbs_vdac_out>;
+			};
+		};
+	};
+};
+
+&cvbs_vdac_port {
+	cvbs_vdac_out: endpoint {
+		remote-endpoint = <&cvbs_connector_in>;
+	};
+};
+
+&i2c3 {
+	status = "okay";
+	pinctrl-0 = <&i2c3_sda_a_pins>, <&i2c3_sck_a_pins>;
+	pinctrl-names = "default";
+
+	rtc@51 {
+		compatible = "nxp,pcf85063a";
+		reg = <0x51>;
+	};
+
+	fan@2f {
+		compatible = "microchip,emc2301";
+		reg = <0x2f>;
+	};
+};

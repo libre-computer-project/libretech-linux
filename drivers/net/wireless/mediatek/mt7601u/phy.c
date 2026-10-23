@@ -1223,6 +1223,75 @@ void mt7601u_set_tx_dac(struct mt7601u_dev *dev, u8 dac)
 	mt7601u_bbp_rmc(dev, 1, 0x18, dac << 3);
 }
 
+#if IS_ENABLED(CONFIG_MT7601U_RESEARCH)
+/*
+ * RF / baseband test modes for RF bring-up and characterization.
+ *
+ * LAB/SHIELDED-ENVIRONMENT ONLY -- emitting a carrier or a continuous tone on
+ * 2.4 GHz outside an RF-shielded chamber violates RF regulations. These are for
+ * antenna / PA / LO characterization on the bench, never for operation. Park the
+ * PHY/PLL on a channel first via the normal mac80211 path (e.g.
+ * `iw dev <wlan> set channel N`) before enabling any emission below.
+ */
+void mt7601u_rf_test_set_power(struct mt7601u_dev *dev, u8 power)
+{
+	power &= 0x3f;
+	mt7601u_rmw(dev, MT_TX_ALC_CFG_0,
+		    MT_TX_ALC_CFG_0_CH_INIT_0 | MT_TX_ALC_CFG_0_CH_INIT_1,
+		    FIELD_PREP(MT_TX_ALC_CFG_0_CH_INIT_0, power) |
+		    FIELD_PREP(MT_TX_ALC_CFG_0_CH_INIT_1, power));
+}
+
+int mt7601u_rf_test_set_tx(struct mt7601u_dev *dev, u32 mode)
+{
+	u32 mac_ctrl;
+
+	if (!test_bit(MT7601U_STATE_WLAN_RUNNING, &dev->state))
+		return -EIO;
+
+	/* Always return to a known state: clear both baseband test bits. */
+	mt7601u_bbp_rmw(dev, 22, 0x80, 0);	/* single-tone off */
+	mt7601u_bbp_rmw(dev, 24, 0x01, 0);	/* continuous-TX off */
+
+	mac_ctrl = mt7601u_rr(dev, MT_MAC_SYS_CTRL);
+
+	switch (mode) {
+	case 0:
+		/* Stop: drop the MAC TX enable. */
+		mt7601u_wr(dev, MT_MAC_SYS_CTRL,
+			   mac_ctrl & ~MT_MAC_SYS_CTRL_ENABLE_TX);
+		break;
+	case 1:
+		/* Single tone / CW carrier -- LO / carrier-leakage char.
+		 * LAB/SHIELDED-ENVIRONMENT ONLY -- emits a carrier. */
+		mt7601u_wr(dev, MT_MAC_SYS_CTRL,
+			   mac_ctrl | MT_MAC_SYS_CTRL_ENABLE_TX);
+		mt7601u_bbp_rmw(dev, 22, 0x80, 0x80);
+		break;
+	case 2:
+		/* Continuous modulated TX -- PA / EVM / spectral-mask char.
+		 * LAB/SHIELDED-ENVIRONMENT ONLY -- emits continuously. */
+		mt7601u_wr(dev, MT_MAC_SYS_CTRL,
+			   mac_ctrl | MT_MAC_SYS_CTRL_ENABLE_TX);
+		mt7601u_bbp_rmw(dev, 24, 0x01, 0x01);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int mt7601u_rf_test_reg_wr(struct mt7601u_dev *dev, u32 packed)
+{
+	u8 bank = (packed >> 16) & 0x0f;
+	u8 reg  = (packed >> 8) & 0x3f;
+	u8 val  = packed & 0xff;
+
+	return mt7601u_rf_wr(dev, bank, reg, val);
+}
+#endif /* CONFIG_MT7601U_RESEARCH */
+
 int mt7601u_phy_init(struct mt7601u_dev *dev)
 {
 	int ret;

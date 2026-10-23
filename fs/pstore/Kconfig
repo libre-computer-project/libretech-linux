@@ -81,6 +81,29 @@ config PSTORE_RAM
 
 	  For more information, see Documentation/admin-guide/ramoops.rst.
 
+config PSTORE_MESON_SRAM
+	tristate "Log panic/oops/console to Amlogic on-chip SRAM"
+	depends on PSTORE
+	depends on HAS_IOMEM
+	depends on ARCH_MESON || COMPILE_TEST
+	select GENERIC_ALLOCATOR
+	help
+	  This enables the console ring and the last kmsg_dump record to be
+	  stored in an on-chip SRAM region carved out of an "mmio-sram" node
+	  and handed to this driver through an "sram" phandle.  Unlike a
+	  ramoops DRAM carve-out, the SRAM contents do not depend on the
+	  bootloader leaving a region of DRAM untouched across a warm reset.
+
+	  Enable CONFIG_PSTORE_CONSOLE with this: a watchdog reset never runs
+	  kmsg_dump(), so only the continuously written console ring survives
+	  it.
+
+	  The SRAM region must be CPU-accessible; SoCs whose only SRAM sits
+	  behind another master's bus (e.g. the G12/SM1 NPU AXI SRAM) cannot
+	  use this backend.
+
+	  If unsure, say N.
+
 config PSTORE_ZONE
 	tristate
 	depends on PSTORE

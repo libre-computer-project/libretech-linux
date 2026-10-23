@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2026 Libre Computer
+ *
+ * AML-A311D-CC on the LIBRE firmware chain (our TF-A, low-16 MiB secure
+ * layout): the control and booted DTB of the aml-a311d-cc u-boot target.
+ * The vendor chain boots meson-g12b-a311d-libretech-cc.dts.
+ */
+
+/dts-v1/;
+
+#include "meson-g12b-a311d-libretech-cc.dtsi"
+#include "meson-g12-libre-firmware.dtsi"

@@ -27,30 +27,30 @@
 			opp-microvolt = <811000>;
 		};
 
-		opp-1512000000 {
-			opp-hz = /bits/ 64 <1512000000>;
-			opp-microvolt = <861000>;
-		};
-
 		opp-1608000000 {
 			opp-hz = /bits/ 64 <1608000000>;
 			opp-microvolt = <901000>;
-		};
-
-		opp-1704000000 {
-			opp-hz = /bits/ 64 <1704000000>;
-			opp-microvolt = <951000>;
 		};
 
 		opp-1800000000 {
 			opp-hz = /bits/ 64 <1800000000>;
 			opp-microvolt = <1001000>;
 		};
+
+		opp-2016000000 {
+			opp-hz = /bits/ 64 <2016000000>;
+			opp-microvolt = <1011000>;
+		};
 	};
 
 	cpub_opp_table_1: opp-table-1 {
 		compatible = "operating-points-v2";
 		opp-shared;
+
+		opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-microvolt = <731000>;
+		};
 
 		opp-1000000000 {
 			opp-hz = /bits/ 64 <1000000000>;
@@ -68,19 +68,9 @@
 			opp-microvolt = <771000>;
 		};
 
-		opp-1512000000 {
-			opp-hz = /bits/ 64 <1512000000>;
-			opp-microvolt = <771000>;
-		};
-
 		opp-1608000000 {
 			opp-hz = /bits/ 64 <1608000000>;
 			opp-microvolt = <781000>;
-		};
-
-		opp-1704000000 {
-			opp-hz = /bits/ 64 <1704000000>;
-			opp-microvolt = <791000>;
 		};
 
 		opp-1800000000 {
@@ -88,24 +78,51 @@
 			opp-microvolt = <831000>;
 		};
 
-                opp-1908000000 {
-                        opp-hz = /bits/ 64 <1908000000>;
-                        opp-microvolt = <861000>;
-                };
+		opp-2016000000 {
+			opp-hz = /bits/ 64 <2016000000>;
+			opp-microvolt = <911000>;
+		};
 
-                opp-2016000000 {
-                        opp-hz = /bits/ 64 <2016000000>;
-                        opp-microvolt = <911000>;
-                };
-
-                opp-2108000000 {
-                        opp-hz = /bits/ 64 <2108000000>;
-                        opp-microvolt = <951000>;
-                };
-
-                opp-2208000000 {
-                        opp-hz = /bits/ 64 <2208000000>;
-                        opp-microvolt = <1011000>;
-                };
+		opp-2208000000 {
+			opp-hz = /bits/ 64 <2208000000>;
+			opp-microvolt = <1011000>;
+		};
 	};
+
+	/*
+	 * A311D has 1 MB of on-chip AXI SRAM at physical 0xFF000000 per
+	 * the SoC datasheet. Expose it as a gen_pool so the etnaviv NPU
+	 * driver can allocate its "AXI SRAM" flat-map backing from real
+	 * on-chip SRAM instead of DDR (what dma_alloc_coherent returned
+	 * before this node existed). The NPU reaches it at GPU VA
+	 * ETNAVIV_AXI_SRAM_VA = 0x04000000 via the etnaviv MMU; OCB_REMAP
+	 * is programmed by mesa to expose that VA window to the NN engine.
+	 * G12A SoCs do not have this SRAM, so the node lives in the
+	 * A311D-specific DTSI, not in meson-g12-common.dtsi.
+	 */
+	axi_sram: sram@ff000000 {
+		compatible = "mmio-sram";
+		reg = <0x0 0xff000000 0x0 0x100000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0 0x0 0xff000000 0x100000>;
+
+		npu_sram_pool: npu-pool@0 {
+			reg = <0x0 0x100000>;
+			pool;
+			/*
+			 * Explicit label required: mmio-sram names the
+			 * gen_pool via of_node_full_name() ("npu-pool@0")
+			 * while of_gen_pool_get() falls back to np->name
+			 * ("npu-pool") -- a mismatch that makes the lookup
+			 * fail silently. Setting "label" makes both sides
+			 * use the same string.
+			 */
+			label = "npu-sram-pool";
+		};
+	};
+};
+
+&npu {
+	sram = <&npu_sram_pool>;
 };

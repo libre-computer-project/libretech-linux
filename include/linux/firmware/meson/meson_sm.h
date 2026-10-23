@@ -12,6 +12,7 @@ enum {
 	SM_EFUSE_WRITE,
 	SM_EFUSE_USER_MAX,
 	SM_GET_CHIP_ID,
+	SM_TEST_N_DIR,
 	SM_A1_PWRC_SET,
 	SM_A1_PWRC_GET,
 };
@@ -27,5 +28,13 @@ int meson_sm_call_read(struct meson_sm_firmware *fw, void *buffer,
 		       unsigned int bsize, unsigned int cmd_index, u32 arg0,
 		       u32 arg1, u32 arg2, u32 arg3, u32 arg4);
 struct meson_sm_firmware *meson_sm_get(struct device_node *firmware_node);
+
+#define MESON_SM_SERIAL_SIZE	12
+int meson_sm_get_serial(struct meson_sm_firmware *fw, u8 *serial);
+
+struct arm_smccc_1_2_regs;
+int meson_sm_call_smc64(struct meson_sm_firmware *fw,
+			struct arm_smccc_1_2_regs *regs, const void *in,
+			size_t in_len, void *out, size_t out_len);
 
 #endif /* _MESON_SM_FW_H_ */

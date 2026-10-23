@@ -36,4 +36,57 @@ config MESON_MX_SOCINFO
 	  Meson8b and Meson8m2 SoC family information about the type
 	  and version.
 
+config MESON_DMC_PORT_PRIORITY
+	bool "Amlogic Meson G12B DMC port priority"
+	depends on ARCH_MESON || COMPILE_TEST
+	default ARCH_MESON
+	help
+	  Apply the per-port DDR arbitration priorities a board's device tree
+	  lists (amlogic,port-priority) to the G12B memory controller at boot.
+	  Built-in so the priorities are live before any requester driver
+	  submits work; a board whose device tree lists no port is untouched.
+
+config MESON_SC_HEARTBEAT
+	bool "Amlogic SM1 kernel heartbeat for the open System Controller"
+	depends on ARCH_MESON || COMPILE_TEST
+	default n
+	help
+	  Advances a heartbeat word in SRAM that the open System Controller
+	  (scp-firmware SCP_G12A_AP_HEARTBEAT) watches: once it has seen the
+	  word change, a kernel that stops advancing it for the SC's grace
+	  period is reset through the AO watchdog, even when no EE watchdog
+	  runs.  Pauses across system sleep and releases the SC on halt,
+	  power-off and kexec.  Built in only (the kexec test reads
+	  kexec_in_progress).  A board opts in through its device tree node.
+
+config MESON_GXL_DDR_PUB_MON
+	tristate "Amlogic GXL DDR PHY (PUB) VT telemetry monitor"
+	depends on ARCH_MESON || COMPILE_TEST
+	default ARCH_MESON
+	help
+	  Read-only sampler for the GXL DDR PHY voltage/temperature drift
+	  tracking state: per-delay-line-field statistics in debugfs and a
+	  tracepoint on every field change, so a memory fault can be read
+	  against what the PHY was doing.
+
+config MESON_GXL_DDR_PUB_MON_KUNIT_TEST
+	bool "KUnit tests for the GXL DDR PHY (PUB) VT telemetry monitor" if !KUNIT_ALL_TESTS
+	depends on MESON_GXL_DDR_PUB_MON && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  KUnit tests of the SC-mode reader: the seqcount copy of the block
+	  the AO Cortex-M3 publishes (torn/odd/zero seq, lost magic, field
+	  and change-ring unpacking), the rate clamp, block validation, the
+	  reset-ack wait and the read-path liveness gate, against a block in
+	  kernel memory. Run with
+	  tools/testing/kunit/kunit.py run --kunitconfig=drivers/soc/amlogic --arch=x86_64
+
+config MESON_GE2D_API
+	bool "Amlogic GE2D kernel API"
+	depends on ARCH_MESON || COMPILE_TEST
+	help
+	  Built-in API shim for the GE2D 2D engine, allowing built-in
+	  drivers (e.g. DRM writeback) to use GE2D when the V4L2 GE2D
+	  driver is loaded as a module.
+
 endmenu

@@ -89,4 +89,36 @@ config MTK_SOCINFO
 	  information about the SoC to the userspace including the
 	  manufacturer name, marketing name and soc name.
 
+config MTK_MT8183_IPU_PROBE
+	tristate "MediaTek MT8183 IPU/VP6 reachability probe"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MFD_SYSCON && PM_GENERIC_DOMAINS
+	help
+	  Minimal experimental probe for the MT8183 (Helio P60) IPU / VP6
+	  DSP block. Powers on the VPU_TOP/CORE0 power domains and reads a
+	  few ipu_conn / ipu_core0 syscon registers to prove the VP6 block
+	  is reachable from mainline Linux. It is NOT a functional VPU
+	  driver -- there is no MT8183 VP6 firmware and no open toolchain.
+	  Say M here only for hardware bring-up investigation.
+
+config MTK_MT8183_VP6
+	tristate "MediaTek MT8183/MT8365 VP6 (IPU/APU / Cadence Vision-P6) driver"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MFD_SYSCON && PM_GENERIC_DOMAINS
+	depends on HAS_DMA
+	help
+	  Driver for the MediaTek Cadence Vision-P6 (VP6) DSP: the MT8183 (Helio
+	  P60 / Genio 500) dual cores (ipu_core0/ipu_core1) and the MT8365 (Genio
+	  350) single core (apu_core, no ipu_conn fabric). Selected per-SoC via
+	  of_match match data. Powers each core, stages a VP6 firmware image into
+	  DDR, releases it from reset, and exposes a per-core /dev/vp6-N character
+	  device with firmware-load, reset/halt, host<->core mailbox, and
+	  shared-buffer (mmap) ioctls (uapi <linux/mtk-vp6.h>).
+
+	  On mt8183 execution is firmware-gated (no image exists). The mt8365 VP6
+	  has a vendor OpenAMP/remoteproc prebuilt (rproc-vp6-fw / xann_0, Cadence
+	  config MVPU6_0226) consumable via the rproc load path. The
+	  power/clock/register/reset/mailbox-doorbell/buffer paths are usable for
+	  bring-up without firmware. Say M for VP6 bring-up.
+
 endmenu

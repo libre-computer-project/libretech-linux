@@ -649,14 +649,16 @@
 			     <GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 89 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 91 IRQ_TYPE_LEVEL_HIGH>,
-			     <GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>;
+			     <GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>;
 		interrupt-names = "gp",
 				  "gpmmu",
 				  "pp",
 				  "pp0",
 				  "ppmmu0",
 				  "pp1",
-				  "ppmmu1";
+				  "ppmmu1",
+				  "pmu";
 		clocks = <&cru ACLK_GPU>, <&cru ACLK_GPU>;
 		clock-names = "bus", "core";
 		operating-points-v2 = <&gpu_opp_table>;

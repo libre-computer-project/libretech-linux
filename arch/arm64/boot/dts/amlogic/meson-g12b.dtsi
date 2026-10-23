@@ -81,13 +81,13 @@
 			reg = <0x0 0x100>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1024>;
-			d-cache-line-size = <32>;
-			d-cache-size = <0x8000>;
-			d-cache-sets = <32>;
-			i-cache-line-size = <32>;
-			i-cache-size = <0x8000>;
-			i-cache-sets = <32>;
-			next-level-cache = <&l2_cache_l>;
+			d-cache-line-size = <64>;
+			d-cache-size = <0x10000>;
+			d-cache-sets = <64>;
+			i-cache-line-size = <64>;
+			i-cache-size = <0x10000>;
+			i-cache-sets = <64>;
+			next-level-cache = <&l2_cache_b>;
 			#cooling-cells = <2>;
 		};
 
@@ -97,13 +97,13 @@
 			reg = <0x0 0x101>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1024>;
-			d-cache-line-size = <32>;
-			d-cache-size = <0x8000>;
-			d-cache-sets = <32>;
-			i-cache-line-size = <32>;
-			i-cache-size = <0x8000>;
-			i-cache-sets = <32>;
-			next-level-cache = <&l2_cache_l>;
+			d-cache-line-size = <64>;
+			d-cache-size = <0x10000>;
+			d-cache-sets = <64>;
+			i-cache-line-size = <64>;
+			i-cache-size = <0x10000>;
+			i-cache-sets = <64>;
+			next-level-cache = <&l2_cache_b>;
 			#cooling-cells = <2>;
 		};
 
@@ -157,6 +157,7 @@
 			cache-sets = <512>;
 		};
 	};
+
 };
 
 &clkc {
@@ -194,6 +195,84 @@
 	compatible = "amlogic,g12b-ddr-pmu";
 };
 
+&dmc {
+	/*
+	 * The DMC's per-port channel-control window (DMC_AM0_CHAN_CTRL at word
+	 * 0x60 through DMC_AXI11_HOLD_CTRL at 0xad). Disabled here: a board
+	 * that raises a port's arbitration priority enables it and lists the
+	 * ports; every other board keeps the firmware default of 0 everywhere.
+	 */
+	dmc_qos: qos@180 {
+		compatible = "amlogic,g12b-dmc-port-priority";
+		reg = <0x0 0x180 0x0 0x140>;
+		status = "disabled";
+	};
+};
+
 &npu {
+	status = "okay";
 	power-domains = <&pwrc PWRC_G12A_NNA_ID>;
+	interrupts = <GIC_SPI 147 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&apb {
+	csi_dphy: phy@50000 {
+		compatible = "amlogic,g12a-mipi-csi-dphy";
+		reg = <0x0 0x50000 0x0 0x2000>;
+		clocks = <&clkc CLKID_MIPI_ISP_CSI_PHY0>,
+			 <&clkc CLKID_MIPI_CSI_PHY_CLK0>;
+		clock-names = "pclk", "phy";
+		phys = <&csi_analog_dphy>;
+		phy-names = "analog";
+		#phy-cells = <0>;
+		status = "disabled";
+	};
+
+	csi: csi@54000 {
+		compatible = "amlogic,g12a-csi2";
+		reg = <0x0 0x54000 0x0 0x100>;
+		interrupts = <GIC_SPI 72 IRQ_TYPE_LEVEL_HIGH>;
+		phys = <&csi_dphy>;
+		phy-names = "dphy";
+		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				/* Sensor endpoint connected in board .dts */
+			};
+		};
+	};
+};
+
+/ {
+	soc {
+		wave420l: hevc-encoder@ff610000 {
+			compatible = "amlogic,meson-g12b-wave420l";
+			reg = <0x0 0xff610000 0x0 0x4000>;
+			interrupts = <GIC_SPI 187 IRQ_TYPE_EDGE_RISING>;
+			clocks = <&clkc CLKID_DOS>,
+				 <&clkc CLKID_WAVE420L_A>,
+				 <&clkc CLKID_WAVE420L_B>,
+				 <&clkc CLKID_WAVE420L_C>;
+			clock-names = "dos", "wave420_aclk", "wave420_bclk", "wave420_cclk";
+			assigned-clocks = <&clkc CLKID_WAVE420L_A_SEL>,
+					  <&clkc CLKID_WAVE420L_B_SEL>,
+					  <&clkc CLKID_WAVE420L_C_SEL>,
+					  <&clkc CLKID_WAVE420L_A>,
+					  <&clkc CLKID_WAVE420L_B>,
+					  <&clkc CLKID_WAVE420L_C>;
+			assigned-clock-parents = <&clkc CLKID_FCLK_DIV3>,
+						 <&clkc CLKID_FCLK_DIV3>,
+						 <&clkc CLKID_FCLK_DIV3>;
+			assigned-clock-rates = <0>, <0>, <0>,
+					       <666666667>, <666666667>, <666666667>;
+			amlogic,hhi-sysctrl = <&hhi>;
+			amlogic,ao-sysctrl = <&rti>;
+			status = "disabled";
+		};
+	};
 };

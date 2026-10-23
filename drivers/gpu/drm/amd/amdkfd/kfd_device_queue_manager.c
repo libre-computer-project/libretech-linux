@@ -22,6 +22,7 @@
  *
  */
 
+#include <linux/module.h>
 #include <linux/ratelimit.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
@@ -31,6 +32,8 @@
 #include <linux/sched.h>
 #include "kfd_priv.h"
 #include "kfd_device_queue_manager.h"
+#include "amdgpu_gfx.h"
+#include "amdgpu_mes.h"
 #include "kfd_mqd_manager.h"
 #include "cik_regs.h"
 #include "kfd_kernel_queue.h"
@@ -71,6 +74,10 @@ static int allocate_sdma_queue(struct device_queue_manager *dqm,
 				struct queue *q, const uint32_t *restore_sdma_id);
 
 static int reset_queues_on_hws_hang(struct device_queue_manager *dqm, bool is_sdma);
+static void set_queue_as_reset(struct device_queue_manager *dqm, struct queue *q,
+				       struct qcm_process_device *qpd);
+static int remove_queue_mes(struct device_queue_manager *dqm, struct queue *q,
+				  struct qcm_process_device *qpd);
 
 static inline
 enum KFD_MQD_TYPE get_mqd_type_from_queue_type(enum kfd_queue_type type)
@@ -155,11 +162,55 @@ void program_sh_mem_settings(struct device_queue_manager *dqm,
 			qpd->sh_mem_bases, xcc_id);
 }
 
+static int reset_queue_mes(struct device_queue_manager *dqm, struct queue *q,
+			   int queue_type, int pipe, int queue, unsigned int db);
+
 static void kfd_hws_hang(struct device_queue_manager *dqm)
 {
 	struct device_process_node *cur;
 	struct qcm_process_device *qpd;
 	struct queue *q;
+	struct amdgpu_device *adev = dqm->dev->adev;
+
+	/* mes-reset-port: try per-queue before contain */
+	if (dqm->dev->kfd->shared_resources.enable_mes && !dqm->is_resetting) {
+		unsigned int num_hung = 0;
+		int rr;
+
+		if (!amdgpu_mes_queue_reset_by_mes_supported(adev)) {
+			dev_err(adev->dev,
+				"MES hang: per-queue reset not supported (gc_ip=0x%x mes=0x%x)\n",
+				amdgpu_ip_version(adev, GC_HWIP, 0),
+				adev->mes.sched_version & AMDGPU_MES_VERSION_MASK);
+		} else {
+			dqm->is_resetting = true;
+			rr = amdgpu_gfx_reset_mes_compute(adev, NULL, NULL,
+							  NULL, &num_hung);
+			dqm->is_resetting = false;
+			if (!rr) {
+				dev_err(adev->dev,
+					"MES hang: per-queue reset recovered (%u hung)\n",
+					num_hung);
+				if (num_hung)
+					kfd_signal_reset_event(dqm->dev);
+				return;
+			}
+			/*
+			 * No MMIO fallback here. An MMIO HQD reset does not need
+			 * the MES, but it needs the HQD slot, and on an
+			 * MES-scheduled device KFD never learns it: q->pipe and
+			 * q->queue stay 0, which addresses MEC1 pipe 0 queue 0 --
+			 * the kernel's first KCQ. On gfx1201 (R9700) the fallback
+			 * that used to sit here reset exactly that ring and then
+			 * logged "MMIO-reset recovered 1/1 KFD compute queues"
+			 * while the hung user queue was never touched. The
+			 * containment below is the honest outcome.
+			 */
+			dev_err(adev->dev,
+				"MES hang: per-queue reset failed (%d); containing\n",
+				rr);
+		}
+	}
 
 	/* Mark all device queues as reset. */
 	list_for_each_entry(cur, &dqm->queues, list) {
@@ -169,6 +220,91 @@ static void kfd_hws_hang(struct device_queue_manager *dqm)
 
 			pdd->has_reset_queue = true;
 		}
+	}
+
+	/*
+	 * On MES-scheduled devices this path is reached when an MES queue op
+	 * (add/remove/suspend/resume) failed -- typically because a userspace
+	 * VM-fault storm wedged the MES scheduler. Escalating to a full-device
+	 * GPU reset here has been observed to deadlock the host on resume
+	 * (gfx1201/R9700: MODE1 reset "succeeds" but the KFD quiesce fails and
+	 * the driver hangs re-initialising MES), taking the whole box down.
+	 *
+	 * A userspace GPU fault must never take the host down. Contain the
+	 * failure to the KFD layer instead: every queue was marked reset above,
+	 * so signal the reset event to tear down the affected process(es) and
+	 * return with the host still up. Set amdgpu_mes_hang_full_reset=1 to
+	 * restore the legacy full-device reset.
+	 *
+	 * The "deferred recovery = amdgpu module reload" this comment used to
+	 * recommend is WRONG and was measured host-fatal three times on aitop
+	 * (Navi48 R9700, 0000:c3:00.0, 2026-08-07): `rmmod amdgpu && modprobe
+	 * amdgpu` against a contained device unloads cleanly, then hangs the
+	 * WHOLE HOST during re-probe -- kernel printk stops mid
+	 * amdgpu_device_ip_init (last line "[VCN instance 0] Found VCN firmware
+	 * Version"), userspace survives ~24 s, then the box is gone with no
+	 * panic, no OOM, no MCE and an empty pstore. Each crash cost a power
+	 * cycle. That is the same PCIe-wedge family this ASIC already carries
+	 * quirks for (74097874ae00b, 5f37ec3add55c) -- and it means containment
+	 * as shipped only DEFERRED the host-down it was written to prevent: the
+	 * host dies later, at the recovery, instead of at the hang.
+	 *
+	 * So take a reference on this module while the device is contained. The
+	 * reload is not merely ineffective here, it is the thing that kills the
+	 * host, and a kernel must not leave userspace a one-command path to that
+	 * outcome. rmmod then fails with EBUSY ("Module amdgpu is in use") and
+	 * the host stays up. Recovery for this class is a reboot; the reference
+	 * is released when the DQM is destroyed, so a device that is torn down
+	 * without ever contending a hang is unaffected.
+	 */
+	if (dqm->dev->kfd->shared_resources.enable_mes &&
+	    !amdgpu_mes_hang_full_reset) {
+		dev_err(dqm->dev->adev->dev,
+			"MES scheduler hang: containing to faulting process(es), skipping full-device reset to keep host up (set amdgpu.mes_hang_full_reset=1 for legacy reset)\n");
+		/*
+		 * Halt the KFD scheduler so the containment is sticky. The MES
+		 * is wedged, so every subsequent queue op on this device would
+		 * otherwise re-poll a dead scheduler and time out again: the
+		 * faulting process's own teardown (destroy_queue -> remove_queue_mes)
+		 * and any new submission (add_queue_mes) would each block for a
+		 * full MES poll timeout and re-enter kfd_hws_hang, turning a
+		 * single hang into a cascade of multi-second stalls that reads
+		 * as a hung host (and can provoke a power-cycle -- reintroducing
+		 * the very host-down we are containing). With sched_halt set,
+		 * add_queue_mes()/remove_queue_mes()/map_queues_cpsch() short-
+		 * circuit (return 0) so KFD structures are torn down cleanly
+		 * without touching the dead MES.
+		 *
+		 * That short-circuit is protective only while the MES is
+		 * actually dead. Once the device has been reset successfully it
+		 * becomes a silent black hole -- queue creation returns success
+		 * and never programs a ring -- so the flag has to come back off
+		 * on the way out of a reset. kgd2kfd_post_reset() calls
+		 * kfd_dqm_rearm_contained_mes(), which clears it and drops the
+		 * module pin below, gated on amdgpu.mes_hang_rearm=1. With the
+		 * default (0) nothing clears it on this DQM instance and
+		 * recovery is a reboot, as before.
+		 */
+		/*
+		 * Pin the module for as long as this device stays contained.
+		 * Guarded on sched_halt so a re-entry (a second queue op failing
+		 * before the halt takes effect elsewhere) cannot leak a second
+		 * reference; the matching module_put() is in the DQM uninit.
+		 */
+		if (!dqm->sched_halt && !dqm->mes_hang_module_ref) {
+			if (try_module_get(THIS_MODULE)) {
+				dqm->mes_hang_module_ref = true;
+				dev_err(dqm->dev->adev->dev,
+					"MES hang contained: pinning amdgpu (reload is host-fatal on this class); recover with a reboot, or with amdgpu.mes_hang_rearm=1 + a device reset\n");
+			} else {
+				/* Module already going away -- nothing to pin. */
+				dev_warn(dqm->dev->adev->dev,
+					 "MES hang contained during module teardown; not pinning\n");
+			}
+		}
+		dqm->sched_halt = true;
+		kfd_signal_reset_event(dqm->dev);
+		return;
 	}
 
 	/*
@@ -293,8 +429,11 @@ static int remove_queue_mes(struct device_queue_manager *dqm, struct queue *q,
 	if (r) {
 		dev_err(adev->dev, "failed to remove hardware queue from MES, doorbell=0x%x\n",
 			q->properties.doorbell_off);
-		dev_err(adev->dev, "MES might be in unrecoverable state, issue a GPU reset\n");
-		kfd_hws_hang(dqm);
+		/* mes-reset-port: skip hang while resetting */
+		if (!dqm->is_resetting) {
+			dev_err(adev->dev, "MES might be in unrecoverable state, issue a GPU reset\n");
+			kfd_hws_hang(dqm);
+		}
 	}
 
 	return r;
@@ -354,6 +493,122 @@ static int add_all_kfd_queues_mes(struct device_queue_manager *dqm)
 	return retval;
 }
 
+
+static struct queue *find_queue_by_doorbell_offset(struct device_queue_manager *dqm,
+						  unsigned int db)
+{
+	struct device_process_node *cur;
+	struct qcm_process_device *qpd;
+	struct queue *q;
+
+	list_for_each_entry(cur, &dqm->queues, list) {
+		qpd = cur->qpd;
+		list_for_each_entry(q, &qpd->queues_list, list) {
+			if (q->properties.doorbell_off == db)
+				return q;
+		}
+	}
+	return NULL;
+}
+
+/*
+ * Per-queue MES reset for a KFD-owned queue (series 0034/0035).
+ * is_resetting guards remove_queue_mes against re-entering kfd_hws_hang.
+ */
+static int reset_queue_mes(struct device_queue_manager *dqm, struct queue *q,
+			   int queue_type, int pipe, int queue, unsigned int db)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)dqm->dev->adev;
+	struct kfd_process_device *pdd;
+	bool use_mmio = adev->gfx.mec.use_mmio_for_reset;
+	bool was_resetting = dqm->is_resetting;
+	int r;
+
+	pdd = kfd_get_process_device_data(q->device, q->process);
+	if (!pdd)
+		return -ENODEV;
+
+	/*
+	 * The queue's type is KFD's own fact; the caller's comes from firmware
+	 * HQD info, which gfx1201 has returned zeroed (decoding as GFX). A KFD
+	 * compute queue is only ever reset as a compute queue.
+	 */
+	if (q->properties.type == KFD_QUEUE_TYPE_COMPUTE &&
+	    queue_type != AMDGPU_RING_TYPE_COMPUTE) {
+		dev_warn_ratelimited(adev->dev,
+				     "MES hang: doorbell 0x%x is a KFD compute queue but was reported as type %d; using compute\n",
+				     db, queue_type);
+		queue_type = AMDGPU_RING_TYPE_COMPUTE;
+	}
+
+	/*
+	 * An MMIO reset addresses an HQD slot, so it needs the slot. Under MES
+	 * KFD never learns it (q->pipe/q->queue stay 0), and a guessed slot is
+	 * MEC1 pipe 0 queue 0 -- the kernel's first KCQ. Refuse rather than
+	 * dequeue a kernel ring and report the user queue as recovered.
+	 */
+	if (use_mmio &&
+	    ((unsigned int)pipe == AMDGPU_GFX_HQD_UNKNOWN ||
+	     (unsigned int)queue == AMDGPU_GFX_HQD_UNKNOWN ||
+	     amdgpu_gfx_hqd_owned_by_kernel(adev, queue_type, 1, pipe, queue))) {
+		dev_warn_ratelimited(adev->dev,
+				     "MES hang: refusing MMIO reset of KFD doorbell 0x%x at %d:%d (unknown or kernel-owned HQD)\n",
+				     db, pipe, queue);
+		return -ENODATA;
+	}
+
+	pr_warn("MES hang: resetting KFD queue doorbell 0x%x pipe %d queue %d type %d (mmio=%d)\n",
+		db, pipe, queue, queue_type, use_mmio);
+
+	if (use_mmio)
+		r = amdgpu_mes_reset_queue_mmio(adev, queue_type, 0, 1, pipe, queue, 0);
+	else
+		r = amdgpu_mes_reset_user_queue(adev, queue_type, db, 0);
+	if (r)
+		return r;
+
+	dqm->is_resetting = true;
+	remove_queue_mes(dqm, q, &pdd->qpd);
+	dqm->is_resetting = was_resetting;
+	set_queue_as_reset(dqm, q, &pdd->qpd);
+	return 0;
+}
+
+int kfd_reset_queue_mes(struct device_queue_manager *dqm, int queue_type,
+		       int pipe, int queue, unsigned int db)
+{
+	struct queue *q;
+
+	q = find_queue_by_doorbell_offset(dqm, db);
+	if (!q)
+		return 0; /* not owned by KFD */
+	return reset_queue_mes(dqm, q, queue_type, pipe, queue, db);
+}
+
+/*
+ * KFD entry into the common multi-queue MES compute reset coordinator
+ * (series 0026/0038).
+ */
+static int reset_queues_mes(struct device_queue_manager *dqm)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)dqm->dev->adev;
+	unsigned int num_hung = 0;
+	int r;
+
+	if (!amdgpu_mes_queue_reset_by_mes_supported(adev))
+		return -ENOTRECOVERABLE;
+
+	r = amdgpu_gfx_reset_mes_compute(adev, NULL, NULL, NULL, &num_hung);
+	if (r)
+		return r;
+
+	dqm->detect_hang_count = num_hung;
+	if (num_hung)
+		kfd_signal_reset_event(dqm->dev);
+
+	return 0;
+}
+
 static int suspend_all_queues_mes(struct device_queue_manager *dqm)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)dqm->dev->adev;
@@ -362,15 +617,34 @@ static int suspend_all_queues_mes(struct device_queue_manager *dqm)
 	if (!down_read_trylock(&adev->reset_domain->sem))
 		return -EIO;
 
-	r = amdgpu_mes_suspend(adev);
-	up_read(&adev->reset_domain->sem);
+	/*
+	 * Series 0026/0038: coordinate KFD+KGD MES compute reset through
+	 * amdgpu_gfx_reset_mes_compute (detect-only → per-queue → resume).
+	 */
+	if (amdgpu_mes_queue_reset_by_mes_supported(adev)) {
+		if (!reset_queues_mes(dqm)) {
+			r = 0;
+			goto out_unlock;
+		}
+		dev_err(adev->dev, "MES per-queue reset failed after suspend hang\n");
+		dev_err(adev->dev, "MES might be in unrecoverable state, issue a GPU reset\n");
+		/* already attempted per-queue; skip re-try inside kfd_hws_hang */
+		dqm->is_resetting = true;
+		kfd_hws_hang(dqm);
+		dqm->is_resetting = false;
+		r = -ENOTRECOVERABLE;
+		goto out_unlock;
+	}
 
+	r = amdgpu_mes_suspend(adev);
 	if (r) {
 		dev_err(adev->dev, "failed to suspend gangs from MES\n");
 		dev_err(adev->dev, "MES might be in unrecoverable state, issue a GPU reset\n");
 		kfd_hws_hang(dqm);
 	}
 
+out_unlock:
+	up_read(&adev->reset_domain->sem);
 	return r;
 }
 
@@ -459,12 +733,32 @@ static int allocate_doorbell(struct qcm_process_device *qpd,
 		 * we need the physical sdma engine id in order to get the
 		 * correct doorbell offset.
 		 */
-		uint32_t valid_id = idx_offset[qpd->dqm->dev->node_id *
-					       get_num_all_sdma_engines(qpd->dqm) +
-					       q->properties.sdma_engine_id]
-						+ (q->properties.sdma_queue_id & 1)
-						* KFD_QUEUE_DOORBELL_MIRROR_OFFSET
-						+ (q->properties.sdma_queue_id >> 1);
+		u32 engine_base = idx_offset[dev->node_id *
+					     get_num_all_sdma_engines(qpd->dqm) +
+					     q->properties.sdma_engine_id];
+		u32 valid_id;
+
+		/*
+		 * With the aqua_vanjaram doorbell layout, a shader doorbell
+		 * write whose 32-byte block starts in the previous engine's
+		 * range rings that engine instead. Engine ranges are 10
+		 * indices apart (sdma_doorbell_range = 20 dwords, halved for
+		 * 8-byte doorbells, in aqua_vanjaram_doorbell_index_init()),
+		 * which puts odd engines 2 indices into a shared block.
+		 * Aligning costs at most 2 indices, and 8 queues per engine use
+		 * only 4 of the 10, so the aligned base stays in range. The
+		 * 512-index mirror offset keeps the alignment.
+		 */
+		if (KFD_GC_VERSION(dev) == IP_VERSION(9, 4, 3) ||
+		    KFD_GC_VERSION(dev) == IP_VERSION(9, 4, 4) ||
+		    KFD_GC_VERSION(dev) == IP_VERSION(9, 5, 0))
+			engine_base = ALIGN(engine_base,
+					    KFD_SDMA_SHADER_DOORBELL_GRANULARITY);
+
+		valid_id = engine_base +
+			   (q->properties.sdma_queue_id & 1) *
+			   KFD_QUEUE_DOORBELL_MIRROR_OFFSET +
+			   (q->properties.sdma_queue_id >> 1);
 
 		if (restore_id && *restore_id != valid_id)
 			return -EINVAL;
@@ -472,6 +766,9 @@ static int allocate_doorbell(struct qcm_process_device *qpd,
 	} else {
 		/* For CP queues on SOC15 */
 		if (restore_id) {
+			if (*restore_id >= KFD_MAX_NUM_OF_QUEUES_PER_PROCESS)
+				return -EINVAL;
+
 			/* make sure that ID is free  */
 			if (__test_and_set_bit(*restore_id, qpd->doorbell_bitmap))
 				return -EINVAL;
@@ -569,7 +866,7 @@ static int allocate_vmid(struct device_queue_manager *dqm,
 			qpd->vmid,
 			qpd->page_table_base);
 	/* invalidate the VM context after pasid and vmid mapping is set up */
-	kfd_flush_tlb(qpd_to_pdd(qpd), TLB_FLUSH_LEGACY);
+	kfd_flush_tlb(qpd_to_pdd(qpd));
 
 	if (dqm->dev->kfd2kgd->set_scratch_backing_va)
 		dqm->dev->kfd2kgd->set_scratch_backing_va(dqm->dev->adev,
@@ -607,7 +904,7 @@ static void deallocate_vmid(struct device_queue_manager *dqm,
 		if (flush_texture_cache_nocpsch(q->device, qpd))
 			dev_err(dev, "Failed to flush TC\n");
 
-	kfd_flush_tlb(qpd_to_pdd(qpd), TLB_FLUSH_LEGACY);
+	kfd_flush_tlb(qpd_to_pdd(qpd));
 
 	/* Release the vmid mapping */
 	set_pasid_vmid_mapping(dqm, 0, qpd->vmid);
@@ -653,6 +950,11 @@ static int create_queue_nocpsch(struct device_queue_manager *dqm,
 
 	mqd_mgr = dqm->mqd_mgrs[get_mqd_type_from_queue_type(
 			q->properties.type)];
+	if (qd && !mqd_mgr->restore_mqd) {
+		pr_debug("restore_mqd not implemented for this GPU\n");
+		retval = -EOPNOTSUPP;
+		goto deallocate_vmid;
+	}
 	if (q->properties.type == KFD_QUEUE_TYPE_COMPUTE) {
 		retval = allocate_hqd(dqm, q);
 		if (retval)
@@ -1209,14 +1511,8 @@ static int evict_process_queues_cpsch(struct device_queue_manager *dqm,
 	pr_debug_ratelimited("Evicting process pid %d queues\n",
 			    pdd->process->lead_thread->pid);
 
-	if (dqm->dev->kfd->shared_resources.enable_mes) {
+	if (dqm->dev->kfd->shared_resources.enable_mes)
 		pdd->last_evict_timestamp = get_jiffies_64();
-		retval = suspend_all_queues_mes(dqm);
-		if (retval) {
-			dev_err(dev, "Suspending all queues failed");
-			goto out;
-		}
-	}
 
 	/* Mark all queues as evicted. Deactivate all active queues on
 	 * the qpd.
@@ -1239,6 +1535,14 @@ static int evict_process_queues_cpsch(struct device_queue_manager *dqm,
 		}
 	}
 
+	/*
+	 * Heavy-weight TLB flush after MES removes queues to ensure
+	 * in-flight memory accesses complete before memory is freed/migrated.
+	 * HWS does this automatically, MES does not.
+	 */
+	if (dqm->dev->kfd->shared_resources.enable_mes)
+		kfd_flush_tlb(pdd);
+
 	if (!dqm->dev->kfd->shared_resources.enable_mes) {
 		pdd->last_evict_timestamp = get_jiffies_64();
 		retval = execute_queues_cpsch(dqm,
@@ -1246,10 +1550,6 @@ static int evict_process_queues_cpsch(struct device_queue_manager *dqm,
 					      KFD_UNMAP_QUEUES_FILTER_ALL_QUEUES :
 					      KFD_UNMAP_QUEUES_FILTER_DYNAMIC_QUEUES, 0,
 					      USE_DEFAULT_GRACE_PERIOD);
-	} else {
-		retval = resume_all_queues_mes(dqm);
-		if (retval)
-			dev_err(dev, "Resuming all queues failed");
 	}
 
 out:
@@ -1292,7 +1592,7 @@ static int restore_process_queues_nocpsch(struct device_queue_manager *dqm,
 				dqm->dev->adev,
 				qpd->vmid,
 				qpd->page_table_base);
-		kfd_flush_tlb(pdd, TLB_FLUSH_LEGACY);
+		kfd_flush_tlb(pdd);
 	}
 
 	/* Take a safe reference to the mm_struct, which may otherwise
@@ -1596,6 +1896,9 @@ static int allocate_sdma_queue(struct device_queue_manager *dqm,
 		}
 
 		if (restore_sdma_id) {
+			if (*restore_sdma_id >= get_num_sdma_queues(dqm))
+				return -EINVAL;
+
 			/* Re-use existing sdma_id */
 			if (!test_bit(*restore_sdma_id, dqm->sdma_bitmap)) {
 				dev_err(dev, "SDMA queue already in use\n");
@@ -1622,6 +1925,9 @@ static int allocate_sdma_queue(struct device_queue_manager *dqm,
 			return -ENOMEM;
 		}
 		if (restore_sdma_id) {
+			if (*restore_sdma_id >= get_num_xgmi_sdma_queues(dqm))
+				return -EINVAL;
+
 			/* Re-use existing sdma_id */
 			if (!test_bit(*restore_sdma_id, dqm->xgmi_sdma_bitmap)) {
 				dev_err(dev, "SDMA queue already in use\n");
@@ -1826,6 +2132,84 @@ static int unhalt_cpsch(struct device_queue_manager *dqm)
 	return ret;
 }
 
+/* kfd_dqm_rearm_contained_mes
+ *
+ * Undo an MES-hang containment (see kfd_hws_hang()) after the device has been
+ * reset successfully. Called from kgd2kfd_post_reset(), i.e. at the tail of
+ * amdgpu_device_gpu_recover(), once the ASIC reset has re-initialised SMU, MES
+ * and the rings, and after kfd_resume() has restarted the DQM.
+ *
+ * The caller is responsible for establishing that a real HW reset actually
+ * happened and succeeded (kgd2kfd_post_reset()'s hw_reset_done). This function
+ * must never be called speculatively: clearing the halt while MES is still dead
+ * sends every subsequent queue op into a dead scheduler for a full poll timeout
+ * and re-enters kfd_hws_hang(), which is the host-down cascade the containment
+ * was written to prevent.
+ *
+ * Containment leaves two pieces of sticky state behind:
+ *   - dqm->sched_halt, which makes add_queue_mes()/remove_queue_mes()/
+ *     map_queues_cpsch() return 0 without touching the (then dead) MES. After a
+ *     successful reset the MES is alive again, so that short-circuit is no
+ *     longer protective -- it is a silent black hole: queue creation reports
+ *     success, no ring is ever programmed, and userspace waits forever on a
+ *     completion signal nothing will set.
+ *   - the amdgpu module reference taken to block the host-fatal reload.
+ *
+ * Gating notes:
+ *   - We key on dqm->mes_hang_module_ref, NOT on sched_halt. sched_halt is also
+ *     set by halt_cpsch() for the debugger/CRIU suspend path, which owns its own
+ *     unhalt_cpsch(); clearing it from here would silently un-suspend a debugged
+ *     process across an unrelated device reset. mes_hang_module_ref is set only
+ *     by the containment path, so it identifies the halt we are allowed to undo.
+ *   - Opt-in via amdgpu.mes_hang_rearm=1. Every reset of this device reaches
+ *     post_reset, including a ring-timeout auto-recovery that may fire while the
+ *     original fault storm is still running -- precisely the reset-during-fault
+ *     case containment declined. Re-arming there is unmeasured, and it also
+ *     drops the module pin, re-opening the reload that killed the host three
+ *     times. So the operator arms this deliberately for a deliberate reset.
+ *
+ * We deliberately do NOT call unhalt_cpsch(). Its MES branch is
+ * add_all_kfd_queues_mes(), which would re-add the queues of processes that
+ * were evicted by kgd2kfd_pre_reset() and, per kgd2kfd_post_reset()'s own
+ * comment, are kept evicted until they terminate; a failure there re-enters
+ * kfd_hws_hang() from inside the reset path. Nothing needs re-mapping: the
+ * contained processes were torn down by kfd_signal_reset_event() and the queues
+ * that matter belong to processes not created yet. Clearing the flag is what
+ * restores dispatch; start_cpsch() has already re-armed everything else.
+ */
+void kfd_dqm_rearm_contained_mes(struct device_queue_manager *dqm)
+{
+	if (!dqm || !amdgpu_mes_hang_rearm)
+		return;
+
+	dqm_lock(dqm);
+	if (!dqm->mes_hang_module_ref) {
+		dqm_unlock(dqm);
+		return;
+	}
+	/*
+	 * Consume the containment state under the DQM lock so a concurrent
+	 * kfd_hws_hang() re-contain either happens entirely before us (and we
+	 * undo it) or entirely after us (and it takes a fresh reference).
+	 * Clearing mes_hang_module_ref here is what keeps
+	 * device_queue_manager_uninit() from double-putting the module: it
+	 * reads the same flag to decide whether to call module_put().
+	 */
+	dqm->mes_hang_module_ref = false;
+	dqm->sched_halt = false;
+	dqm_unlock(dqm);
+
+	dev_info(dqm->dev->adev->dev,
+		 "MES hang containment cleared after device reset: KFD dispatch re-armed, amdgpu unpinned (amdgpu.mes_hang_rearm=1)\n");
+
+	/*
+	 * Last, and not under dqm_lock (which runs in memalloc_noreclaim
+	 * context): this may be the reference that lets the module go away, so
+	 * nothing in it may run afterwards.
+	 */
+	module_put(THIS_MODULE);
+}
+
 static int start_cpsch(struct device_queue_manager *dqm)
 {
 	struct device *dev = dqm->dev->adev->dev;
@@ -2004,6 +2388,11 @@ static int create_queue_cpsch(struct device_queue_manager *dqm, struct queue *q,
 
 	mqd_mgr = dqm->mqd_mgrs[get_mqd_type_from_queue_type(
 			q->properties.type)];
+	if (qd && !mqd_mgr->restore_mqd) {
+		pr_debug("restore_mqd not implemented for this GPU\n");
+		retval = -EOPNOTSUPP;
+		goto out_deallocate_doorbell;
+	}
 
 	if (q->properties.type == KFD_QUEUE_TYPE_SDMA ||
 		q->properties.type == KFD_QUEUE_TYPE_SDMA_XGMI)
@@ -2091,7 +2480,8 @@ int amdkfd_fence_wait_timeout(struct device_queue_manager *dqm,
 
 	while (*fence_addr != fence_value) {
 		/* Fatal err detected, this response won't come */
-		if (amdgpu_amdkfd_is_fed(dqm->dev->adev))
+		if (amdgpu_amdkfd_is_fed(dqm->dev->adev) ||
+				amdgpu_in_reset(dqm->dev->adev))
 			return -EIO;
 
 		if (time_after(jiffies, end_jiffies)) {
@@ -2500,6 +2890,9 @@ static int wait_on_destroy_queue(struct device_queue_manager *dqm,
 	if (pdd->qpd.is_debug)
 		return ret;
 
+	if (q->properties.is_being_destroyed)
+		return -EBUSY;
+
 	q->properties.is_being_destroyed = true;
 
 	if (pdd->process->debug_trap_enabled && q->properties.is_suspended) {
@@ -2511,6 +2904,9 @@ static int wait_on_destroy_queue(struct device_queue_manager *dqm,
 		mutex_lock(&q->process->mutex);
 		dqm_lock(dqm);
 	}
+
+	if (ret)
+		q->properties.is_being_destroyed = false;
 
 	return ret;
 }
@@ -2605,7 +3001,7 @@ static int destroy_queue_cpsch(struct device_queue_manager *dqm,
 	return retval;
 
 failed_try_destroy_debugged_queue:
-
+	q->properties.is_being_destroyed = false;
 	dqm_unlock(dqm);
 	return retval;
 }
@@ -2915,6 +3311,14 @@ static int allocate_hiq_sdma_mqd(struct device_queue_manager *dqm)
 	return retval;
 }
 
+static void deallocate_hiq_sdma_mqd(struct kfd_node *dev,
+				    struct kfd_mem_obj *mqd)
+{
+	WARN(!mqd, "No hiq sdma mqd trunk to free");
+
+	amdgpu_amdkfd_free_gtt_mem(dev->adev, &mqd->gtt_mem);
+}
+
 struct device_queue_manager *device_queue_manager_init(struct kfd_node *dev)
 {
 	struct device_queue_manager *dqm;
@@ -3038,26 +3442,40 @@ struct device_queue_manager *device_queue_manager_init(struct kfd_node *dev)
 		return dqm;
 	}
 
+	if (!dev->kfd->shared_resources.enable_mes)
+		deallocate_hiq_sdma_mqd(dev, &dqm->hiq_sdma_mqd);
+
 out_free:
 	kfree(dqm);
 	return NULL;
 }
 
-static void deallocate_hiq_sdma_mqd(struct kfd_node *dev,
-				    struct kfd_mem_obj *mqd)
-{
-	WARN(!mqd, "No hiq sdma mqd trunk to free");
-
-	amdgpu_amdkfd_free_gtt_mem(dev->adev, &mqd->gtt_mem);
-}
-
 void device_queue_manager_uninit(struct device_queue_manager *dqm)
 {
+	bool put_module;
+
+	/*
+	 * Read-and-clear under the DQM lock: kfd_dqm_rearm_contained_mes() may
+	 * be racing to release the same single reference from a device reset.
+	 * Exactly one of the two sees true.
+	 */
+	dqm_lock(dqm);
+	put_module = dqm->mes_hang_module_ref;
+	dqm->mes_hang_module_ref = false;
+	dqm_unlock(dqm);
+
 	dqm->ops.stop(dqm);
 	dqm->ops.uninitialize(dqm);
 	if (!dqm->dev->kfd->shared_resources.enable_mes)
 		deallocate_hiq_sdma_mqd(dqm->dev, &dqm->hiq_sdma_mqd);
 	kfree(dqm);
+	/*
+	 * Drop the reference kfd_hws_hang() took to block the host-fatal reload
+	 * (read out of dqm BEFORE the kfree above -- module_put() may be the last
+	 * reference, and this must not touch freed memory).
+	 */
+	if (put_module)
+		module_put(THIS_MODULE);
 }
 
 int kfd_dqm_suspend_bad_queue_mes(struct kfd_node *knode, u32 pasid, u32 doorbell_id)
@@ -3080,32 +3498,24 @@ int kfd_dqm_suspend_bad_queue_mes(struct kfd_node *knode, u32 pasid, u32 doorbel
 
 		list_for_each_entry(q, &qpd->queues_list, list) {
 			if (q->doorbell_id == doorbell_id && q->properties.is_active) {
-				ret = suspend_all_queues_mes(dqm);
-				if (ret) {
-					dev_err(dev, "Suspending all queues failed");
-					goto out;
-				}
+				/* suspend all queues will save any good queues and mark the rest as bad */
+				suspend_all_queues_mes(dqm);
 
 				q->properties.is_evicted = true;
 				q->properties.is_active = false;
 				decrement_queue_count(dqm, qpd, q);
 
+				/* this will remove the bad queue and sched a GPU reset if needed */
 				ret = remove_queue_mes(dqm, q, qpd);
-				if (ret) {
-					dev_err(dev, "Removing bad queue failed");
-					goto out;
-				}
-
-				ret = resume_all_queues_mes(dqm);
 				if (ret)
-					dev_err(dev, "Resuming all queues failed");
-
+					dev_err(dev, "Removing bad queue failed");
+				/* resume the good queues */
+				resume_all_queues_mes(dqm);
 				break;
 			}
 		}
 	}
 
-out:
 	dqm_unlock(dqm);
 	kfd_unref_process(p);
 	return ret;
@@ -3299,12 +3709,14 @@ static void copy_context_work_handler(struct work_struct *work)
 
 static uint32_t *get_queue_ids(uint32_t num_queues, uint32_t *usr_queue_id_array)
 {
-	size_t array_size = num_queues * sizeof(uint32_t);
-
 	if (!usr_queue_id_array)
-		return NULL;
+		return num_queues ? ERR_PTR(-EINVAL) : NULL;
 
-	return memdup_user(usr_queue_id_array, array_size);
+	if (num_queues > KFD_MAX_NUM_OF_QUEUES_PER_PROCESS)
+		return ERR_PTR(-EINVAL);
+
+	return memdup_user(usr_queue_id_array,
+			   array_size(num_queues, sizeof(uint32_t)));
 }
 
 int resume_queues(struct kfd_process *p,
@@ -3470,8 +3882,11 @@ int suspend_queues(struct kfd_process *p,
 		if (!per_device_suspended) {
 			dqm_unlock(dqm);
 			mutex_unlock(&p->event_mutex);
-			if (total_suspended)
+			if (total_suspended) {
 				amdgpu_amdkfd_debug_mem_fence(dqm->dev->adev);
+				/* Heavy-weight TLB flush after MES suspends queues */
+				kfd_flush_tlb(pdd);
+			}
 			continue;
 		}
 
@@ -3641,6 +4056,12 @@ out:
 	dqm_unlock(dqm);
 	return r;
 }
+
+size_t mqd_size_from_queue_type(struct device_queue_manager *dqm, enum kfd_queue_type type)
+{
+	return dqm->mqd_mgrs[get_mqd_type_from_queue_type(type)]->mqd_size;
+}
+
 #if defined(CONFIG_DEBUG_FS)
 
 static void seq_reg_dump(struct seq_file *m,
@@ -3662,6 +4083,76 @@ static void seq_reg_dump(struct seq_file *m,
 	}
 
 	seq_puts(m, "\n");
+}
+
+/*
+ * Print the DQM scheduling flags. Backs /sys/kernel/debug/kfd/sched.
+ *
+ * This exists because dqm->sched_halt has no userspace surface at all, and it
+ * is the flag that decides whether KFD dispatch works. When it is set,
+ * add_queue_mes() (:374), remove_queue_mes() (:444) and map_queues_cpsch()
+ * (:2463) return 0 without touching MES -- so on a device whose MES is alive,
+ * queue creation SUCCEEDS, no ring is ever programmed, and userspace waits
+ * forever on a completion signal nothing will set. Every other signal reads
+ * healthy in that state: the KFD topology node is present with SIMDs, /dev/kfd
+ * opens, rocminfo enumerates the agent, gpu_busy_percent reads 0, and the
+ * kernel log is silent because from its side nothing failed. Diagnosing it
+ * previously required inferring the flag from that silence.
+ *
+ * The three flags separate the cases that silence conflates:
+ *
+ *   sched_running=0                     the DQM is stopped (suspend/teardown);
+ *                                       not the containment case.
+ *   sched_running=1 sched_halt=0        normal. A hang here is not this bug.
+ *   sched_running=1 sched_halt=1
+ *     mes_hang_module_ref=1             MES-hang CONTAINMENT (kfd_hws_hang()).
+ *                                       Dispatch is halted and amdgpu is
+ *                                       pinned. This is the state that
+ *                                       kfd_dqm_rearm_contained_mes() undoes
+ *                                       and the one a reboot was previously
+ *                                       required to clear.
+ *     mes_hang_module_ref=0             halt_cpsch() -- the debugger/CRIU
+ *                                       suspend path, which owns its own
+ *                                       unhalt_cpsch(). NOT ours to clear, and
+ *                                       the reason the re-arm keys on
+ *                                       mes_hang_module_ref rather than on
+ *                                       sched_halt.
+ *
+ * Read-only by construction: no write fop, no MMIO, no MES round-trip, and
+ * NO dqm_lock. The lock is deliberately not taken -- it is held across MES
+ * queue ops, which on the wedged device this file is for can block for a full
+ * MES poll timeout, so taking it would hang the reader on exactly the card
+ * being diagnosed. Three bools read without it can only be torn across a
+ * concurrent transition, and a diagnostic that reports a state one transition
+ * stale is worth incomparably more than one that cannot be read at all.
+ */
+int dqm_debugfs_sched_state(struct seq_file *m, void *data)
+{
+	struct device_queue_manager *dqm = data;
+
+	if (!dqm) {
+		seq_puts(m, "  no DQM\n");
+		return 0;
+	}
+
+	seq_printf(m,
+		   "  sched_running=%d sched_halt=%d mes_hang_module_ref=%d mes=%d\n",
+		   dqm->sched_running ? 1 : 0,
+		   dqm->sched_halt ? 1 : 0,
+		   dqm->mes_hang_module_ref ? 1 : 0,
+		   dqm->dev->kfd->shared_resources.enable_mes ? 1 : 0);
+
+	if (dqm->sched_halt && dqm->mes_hang_module_ref)
+		seq_puts(m,
+			 "  state: MES-HANG CONTAINED -- KFD dispatch is halted and amdgpu is pinned.\n"
+			 "         Queue creation will SUCCEED and never run. Recover with a reboot,\n"
+			 "         or with amdgpu.mes_hang_rearm=1 + a device reset.\n");
+	else if (dqm->sched_halt)
+		seq_puts(m,
+			 "  state: halted by halt_cpsch() (debugger/CRIU suspend), not by MES-hang\n"
+			 "         containment. unhalt_cpsch() owns this one.\n");
+
+	return 0;
 }
 
 int dqm_debugfs_hqds(struct seq_file *m, void *data)

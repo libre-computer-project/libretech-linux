@@ -10,14 +10,153 @@
 	compatible = "amlogic,s805x", "amlogic,meson-gxl";
 };
 
-/* The S805X Package doesn't seem to handle the 744MHz OPP correctly */
-&gpu_opp_table {
-	opp-744000000 {
-		status = "disabled";
-	};
+/*
+ * S805X uses the same die as S905X. All 7 GPU OPPs (125-744 MHz) work.
+ * The 744 MHz OPP was previously disabled due to a suspected package issue,
+ * but testing (2026-03-31) confirmed all frequencies work including 666 MHz.
+ * Re-enabled with the same GP0_PLL rate as S905X.
+ *
+ * Two-entry assigned-clocks: entry 0 programs GP0_PLL to 792 MHz; entry 1
+ * asks the mali synth to land at 792 MHz. The clk-mali driver's smart
+ * parent selection (drivers/clk/meson/clk-mali.c meson_mali_set_rate)
+ * picks GP0_PLL with div=1 because that gives an exact match for the
+ * 792 MHz target, then writes the dual-path mux glitch-free. GP0_PLL is
+ * already locked at 792 MHz by entry 0 when entry 1's set_rate runs, so
+ * the mux switch points at a stable PLL.
+ *
+ * NO `assigned-clock-parents` here. OF clk-conf.c runs
+ * __set_clk_parents BEFORE __set_clk_rates; an entry that retargets the
+ * mali synth to GP0_PLL at the parents pass would fire while GP0_PLL is
+ * still at its U-Boot default rate (0 Hz on this SoC), flipping the
+ * mali mux to an unlocked PLL. The subsequent lima_pmu_init's PMU
+ * register read then traps with 0x96000210 SError.
+ *
+ * Boards still booting on the legacy U-Boot SPI-NOR DTS (which has no
+ * `assigned-clocks`/`assigned-clock-rates` on the mali node) are
+ * unaffected: that DTS lives in SPI NOR and is not touched by this
+ * change. On those boards lima's bailout still fires and pins at the
+ * highest fclk-derived rate (typically 666 MHz).
+ */
+&mali {
+	/*
+	 * Mali GPU is in the VPU power domain on GXL (shared with the
+	 * display controller). Without this binding, lima has no way to
+	 * refcount the domain -- when vpu's runtime-PM autosuspends, the
+	 * VPU domain powers off and any subsequent GPU MMIO traps with a
+	 * 0x96000210 synchronous external abort. Lima's probe additionally
+	 * holds a pm_runtime reference (see amlogic-gxl gate in
+	 * lima_pdev_probe) so the domain stays on through MMIO setup.
+	 */
+	power-domains = <&pwrc PWRC_GXBB_VPU_ID>;
+
+	assigned-clocks      = <&clkc CLKID_GP0_PLL>, <&clkc CLKID_MALI>;
+	assigned-clock-rates = <792000000>, <792000000>;
 };
 
-&mali {
-	/delete-property/ assigned-clocks;
-	/delete-property/ assigned-clock-rates;
+/*
+ * Overclock OPPs (gpu-turbo-* overlays merged in-tree).
+ *
+ * These rates (1008/1200/1392/1584 MHz) are reachable only with
+ * gp0_pll on-the-fly reprogramming -- requires CLK_SET_RATE_PARENT
+ * on gxbb_mali so clk_set_rate(mali, target) propagates up to
+ * gp0_pll.set_rate(target). Without that flag, intermediate OC OPPs
+ * round down to gp0_pll/N (highest exactly-reachable is 1584 if
+ * gp0_pll is at 1584, otherwise lower divisions of whatever rate
+ * gp0_pll is currently at).
+ *
+ * opp-microvolt = 1000000 -- the SoC's default VDDEE rail. Higher
+ * OC rates are validated stable at this voltage (S805X die-shared
+ * with S905X; 28nm GXL; all rates 125-1584 MHz tested clean at 1.0V
+ * VDDEE on production silicon).
+ */
+&gpu_opp_table {
+	/*
+	 * Drop the noise OPPs in the lower / mid table. The remaining
+	 * stock ladder is 125 / 250 / 500 / 792 MHz -- each step a
+	 * meaningfully distinct rate (each ~2x above the previous,
+	 * which is the natural binary spread of fixed-parent dividers).
+	 *
+	 *   - 285.7 MHz: fclk_div7/1 -- literal hardware divisor with no
+	 *     workload meaning; 250 MHz (fclk_div2/4) covers the same band.
+	 *   - 400 MHz:   fclk_div5/1 -- only ~25% below 500 MHz
+	 *     (fclk_div4/1); the gap is too narrow to be a useful step.
+	 *   - 744 MHz:   below 792 MHz, not achievable from any fixed
+	 *     parent (only via gp0_pll at 744 MHz, which we don't want as
+	 *     a separate boot rate). Removing avoids governor picking it
+	 *     and the inevitable clk_round_rate floor-back to 666.
+	 *
+	 * 666 MHz (fclk_div3/1) STAYS in the table -- it's the highest
+	 * fixed-divider rate, so the default kernel max_freq cap of
+	 * 666 MHz (see lima_devfreq_init) lands on a real OPP and lets
+	 * the governor reach mali on a fixed parent without PLL
+	 * reprogramming when the cap is at its default value.
+	 */
+	/delete-node/ opp-285714285;
+	/delete-node/ opp-400000000;
+	/delete-node/ opp-744000000;
+	/*
+	 * 2026-05-14: S805X die runtime-stable ceiling is 708 MHz output
+	 * (via M=59 OD=1 DCO=1416), from a per-die GP0_PLL DCO ceiling walk.
+	 * 720 MHz under load triggers SError 0x96000210 panic at
+	 * lima_l2_cache_flush. 792 MHz output via gp0_pll is therefore
+	 * NOT a safe stock OPP on this SoC -- governor under load could
+	 * pick it and brick the board. Remove it from the table so the
+	 * highest stock OPP is 666 MHz (fclk_div3/1, no PLL, no relock
+	 * cost). OC OPPs below remain reachable only via explicit
+	 * userspace sysfs writes.
+	 */
+	/delete-node/ opp-792000000;
+
+	/*
+	 * Fine gp0_pll OC rungs (684-720 MHz, M=57-60 OD=1, DCO 1368-1440,
+	 * all >=1008 lock floor) for per-die OC ceiling walk-up. Like the
+	 * 1008+ OC OPPs, these are NOT in the default governor range: the
+	 * per-SoC cap (lima_devfreq_init: amlogic,s805x -> 666 MHz) keeps the
+	 * governor at fixed-divider 666; these are reached only via an explicit
+	 * `echo <freq> > /sys/class/devfreq/d00c0000.gpu/max_freq`. The runtime-
+	 * stable ceiling is per-die (708 on an S805X board; 720 SError-panics that
+	 * die under load) -- these rungs let the canonical clk-pin + meson-clk-msr
+	 * walk-up find each die's ceiling. Validated 2026-06-04 on an S805X board:
+	 * 684/696/708/720 each gp0_pll-lock with clk-msr within 1 MHz of target.
+	 * Payoff: fragment-bound workloads scale FPS in proportion to the
+	 * GPU clock.
+	 *
+	 * 672 MHz is intentionally OMITTED: it is within clk-mali's fixed-parent
+	 * tolerance of 666 (fclk_div3), so meson_mali_determine_rate keeps the
+	 * fixed parent and the request floors to 666 (verified clk-msr=666 at a
+	 * 672 pin) -- a non-functional OPP, same class as the deleted opp-744.
+	 */
+	opp-684000000 {
+		opp-hz = /bits/ 64 <684000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-696000000 {
+		opp-hz = /bits/ 64 <696000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-708000000 {
+		opp-hz = /bits/ 64 <708000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-720000000 {
+		opp-hz = /bits/ 64 <720000000>;
+		opp-microvolt = <1000000>;
+	};
+
+	opp-1008000000 {
+		opp-hz = /bits/ 64 <1008000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-1200000000 {
+		opp-hz = /bits/ 64 <1200000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-1392000000 {
+		opp-hz = /bits/ 64 <1392000000>;
+		opp-microvolt = <1000000>;
+	};
+	opp-1584000000 {
+		opp-hz = /bits/ 64 <1584000000>;
+		opp-microvolt = <1000000>;
+	};
 };

@@ -117,6 +117,7 @@ static void __rtw_leave_lps_deep(struct rtw_dev *rtwdev)
 static int __rtw_fw_leave_lps_check_reg(struct rtw_dev *rtwdev)
 {
 	int i;
+	int try_cnt = (rtwdev->hci.type == RTW_HCI_TYPE_USB) ? LEAVE_LPS_TRY_CNT_USB : LEAVE_LPS_TRY_CNT;
 
 	/* Driver needs to wait for firmware to leave LPS state
 	 * successfully. Firmware will send null packet to inform AP,
@@ -130,7 +131,12 @@ static int __rtw_fw_leave_lps_check_reg(struct rtw_dev *rtwdev)
 	 * the flow. If REG_TCR Register is still incorrect after 100ms,
 	 * just modify it directly, and throw a warn message.
 	 */
-	for (i = 0 ; i < LEAVE_LPS_TRY_CNT; i++) {
+
+	/* USB has higher latency - add initial delay for command to reach firmware */
+	if (rtwdev->hci.type == RTW_HCI_TYPE_USB)
+		msleep(LEAVE_LPS_USB_INITIAL_DELAY);
+
+	for (i = 0 ; i < try_cnt; i++) {
 		if (rtw_read32_mask(rtwdev, REG_TCR, BIT_PWRMGT_HWDATA_EN) == 0)
 			return 0;
 		msleep(20);
@@ -141,8 +147,13 @@ static int __rtw_fw_leave_lps_check_reg(struct rtw_dev *rtwdev)
 
 static  int __rtw_fw_leave_lps_check_c2h(struct rtw_dev *rtwdev)
 {
+	unsigned long timeout = LEAVE_LPS_TIMEOUT;
+
+	if (rtwdev->hci.type == RTW_HCI_TYPE_USB)
+		timeout = LEAVE_LPS_TIMEOUT_USB;
+
 	if (wait_for_completion_timeout(&rtwdev->lps_leave_check,
-					LEAVE_LPS_TIMEOUT))
+					timeout))
 		return 0;
 	return -EBUSY;
 }

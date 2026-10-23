@@ -119,12 +119,26 @@ static const struct watchdog_info meson_gxbb_wdt_info = {
 	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING | WDIOF_MAGICCLOSE,
 };
 
+/*
+ * A watchdog the bootloader left running (WDOG_HW_RUNNING, petted by the
+ * watchdog core's worker until userspace opens it) is not watchdog_active(),
+ * but it keeps counting through system sleep while nothing pets it.  Stop and
+ * restart it across suspend exactly like an opened one, or a deep suspend
+ * longer than the time left on it resets the board.
+ */
+static bool meson_gxbb_wdt_counting(struct watchdog_device *wdt_dev)
+{
+	return watchdog_active(wdt_dev) || watchdog_hw_running(wdt_dev);
+}
+
 static int __maybe_unused meson_gxbb_wdt_resume(struct device *dev)
 {
 	struct meson_gxbb_wdt *data = dev_get_drvdata(dev);
 
-	if (watchdog_active(&data->wdt_dev))
+	if (meson_gxbb_wdt_counting(&data->wdt_dev)) {
+		meson_gxbb_wdt_ping(&data->wdt_dev);
 		meson_gxbb_wdt_start(&data->wdt_dev);
+	}
 
 	return 0;
 }
@@ -133,7 +147,7 @@ static int __maybe_unused meson_gxbb_wdt_suspend(struct device *dev)
 {
 	struct meson_gxbb_wdt *data = dev_get_drvdata(dev);
 
-	if (watchdog_active(&data->wdt_dev))
+	if (meson_gxbb_wdt_counting(&data->wdt_dev))
 		meson_gxbb_wdt_stop(&data->wdt_dev);
 
 	return 0;
@@ -151,8 +165,25 @@ static const struct wdt_params t7_params = {
 	.rst = BIT(22),
 };
 
+/*
+ * The GX SoCs carry a SECOND watchdog in the always-on domain, at 0xC8100120,
+ * which is the one the BootROM arms before it hands off. It is a distinct
+ * block from the EE/CBUS watchdog at 0xC11098D0 that "amlogic,meson-gxbb-wdt"
+ * describes, but it is register-compatible over every register this driver
+ * touches: CTRL +0x0, TCNT +0x8, RSET +0xC. Its one extra register, CNTL1 at
+ * +0x4, is not used here.
+ *
+ * .rst is BIT(21) for this block too, and that is measured rather than
+ * assumed: the ROM leaves CTRL = 0x03245dbf on an S905X, which has BIT(21)
+ * set. Reusing gxbb_params therefore reproduces the ROM's own configuration
+ * instead of redefining the reset scope underneath a running watchdog.
+ *
+ * Note for this block specifically: RSET must never be read (a read stalls
+ * both masters on GXL). This driver only ever writes it, in the ping path.
+ */
 static const struct of_device_id meson_gxbb_wdt_dt_ids[] = {
 	 { .compatible = "amlogic,meson-gxbb-wdt", .data = &gxbb_params, },
+	 { .compatible = "amlogic,meson-gxl-ao-wdt", .data = &gxbb_params, },
 	 { .compatible = "amlogic,t7-wdt", .data = &t7_params, },
 	 { /* sentinel */ },
 };
@@ -163,7 +194,8 @@ static int meson_gxbb_wdt_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct meson_gxbb_wdt *data;
 	struct wdt_params *params;
-	u32 ctrl_reg;
+	unsigned int req_timeout;
+	u32 ctrl_reg, boot_ctrl;
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -191,8 +223,27 @@ static int meson_gxbb_wdt_probe(struct platform_device *pdev)
 	watchdog_set_nowayout(&data->wdt_dev, nowayout);
 	watchdog_set_drvdata(&data->wdt_dev, data);
 
-	ctrl_reg = readl(data->reg_base + GXBB_WDT_CTRL_REG) &
-				GXBB_WDT_CTRL_EN;
+	/*
+	 * Remember what was actually asked for -- the module parameter, then
+	 * "timeout-sec", then DEFAULT_TIMEOUT, as watchdog_init_timeout()
+	 * resolved it.  The boot-enabled path below widens the timeout to the
+	 * hardware maximum while it reprograms the timebase, and .set_timeout
+	 * writes wdt_dev->timeout as a side effect, so by the time we settle
+	 * the device down that field no longer holds the request.
+	 */
+	req_timeout = data->wdt_dev.timeout;
+
+	boot_ctrl = readl(data->reg_base + GXBB_WDT_CTRL_REG);
+	ctrl_reg = boot_ctrl & GXBB_WDT_CTRL_EN;
+
+	/*
+	 * Unconditional on purpose: this line dates the probe and says what
+	 * state the bootloader left, so its ABSENCE means the probe did not
+	 * run -- not that some branch was not taken.
+	 */
+	dev_info(dev, "probe: ctrl %#010x tcnt %#010x -> %s\n",
+		 boot_ctrl, readl(data->reg_base + GXBB_WDT_TCNT_REG),
+		 ctrl_reg ? "already enabled, taking it over" : "stopped");
 
 	if (ctrl_reg) {
 		/* Watchdog is running - keep it running but extend timeout
@@ -211,7 +262,7 @@ static int meson_gxbb_wdt_probe(struct platform_device *pdev)
 			GXBB_WDT_CTRL_CLKDIV_EN;
 
 	writel(ctrl_reg, data->reg_base + GXBB_WDT_CTRL_REG);
-	meson_gxbb_wdt_set_timeout(&data->wdt_dev, data->wdt_dev.timeout);
+	meson_gxbb_wdt_set_timeout(&data->wdt_dev, req_timeout);
 
 	return devm_watchdog_register_device(dev, &data->wdt_dev);
 }

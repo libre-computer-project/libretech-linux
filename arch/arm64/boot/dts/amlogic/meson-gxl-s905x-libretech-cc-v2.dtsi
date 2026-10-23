@@ -1,0 +1,549 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2020 BayLibre, SAS.
+ * Author: Jerome Brunet <jbrunet@baylibre.com>
+ */
+
+/*
+ * AML-S905X-CC-V2 board body, shared by the two firmware layouts this board
+ * boots: meson-gxl-s905x-libretech-cc-v2.dts (vendor chain) and
+ * meson-gxl-s905x-libretech-cc-v2-libre.dts (libre chain). The firmware
+ * reservations are the leaf's, never this file's.
+ */
+
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/sound/meson-aiu.h>
+
+#include "meson-gxl-s905x.dtsi"
+
+/ {
+	compatible = "libretech,aml-s905x-cc-v2", "amlogic,s905x",
+		     "amlogic,meson-gxl";
+	model = "Libre Computer AML-S905X-CC V2";
+
+	aliases {
+		serial0 = &uart_AO;
+		ethernet0 = &ethmac;
+		spi0 = &spifc;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	emmc_pwrseq: emmc-pwrseq {
+		compatible = "mmc-pwrseq-emmc";
+		reset-gpios = <&gpio BOOT_9 GPIO_ACTIVE_LOW>;
+	};
+
+	hdmi-connector {
+		compatible = "hdmi-connector";
+		type = "a";
+
+		port {
+			hdmi_connector_in: endpoint {
+				remote-endpoint = <&hdmi_tx_tmds_out>;
+			};
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led-blue {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio GPIODV_24 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "heartbeat";
+			panic-indicator;
+		};
+
+		led-green {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_DISK_ACTIVITY;
+			gpios = <&gpio_ao GPIOAO_2 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "disk-activity";
+		};
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x80000000>;
+	};
+
+	ao_5v: regulator-ao-5v {
+		compatible = "regulator-fixed";
+		regulator-name = "AO_5V";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&dc_in>;
+		regulator-always-on;
+	};
+
+	dc_in: regulator-dc-in {
+		compatible = "regulator-fixed";
+		regulator-name = "DC_IN";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+	};
+
+	vcck: regulator-vcck {
+		compatible = "regulator-fixed";
+		regulator-name = "VCCK";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&ao_5v>;
+		regulator-always-on;
+	};
+
+	vcc_card: regulator-vcc-card {
+		compatible = "regulator-fixed";
+		regulator-name = "VCC_CARD";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vddio_ao3v3>;
+
+		gpio = <&gpio GPIOCLK_1 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	vcc5v: regulator-vcc5v {
+		compatible = "regulator-fixed";
+		regulator-name = "VCC5V";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&ao_5v>;
+
+		gpio = <&gpio GPIOH_3 GPIO_OPEN_DRAIN>;
+	};
+
+	vddio_ao3v3: regulator-vddio-ao3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "VDDIO_AO3V3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&ao_5v>;
+		regulator-always-on;
+	};
+
+	vddio_card: regulator-vddio-card {
+		compatible = "regulator-gpio";
+		regulator-name = "VDDIO_CARD";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3300000>;
+
+		gpios = <&gpio_ao GPIOAO_3 GPIO_ACTIVE_HIGH>;
+		gpios-states = <0>;
+
+		states = <3300000 0>,
+			 <1800000 1>;
+
+		regulator-settling-time-up-us = <200>;
+		regulator-settling-time-down-us = <50000>;
+	};
+
+	vddio_ao18: regulator-vddio-ao18 {
+		compatible = "regulator-fixed";
+		regulator-name = "VDDIO_AO18";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vddio_ao3v3>;
+		regulator-always-on;
+	};
+
+	vcc_1v8: regulator-vcc-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "VCC 1V8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vddio_ao3v3>;
+		regulator-always-on;
+	};
+
+	sound {
+		compatible = "amlogic,gx-sound-card";
+		model = "LIBRETECH-CC-V2";
+		clocks = <&clkc CLKID_MPLL0>,
+			 <&clkc CLKID_MPLL1>,
+			 <&clkc CLKID_MPLL2>;
+
+		assigned-clocks = <&clkc CLKID_MPLL0>,
+				  <&clkc CLKID_MPLL1>,
+				  <&clkc CLKID_MPLL2>;
+		assigned-clock-parents = <0>, <0>, <0>;
+		assigned-clock-rates = <294912000>,
+				       <270950400>,
+				       <393216000>;
+
+		dai-link-0 {
+			sound-dai = <&aiu AIU_CPU CPU_I2S_FIFO>;
+		};
+
+		dai-link-1 {
+			sound-dai = <&aiu AIU_CPU CPU_I2S_ENCODER>;
+			dai-format = "i2s";
+			mclk-fs = <256>;
+
+			codec-0 {
+				sound-dai = <&aiu AIU_HDMI CTRL_I2S>;
+			};
+		};
+
+		dai-link-2 {
+			sound-dai = <&aiu AIU_HDMI CTRL_OUT>;
+
+			codec-0 {
+				sound-dai = <&hdmi_tx>;
+			};
+		};
+	};
+};
+
+&aiu {
+	status = "okay";
+};
+
+&cec_AO {
+	status = "okay";
+	pinctrl-0 = <&ao_cec_pins>;
+	pinctrl-names = "default";
+	hdmi-phandle = <&hdmi_tx>;
+};
+
+&ethmac {
+	status = "okay";
+};
+
+&internal_phy {
+	pinctrl-0 = <&eth_link_led_pins>, <&eth_act_led_pins>;
+	pinctrl-names = "default";
+};
+
+&ir {
+	status = "okay";
+	pinctrl-0 = <&remote_input_ao_pins>;
+	pinctrl-names = "default";
+};
+
+&hdmi_tx {
+	status = "okay";
+	pinctrl-0 = <&hdmi_hpd_pins>, <&hdmi_i2c_pins>;
+	hdmi-supply = <&vcc5v>;
+	pinctrl-names = "default";
+};
+
+&hdmi_tx_tmds_port {
+	hdmi_tx_tmds_out: endpoint {
+		remote-endpoint = <&hdmi_connector_in>;
+	};
+};
+
+&saradc {
+	status = "okay";
+	vref-supply = <&vddio_ao18>;
+};
+
+/* SD card */
+&sd_emmc_b {
+	pinctrl-0 = <&sdcard_pins>;
+	pinctrl-1 = <&sdcard_clk_gate_pins>;
+	pinctrl-names = "default", "clk-gate";
+
+	bus-width = <4>;
+	cap-sd-highspeed;
+	sd-uhs-sdr50;
+	sd-uhs-ddr50;
+	sd-uhs-sdr104;
+	max-frequency = <166666667>;
+	/*
+	 * Upstream-safe ceiling is SDR104 @ 166 MHz above; our kernel's CRC
+	 * clock-ladder (reduced-clock tuning retry + SDR104 clock-step) lets it
+	 * attempt 200 MHz and step a marginal card back down within SDR104.
+	 * Downstream-only property -- upstream ignores it and keeps 166.
+	 */
+	max-frequency-tuned = <200000000>;
+	disable-wp;
+
+	cd-gpios = <&gpio CARD_6 GPIO_ACTIVE_LOW>;
+
+	vmmc-supply = <&vcc_card>;
+	vqmmc-supply = <&vddio_card>;
+
+	status = "okay";
+};
+
+/* eMMC */
+&sd_emmc_c {
+	pinctrl-0 = <&emmc_pins>;
+	pinctrl-1 = <&emmc_clk_gate_pins>;
+	pinctrl-names = "default", "clk-gate";
+
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	mmc-hs200-1_8v;
+	max-frequency = <200000000>;
+	disable-wp;
+
+	mmc-pwrseq = <&emmc_pwrseq>;
+	vmmc-supply = <&vddio_ao3v3>;
+	vqmmc-supply = <&vcc_1v8>;
+
+	status = "okay";
+};
+
+&spifc {
+	status = "okay";
+	pinctrl-0 = <&nor_pins>;
+	pinctrl-names = "default";
+
+	nor_4u1: flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <83333333>;
+	};
+};
+
+&uart_AO {
+	status = "okay";
+	pinctrl-0 = <&uart_ao_a_pins>;
+	pinctrl-names = "default";
+};
+
+&usb {
+	status = "okay";
+	dr_mode = "host";
+};
+
+&usb2_phy0 {
+	phy-supply = <&vcc5v>;
+};
+
+&usb2_phy1 {
+	phy-supply = <&vcc5v>;
+};
+
+/ {
+	reserved-memory {
+		linux,cma {
+			/*
+			 * 384 MiB. NOT 7/32 of RAM (448 MiB at 2 GiB): the
+			 * binding constraint is not how much RAM exists but
+			 * what fits CONTIGUOUSLY under the 1 GiB alloc-ranges
+			 * ceiling u-boot's meson_fixup_cma_size() writes on
+			 * every boot -- and the kernel image lands inside that
+			 * window at a KASLR-random address, so the largest
+			 * satisfiable run is a per-boot variable.
+			 *
+			 * Below 1 GiB this board reserves hwrom@0 (1 MiB),
+			 * secmon@5000000 (3 MiB) and ramoops@7400000 (1 MiB),
+			 * leaving a 904 MiB run at 4 MiB alignment. A ~72 MiB
+			 * image placed at the WORST point in that run splits it
+			 * into two halves of (904 - 72) / 2 = 416 MiB, so 416
+			 * is the largest request satisfiable on EVERY boot.
+			 * 448 exceeds it and fails on a minority of boots --
+			 * silently, to the 128 MiB CONFIG_CMA_SIZE_MBYTES
+			 * fallback. 384 leaves room for the image to grow to
+			 * 136 MiB before the guarantee is lost.
+			 */
+			size = <0x0 0x18000000>;
+		};
+	};
+};
+
+/*
+ * Open-SC SCMI package -- carried DISABLED.
+ *
+ * This board ships two firmware builds that boot this one DTB: the vendor
+ * chain, whose BL30 speaks SCPI on MHU channel 2 / cpu_scp_hpri, and the
+ * open chain (u-boot libretech-cc_v2_libre_defconfig), whose SC answers
+ * SCMI on the same mailbox and the same shared memory. The DTB cannot know
+ * which is flashed, so the open-chain U-Boot says so at boot: its
+ * ft_board_setup() (CONFIG_MESON_GX_LIBRE_SCMI_FIXUP) flips the nodes
+ * below to "okay", flips /scpi to "disabled", and points each CPU's
+ * `clocks` at protocol@14 and `power-domains` at protocol@13 -- on
+ * whatever blob it hands Linux, PXE-supplied or built-in. The vendor chain
+ * never touches them, so on a vendor boot this whole block is inert and
+ * /scpi stays the CPU clock provider exactly as before.
+ *
+ * Same pattern as the SM1 board's meson-sm1-scmi.dtsi: describe the open
+ * SC in the shipping DTS, disabled, so that enabling it is a status flip
+ * and not a second device tree.
+ *
+ * Every node the fixup must find carries a label: the kernel's dtc emits a
+ * phandle for a labelled node (-@, CONFIG_OF_OVERLAY), and the fixup
+ * refuses -- and says so -- rather than mint one.
+ *
+ * Address map, measured on this board and vendor-cited where named:
+ *   MHU doorbell   mailbox@404 -> 0xC883C404 (amlogic,meson-gxbb-mhu);
+ *                  channel 2 = HP = the OSPM channel, AP RX 0xC883C41C
+ *                  (GIC SPI 210), AP TX 0xC883C440 (HIU_MAILBOX_SET_5).
+ *   NS shmem       cpu_scp_hpri = sram@c8000000 + 0x13400, 0x400. Only KiB
+ *                  76 and 77 of that SRAM are non-secure permitted (the SC
+ *                  opens exactly those two); do not aim any node elsewhere.
+ */
+&cpu_scp_hpri {
+	compatible = "arm,scmi-shmem", "amlogic,meson-gxbb-scp-shmem";
+};
+
+/*
+ * cpu_scp_lpri is the SCMI notification / RX shmem. Its binding must also
+ * name "arm,scmi-shmem": drivers/firmware/arm_scmi/shmem.c reads shmem index
+ * 1 as the RX channel and rejects any phandle that lacks that compatible
+ * (-ENXIO), so without this line the RX channel dies quietly inside
+ * chan_setup while TX still works. Mirrors the &cpu_scp_hpri override above
+ * and the merged U-Boot blob (v2026.07/lc-master
+ * arch/arm/dts/meson-gxl-scmi-u-boot.dtsi). Kept in the board DTS, not
+ * meson-gx.dtsi, so only cc-v2 changes and the vendor /scpi path that also
+ * references this node is untouched -- arm_scpi still classifies it via the
+ * retained "amlogic,meson-gxbb-scp-shmem" fallback string.
+ */
+&cpu_scp_lpri {
+	compatible = "arm,scmi-shmem", "amlogic,meson-gxbb-scp-shmem";
+};
+
+/ {
+	firmware {
+		scmi: scmi {
+			compatible = "arm,scmi";
+			status = "disabled";
+
+			/*
+			 * tx = MHU ch2 (HP / OSPM request channel), rx = MHU ch1
+			 * (LP). The arm_scmi mailbox transport binds TX on
+			 * mboxes[0] and the notification/RX on mboxes[1]
+			 * (transports/mailbox.c mailbox_chan_validate, case 2
+			 * with num_sh == 2), reading shmem[0]=hpri for tx and
+			 * shmem[1]=lpri for rx. Same shape as the merged U-Boot
+			 * blob that closed the 2026-08-26 cc-v2 SCMI round trip.
+			 * The request path stays ch2/hpri, so a board whose SC
+			 * has no SCP_GXL_LP_TRANSPORT only loses async
+			 * notifications on ch1, never a synchronous request.
+			 */
+			mboxes = <&mailbox 2>, <&mailbox 1>;
+			mbox-names = "tx", "rx";
+			shmem = <&cpu_scp_hpri>, <&cpu_scp_lpri>;
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/*
+			 * NODE ORDER IS LOAD-BEARING -- protocol@14 MUST come
+			 * before protocol@13, and the list is deliberately not
+			 * numeric. arm_scmi creates one device per child in DT
+			 * order, so this is the order the protocol drivers
+			 * probe in. scmi-cpufreq's OPP setup resolves the CPUs'
+			 * `clocks` phandle into this clock provider; with perf
+			 * ahead of clock it runs before the provider exists and
+			 * every OPP add fails with -19 (ENODEV) instead of
+			 * deferring: no cpufreq policy at all. Measured both
+			 * ways on hardware. Do not tidy this list.
+			 *
+			 * SENSOR (0x15): the open SC serves the die temperature
+			 * as sensor 2, "soc-temp", in millidegrees from the die's
+			 * eFuse thermal trim, sampling SAR ADC ch6 inside its own
+			 * BL30_BUSY window beside meson_saradc. Each read is also
+			 * a sample for the SC's adaptive DDR4 refresh governor,
+			 * which the soc-thermal zone below polls once a second. An
+			 * SC built without the sensor never advertises 0x15, and
+			 * the zone then never registers.
+			 */
+			scmi_power: protocol@11 {
+				reg = <0x11>;
+				#power-domain-cells = <1>;
+			};
+
+			scmi_clk: protocol@14 {
+				reg = <0x14>;
+				#clock-cells = <1>;
+			};
+
+			scmi_syspower: protocol@12 {
+				reg = <0x12>;
+			};
+
+			scmi_perf: protocol@13 {
+				reg = <0x13>;
+				#power-domain-cells = <1>;
+			};
+
+			scmi_sensor: protocol@15 {
+				reg = <0x15>;
+				#thermal-sensor-cells = <1>;
+			};
+		};
+	};
+
+	/*
+	 * The open chain's die-temperature zone.  U-Boot's SCMI fixup disables
+	 * /scpi there, so meson-gx.dtsi's cpu-thermal (on &scpi_sensors) never
+	 * registers; this zone carries the same throttling it would have --
+	 * passive 80 C and hot 90 C on the CPUs, hot on vdec and ge2d -- so the
+	 * open chain is not left with a shutdown as its only thermal action.  On
+	 * the vendor chain /firmware/scmi stays disabled, this zone never
+	 * registers, and cpu-thermal does the same job.
+	 */
+	thermal-zones {
+		soc-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&scmi_sensor 2>;
+
+			trips {
+				soc_passive: soc-passive {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				soc_hot: soc-hot {
+					temperature = <90000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+
+				soc_crit: soc-crit {
+					temperature = <105000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&soc_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map1 {
+					trip = <&soc_hot>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map_vdec {
+					trip = <&soc_hot>;
+					cooling-device = <&vdec THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map_ge2d {
+					trip = <&soc_hot>;
+					cooling-device = <&ge2d THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+	};
+};
+
+/* PUB VT reads verified on Linux, open chain: enable the monitor. */
+&ddr_pub {
+	status = "okay";
+};

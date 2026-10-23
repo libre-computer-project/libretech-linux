@@ -7,15 +7,19 @@
  */
 
 #include <linux/clk.h>
+#include <linux/crc32.h>
+#include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/nvmem-provider.h>
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/sys_soc.h>
 
 #define RK3288_A_SHIFT		6
 #define RK3288_A_MASK		0x3ff
@@ -210,6 +214,8 @@ static struct nvmem_config econfig = {
 	.stride = 1,
 	.word_size = 1,
 	.read_only = true,
+	/* the dump carries the chip id (cell id@7 / cpu-id@7): it identifies the board */
+	.root_only = true,
 };
 
 static const struct of_device_id rockchip_efuse_match[] = {
@@ -250,6 +256,77 @@ static const struct of_device_id rockchip_efuse_match[] = {
 };
 MODULE_DEVICE_TABLE(of, rockchip_efuse_match);
 
+#define ROCKCHIP_CPUID_SIZE	16
+
+static void rockchip_efuse_socinfo_unregister(void *soc_dev)
+{
+	soc_device_unregister(soc_dev);
+}
+
+/*
+ * soc0 from the efuse's 16-byte chip id (cell "cpu-id", or "id" on RK3328):
+ * soc_id from the efuse compatible ("rockchip,rk3399-efuse" -> "RK3399"),
+ * serial_number the board serial# U-Boot derives from the same bytes
+ * (rockchip_cpuid_set): crc32 of the odd bytes, then crc32 of the even bytes
+ * seeded with it, as the high word, in 16 lowercase hex.
+ */
+static void rockchip_efuse_add_socinfo(struct device *dev,
+				       struct nvmem_device *nvmem)
+{
+	u8 id[ROCKCHIP_CPUID_SIZE], low[ROCKCHIP_CPUID_SIZE / 2];
+	u8 high[ROCKCHIP_CPUID_SIZE / 2];
+	struct soc_device_attribute *attr;
+	struct soc_device *soc_dev;
+	struct device_node *cell;
+	const char *compat, *p;
+	u32 reg[2], lo, hi;
+	char *soc_id;
+	int i, ret;
+
+	cell = of_get_child_by_name(dev->of_node, "cpu-id");
+	if (!cell)
+		cell = of_get_child_by_name(dev->of_node, "id");
+	if (!cell)
+		return;
+	ret = of_property_read_u32_array(cell, "reg", reg, 2);
+	of_node_put(cell);
+	if (ret || reg[1] != ROCKCHIP_CPUID_SIZE)
+		return;
+	if (nvmem_device_read(nvmem, reg[0], sizeof(id), id) != sizeof(id) ||
+	    !memchr_inv(id, 0, sizeof(id)))
+		return;
+
+	for (i = 0; i < ROCKCHIP_CPUID_SIZE / 2; i++) {
+		low[i] = id[1 + (i << 1)];
+		high[i] = id[i << 1];
+	}
+	lo = crc32_le(0, low, sizeof(low));
+	hi = crc32_le(lo, high, sizeof(high));
+
+	attr = devm_kzalloc(dev, sizeof(*attr), GFP_KERNEL);
+	if (!attr)
+		return;
+	attr->family = "Rockchip";
+	if (!of_property_read_string(dev->of_node, "compatible", &compat) &&
+	    (p = strstr(compat, ",rk")) && strstr(p, "-efuse")) {
+		soc_id = devm_kasprintf(dev, GFP_KERNEL, "%.*s",
+					(int)(strstr(p, "-efuse") - p - 1), p + 1);
+		for (i = 0; soc_id && soc_id[i]; i++)
+			soc_id[i] = toupper(soc_id[i]);
+		attr->soc_id = soc_id;
+	}
+	attr->serial_number = devm_kasprintf(dev, GFP_KERNEL, "%08x%08x", hi, lo);
+	if (!attr->serial_number)
+		return;
+
+	soc_dev = soc_device_register(attr);
+	if (IS_ERR(soc_dev)) {
+		dev_warn(dev, "soc device: %pe\n", soc_dev);
+		return;
+	}
+	devm_add_action_or_reset(dev, rockchip_efuse_socinfo_unregister, soc_dev);
+}
+
 static int rockchip_efuse_probe(struct platform_device *pdev)
 {
 	struct resource *res;
@@ -285,8 +362,12 @@ static int rockchip_efuse_probe(struct platform_device *pdev)
 	econfig.priv = efuse;
 	econfig.dev = efuse->dev;
 	nvmem = devm_nvmem_register(dev, &econfig);
+	if (IS_ERR(nvmem))
+		return PTR_ERR(nvmem);
 
-	return PTR_ERR_OR_ZERO(nvmem);
+	rockchip_efuse_add_socinfo(dev, nvmem);
+
+	return 0;
 }
 
 static struct platform_driver rockchip_efuse_driver = {

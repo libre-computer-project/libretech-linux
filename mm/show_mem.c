@@ -22,6 +22,14 @@ atomic_long_t _totalram_pages __read_mostly;
 EXPORT_SYMBOL(_totalram_pages);
 unsigned long totalreserve_pages __read_mostly;
 unsigned long totalcma_pages __read_mostly;
+/*
+ * Exported so drivers that size their allocations against the contiguous
+ * pool can read the REAL CMA total (the same value /proc/meminfo reports
+ * as CmaTotal) instead of guessing it from totalram_pages().  Drivers that
+ * guessed were wrong by ~7x on boards whose bootloader fails to widen the
+ * linux,cma alloc-ranges and the kernel falls back to CONFIG_CMA_SIZE_MBYTES.
+ */
+EXPORT_SYMBOL_GPL(totalcma_pages);
 
 static inline void show_node(struct zone *zone)
 {

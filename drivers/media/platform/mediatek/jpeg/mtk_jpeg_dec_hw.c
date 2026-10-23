@@ -580,12 +580,16 @@ static irqreturn_t mtk_jpegdec_hw_irq_handler(int irq, void *priv)
 	buf_state = VB2_BUF_STATE_DONE;
 	v4l2_m2m_buf_done(src_buf, buf_state);
 	mtk_jpegdec_put_buf(jpeg);
-	pm_runtime_put(ctx->jpeg->dev);
+	pm_runtime_put(jpeg->dev);
 	clk_disable_unprepare(jpeg->jdec_clk.clks->clk);
 
 	jpeg->hw_state = MTK_JPEG_HW_IDLE;
-	wake_up(&master_jpeg->hw_wq);
+	/*
+	 * Increment hw_rdy BEFORE waking the worker to avoid a lost wakeup --
+	 * see mtk_jpegenc_hw_irq_handler(). Match mtk_jpegdec_timeout_work().
+	 */
 	atomic_inc(&master_jpeg->hw_rdy);
+	wake_up(&master_jpeg->hw_wq);
 
 	return IRQ_HANDLED;
 }

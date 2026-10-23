@@ -58,6 +58,12 @@
 /* Device (host) features set selector - Write Only */
 #define VIRTIO_MMIO_DEVICE_FEATURES_SEL	0x014
 
+/* Is device side a software/polling implementation that requires synchronization - Read Only */
+#define VIRTIO_MMIO_SW_IMPL 0x018
+
+/* (If SW_IMPL is set) Register used for synchronization between device and host for certain register accesses */
+#define VIRTIO_MMIO_SEL_GENERATION 0x01c
+
 /* Bitmask of features activated by the driver (guest)
  * (32 bits per set) - Write Only */
 #define VIRTIO_MMIO_DRIVER_FEATURES	0x020

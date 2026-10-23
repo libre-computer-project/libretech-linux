@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Libre Computer Cottonwood CM carrier board - common hardware
+ *
+ * Shared between CM4IO and CM5IO carrier boards.
+ * Hardware enabled here:
+ * - HDMI Type-A connector (single HDMI TX on AML, maps to HDMI1 pins)
+ * - Gigabit Ethernet RJ45 (PHY is on-module)
+ * - SD card slot (GPIOC bank, microSD)
+ * - PCIe Gen2 x1 (full-size on CM4IO, M.2 M-key on CM5IO)
+ * - USB 2.0 ports
+ * - CEC (via HDMI connector)
+ */
+
+/ {
+	aliases {
+		ethernet0 = &ethmac;
+	};
+
+	hdmi-connector {
+		compatible = "hdmi-connector";
+		type = "a";
+
+		port {
+			hdmi_connector_in: endpoint {
+				remote-endpoint = <&hdmi_tx_tmds_out>;
+			};
+		};
+	};
+};
+
+&cecb_AO {
+	status = "okay";
+};
+
+&ethmac {
+	status = "okay";
+};
+
+&hdmi_tx {
+	status = "okay";
+};
+
+&hdmi_tx_tmds_port {
+	hdmi_tx_tmds_out: endpoint {
+		remote-endpoint = <&hdmi_connector_in>;
+	};
+};
+
+&pcie {
+	status = "okay";
+	supports-clkreq;
+	pinctrl-0 = <&pcie_clkreqn>;
+	pinctrl-names = "default";
+	clkreq-gpios = <&gpio GPIOC_7 (GPIO_ACTIVE_LOW | GPIO_OPEN_DRAIN)>;
+};
+
+&sd_emmc_b {
+	status = "okay";
+};
+
+&usb {
+	status = "okay";
+};
+
+&dwc3 {
+	status = "disabled";
+};

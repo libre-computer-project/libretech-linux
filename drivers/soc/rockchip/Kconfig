@@ -30,4 +30,16 @@ config ROCKCHIP_DTPM
 	  on this platform. That will create all the power capping capable
 	  devices.
 
+config ROCKCHIP_M0_I2C_OFFLOAD
+	tristate "Rockchip RK3399 M0 I2C offload service"
+	depends on OF && MAILBOX && I2C
+	help
+	  Say M here to let the kernel serve I2C transfers that the BL31
+	  Cortex-M0 SCMI server offloads to it over mailbox1, instead of
+	  the firmware owning a PMIC I2C bus itself. The M0 needs a few
+	  PMIC register accesses to answer CPU OPP voltage requests and
+	  posts them one at a time to a shared page; this driver runs the
+	  transfer on the bus that Linux owns and answers back. It is
+	  inert on boards whose firmware does not host such a server.
+
 endif

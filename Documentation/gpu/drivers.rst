@@ -6,6 +6,7 @@ GPU Driver Documentation
    :maxdepth: 3
 
    amdgpu/index
+   gna
    i915
    imagination/index
    mcde

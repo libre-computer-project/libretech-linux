@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Libre Computer Cottonwood V0.1 (pre-production) CC board differences.
+ * Include AFTER cottonwood.dtsi to override V1 nodes.
+ *
+ * V0.1 hardware differences from V1:
+ * - LEDs: V01 uses GPIOAO_11 (dual blue/orange) + GPIOAO_9 (disk blue)
+ *   V1 uses GPIOX_3 (green PWM), GPIOX_6 (orange GPIO), GPIOX_7 (blue PWM)
+ * - 40-pin header: 13 pins differ
+ * - CSI I2C: V01 uses I2C_M3, V1 uses I2C_M1
+ *
+ * Power tree, Ethernet, USB, SD, eMMC, SPI NOR, HDMI, CVBS, audio amp
+ * are all identical between V01 and V1.
+ */
+
+#include <dt-bindings/gpio/meson-g12a-gpio.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	/* Remove V1 PWM LEDs by overriding with disabled status */
+	led-blue {
+		status = "disabled";
+	};
+
+	led-green {
+		status = "disabled";
+	};
+
+	led-orange {
+		status = "disabled";
+	};
+
+	/* V01 LEDs on AO-domain GPIOs */
+	leds-v01 {
+		compatible = "gpio-leds";
+
+		/* GPIOAO_11: LOW=blue (running), HIGH=orange (standby) */
+		led-sys {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio_ao GPIOAO_11 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "default-on";
+		};
+
+		/* GPIOAO_9: blue disk activity LED */
+		led-disk {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_DISK_ACTIVITY;
+			gpios = <&gpio_ao GPIOAO_9 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "activity";
+		};
+	};
+};

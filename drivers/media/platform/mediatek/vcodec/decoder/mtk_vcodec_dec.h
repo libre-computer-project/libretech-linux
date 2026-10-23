@@ -17,6 +17,20 @@
 #define VCODEC_CAPABILITY_4K_DISABLED	0x10
 #define VCODEC_DEC_4K_CODED_WIDTH	4096U
 #define VCODEC_DEC_4K_CODED_HEIGHT	2304U
+/*
+ * MT8195's HEVC and H.264 decode line buffer is 8192-wide, not 4K: bisected on
+ * demo-mt8195 (per-codec PSNR sweep, 2026-06-10) -- HEVC + H.264 bit-exact up to
+ * 8192 px wide (progressive corruption beyond), height bit-exact past 16320. The
+ * shared 4K constants above under-advertised those, wrongly rejecting
+ * >4K-in-one-dimension / 8K streams (and conformance vectors PICSIZE_C/D at
+ * 4216 px). 8192 wide x 4352 tall covers 8K coded (7680x4352) + the recovered
+ * conformance, kept near the bisected-decodable area (~33.6 Mpix at 8192x4096).
+ * Applied ONLY to MT8195 HEVC + H.264 (see mtk_vcodec_dec_stateless.c): VP9 and
+ * AV1 on this HW are 4096-px tile-column limited (hang beyond 4096), and other
+ * chips are unbisected -- all keep the 4K caps.
+ */
+#define VCODEC_DEC_8K_CODED_WIDTH	8192U
+#define VCODEC_DEC_8K_CODED_HEIGHT	4352U
 #define MTK_VDEC_MAX_W	2048U
 #define MTK_VDEC_MAX_H	1088U
 #define MTK_VDEC_MIN_W	64U
@@ -71,6 +85,7 @@ extern const struct mtk_vcodec_dec_pdata mtk_vdec_8173_pdata;
 extern const struct mtk_vcodec_dec_pdata mtk_vdec_8183_pdata;
 extern const struct mtk_vcodec_dec_pdata mtk_lat_sig_core_pdata;
 extern const struct mtk_vcodec_dec_pdata mtk_vdec_single_core_pdata;
+extern const struct mtk_vcodec_dec_pdata mtk_vdec_mt8365_pdata;
 
 
 /*
@@ -85,6 +100,15 @@ int mtk_vcodec_dec_queue_init(void *priv, struct vb2_queue *src_vq,
 			   struct vb2_queue *dst_vq);
 void mtk_vcodec_dec_set_default_params(struct mtk_vcodec_dec_ctx *ctx);
 void mtk_vcodec_dec_release(struct mtk_vcodec_dec_ctx *ctx);
+
+/*
+ * N45: audit + write-barrier for a bitstream submission on the MT8365
+ * direct-register backends. Replaces the illegal
+ * dma_sync_single_for_device(bs->dma_addr, bs->size) those backends used to
+ * make -- see the block comment in mtk_vcodec_dec_drv.c.
+ */
+void mtk_vcodec_mt8365_bs_audit(struct mtk_vcodec_dec_ctx *ctx,
+				dma_addr_t dma_addr, size_t len);
 
 /*
  * VB2 ops

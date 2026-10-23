@@ -4,6 +4,7 @@
  */
 /dts-v1/;
 #include "mt8195-cherry.dtsi"
+#include "mt8195-apusys.dtsi"
 
 / {
 	model = "Acer Tomato (rev3 - 4) board";

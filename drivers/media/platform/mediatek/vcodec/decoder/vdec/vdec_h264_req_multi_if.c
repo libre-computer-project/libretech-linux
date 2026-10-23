@@ -347,7 +347,8 @@ static int get_vdec_sig_decode_parameters(struct vdec_h264_slice_inst *inst)
 	mtk_vdec_h264_copy_pps_params(&slice_param->pps, pps);
 	mtk_vdec_h264_copy_scaling_matrix(&slice_param->scaling_matrix, scaling_matrix);
 
-	mtk_vdec_h264_copy_decode_params(&slice_param->decode_params, dec_params, inst->dpb);
+	mtk_vdec_h264_copy_decode_params(&slice_param->decode_params, dec_params, inst->dpb,
+					 false);
 	mtk_vdec_h264_fill_dpb_info(inst->ctx, &slice_param->decode_params,
 				    slice_param->h264_dpb_info);
 
@@ -357,9 +358,12 @@ static int get_vdec_sig_decode_parameters(struct vdec_h264_slice_inst *inst)
 	v4l2_h264_build_b_ref_lists(&reflist_builder, v4l2_b0_reflist, v4l2_b1_reflist);
 
 	/* Adapt the built lists to the firmware's expectations */
-	mtk_vdec_h264_get_ref_list(p0_reflist, v4l2_p0_reflist, reflist_builder.num_valid);
-	mtk_vdec_h264_get_ref_list(b0_reflist, v4l2_b0_reflist, reflist_builder.num_valid);
-	mtk_vdec_h264_get_ref_list(b1_reflist, v4l2_b1_reflist, reflist_builder.num_valid);
+	mtk_vdec_h264_get_ref_list(p0_reflist, v4l2_p0_reflist,
+				   reflist_builder.num_valid, false);
+	mtk_vdec_h264_get_ref_list(b0_reflist, v4l2_b0_reflist,
+				   reflist_builder.num_valid, false);
+	mtk_vdec_h264_get_ref_list(b1_reflist, v4l2_b1_reflist,
+				   reflist_builder.num_valid, false);
 
 	return 0;
 }
@@ -381,7 +385,7 @@ static void vdec_h264_slice_fill_decode_reflist(struct vdec_h264_slice_inst *ins
 	mtk_vdec_h264_update_dpb(dec_params, inst->dpb);
 
 	mtk_vdec_h264_copy_decode_params(&slice_param->decode_params, dec_params,
-					 inst->dpb);
+					 inst->dpb, false);
 	mtk_vdec_h264_fill_dpb_info(inst->ctx, &slice_param->decode_params,
 				    slice_param->h264_dpb_info);
 
@@ -393,9 +397,12 @@ static void vdec_h264_slice_fill_decode_reflist(struct vdec_h264_slice_inst *ins
 	v4l2_h264_build_b_ref_lists(&reflist_builder, v4l2_b0_reflist, v4l2_b1_reflist);
 
 	/* Adapt the built lists to the firmware's expectations */
-	mtk_vdec_h264_get_ref_list(p0_reflist, v4l2_p0_reflist, reflist_builder.num_valid);
-	mtk_vdec_h264_get_ref_list(b0_reflist, v4l2_b0_reflist, reflist_builder.num_valid);
-	mtk_vdec_h264_get_ref_list(b1_reflist, v4l2_b1_reflist, reflist_builder.num_valid);
+	mtk_vdec_h264_get_ref_list(p0_reflist, v4l2_p0_reflist,
+				   reflist_builder.num_valid, false);
+	mtk_vdec_h264_get_ref_list(b0_reflist, v4l2_b0_reflist,
+				   reflist_builder.num_valid, false);
+	mtk_vdec_h264_get_ref_list(b1_reflist, v4l2_b1_reflist,
+				   reflist_builder.num_valid, false);
 }
 
 static int vdec_h264_slice_alloc_mv_buf(struct vdec_h264_slice_inst *inst,
@@ -1224,7 +1231,18 @@ static int vdec_h264_slice_init(struct mtk_vcodec_dec_ctx *ctx)
 		goto error_free_inst;
 	}
 
-	if (IS_VDEC_SUPPORT_EXT(ctx->dev->dec_capability)) {
+	/*
+	 * Force the extended-VSI path on mt8188 (geralt SCP firmware). The geralt
+	 * firmware uses the extended VSI layout (struct vdec_h264_slice_vsi_ext:
+	 * bs/fb/ube/trans/row_info/slice_bc with size fields) -- it reads row_info
+	 * and the ube/trans ring by that layout -- yet its dec_capability (0x41f20)
+	 * omits the MTK_VDEC_IS_SUPPORT_EXT (0x80000) bit, so the stock capability
+	 * check wrongly selects the non-ext path and the LAT engine overruns the
+	 * transcode ring (vpp larb23 iommu fault flood). Scope the force to mt8188
+	 * so mt8195 keeps its capability-driven selection unchanged.
+	 */
+	if (ctx->dev->chip_name == MTK_VDEC_MT8188 ||
+	    IS_VDEC_SUPPORT_EXT(ctx->dev->dec_capability)) {
 		vsi_size = sizeof(struct vdec_h264_slice_vsi_ext);
 
 		vsi_size = round_up(vsi_size, VCODEC_DEC_ALIGNED_64);

@@ -79,11 +79,10 @@ static bool pcie_lbms_seen(struct pci_dev *dev, u16 lnksta)
  * Restrict the speed to 2.5GT/s then with the Target Link Speed field,
  * request a retrain and check the result.
  *
- * If this turns out successful and we know by the Vendor:Device ID it is
- * safe to do so, then lift the restriction, letting the devices negotiate
- * a higher speed.  Also check for a similar 2.5GT/s speed restriction the
- * firmware may have already arranged and lift it with ports that already
- * report their data link being up.
+ * If this turns out successful, or where a 2.5GT/s speed restriction has
+ * been previously arranged by the firmware and the port reports its link
+ * already being up, lift the restriction, in a hope it is safe to do so,
+ * letting the devices negotiate a higher speed.
  *
  * Otherwise revert the speed to the original setting and request a retrain
  * again to remove any residual state, ignoring the result as it's supposed
@@ -94,51 +93,37 @@ static bool pcie_lbms_seen(struct pci_dev *dev, u16 lnksta)
  */
 int pcie_failed_link_retrain(struct pci_dev *dev)
 {
-	static const struct pci_device_id ids[] = {
-		{ PCI_VDEVICE(ASMEDIA, 0x2824) }, /* ASMedia ASM2824 */
-		{}
-	};
-	u16 lnksta, lnkctl2;
+	u16 lnksta, lnkctl2, oldlnkctl2;
 	int ret = -ENOTTY;
+	u32 lnkcap;
 
 	if (!pci_is_pcie(dev) || !pcie_downstream_port(dev) ||
 	    !pcie_cap_has_lnkctl2(dev) || !dev->link_active_reporting)
 		return ret;
 
 	pcie_capability_read_word(dev, PCI_EXP_LNKSTA, &lnksta);
+	pcie_capability_read_word(dev, PCI_EXP_LNKCTL2, &oldlnkctl2);
 	if (!(lnksta & PCI_EXP_LNKSTA_DLLLA) && pcie_lbms_seen(dev, lnksta)) {
-		u16 oldlnkctl2;
-
 		pci_info(dev, "broken device, retraining non-functional downstream link at 2.5GT/s\n");
-
-		pcie_capability_read_word(dev, PCI_EXP_LNKCTL2, &oldlnkctl2);
 		ret = pcie_set_target_speed(dev, PCIE_SPEED_2_5GT, false);
-		if (ret) {
-			pci_info(dev, "retraining failed\n");
-			pcie_set_target_speed(dev, PCIE_LNKCTL2_TLS2SPEED(oldlnkctl2),
-					      true);
-			return ret;
-		}
-
-		pcie_capability_read_word(dev, PCI_EXP_LNKSTA, &lnksta);
+		if (ret)
+			goto err;
 	}
 
 	pcie_capability_read_word(dev, PCI_EXP_LNKCTL2, &lnkctl2);
-
-	if ((lnksta & PCI_EXP_LNKSTA_DLLLA) &&
-	    (lnkctl2 & PCI_EXP_LNKCTL2_TLS) == PCI_EXP_LNKCTL2_TLS_2_5GT &&
-	    pci_match_id(ids, dev)) {
-		u32 lnkcap;
-
+	pcie_capability_read_dword(dev, PCI_EXP_LNKCAP, &lnkcap);
+	if ((lnkctl2 & PCI_EXP_LNKCTL2_TLS) == PCI_EXP_LNKCTL2_TLS_2_5GT &&
+	    (lnkcap & PCI_EXP_LNKCAP_SLS) != PCI_EXP_LNKCAP_SLS_2_5GB) {
 		pci_info(dev, "removing 2.5GT/s downstream link speed restriction\n");
-		pcie_capability_read_dword(dev, PCI_EXP_LNKCAP, &lnkcap);
 		ret = pcie_set_target_speed(dev, PCIE_LNKCAP_SLS2SPEED(lnkcap), false);
-		if (ret) {
-			pci_info(dev, "retraining failed\n");
-			return ret;
-		}
+		if (ret)
+			goto err;
 	}
 
+	return ret;
+err:
+	pci_info(dev, "retraining failed\n");
+	pcie_set_target_speed(dev, PCIE_LNKCTL2_TLS2SPEED(oldlnkctl2), true);
 	return ret;
 }
 
@@ -1360,6 +1345,16 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_82380FB,	quirk
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_TOSHIBA,	0x605,	quirk_transparent_bridge);
 
 /*
+ * Enabling Link Bandwidth Management Interrupts (BW notifications) can cause
+ * boot hangs on P45.
+ */
+static void quirk_p45_bw_notifications(struct pci_dev *dev)
+{
+	dev->no_bw_notif = 1;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x2e21, quirk_p45_bw_notifications);
+
+/*
  * Common misconfiguration of the MediaGX/Geode PCI master that will reduce
  * PCI bandwidth from 70MB/s to 25MB/s.  See the GXM/GXLV/GX1 datasheets
  * found at http://www.national.com/analog for info on what these bits do.
@@ -2510,6 +2505,9 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x10ec, quirk_disable_aspm_l0s);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x10f1, quirk_disable_aspm_l0s);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x10f4, quirk_disable_aspm_l0s);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x1508, quirk_disable_aspm_l0s);
+
+/* Realtek RTS525A generates a Replay Timer Timeout storm when L0s is enabled. */
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_REALTEK, 0x525a, quirk_disable_aspm_l0s);
 
 static void quirk_disable_aspm_l0s_l1(struct pci_dev *dev)
 {
@@ -3749,6 +3747,14 @@ static void quirk_no_bus_reset(struct pci_dev *dev)
 }
 
 /*
+ * After asserting Secondary Bus Reset to downstream devices via a GB10
+ * Root Port, the link may not retrain correctly.
+ * https://lore.kernel.org/r/20251113084441.2124737-1-Johnny-CC.Chang@mediatek.com
+ */
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA, 0x22CE, quirk_no_bus_reset);
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA, 0x22D0, quirk_no_bus_reset);
+
+/*
  * Some NVIDIA GPU devices do not work with bus reset, SBR needs to be
  * prevented for those affected devices.
  */
@@ -3773,6 +3779,9 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATHEROS, 0x003c, quirk_no_bus_reset);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATHEROS, 0x0033, quirk_no_bus_reset);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATHEROS, 0x0034, quirk_no_bus_reset);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATHEROS, 0x003e, quirk_no_bus_reset);
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_QCOM, 0x1103, quirk_no_bus_reset); /* WCN6855 */
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_QCOM, 0x1107, quirk_no_bus_reset); /* WCN7850 */
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_QCOM, 0x0308, quirk_no_bus_reset); /* SDX62/SDX65 */
 
 /*
  * Root port on some Cavium CN8xxx chips do not successfully complete a bus
@@ -3790,6 +3799,16 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_CAVIUM, 0xa100, quirk_no_bus_reset);
  * https://e2e.ti.com/support/processors/f/791/t/954382
  */
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_TI, 0xb005, quirk_no_bus_reset);
+
+/*
+ * Reports from users making use of PCI device assignment with ASM1164
+ * controllers indicate an issue with bus reset where the device fails to
+ * retrain.  The issue appears more common in configurations with multiple
+ * controllers.  The device does indicate PM reset support (NoSoftRst-),
+ * therefore this still leaves a viable reset method.
+ * https://forum.proxmox.com/threads/problems-with-pcie-passthrough-with-two-identical-devices.149003/
+ */
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ASMEDIA, 0x1164, quirk_no_bus_reset);
 
 static void quirk_no_pm_reset(struct pci_dev *dev)
 {
@@ -3911,6 +3930,63 @@ DECLARE_PCI_FIXUP_SUSPEND_LATE(PCI_VENDOR_ID_INTEL,
 			       PCI_DEVICE_ID_INTEL_CACTUS_RIDGE_4C,
 			       quirk_apple_poweroff_thunderbolt);
 #endif
+
+/*
+ * Intel Thunderbolt 4 / Thunderbolt 5 hub-bridge runtime PM workaround.
+ *
+ * The PCIe-tunnel-as-bridge functions inside the Intel Barlow Ridge TB5 hub
+ * (8086:5786 80G, 8086:57a4 40G) and the Intel Maple Ridge TB4 host/hub
+ * bridges (8086:1136 / 1138..113c) do not reliably exit D3hot within the
+ * spec-mandated PCI_PM_D3HOT_WAIT = 10 ms window. After a runtime suspend
+ * to D3hot, pci_power_up() reads the bridge's PMCSR back as 0xFFFF and
+ * emits
+ *
+ *   pcieport ...: Unable to change power state from D3hot to D0,
+ *                 device inaccessible
+ *
+ * (drivers/pci/pci.c, pci_power_up()), then marks the bridge PCI_D3cold
+ * and returns -EIO. The D3hot resume path has no equivalent of
+ * pci_bridge_wait_for_secondary_bus() to absorb a slow link retrain --
+ * that helper only runs on the D3cold path via
+ * pci_pm_bridge_power_up_actions(). On AMD platforms the failed wake
+ * cascades into a fabric sync-flood reset of the root complex peer; the
+ * symptom was first observed on an AORUS AI BOX (RTX 5090 behind a Barlow
+ * Ridge hub) hosted by a Threadripper system.
+ *
+ * The defect is in the TB hub silicon / firmware -- the kernel's
+ * D3hot->D0 sequence is the textbook PCI PM 1.2 sequence and works on
+ * every non-TB bridge. The proper fix requires an Intel firmware update
+ * to the JHL9xxx hub's CLx / D-state coordination state machine; in the
+ * meantime this quirk mirrors what the empirical userspace workaround
+ * (echo on > /sys/.../power/control on every Intel TB bridge) does, but
+ * in-kernel and per-device.
+ *
+ * Set both PCI_DEV_FLAGS_NO_D3 (blocks D3hot at pci.c:1558) and call
+ * pci_d3cold_disable() (blocks D3cold). Together they keep the bridge
+ * pinned at D0 and prevent the wake-fail cascade. Restricted to PCIe
+ * upstream / downstream bridge functions so an NHI device sharing an ID
+ * range would be a no-op.
+ */
+static void quirk_intel_tb_hub_no_d3(struct pci_dev *pdev)
+{
+	int type = pci_pcie_type(pdev);
+
+	if (type != PCI_EXP_TYPE_UPSTREAM && type != PCI_EXP_TYPE_DOWNSTREAM)
+		return;
+	pdev->dev_flags |= PCI_DEV_FLAGS_NO_D3;
+	pci_d3cold_disable(pdev);
+	pci_info(pdev, "quirk: Intel TB hub bridge blocked from D3 (D3hot wake-fail workaround)\n");
+}
+/* Barlow Ridge TB5 hub (PCI_DEVICE_ID_INTEL_BARLOW_RIDGE_HUB_*_BRIDGE) */
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x5786, quirk_intel_tb_hub_no_d3);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x57a4, quirk_intel_tb_hub_no_d3);
+/* Maple Ridge TB4 bridge IDs (no symbolic names in nhi.h -- NHIs 0x1134/0x1137 excluded) */
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x1136, quirk_intel_tb_hub_no_d3);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x1138, quirk_intel_tb_hub_no_d3);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x1139, quirk_intel_tb_hub_no_d3);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x113a, quirk_intel_tb_hub_no_d3);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x113b, quirk_intel_tb_hub_no_d3);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x113c, quirk_intel_tb_hub_no_d3);
 
 /*
  * Following are device-specific reset methods which can be used to
@@ -5107,6 +5183,10 @@ static const struct pci_dev_acs_enabled {
 	{ PCI_VENDOR_ID_QCOM, 0x0401, pci_quirk_qcom_rp_acs },
 	/* QCOM SA8775P root port */
 	{ PCI_VENDOR_ID_QCOM, 0x0115, pci_quirk_qcom_rp_acs },
+	/* QCOM Hamoa root port */
+	{ PCI_VENDOR_ID_QCOM, 0x0111, pci_quirk_qcom_rp_acs },
+	/* QCOM Glymur root port */
+	{ PCI_VENDOR_ID_QCOM, 0x0120, pci_quirk_qcom_rp_acs },
 	/* HXT SD4800 root ports. The ACS design is same as QCOM QDF2xxx */
 	{ PCI_VENDOR_ID_HXT, 0x0401, pci_quirk_qcom_rp_acs },
 	/* Intel PCH root ports */
@@ -5314,7 +5394,7 @@ static void pci_quirk_enable_intel_rp_mpc_acs(struct pci_dev *dev)
 	if (!(mpc & INTEL_MPC_REG_IRBNCE)) {
 		pci_info(dev, "Enabling MPC IRBNCE\n");
 		mpc |= INTEL_MPC_REG_IRBNCE;
-		pci_write_config_word(dev, INTEL_MPC_REG, mpc);
+		pci_write_config_dword(dev, INTEL_MPC_REG, mpc);
 	}
 }
 
@@ -5547,6 +5627,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x443, quirk_intel_qat_vf_cap);
  * Intel 82579LM Gigabit Ethernet Controller 0x1502
  * Intel 82579V Gigabit Ethernet Controller 0x1503
  * Mediatek MT7922 802.11ax PCI Express Wireless Network Adapter
+ * Mediatek MT7925 802.11be PCI Express Wireless Network Adapter
  */
 static void quirk_no_flr(struct pci_dev *dev)
 {
@@ -5559,6 +5640,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_AMD, 0x7901, quirk_no_flr);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x1502, quirk_no_flr);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x1503, quirk_no_flr);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_MEDIATEK, 0x0616, quirk_no_flr);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_MEDIATEK, 0x7925, quirk_no_flr);
 
 /* FLR may cause the SolidRun SNET DPU (rev 0x1) to hang */
 static void quirk_no_flr_snet(struct pci_dev *dev)
@@ -5581,6 +5663,7 @@ static void quirk_no_ext_tags(struct pci_dev *pdev)
 	pci_walk_bus(bridge->bus, pci_configure_extended_tags, NULL);
 }
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_3WARE, 0x1004, quirk_no_ext_tags);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_3WARE, 0x1005, quirk_no_ext_tags);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, 0x0132, quirk_no_ext_tags);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, 0x0140, quirk_no_ext_tags);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, 0x0141, quirk_no_ext_tags);
@@ -6188,6 +6271,14 @@ DECLARE_PCI_FIXUP_ENABLE(PCI_VENDOR_ID_PERICOM, 0x2303,
 			 pci_fixup_pericom_acs_store_forward);
 DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_PERICOM, 0x2303,
 			 pci_fixup_pericom_acs_store_forward);
+DECLARE_PCI_FIXUP_ENABLE(PCI_VENDOR_ID_PERICOM, 0xb404,
+			 pci_fixup_pericom_acs_store_forward);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_PERICOM, 0xb404,
+			 pci_fixup_pericom_acs_store_forward);
+DECLARE_PCI_FIXUP_ENABLE(PCI_VENDOR_ID_PERICOM, 0x2608,
+			 pci_fixup_pericom_acs_store_forward);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_PERICOM, 0x2608,
+			 pci_fixup_pericom_acs_store_forward);
 
 static void nvidia_ion_ahci_fixup(struct pci_dev *pdev)
 {
@@ -6341,3 +6432,240 @@ static void pci_mask_replay_timer_timeout(struct pci_dev *pdev)
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9750, pci_mask_replay_timer_timeout);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9755, pci_mask_replay_timer_timeout);
 #endif
+
+/*
+ * ASUS Pro WS TRX50-SAGE WIFI A (BIOS 0617) leaves the Target Link Speed in
+ * LnkCtl2 of every *external* AMD GPP Bridge Root Port at 16 GT/s (Gen 4) even
+ * though both ends advertise 32 GT/s in LnkCap2, the SMBIOS slot is "PCI
+ * Express 5 x16", and the per-slot BIOS item is already set to Gen 5.
+ * Firmware is not applying its own setting.  CPU-internal links are unaffected.
+ *
+ * The defect belongs to the BOARD FIRMWARE, not to one CPU generation, so it
+ * follows the socket rather than the silicon: the same board shows it with a
+ * Zen 5 Threadripper behind "Turin GPP Bridge" Root Ports (1022:153e) and with
+ * a Zen 4 Threadripper behind "Genoa/Bergamo GPP Bridge" Root Ports
+ * (1022:14ab).  Both are registered below.  Measured on two hosts running this
+ * board at BIOS 0617, each with two RTX 5090/PRO 6000 class cards:
+ *
+ *   9960X (Zen 5): 0000:10:01.1 + 0000:e0:01.1  1022:153e  cap 32, target 16
+ *   7960X (Zen 4): 0000:20:01.1 + 0000:c0:01.1  1022:14ab  cap 32, target 16
+ *
+ * The damage is not just the link rate: a downstream driver that reads host
+ * capability once at init (nvidia) latches its maximum at Gen 4, and because
+ * the *downstream* component is what requests a speed change on every exit
+ * from L0s/L1 it then keeps asking for its cached Gen 4 forever.  Writing the
+ * target after the driver has bound therefore changes nothing, so the fix has
+ * to land at enumeration, before any driver binds.
+ *
+ * DECLARE_PCI_FIXUP_FINAL runs from pci_bus_add_device(), which calls
+ * pci_fixup_device(pci_fixup_final, dev) before device_initial_probe(), and
+ * pci_bus_add_devices() walks parents before children -- so this runs on the
+ * Root Port before the endpoint below it is even bus-added, and long before
+ * the nvidia module is loaded.
+ *
+ * Scoping: DMI-matched to this one board *and* to the AMD GPP Bridge Root Port
+ * device IDs this board is known to present.  A blanket "raise every AMD Root
+ * Port" quirk is not safe -- on other boards a Gen 4 target can be a deliberate
+ * platform choice (marginal traces, missing retimers), and silently raising it
+ * could destabilise a link that firmware intentionally held down.  Adding a
+ * device ID here widens the quirk only within the DMI match, so it reaches
+ * another CPU option for this same board and nothing else.
+ *
+ * The PCI_EXP_TYPE_ROOT_PORT test is load-bearing for that scoping, not
+ * decoration: this board also carries Downstream Ports whose target sits below
+ * their cap (an ASMedia ASM4242 switch port and an AMD 600-series chipset
+ * switch port were both observed that way on the Zen 4 host), and those are
+ * switch-internal links this quirk has no business touching.
+ *
+ * We only ever raise, never lower, and only when LnkCap2 genuinely advertises
+ * a speed above the current target.  No retrain is forced: the goal is that
+ * the target reads Gen 5 before the endpoint driver latches, and the link then
+ * reaches 32 GT/s on the driver's own next link-management retrain.  Not
+ * retraining here also means a failed equalisation cannot strand the port in
+ * recovery during enumeration; if the higher speed does not take, the PCIe
+ * link-training state machine falls back on its own.
+ */
+static const struct dmi_system_id pcie_gen5_target_speed_boards[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_BOARD_NAME, "Pro WS TRX50-SAGE WIFI A"),
+		},
+	},
+	{ }
+};
+
+/*
+ * Raising the Target Link Speed is necessary on this board and is NOT
+ * sufficient on its Zen 5 option: with LnkCtl2 targeting 32 GT/s on both ends,
+ * the link still trained at 16 GT/s and the 32.0 GT/s Status register stayed
+ * all-zero -- Gen 5 equalization was never even attempted.  Forcing it with
+ * LnkCtl3.PerformEqu plus a retrain did not change that.
+ *
+ * What does change it is the Equalization Bypass to Highest Rate Disable bit in
+ * the 32.0 GT/s Control register.  Firmware leaves it SET on this board, which
+ * forbids the direct-to-highest-rate path; clearing it and retraining brings the
+ * link up at 32 GT/s x16 on the first attempt with Equalization Complete and
+ * Phases 1/2/3 all successful, and zero AER; pinned host-to-device bandwidth
+ * roughly doubles against an untouched second card in the same host.
+ *
+ * This has to happen before the endpoint driver binds.  nvidia latches host link
+ * capability once at init and the downstream component then asserts a speed
+ * change on every exit from a low-power link state, so it keeps asking for the
+ * speed it cached -- measured directly, a healthy 32 GT/s link was dragged back
+ * to 16 the moment a transfer started, with no AER to explain it.
+ * DECLARE_PCI_FIXUP_FINAL runs inside pci_bus_add_device() before
+ * device_initial_probe(), which is what makes this placement work.
+ */
+/*
+ * Physical Layer 32.0 GT/s Extended Capability registers.  pci_regs.h carries
+ * the capability ID and the Lane Equalization Control offset, but not these.
+ */
+#define PCI_PL_32GT_CAP					0x04
+#define  PCI_PL_32GT_CAP_EQ_BYPASS_SUP			0x00000001
+#define PCI_PL_32GT_CTL					0x08
+#define  PCI_PL_32GT_CTL_EQ_BYPASS_DIS			0x00000001
+
+/* Clear the bypass-disable bit.  Returns true if it changed anything. */
+static bool quirk_allow_eq_bypass(struct pci_dev *dev)
+{
+	u32 cap32, ctl32;
+	int pos;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_PL_32GT);
+	if (!pos)
+		return false;
+
+	if (pci_read_config_dword(dev, pos + PCI_PL_32GT_CAP, &cap32))
+		return false;
+
+	/* Only touch it where the port says the bypass path exists. */
+	if (!(cap32 & PCI_PL_32GT_CAP_EQ_BYPASS_SUP))
+		return false;
+
+	if (pci_read_config_dword(dev, pos + PCI_PL_32GT_CTL, &ctl32))
+		return false;
+
+	if (!(ctl32 & PCI_PL_32GT_CTL_EQ_BYPASS_DIS))
+		return false;		/* already allowed; nothing to do */
+
+	ctl32 &= ~PCI_PL_32GT_CTL_EQ_BYPASS_DIS;
+	if (pci_write_config_dword(dev, pos + PCI_PL_32GT_CTL, ctl32))
+		return false;
+
+	pci_info(dev, "firmware forbade Equalization Bypass to Highest Rate; allowed it\n");
+	return true;
+}
+
+/*
+ * Retrain so the link is at its real speed before the endpoint driver reads
+ * capability.  A link that cannot make the higher rate falls back on its own --
+ * that is the behaviour this board already showed before the bypass was
+ * allowed -- so a failure here costs the retrain, not the port.
+ */
+static void quirk_retrain_and_report(struct pci_dev *dev)
+{
+	u16 lnksta;
+	int i;
+
+	if (pcie_capability_set_word(dev, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_RL))
+		return;
+
+	/* Link training is expected to settle well inside 100 ms. */
+	for (i = 0; i < 100; i++) {
+		if (pcie_capability_read_word(dev, PCI_EXP_LNKSTA, &lnksta))
+			return;
+		if (!(lnksta & PCI_EXP_LNKSTA_LT))
+			break;
+		msleep(1);
+	}
+
+	pci_info(dev, "link retrained to %s\n",
+		 pci_speed_string(pcie_link_speed[lnksta & PCI_EXP_LNKSTA_CLS]));
+}
+
+static void quirk_raise_target_link_speed(struct pci_dev *dev)
+{
+	u32 lnkcap2;
+	u16 lnkctl2, new_lnkctl2, lnksta;
+	u16 cap_tls, cur_tls;
+
+	if (pci_pcie_type(dev) != PCI_EXP_TYPE_ROOT_PORT)
+		return;
+
+	if (!dmi_check_system(pcie_gen5_target_speed_boards))
+		return;
+
+	pcie_capability_read_dword(dev, PCI_EXP_LNKCAP2, &lnkcap2);
+	lnkcap2 &= PCI_EXP_LNKCAP2_SLS;
+	if (!lnkcap2)
+		return;			/* no Supported Link Speeds Vector */
+
+	/*
+	 * The TLS encoding is the 1-based index of the bit in the Supported
+	 * Link Speeds Vector, so the highest supported speed is fls() of the
+	 * vector minus one (bit 0 of LNKCAP2 is reserved).
+	 */
+	cap_tls = fls(lnkcap2) - 1;
+	if (cap_tls > PCI_EXP_LNKCTL2_TLS_64_0GT)
+		cap_tls = PCI_EXP_LNKCTL2_TLS_64_0GT;
+
+	if (pcie_capability_read_word(dev, PCI_EXP_LNKCTL2, &lnkctl2))
+		return;
+	cur_tls = lnkctl2 & PCI_EXP_LNKCTL2_TLS;
+
+	/*
+	 * Raise only.  If firmware already targets the cap there is nothing to
+	 * write here -- but the bypass bit below is a separate defect and must
+	 * still be cleared, so this is not an early return.
+	 */
+	if (cur_tls < cap_tls) {
+		new_lnkctl2 = (lnkctl2 & ~PCI_EXP_LNKCTL2_TLS) | cap_tls;
+		if (pcie_capability_write_word(dev, PCI_EXP_LNKCTL2, new_lnkctl2))
+			pci_info(dev, "could not raise Target Link Speed past %s\n",
+				 pci_speed_string(PCIE_LNKCTL2_TLS2SPEED(lnkctl2)));
+		else
+			pci_info(dev, "firmware left Target Link Speed at %s; raised to %s advertised by LnkCap2\n",
+				 pci_speed_string(PCIE_LNKCTL2_TLS2SPEED(lnkctl2)),
+				 pci_speed_string(PCIE_LNKCTL2_TLS2SPEED(new_lnkctl2)));
+	}
+
+	/*
+	 * Firmware sets the bypass-disable bit on BOTH ends and the link trains
+	 * at the lower rate unless both are cleared, so walk the children too.
+	 * They are already scanned at this point -- pci_bus_add_devices() walks
+	 * parents before children, so this root port's FINAL fixup runs after
+	 * the whole bus was enumerated and before any child driver binds.
+	 */
+	quirk_allow_eq_bypass(dev);
+	if (dev->subordinate) {
+		struct pci_dev *child;
+
+		list_for_each_entry(child, &dev->subordinate->devices, bus_list)
+			quirk_allow_eq_bypass(child);
+	}
+
+	/*
+	 * Retrain whenever the link is running below the speed it is now told
+	 * to target, NOT merely when this quirk changed a register.  The two
+	 * ports on this board need different halves of the fix and only this
+	 * condition covers both: one has the bypass bit set and needs it
+	 * cleared, the other already has it clear and is simply still sitting
+	 * on the 16 GT/s it negotiated before the target was raised.  Keying
+	 * the retrain off "did I write something" leaves that second port at
+	 * Gen 4 -- measured, and the endpoint driver then latches
+	 * Gen 4 for the life of the boot.
+	 *
+	 * LNKSTA Current Link Speed and LNKCTL2 Target Link Speed share an
+	 * encoding, so they compare directly.
+	 */
+	if (pcie_capability_read_word(dev, PCI_EXP_LNKSTA, &lnksta))
+		return;
+
+	if ((lnksta & PCI_EXP_LNKSTA_CLS) < cap_tls)
+		quirk_retrain_and_report(dev);
+}
+/* AMD Turin GPP Bridge -- the external Root Ports on this board with Zen 5 */
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AMD, 0x153e, quirk_raise_target_link_speed);
+/* AMD Genoa/Bergamo GPP Bridge -- the same Root Ports on this board with Zen 4 */
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AMD, 0x14ab, quirk_raise_target_link_speed);

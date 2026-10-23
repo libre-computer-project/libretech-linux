@@ -7,6 +7,7 @@
 
 #include "meson-g12b-s922x.dtsi"
 #include "meson-g12b-bananapi.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "bananapi,bpi-m2s", "amlogic,s922x", "amlogic,g12b";

@@ -10,6 +10,7 @@
 /dts-v1/;
 
 #include "meson-gxl.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "jethome,jethub-j80", "amlogic,s905w", "amlogic,meson-gxl";

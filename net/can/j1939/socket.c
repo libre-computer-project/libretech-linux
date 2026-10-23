@@ -332,7 +332,8 @@ static void j1939_sk_recv_one(struct j1939_sock *jsk, struct sk_buff *oskb)
 	if (skb->sk)
 		skcb->msg_flags |= MSG_DONTROUTE;
 
-	if (sock_queue_rcv_skb_reason(&jsk->sk, skb, &reason) < 0)
+	reason = sock_queue_rcv_skb_reason(&jsk->sk, skb);
+	if (reason)
 		sk_skb_reason_drop(&jsk->sk, skb, reason);
 }
 
@@ -440,7 +441,7 @@ static int j1939_sk_sanity_check(struct sockaddr_can *addr, int len)
 	return 0;
 }
 
-static int j1939_sk_bind(struct socket *sock, struct sockaddr *uaddr, int len)
+static int j1939_sk_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int len)
 {
 	struct sockaddr_can *addr = (struct sockaddr_can *)uaddr;
 	struct j1939_sock *jsk = j1939_sk(sock->sk);
@@ -478,6 +479,12 @@ static int j1939_sk_bind(struct socket *sock, struct sockaddr *uaddr, int len)
 
 		ndev = dev_get_by_index(net, addr->can_ifindex);
 		if (!ndev) {
+			ret = -ENODEV;
+			goto out_release_sock;
+		}
+
+		if (ndev->reg_state != NETREG_REGISTERED) {
+			dev_put(ndev);
 			ret = -ENODEV;
 			goto out_release_sock;
 		}

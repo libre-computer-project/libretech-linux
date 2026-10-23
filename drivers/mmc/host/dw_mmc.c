@@ -61,6 +61,98 @@
 
 #define DESC_RING_BUF_SZ	PAGE_SIZE
 
+/*
+ * TEST ONLY -- a data-CRC fault injector for the CRC-storm clock-fallback
+ * ladder (mmc_host_ops->lower_bus_clock, drv_data->lower_bus_clock). With
+ * dcrc_inject_every=N, every Nth data transfer that completed cleanly while
+ * the card clock is at least dcrc_inject_min_hz is reported to the core as a
+ * data CRC error (-EILSEQ, no bytes transferred) exactly as a real DCRC
+ * would be: the block layer retries it, the core counts it towards its
+ * storm threshold and re-tunes, and once the threshold is crossed the host
+ * steps the clock down a rung. Tuning blocks (CMD19/CMD21) are never faked.
+ * Both parameters default to 0 (off); the counter is read-only.
+ */
+static unsigned int dcrc_inject_every;
+module_param(dcrc_inject_every, uint, 0644);
+MODULE_PARM_DESC(dcrc_inject_every,
+		 "TEST ONLY: report every Nth clean data transfer as a data CRC error (0 = off)");
+static unsigned int dcrc_inject_min_hz;
+module_param(dcrc_inject_min_hz, uint, 0644);
+MODULE_PARM_DESC(dcrc_inject_min_hz,
+		 "TEST ONLY: inject only while the card clock is at least this many Hz");
+static unsigned int dcrc_injected;
+module_param(dcrc_injected, uint, 0444);
+MODULE_PARM_DESC(dcrc_injected, "TEST ONLY: number of data CRC errors faked so far");
+
+static bool dw_mci_dcrc_inject(struct dw_mci *host, struct mmc_data *data)
+{
+	static unsigned int since_last;
+	struct mmc_host *mmc = host->slot ? host->slot->mmc : NULL;
+
+	if (likely(!dcrc_inject_every) || !mmc || !data->mrq || !data->mrq->cmd ||
+	    mmc_op_tuning(data->mrq->cmd->opcode) ||
+	    mmc->actual_clock < dcrc_inject_min_hz)
+		return false;
+
+	if (++since_last < dcrc_inject_every)
+		return false;
+
+	since_last = 0;
+	dcrc_injected++;
+	dev_warn(host->dev, "TEST: faking data CRC error #%u on CMD%u at %u Hz\n",
+		 dcrc_injected, data->mrq->cmd->opcode, mmc->actual_clock);
+	return true;
+}
+
+/*
+ * TEST ONLY -- real bus-level fault injectors for the recovery paths, so a
+ * bench can drive them without a misbehaving card:
+ *
+ * cmd_inject_opcode=N, cmd_inject_count=M: the next M commands whose opcode
+ * is N are put on the bus with the reserved command index 14 instead (SD
+ * Physical Layer 3.01 table 4-23: reserved), which no SD card answers, so the
+ * CIU sees a genuine response timeout (RTO) with the bus otherwise untouched
+ * -- the driver's own abort/reset path and the core's recovery run exactly as
+ * for a card that went silent. N=18 is a silent read, N=19 a silent tuning
+ * block (M large = every phase bad, the whole clock ladder, then the core's
+ * fallback), N=11 a silent voltage switch. The index is written as the CMD
+ * register's full 6-bit field; SDMMC_CMD_INDX() masks to 5 bits.
+ *
+ * idmac_inject_noown=M: for the next M data transfers the first IDMAC
+ * descriptor is handed to the DMA with its OWN bit clear -- a host-side
+ * fault the driver never makes -- so the IDMAC stops on the spot (DU) and
+ * the data phase can only end through a timeout.
+ *
+ * All default to 0 (off) and count down as they fire.
+ */
+static unsigned int cmd_inject_opcode;
+module_param(cmd_inject_opcode, uint, 0644);
+MODULE_PARM_DESC(cmd_inject_opcode,
+		 "TEST ONLY: command index to put on the bus as the reserved CMD60 (no response)");
+static unsigned int cmd_inject_count;
+module_param(cmd_inject_count, uint, 0644);
+MODULE_PARM_DESC(cmd_inject_count,
+		 "TEST ONLY: how many more matching commands to replace (0 = off)");
+static unsigned int idmac_inject_noown;
+module_param(idmac_inject_noown, uint, 0644);
+MODULE_PARM_DESC(idmac_inject_noown,
+		 "TEST ONLY: hand the next N data transfers' first IDMAC descriptor over without OWN (0 = off)");
+
+#define DW_MCI_INJECT_RESERVED_CMD	14
+#define DW_MCI_CMD_INDEX_MASK		0x3fU
+
+static u32 dw_mci_cmd_inject(struct dw_mci *host, struct mmc_command *cmd,
+			     u32 cmd_flags)
+{
+	if (likely(!cmd_inject_count) || cmd->opcode != cmd_inject_opcode)
+		return cmd_flags;
+
+	cmd_inject_count--;
+	dev_warn(host->dev, "TEST: sending CMD%u as the unanswered CMD%u (%u left)\n",
+		 cmd->opcode, DW_MCI_INJECT_RESERVED_CMD, cmd_inject_count);
+	return (cmd_flags & ~DW_MCI_CMD_INDEX_MASK) | DW_MCI_INJECT_RESERVED_CMD;
+}
+
 struct idmac_desc_64addr {
 	u32		des0;	/* Control Descriptor */
 #define IDMAC_OWN_CLR64(x) \
@@ -402,15 +494,24 @@ static void dw_mci_start_command(struct dw_mci *host,
 		 "start command: ARGR=0x%08x CMDR=0x%08x\n",
 		 cmd->arg, cmd_flags);
 
+	cmd_flags = dw_mci_cmd_inject(host, cmd, cmd_flags);
+
 	mci_writel(host, CMDARG, cmd->arg);
 	wmb(); /* drain writebuffer */
 	dw_mci_wait_while_busy(host, cmd_flags);
 
 	mci_writel(host, CMD, cmd_flags | SDMMC_CMD_START);
 
-	/* response expected command only */
-	if (cmd_flags & SDMMC_CMD_RESP_EXP)
-		dw_mci_set_cto(host);
+	/*
+	 * Arm the software backstop for every command, not only those that
+	 * expect a response. A no-response command (CMD0, CMD4, ...) completes
+	 * with CDONE too, and a CIU that never raises it -- card clock gated,
+	 * a stalled clock update -- used to leave the request without any
+	 * timer: the core waits on the completion for ever and the block
+	 * queue hangs. cto_ms is 255 card clocks plus 10 ms, and a no-response
+	 * command is on the bus for at most 48 bits plus the 80 init clocks.
+	 */
+	dw_mci_set_cto(host);
 }
 
 static inline void send_stop_abort(struct dw_mci *host, struct mmc_data *data)
@@ -732,6 +833,23 @@ static int dw_mci_idmac_start_dma(struct dw_mci *host, unsigned int sg_len)
 
 	if (ret)
 		goto out;
+
+	if (unlikely(idmac_inject_noown)) {
+		/* TEST ONLY: first descriptor handed over without OWN -> DU */
+		idmac_inject_noown--;
+		if (host->dma_64bit_address == 1) {
+			struct idmac_desc_64addr *d = host->sg_cpu;
+
+			d->des0 &= ~IDMAC_DES0_OWN;
+		} else {
+			struct idmac_desc *d = host->sg_cpu;
+
+			d->des0 &= cpu_to_le32(~IDMAC_DES0_OWN);
+		}
+		dev_warn(host->dev, "TEST: IDMAC descriptor 0 handed over without OWN (%s, %u left)\n",
+			 host->data->flags & MMC_DATA_WRITE ? "write" : "read",
+			 idmac_inject_noown);
+	}
 
 	/* drain writebuffer */
 	wmb();
@@ -1729,6 +1847,29 @@ static int dw_mci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	return err;
 }
 
+/*
+ * CRC-storm clock-fallback rung (mmc_host_ops->lower_bus_clock): the
+ * implementation lowers its clock ceiling; re-applying the current ios then
+ * re-rates the CIU clock and the divider before the core re-tunes.
+ */
+static int dw_mci_lower_bus_clock(struct mmc_host *mmc)
+{
+	struct dw_mci_slot *slot = mmc_priv(mmc);
+	struct dw_mci *host = slot->host;
+	const struct dw_mci_drv_data *drv_data = host->drv_data;
+	int err;
+
+	if (!drv_data || !drv_data->lower_bus_clock)
+		return -EOPNOTSUPP;
+
+	err = drv_data->lower_bus_clock(host);
+	if (err)
+		return err;
+
+	dw_mci_set_ios(mmc, &mmc->ios);
+	return 0;
+}
+
 static int dw_mci_prepare_hs400_tuning(struct mmc_host *mmc,
 				       struct mmc_ios *ios)
 {
@@ -1820,6 +1961,7 @@ static const struct mmc_host_ops dw_mci_ops = {
 	.enable_sdio_irq	= dw_mci_enable_sdio_irq,
 	.ack_sdio_irq		= dw_mci_ack_sdio_irq,
 	.execute_tuning		= dw_mci_execute_tuning,
+	.lower_bus_clock	= dw_mci_lower_bus_clock,
 	.card_busy		= dw_mci_card_busy,
 	.start_signal_voltage_switch = dw_mci_switch_voltage,
 	.prepare_hs400_tuning	= dw_mci_prepare_hs400_tuning,
@@ -1992,6 +2134,10 @@ static int dw_mci_data_complete(struct dw_mci *host, struct mmc_data *data)
 		 * in the FIFO
 		 */
 		dw_mci_reset(host);
+	} else if (dw_mci_dcrc_inject(host, data)) {
+		/* TEST ONLY: the transfer was clean; report it as a DCRC */
+		data->bytes_xfered = 0;
+		data->error = -EILSEQ;
 	} else {
 		data->bytes_xfered = data->blocks * data->blksz;
 		data->error = 0;
@@ -2025,9 +2171,11 @@ static void dw_mci_set_drto(struct dw_mci *host)
 	drto_ms += 10;
 
 	spin_lock_irqsave(&host->irq_lock, irqflags);
-	if (!test_bit(EVENT_DATA_COMPLETE, &host->pending_events))
-		mod_timer(&host->dto_timer,
-			  jiffies + msecs_to_jiffies(drto_ms));
+	if (!test_bit(EVENT_DATA_COMPLETE, &host->pending_events)) {
+		host->dto_tcbcnt = mci_readl(host, TCBCNT);
+		host->dto_interval = msecs_to_jiffies(drto_ms);
+		mod_timer(&host->dto_timer, jiffies + host->dto_interval);
+	}
 	spin_unlock_irqrestore(&host->irq_lock, irqflags);
 }
 
@@ -2165,10 +2313,15 @@ static void dw_mci_work_func(struct work_struct *t)
 						&host->pending_events)) {
 				/*
 				 * If all data-related interrupts don't come
-				 * within the given time in reading data state.
+				 * within the given time. Both directions: a
+				 * write whose DMA stalls (the IDMAC stopped on
+				 * a descriptor, FIFO starved) never raises DTO
+				 * either, and the hardware busy timeout only
+				 * runs once the data is out. The timer re-arms
+				 * while TCBCNT still advances, so a slow card
+				 * is never mistaken for a stalled host.
 				 */
-				if (host->dir_status == DW_MCI_RECV_STATUS)
-					dw_mci_set_drto(host);
+				dw_mci_set_drto(host);
 				break;
 			}
 
@@ -3227,6 +3380,10 @@ static void dw_mci_cto_timer(struct timer_list *t)
 		 * state, we should notify the driver to terminate current
 		 * transfer and report a command timeout to the core.
 		 */
+		dev_warn_ratelimited(host->dev,
+				     "CMD%u never completed (state %d, RINTSTS %#x, STATUS %#x), timing it out\n",
+				     host->cmd ? host->cmd->opcode : 0, host->state,
+				     mci_readl(host, RINTSTS), mci_readl(host, STATUS));
 		host->cmd_status = SDMMC_INT_RTO;
 		set_bit(EVENT_CMD_COMPLETE, &host->pending_events);
 		queue_work(system_bh_wq, &host->bh_work);
@@ -3273,10 +3430,45 @@ static void dw_mci_dto_timer(struct timer_list *t)
 	case STATE_SENDING_DATA:
 	case STATE_DATA_BUSY:
 		/*
+		 * A transfer that is still moving bytes is not stuck, only
+		 * long: a slow card's multi-block write, or a large read at
+		 * a low rate, can outlast one TMOUT interval as a whole while
+		 * every block inside it is bounded by the hardware timeout.
+		 * Re-arm and look again; only a CIU byte count that has not
+		 * moved since the last look is a stall.
+		 */
+		pending = mci_readl(host, TCBCNT);
+		if (host->data && host->data->blocks > 1 &&
+		    pending != host->dto_tcbcnt) {
+			host->dto_tcbcnt = pending;
+			mod_timer(&host->dto_timer, jiffies + host->dto_interval);
+			goto exit;
+		}
+
+		/*
 		 * If DTO interrupt does NOT come in sending data state,
 		 * we should notify the driver to terminate current transfer
 		 * and report a data timeout to the core.
 		 */
+		/*
+		 * A tuning block at a bad sample phase routinely ends here
+		 * (the CIU raises neither DTO nor DRTO for it); that is the
+		 * sweep working, not a fault, so it stays at debug level.
+		 */
+		if (host->data && host->data->mrq && host->data->mrq->cmd &&
+		    mmc_op_tuning(host->data->mrq->cmd->opcode))
+			dev_dbg(host->dev,
+				"tuning block never completed (RINTSTS %#x, STATUS %#x), timing it out\n",
+				mci_readl(host, RINTSTS), mci_readl(host, STATUS));
+		else
+			dev_warn_ratelimited(host->dev,
+					     "data phase never completed (state %d, %s %u blocks, TCBCNT %u, RINTSTS %#x, STATUS %#x, IDSTS %#x), timing it out\n",
+					     host->state,
+					     host->dir_status == DW_MCI_SEND_STATUS ? "write" : "read",
+					     host->data ? host->data->blocks : 0, pending,
+					     mci_readl(host, RINTSTS), mci_readl(host, STATUS),
+					     host->dma_64bit_address == 1 ?
+					     mci_readl(host, IDSTS64) : mci_readl(host, IDSTS));
 		host->data_status = SDMMC_INT_DRTO;
 		set_bit(EVENT_DATA_ERROR, &host->pending_events);
 		set_bit(EVENT_DATA_COMPLETE, &host->pending_events);

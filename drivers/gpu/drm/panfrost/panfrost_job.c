@@ -22,7 +22,7 @@
 #include "panfrost_mmu.h"
 #include "panfrost_dump.h"
 
-#define JOB_TIMEOUT_MS 500
+#define JOB_TIMEOUT_MS 10000
 
 #define job_write(dev, reg, data) writel(data, dev->iomem + (reg))
 #define job_read(dev, reg) readl(dev->iomem + (reg))
@@ -341,23 +341,36 @@ static void panfrost_job_cleanup(struct kref *ref)
 	dma_fence_put(job->done_fence);
 	dma_fence_put(job->render_done_fence);
 
-	if (job->mappings) {
-		for (i = 0; i < job->bo_count; i++) {
-			if (!job->mappings[i])
-				break;
+	/* shared_bos: another job in the batch (SUBMIT_BATCH) owns
+	 * bos/mappings -- only the owning job frees them. */
+	if (!job->shared_bos) {
+		if (job->mappings) {
+			for (i = 0; i < job->bo_count; i++) {
+				if (!job->mappings[i])
+					break;
 
-			atomic_dec(&job->mappings[i]->obj->gpu_usecount);
-			panfrost_gem_mapping_put(job->mappings[i]);
+				atomic_dec(&job->mappings[i]->obj->gpu_usecount);
+				panfrost_gem_mapping_put(job->mappings[i]);
+			}
+			kvfree(job->mappings);
 		}
-		kvfree(job->mappings);
+
+		if (job->bos) {
+			for (i = 0; i < job->bo_count; i++)
+				drm_gem_object_put(job->bos[i]);
+
+			kvfree(job->bos);
+		}
 	}
 
-	if (job->bos) {
-		for (i = 0; i < job->bo_count; i++)
-			drm_gem_object_put(job->bos[i]);
-
-		kvfree(job->bos);
-	}
+	/*
+	 * Release the ref taken on the SUBMIT_BATCH owner (see
+	 * panfrost_ioctl_submit_batch): now that this secondary is gone, the
+	 * owner (and the shared bos/mappings arrays) may be freed.  Done after
+	 * this job's own teardown; the put may recursively clean up the owner.
+	 */
+	if (job->shared_owner)
+		panfrost_job_put(job->shared_owner);
 
 	kfree(job);
 }

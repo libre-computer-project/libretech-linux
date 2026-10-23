@@ -7,6 +7,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
 #include <linux/devfreq-event.h>
@@ -176,8 +177,19 @@ static int rk3399_dmcfreq_target(struct device *dev, unsigned long *freq,
 		}
 	}
 
+	/*
+	 * The switch parks every other online CPU in BL31 for its duration
+	 * (clk-ddr.c runs the SIP under stop_machine_cpuslocked()), so no CPU
+	 * may come or go while it is in flight. Take the hotplug lock HERE,
+	 * outside clk_set_rate(), because the hotplug path already nests the
+	 * clk prepare lock inside it (cpufreq's online callback sets its
+	 * initial target); the clk driver taking it the other way round would
+	 * be an inversion.
+	 */
+	cpus_read_lock();
 	err = clk_set_rate(dmcfreq->dmc_clk, target_rate);
 	if (err) {
+		cpus_read_unlock();
 		dev_err(dev, "Cannot set frequency %lu (%d)\n", target_rate,
 			err);
 		regulator_set_voltage(dmcfreq->vdd_center, dmcfreq->volt,
@@ -192,13 +204,20 @@ static int rk3399_dmcfreq_target(struct device *dev, unsigned long *freq,
 	 * 2. Ddr frequency scaling sucessful, we get the rate we set.
 	 */
 	dmcfreq->rate = clk_get_rate(dmcfreq->dmc_clk);
+	cpus_read_unlock();
 
-	/* If get the incorrect rate, set voltage to old value. */
+	/*
+	 * If get the incorrect rate, set voltage to old value -- and say so
+	 * with an errno: BL31 refuses a switch whose rendezvous did not
+	 * complete and keeps the old rate, and a 0 here would let devfreq
+	 * record a transition that did not happen.
+	 */
 	if (dmcfreq->rate != target_rate) {
 		dev_err(dev, "Got wrong frequency, Request %lu, Current %lu\n",
 			target_rate, dmcfreq->rate);
 		regulator_set_voltage(dmcfreq->vdd_center, dmcfreq->volt,
 				      dmcfreq->volt);
+		err = -EAGAIN;
 		goto out;
 	} else if (old_clk_rate > target_rate)
 		err = regulator_set_voltage(dmcfreq->vdd_center, target_volt,
@@ -230,6 +249,21 @@ static int rk3399_dmcfreq_get_dev_status(struct device *dev,
 	stat->current_frequency = dmcfreq->rate;
 	stat->busy_time = edata.load_count;
 	stat->total_time = edata.total_count;
+
+	/*
+	 * A fixed-rate board never issues DRAM_SET_RATE, so this is the tick
+	 * that lets BL31 reread LPDDR4 MR4. BL31 keeps the short interval
+	 * until repeated cool readings allow a longer one. A BL31 without
+	 * the opcode returns 0. The interval decision stays in BL31; this
+	 * call does not use it.
+	 */
+	{
+		struct arm_smccc_res res;
+
+		arm_smccc_smc(ROCKCHIP_SIP_DRAM_FREQ, 0, 0,
+			      ROCKCHIP_SIP_CONFIG_DRAM_MR4_REFRESH,
+			      0, 0, 0, 0, &res);
+	}
 
 	return ret;
 }

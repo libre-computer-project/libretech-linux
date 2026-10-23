@@ -136,7 +136,7 @@ bool __init microcode_loader_disabled(void)
 	return dis_ucode_ldr;
 }
 
-static void early_parse_cmdline(void)
+static void __init early_parse_cmdline(void)
 {
 	char cmd_buf[64] = {};
 	char *s, *p = cmd_buf;
@@ -812,8 +812,17 @@ void microcode_bsp_resume(void)
 		reload_early_microcode(cpu);
 }
 
-static struct syscore_ops mc_syscore_ops = {
-	.resume	= microcode_bsp_resume,
+static void microcode_bsp_syscore_resume(void *data)
+{
+	microcode_bsp_resume();
+}
+
+static const struct syscore_ops mc_syscore_ops = {
+	.resume	= microcode_bsp_syscore_resume,
+};
+
+static struct syscore mc_syscore = {
+	.ops = &mc_syscore_ops,
 };
 
 static int mc_cpu_online(unsigned int cpu)
@@ -892,7 +901,7 @@ static int __init microcode_init(void)
 		}
 	}
 
-	register_syscore_ops(&mc_syscore_ops);
+	register_syscore(&mc_syscore);
 	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "x86/microcode:online",
 			  mc_cpu_online, mc_cpu_down_prep);
 

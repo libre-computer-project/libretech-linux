@@ -48,7 +48,7 @@ MODULE_DESCRIPTION("Asus HID Keyboard and TouchPad");
 #define FEATURE_REPORT_ID 0x0d
 #define INPUT_REPORT_ID 0x5d
 #define FEATURE_KBD_REPORT_ID 0x5a
-#define FEATURE_KBD_REPORT_SIZE 16
+#define FEATURE_KBD_REPORT_SIZE 64
 #define FEATURE_KBD_LED_REPORT_ID1 0x5d
 #define FEATURE_KBD_LED_REPORT_ID2 0x5e
 
@@ -89,6 +89,7 @@ MODULE_DESCRIPTION("Asus HID Keyboard and TouchPad");
 #define QUIRK_ROG_NKEY_KEYBOARD		BIT(11)
 #define QUIRK_ROG_CLAYMORE_II_KEYBOARD BIT(12)
 #define QUIRK_ROG_ALLY_XPAD		BIT(13)
+#define QUIRK_DISABLE_OOBE		BIT(14)	/* send OOBE-disable sequence at probe */
 
 #define I2C_KEYBOARD_QUIRKS			(QUIRK_FIX_NOTEBOOK_REPORT | \
 						 QUIRK_NO_INIT_REPORTS | \
@@ -108,6 +109,20 @@ struct asus_kbd_leds {
 	bool removed;
 };
 
+struct asus_mic_mute_led {
+	struct led_classdev cdev;
+	struct hid_device *hdev;
+	struct work_struct work;
+	unsigned int brightness;
+};
+
+struct asus_camera_led {
+	struct led_classdev cdev;
+	struct hid_device *hdev;
+	struct work_struct work;
+	unsigned int brightness;
+};
+
 struct asus_touchpad_info {
 	int max_x;
 	int max_y;
@@ -124,6 +139,8 @@ struct asus_drvdata {
 	struct input_dev *input;
 	struct input_dev *tp_kbd_input;
 	struct asus_kbd_leds *kbd_backlight;
+	struct asus_mic_mute_led *mic_mute_led;
+	struct asus_camera_led *camera_led;
 	const struct asus_touchpad_info *tp;
 	bool enable_backlight;
 	struct power_supply *battery;
@@ -393,15 +410,41 @@ static int asus_kbd_set_report(struct hid_device *hdev, const u8 *buf, size_t bu
 
 static int asus_kbd_init(struct hid_device *hdev, u8 report_id)
 {
+	/*
+	 * The handshake is first sent as a set_report, then retrieved
+	 * from a get_report. They should be equal.
+	 */
 	const u8 buf[] = { report_id, 0x41, 0x53, 0x55, 0x53, 0x20, 0x54,
 		     0x65, 0x63, 0x68, 0x2e, 0x49, 0x6e, 0x63, 0x2e, 0x00 };
 	int ret;
 
 	ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
-	if (ret < 0)
-		hid_err(hdev, "Asus failed to send init command: %d\n", ret);
+	if (ret < 0) {
+		hid_err(hdev, "Asus handshake %02x failed to send: %d\n",
+			report_id, ret);
+		return ret;
+	}
 
-	return ret;
+	u8 *readbuf __free(kfree) = kzalloc(FEATURE_KBD_REPORT_SIZE, GFP_KERNEL);
+	if (!readbuf)
+		return -ENOMEM;
+
+	ret = hid_hw_raw_request(hdev, report_id, readbuf,
+				 FEATURE_KBD_REPORT_SIZE, HID_FEATURE_REPORT,
+				 HID_REQ_GET_REPORT);
+	if (ret < 0) {
+		hid_warn(hdev, "Asus handshake %02x failed to receive ack: %d\n",
+			 report_id, ret);
+	} else if (memcmp(readbuf, buf, sizeof(buf)) != 0) {
+		hid_warn(hdev, "Asus handshake %02x returned invalid response: %*ph\n",
+			 report_id, FEATURE_KBD_REPORT_SIZE, readbuf);
+	}
+
+	/*
+	 * Do not return error if handshake is wrong until this is
+	 * verified to work for all devices.
+	 */
+	return 0;
 }
 
 static int asus_kbd_get_functions(struct hid_device *hdev,
@@ -439,19 +482,18 @@ static int asus_kbd_get_functions(struct hid_device *hdev,
 
 static int asus_kbd_disable_oobe(struct hid_device *hdev)
 {
-	const u8 init[][6] = {
-		{ FEATURE_KBD_REPORT_ID, 0x05, 0x20, 0x31, 0x00, 0x08 },
-		{ FEATURE_KBD_REPORT_ID, 0xBA, 0xC5, 0xC4 },
-		{ FEATURE_KBD_REPORT_ID, 0xD0, 0x8F, 0x01 },
-		{ FEATURE_KBD_REPORT_ID, 0xD0, 0x85, 0xFF }
-	};
+	/*
+	 * RE of AsusOptimization.exe (ARM64) VA 0x140023e5c: "SetFeature OOBE
+	 * Complete" — stops the rainbow boot animation on PID 0x4543.
+	 * asus_kbd_init() already sends the "ASUS Tech.Inc." init string first.
+	 */
+	static const u8 oobe_complete[] = { FEATURE_KBD_REPORT_ID, 0xD0, 0x8F, 0x01,
+					    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	int ret;
 
-	for (size_t i = 0; i < ARRAY_SIZE(init); i++) {
-		ret = asus_kbd_set_report(hdev, init[i], sizeof(init[i]));
-		if (ret < 0)
-			return ret;
-	}
+	ret = asus_kbd_set_report(hdev, oobe_complete, sizeof(oobe_complete));
+	if (ret < 0)
+		return ret;
 
 	hid_info(hdev, "Disabled OOBE for keyboard\n");
 	return 0;
@@ -498,6 +540,7 @@ static enum led_brightness asus_kbd_backlight_get(struct led_classdev *led_cdev)
 static void asus_kbd_backlight_work(struct work_struct *work)
 {
 	struct asus_kbd_leds *led = container_of(work, struct asus_kbd_leds, work);
+	struct asus_drvdata *drvdata = hid_get_drvdata(led->hdev);
 	u8 buf[] = { FEATURE_KBD_REPORT_ID, 0xba, 0xc5, 0xc4, 0x00 };
 	int ret;
 	unsigned long flags;
@@ -506,9 +549,89 @@ static void asus_kbd_backlight_work(struct work_struct *work)
 	buf[4] = led->brightness;
 	spin_unlock_irqrestore(&led->lock, flags);
 
-	ret = asus_kbd_set_report(led->hdev, buf, sizeof(buf));
+	if (drvdata->quirks & QUIRK_DISABLE_OOBE) {
+		/* ARM64 MCU keyboards (PID 0x4543) use opcode 0xB0 with a
+		 * direct 0-3 level; the idle-timeout opcode 0xBA is incorrect. */
+		u8 arm64_buf[] = { FEATURE_KBD_REPORT_ID, 0xB0, buf[4] };
+
+		ret = asus_kbd_set_report(led->hdev, arm64_buf, sizeof(arm64_buf));
+	} else {
+		ret = asus_kbd_set_report(led->hdev, buf, sizeof(buf));
+	}
 	if (ret < 0)
 		hid_err(led->hdev, "Asus failed to set keyboard backlight: %d\n", ret);
+}
+
+static void asus_mic_mute_led_set(struct led_classdev *led_cdev,
+				  enum led_brightness brightness)
+{
+	struct asus_mic_mute_led *led = container_of(led_cdev,
+						     struct asus_mic_mute_led,
+						     cdev);
+	led->brightness = brightness;
+	schedule_work(&led->work);
+}
+
+static enum led_brightness asus_mic_mute_led_get(struct led_classdev *led_cdev)
+{
+	struct asus_mic_mute_led *led = container_of(led_cdev,
+						     struct asus_mic_mute_led,
+						     cdev);
+	return led->brightness;
+}
+
+static void asus_mic_mute_led_work(struct work_struct *work)
+{
+	struct asus_mic_mute_led *led = container_of(work,
+						     struct asus_mic_mute_led,
+						     work);
+	u8 buf[FEATURE_KBD_REPORT_SIZE] = { FEATURE_KBD_REPORT_ID, 0xD0, 0x4E,
+					    (u8)led->brightness };
+	int ret;
+
+	ret = asus_kbd_set_report(led->hdev, buf, sizeof(buf));
+	if (ret < 0)
+		hid_err(led->hdev, "Asus failed to set mic mute LED: %d\n", ret);
+}
+
+static void asus_camera_led_set(struct led_classdev *led_cdev,
+				enum led_brightness brightness)
+{
+	struct asus_camera_led *led = container_of(led_cdev,
+						   struct asus_camera_led,
+						   cdev);
+	led->brightness = brightness;
+	schedule_work(&led->work);
+}
+
+static enum led_brightness asus_camera_led_get(struct led_classdev *led_cdev)
+{
+	struct asus_camera_led *led = container_of(led_cdev,
+						   struct asus_camera_led,
+						   cdev);
+	return led->brightness;
+}
+
+static void asus_camera_led_work(struct work_struct *work)
+{
+	struct asus_camera_led *led = container_of(work,
+						   struct asus_camera_led,
+						   work);
+	u8 buf[FEATURE_KBD_REPORT_SIZE] = { FEATURE_KBD_REPORT_ID, 0xD0, 0x89,
+					    led->brightness ? 0xF0 : 0xF1 };
+	int ret;
+
+	ret = asus_kbd_set_report(led->hdev, buf, sizeof(buf));
+	if (ret < 0)
+		hid_err(led->hdev, "Asus failed to set camera LED: %d\n", ret);
+
+	/* Also close the RGB shutter; open command is unknown so only close. */
+	if (led->brightness) {
+		buf[3] = 0xF2;
+		ret = asus_kbd_set_report(led->hdev, buf, sizeof(buf));
+		if (ret < 0)
+			hid_err(led->hdev, "Asus failed to set camera RGB shutter: %d\n", ret);
+	}
 }
 
 /* WMI-based keyboard backlight LED control (via asus-wmi driver) takes
@@ -638,13 +761,22 @@ static int asus_kbd_register_leds(struct hid_device *hdev)
 	unsigned char kbd_func;
 	int ret;
 
-	if (drvdata->quirks & QUIRK_ROG_NKEY_KEYBOARD) {
-		/* Initialize keyboard */
-		ret = asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
-		if (ret < 0)
-			return ret;
+	ret = asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
+	if (ret < 0)
+		return ret;
 
-		/* The LED endpoint is initialised in two HID */
+	/* Get keyboard functions */
+	ret = asus_kbd_get_functions(hdev, &kbd_func, FEATURE_KBD_REPORT_ID);
+	if (ret < 0)
+		return ret;
+
+	/* Check for backlight support; QUIRK_USE_KBD_BACKLIGHT overrides
+	 * when the MCU doesn't advertise the capability bit (e.g. 0x4543). */
+	if (!(kbd_func & SUPPORT_KBD_BACKLIGHT) &&
+	    !(drvdata->quirks & QUIRK_USE_KBD_BACKLIGHT))
+		return -ENODEV;
+
+	if (drvdata->quirks & QUIRK_ROG_NKEY_KEYBOARD) {
 		ret = asus_kbd_init(hdev, FEATURE_KBD_LED_REPORT_ID1);
 		if (ret < 0)
 			return ret;
@@ -652,34 +784,19 @@ static int asus_kbd_register_leds(struct hid_device *hdev)
 		ret = asus_kbd_init(hdev, FEATURE_KBD_LED_REPORT_ID2);
 		if (ret < 0)
 			return ret;
+	}
 
-		if (dmi_match(DMI_PRODUCT_FAMILY, "ProArt P16")) {
-			ret = asus_kbd_disable_oobe(hdev);
-			if (ret < 0)
-				return ret;
-		}
-
-		if (drvdata->quirks & QUIRK_ROG_ALLY_XPAD) {
-			intf = to_usb_interface(hdev->dev.parent);
-			udev = interface_to_usbdev(intf);
-			validate_mcu_fw_version(hdev,
-				le16_to_cpu(udev->descriptor.idProduct));
-		}
-
-	} else {
-		/* Initialize keyboard */
-		ret = asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
+	if (dmi_match(DMI_PRODUCT_FAMILY, "ProArt P16")) {
+		ret = asus_kbd_disable_oobe(hdev);
 		if (ret < 0)
 			return ret;
+	}
 
-		/* Get keyboard functions */
-		ret = asus_kbd_get_functions(hdev, &kbd_func, FEATURE_KBD_REPORT_ID);
-		if (ret < 0)
-			return ret;
-
-		/* Check for backlight support */
-		if (!(kbd_func & SUPPORT_KBD_BACKLIGHT))
-			return -ENODEV;
+	if ((drvdata->quirks & QUIRK_ROG_ALLY_XPAD) && hid_is_usb(hdev)) {
+		intf = to_usb_interface(hdev->dev.parent);
+		udev = interface_to_usbdev(intf);
+		validate_mcu_fw_version(hdev,
+			le16_to_cpu(udev->descriptor.idProduct));
 	}
 
 	drvdata->kbd_backlight = devm_kzalloc(&hdev->dev,
@@ -1095,22 +1212,80 @@ static int asus_start_multitouch(struct hid_device *hdev)
 	return 0;
 }
 
-static int __maybe_unused asus_resume(struct hid_device *hdev) {
+static int __maybe_unused asus_resume(struct hid_device *hdev)
+{
 	struct asus_drvdata *drvdata = hid_get_drvdata(hdev);
 	int ret = 0;
 
-	if (drvdata->kbd_backlight) {
-		const u8 buf[] = { FEATURE_KBD_REPORT_ID, 0xba, 0xc5, 0xc4,
-				drvdata->kbd_backlight->cdev.brightness };
-		ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
+	if (drvdata->quirks & QUIRK_DISABLE_OOBE) {
+		/*
+		 * After deep S3 the ARM64 MCU (PID 0x4543) may have lost its
+		 * "OOBE complete" state and restarted its rainbow animation.
+		 * Re-send the init string and OOBE-disable sequence before
+		 * restoring LED state, mirroring the probe-time sequence.
+		 */
+		ret = asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
 		if (ret < 0) {
-			hid_err(hdev, "Asus failed to set keyboard backlight: %d\n", ret);
+			hid_err(hdev, "Asus failed to re-init keyboard on resume: %d\n", ret);
+			goto asus_resume_err;
+		}
+
+		ret = asus_kbd_disable_oobe(hdev);
+		if (ret < 0) {
+			hid_err(hdev, "Asus failed to disable OOBE on resume: %d\n", ret);
 			goto asus_resume_err;
 		}
 	}
 
+	if (drvdata->kbd_backlight) {
+		enum led_brightness lvl = drvdata->kbd_backlight->cdev.brightness;
+
+		if (drvdata->quirks & QUIRK_DISABLE_OOBE) {
+			/* ARM64 MCU keyboards (PID 0x4543) use opcode 0xB0. */
+			const u8 buf[] = { FEATURE_KBD_REPORT_ID, 0xB0, lvl };
+
+			ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
+		} else {
+			const u8 buf[] = { FEATURE_KBD_REPORT_ID, 0xba, 0xc5, 0xc4, lvl };
+
+			ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
+		}
+		if (ret < 0)
+			hid_err(hdev, "Asus failed to set keyboard backlight: %d\n", ret);
+	}
+
+	if (drvdata->mic_mute_led) {
+		u8 buf[FEATURE_KBD_REPORT_SIZE] = {
+			FEATURE_KBD_REPORT_ID, 0xD0, 0x4E,
+			(u8)drvdata->mic_mute_led->cdev.brightness
+		};
+
+		ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
+		if (ret < 0)
+			hid_err(hdev, "Asus failed to restore mic mute LED: %d\n", ret);
+	}
+
+	if (drvdata->camera_led) {
+		enum led_brightness lvl = drvdata->camera_led->cdev.brightness;
+		u8 buf[FEATURE_KBD_REPORT_SIZE] = {
+			FEATURE_KBD_REPORT_ID, 0xD0, 0x89,
+			lvl ? 0xF0 : 0xF1
+		};
+
+		ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
+		if (ret < 0)
+			hid_err(hdev, "Asus failed to restore camera LED: %d\n", ret);
+
+		if (lvl) {
+			buf[3] = 0xF2;
+			ret = asus_kbd_set_report(hdev, buf, sizeof(buf));
+			if (ret < 0)
+				hid_err(hdev, "Asus failed to restore camera RGB shutter: %d\n", ret);
+		}
+	}
+
 asus_resume_err:
-	return ret;
+	return ret < 0 ? ret : 0;
 }
 
 static int __maybe_unused asus_reset_resume(struct hid_device *hdev)
@@ -1222,22 +1397,71 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	 * were freed during registration due to no usages being mapped,
 	 * leaving drvdata->input pointing to freed memory.
 	 */
-	if (!drvdata->input || !(hdev->claimed & HID_CLAIMED_INPUT)) {
-		hid_err(hdev, "Asus input not registered\n");
-		ret = -ENOMEM;
-		goto err_stop_hw;
+	if (drvdata->input && (hdev->claimed & HID_CLAIMED_INPUT)) {
+		if (drvdata->tp)
+			drvdata->input->name = "Asus TouchPad";
+		else
+			drvdata->input->name = "Asus Keyboard";
+
+		if (drvdata->tp) {
+			ret = asus_start_multitouch(hdev);
+			if (ret)
+				goto err_stop_hw;
+		}
 	}
 
-	if (drvdata->tp) {
-		drvdata->input->name = "Asus TouchPad";
-	} else {
-		drvdata->input->name = "Asus Keyboard";
-	}
+	if (drvdata->quirks & QUIRK_DISABLE_OOBE) {
+		asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
+		asus_kbd_disable_oobe(hdev);
+		/*
+		 * asus_input_configured() runs before OOBE is disabled and
+		 * finds the MCU in rainbow mode, causing backlight init to fail.
+		 * Re-try after OOBE disable puts the MCU in normal mode.
+		 */
+		if ((drvdata->quirks & QUIRK_USE_KBD_BACKLIGHT) &&
+		    !drvdata->kbd_backlight &&
+		    !asus_kbd_wmi_led_control_present(hdev)) {
+			if (asus_kbd_register_leds(hdev))
+				hid_warn(hdev, "Failed to initialize backlight.\n");
+		}
 
-	if (drvdata->tp) {
-		ret = asus_start_multitouch(hdev);
-		if (ret)
-			goto err_stop_hw;
+		drvdata->mic_mute_led = devm_kzalloc(&hdev->dev,
+						     sizeof(struct asus_mic_mute_led),
+						     GFP_KERNEL);
+		if (drvdata->mic_mute_led) {
+			drvdata->mic_mute_led->hdev = hdev;
+			drvdata->mic_mute_led->brightness = 0;
+			drvdata->mic_mute_led->cdev.name = "asus::mic_mute";
+			drvdata->mic_mute_led->cdev.max_brightness = 1;
+			drvdata->mic_mute_led->cdev.brightness_set = asus_mic_mute_led_set;
+			drvdata->mic_mute_led->cdev.brightness_get = asus_mic_mute_led_get;
+			INIT_WORK(&drvdata->mic_mute_led->work, asus_mic_mute_led_work);
+			if (devm_led_classdev_register(&hdev->dev,
+						       &drvdata->mic_mute_led->cdev)) {
+				hid_warn(hdev, "Failed to initialize mic mute LED.\n");
+				devm_kfree(&hdev->dev, drvdata->mic_mute_led);
+				drvdata->mic_mute_led = NULL;
+			}
+		}
+
+		drvdata->camera_led = devm_kzalloc(&hdev->dev,
+						   sizeof(struct asus_camera_led),
+						   GFP_KERNEL);
+		if (drvdata->camera_led) {
+			drvdata->camera_led->hdev = hdev;
+			drvdata->camera_led->brightness = 0;
+			drvdata->camera_led->cdev.name = "asus::camera_privacy";
+			drvdata->camera_led->cdev.max_brightness = 1;
+			drvdata->camera_led->cdev.brightness_set = asus_camera_led_set;
+			drvdata->camera_led->cdev.brightness_get = asus_camera_led_get;
+			INIT_WORK(&drvdata->camera_led->work, asus_camera_led_work);
+			if (devm_led_classdev_register(&hdev->dev,
+						       &drvdata->camera_led->cdev)) {
+				hid_warn(hdev, "Failed to initialize camera privacy LED.\n");
+				devm_kfree(&hdev->dev, drvdata->camera_led);
+				drvdata->camera_led = NULL;
+			}
+		}
 	}
 
 	return 0;
@@ -1258,6 +1482,12 @@ static void asus_remove(struct hid_device *hdev)
 
 		cancel_work_sync(&drvdata->kbd_backlight->work);
 	}
+
+	if (drvdata->mic_mute_led)
+		cancel_work_sync(&drvdata->mic_mute_led->work);
+
+	if (drvdata->camera_led)
+		cancel_work_sync(&drvdata->camera_led->work);
 
 	hid_hw_stop(hdev);
 }
@@ -1305,14 +1535,21 @@ static const __u8 *asus_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		 */
 		if (*rsize == rsize_orig &&
 			rdesc[offs] == 0x09 && rdesc[offs + 1] == 0x76) {
-			*rsize = rsize_orig + 1;
-			rdesc = kmemdup(rdesc, *rsize, GFP_KERNEL);
-			if (!rdesc)
-				return NULL;
+			__u8 *new_rdesc;
+
+			new_rdesc = devm_kzalloc(&hdev->dev, rsize_orig + 1,
+						 GFP_KERNEL);
+			if (!new_rdesc)
+				return rdesc;
 
 			hid_info(hdev, "Fixing up %s keyb report descriptor\n",
 				drvdata->quirks & QUIRK_T100CHI ?
 				"T100CHI" : "T90CHI");
+
+			memcpy(new_rdesc, rdesc, rsize_orig);
+			*rsize = rsize_orig + 1;
+			rdesc = new_rdesc;
+
 			memmove(rdesc + offs + 4, rdesc + offs + 2, 12);
 			rdesc[offs] = 0x19;
 			rdesc[offs + 1] = 0x00;
@@ -1370,6 +1607,16 @@ static const __u8 *asus_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 static const struct hid_device_id asus_devices[] = {
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ASUSTEK,
 		USB_DEVICE_ID_ASUSTEK_I2C_KEYBOARD), I2C_KEYBOARD_QUIRKS},
+	/*
+	 * ASUS Vivobook S15 (Snapdragon X Elite) ARM64 I2C keyboard (0x4543).
+	 * QUIRK_DISABLE_OOBE: sends OOBE Complete {0x5A, 0xD0, 0x8F, 0x01} to stop rainbow.
+	 * QUIRK_DISABLE_OOBE also selects the ARM64 backlight path in
+	 * asus_kbd_backlight_work(): this MCU uses opcode 0xB0 with a raw level
+	 * (0-3) byte, not the x86 0xBA idle-timeout opcode.
+	 */
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ASUSTEK,
+		USB_DEVICE_ID_ASUSTEK_VIVOBOOK_KBD),
+	  I2C_KEYBOARD_QUIRKS | QUIRK_DISABLE_OOBE | QUIRK_USE_KBD_BACKLIGHT },
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ASUSTEK,
 		USB_DEVICE_ID_ASUSTEK_I2C_TOUCHPAD), I2C_TOUCHPAD_QUIRKS },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
@@ -1396,6 +1643,9 @@ static const struct hid_device_id asus_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
 	    USB_DEVICE_ID_ASUSTEK_ROG_NKEY_ALLY_X),
 	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_ROG_NKEY_KEYBOARD | QUIRK_ROG_ALLY_XPAD },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
+	    USB_DEVICE_ID_ASUSTEK_XGM_2023),
+	},
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
 	    USB_DEVICE_ID_ASUSTEK_ROG_CLAYMORE_II_KEYBOARD),
 	  QUIRK_ROG_CLAYMORE_II_KEYBOARD },

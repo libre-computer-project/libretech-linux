@@ -85,9 +85,22 @@ struct mtk_jpeg_variant {
 };
 
 struct mtk_jpeg_src_buf {
-	u32 frame_num;
+	/*
+	 * Layout is load-bearing. The m2m core treats every buffer as a
+	 * struct v4l2_m2m_buffer { struct vb2_v4l2_buffer vb; struct list_head list; },
+	 * via v4l2_m2m_buf_queue(... to_vb2_v4l2_buffer(vb) ...). So `b` and `list`
+	 * MUST be the first two members, in that order, to overlay v4l2_m2m_buffer's
+	 * {vb, list} -- `list` doubles as the m2m ready-list AND ctx->dst_done_queue.
+	 * `b` must also be first so mtk_jpeg_vb2_to_srcbuf()'s container_of(&b, ...)
+	 * returns the allocation base: any member BEFORE `b` makes that pointer land
+	 * offsetof(b) bytes before the allocation, so writing frame_num underflows the
+	 * slab and corrupts the neighbour's dma-contig cookie (mt8195 KI-E004: KASAN
+	 * slab-out-of-bounds in mtk_jpegenc_worker -> ___free_pages oops at
+	 * vb2_queue_release). frame_num therefore goes AFTER list, never between them.
+	 */
 	struct vb2_v4l2_buffer b;
 	struct list_head list;
+	u32 frame_num;
 	u32 bs_size;
 	struct mtk_jpeg_dec_param dec_param;
 

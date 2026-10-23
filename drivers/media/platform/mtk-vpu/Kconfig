@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MEDIATEK_VCU_MT8365
+	tristate "Mediatek VCU/VPU for MT8365 vendor vcodec (Genio 350)"
+	depends on VIDEO_DEV
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	    Vendor MT8365 (Genio 350) Video Processor Unit / VCU driver.
+	    Ported from the mtk-v5.10 BSP. Provides VPU firmware download
+	    and the VCU communication channel used by the proprietary
+	    userspace (vpud) HW video codec path on MT8365.
+
+	    This builds the mtk-vpu-mt8365 and mtk-vcu-mt8365 modules. The
+	    SoC suffix keeps them distinct from mainline's mtk-vpu
+	    (drivers/media/platform/mediatek/vpu), which otherwise collides
+	    at modules_check when CONFIG_MEDIA_SUPPORT=m.
+
+	    Renamed from the BSP's CONFIG_VIDEO_MEDIATEK_VPU to avoid a
+	    symbol collision with mainline's CONFIG_VIDEO_MEDIATEK_VPU
+	    (drivers/media/platform/mediatek/vpu).
+
+	    To compile this driver as modules, choose M here.

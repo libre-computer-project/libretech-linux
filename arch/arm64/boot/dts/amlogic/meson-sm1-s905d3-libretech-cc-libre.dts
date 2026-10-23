@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2026 Libre Computer
+ *
+ * AML-S905D3-CC on the LIBRE firmware chain (our TF-A, low-16 MiB secure
+ * layout): the control and booted DTB of the aml-s905d3-cc -libre u-boot
+ * targets. The vendor chain boots meson-sm1-s905d3-libretech-cc.dts.
+ */
+
+/dts-v1/;
+
+#include "meson-sm1-s905d3-libretech-cc.dtsi"
+#include "meson-g12-libre-firmware.dtsi"
+#include "meson-sm1-libre-scmi.dtsi"
+
+/*
+ * No OPP table and no cpu-supply (vddcpu_b is always-on): the open SC owns
+ * sys_pll.  MESON_G12A_LIBRE_SCMI_FIXUP repoints these clocks at the SCMI
+ * clock provider when the SC answers.
+ */
+&cpu0 {
+	clocks = <&clkc CLKID_CPU_CLK>;
+};
+
+&cpu1 {
+	clocks = <&clkc CLKID_CPU1_CLK>;
+};
+
+&cpu2 {
+	clocks = <&clkc CLKID_CPU2_CLK>;
+};
+
+&cpu3 {
+	clocks = <&clkc CLKID_CPU3_CLK>;
+};

@@ -111,10 +111,15 @@ static int sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 		 * let the queue segment size sort out the real limit.
 		 */
 		lim->max_hw_sectors = 0x7FFFFF;
-	} else if (us->pusb_dev->speed >= USB_SPEED_SUPER) {
+	} else if (us->pusb_dev->speed >= USB_SPEED_HIGH) {
 		/*
-		 * USB3 devices will be limited to 2048 sectors. This gives us
-		 * better throughput on most devices.
+		 * USB2 HS BOT and USB3: 2048 sectors (1 MiB URBs). The host
+		 * template default of 240 (120 KiB) stays the Full/Low-speed
+		 * cap. USB3 already used this raise; USB2 HS did not, so
+		 * gadget Block Limits VPD was ignored (skip_vpd_pages) and
+		 * sysfs max_sectors=2048 was required after every re-enum.
+		 * US_FL_MAX_SECTORS_64 / US_FL_MAX_SECTORS_240 still clamp
+		 * known-quirky devices. UAS is a separate driver.
 		 */
 		lim->max_hw_sectors = 2048;
 	}

@@ -1086,11 +1086,13 @@ error_setup:
 	return rc;
 }
 
-static u64 vu_get_features(struct virtio_device *vdev)
+static int vu_get_features(struct virtio_device *vdev, u64 *features)
 {
 	struct virtio_uml_device *vu_dev = to_virtio_uml_device(vdev);
 
-	return vu_dev->features;
+	*features = vu_dev->features;
+
+	return 0;
 }
 
 static int vu_finalize_features(struct virtio_device *vdev)

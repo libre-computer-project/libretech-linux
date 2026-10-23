@@ -2372,6 +2372,8 @@
 			bypassed by not enabling DMAR with this option. In
 			this case, gfx device will use physical address for
 			DMA.
+		intgpu_off [Default Off]
+			Bypass the DMAR unit for an integrated GPU only.
 		strict [Default Off]
 			Deprecated, equivalent to iommu.strict=1.
 		sp_off [Default Off]
@@ -4552,6 +4554,8 @@
 			'node', 'default' can be specified
 			This can be set from sysctl after boot.
 			See Documentation/admin-guide/sysctl/vm.rst for details.
+
+	of_overlay_disable	[OF] Disable device tree overlays at boot time.
 
 	ohci1394_dma=early	[HW,EARLY] enable debugging via the ohci1394 driver.
 			See Documentation/core-api/debugging-via-ohci1394.rst for more
@@ -7268,6 +7272,10 @@
 			later by a loaded module cannot be set this way.
 			Example: sysctl.vm.swappiness=40
 
+	syscall.x32=	[KNL,x86_64] Enable/disable use of x32 syscalls on
+			an x86_64 kernel where CONFIG_X86_X32 is enabled.
+			Default depends on CONFIG_X86_X32_DISABLED.
+
 	sysrq_always_enabled
 			[KNL]
 			Ignore sysrq setting - this boot parameter will
@@ -7338,6 +7346,10 @@
 			It can be used multiple times for multiple shmem THP sizes.
 			See Documentation/admin-guide/mm/transhuge.rst for more
 			details.
+
+	tlbi=		[X86-64]
+			Format: {ipi}
+			ipi: switch to IPI-based TLB flushing
 
 	topology=	[S390,EARLY]
 			Format: {off | on}
@@ -7925,6 +7937,14 @@
 				p = USB_QUIRK_SHORT_SET_ADDRESS_REQ_TIMEOUT
 					(Reduce timeout of the SET_ADDRESS
 					request from 5000 ms to 500 ms);
+				q = USB_QUIRK_FORCE_ONE_CONFIG (Device
+					claims zero configurations,
+					forcing to 1);
+				r = USB_QUIRK_WINDOWS_CONFIG_REQ_SIZE (Device
+					fails during initialization when asked for
+					9-bytes configuration descriptor request.
+					Ask for 255-bytes request instead to mirror
+					Windows' behavior);
 			Example: quirks=0781:5580:bk,0a5c:5834:gij
 
 	usbhid.mousepoll=

@@ -887,6 +887,7 @@ static void bcache_device_free(struct bcache_device *d)
 	}
 
 	bioset_exit(&d->bio_split);
+	bioset_exit(&d->bio_detached);
 	kvfree(d->full_dirty_stripes);
 	kvfree(d->stripe_sectors_dirty);
 
@@ -949,6 +950,11 @@ static int bcache_device_init(struct bcache_device *d, unsigned int block_size,
 			BIOSET_NEED_BVECS|BIOSET_NEED_RESCUER))
 		goto out_ida_remove;
 
+	if (bioset_init(&d->bio_detached, 4,
+			offsetof(struct detached_dev_io_private, bio),
+			BIOSET_NEED_BVECS|BIOSET_NEED_RESCUER))
+		goto out_bioset_split_exit;
+
 	if (lim.logical_block_size > PAGE_SIZE && cached_bdev) {
 		/*
 		 * This should only happen with BCACHE_SB_VERSION_BDEV.
@@ -964,7 +970,7 @@ static int bcache_device_init(struct bcache_device *d, unsigned int block_size,
 
 	d->disk = blk_alloc_disk(&lim, NUMA_NO_NODE);
 	if (IS_ERR(d->disk))
-		goto out_bioset_exit;
+		goto out_bioset_detach_exit;
 
 	set_capacity(d->disk, sectors);
 	snprintf(d->disk->disk_name, DISK_NAME_LEN, "bcache%i", idx);
@@ -976,7 +982,9 @@ static int bcache_device_init(struct bcache_device *d, unsigned int block_size,
 	d->disk->private_data	= d;
 	return 0;
 
-out_bioset_exit:
+out_bioset_detach_exit:
+	bioset_exit(&d->bio_detached);
+out_bioset_split_exit:
 	bioset_exit(&d->bio_split);
 out_ida_remove:
 	ida_free(&bcache_device_idx, idx);
@@ -1364,6 +1372,14 @@ static CLOSURE_CALLBACK(cached_dev_free)
 	list_del(&dc->list);
 
 	mutex_unlock(&bch_register_lock);
+
+	/*
+	 * Wait for any pending sb_write to complete before free.
+	 * The sb_bio is embedded in struct cached_dev, so we must
+	 * ensure no I/O is in progress.
+	 */
+	down(&dc->sb_write_mutex);
+	up(&dc->sb_write_mutex);
 
 	if (dc->sb_disk)
 		folio_put(virt_to_folio(dc->sb_disk));

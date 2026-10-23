@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2026 Libre Computer
+ *
+ * SM1 open SC (SCP-firmware product amlogic/g12a) as an SCMI platform, for
+ * the -libre leaves only.  Shipped DISABLED: the firmware describes itself.
+ * U-Boot's MESON_G12A_LIBRE_SCMI_FIXUP sets /firmware/scmi and the mailbox
+ * to "okay" and repoints the CPUs at protocol@14 / protocol@13, and only
+ * after the SC answered one SCMI BASE PROTOCOL_VERSION on this boot.  With
+ * the package off, the -libre CPUs have no OPP table, so no cpufreq driver
+ * ever touches sys_pll.
+ *
+ * One channel: the NS high-priority (OSPM) window 0xFFFE7600, doorbell
+ * mailbox channel 2.  The SC serves no NS low-priority agent.
+ *
+ * Protocol order is @11 @14 @13 @15: arm_scmi creates one device per child
+ * in DT order, and scmi-cpufreq resolves the CPUs' clocks into the SCMI
+ * clock provider, so clock (@14) must precede perf (@13).  Reset (@16) has
+ * no consumer and is not declared.
+ *
+ * Every node the fixup writes or points at carries a label, so dtc emits
+ * its phandle; the fixup never creates a node or mints a phandle.
+ */
+
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+	firmware {
+		scmi: scmi {
+			compatible = "arm,scmi";
+			mboxes = <&mailbox 2>;
+			mbox-names = "tx";
+			shmem = <&cpu_scp_hpri>;
+			arm,max-rx-timeout-ms = <30>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			scmi_power: protocol@11 {
+				reg = <0x11>;
+				#power-domain-cells = <1>;
+			};
+
+			scmi_clk: protocol@14 {
+				reg = <0x14>;
+				#clock-cells = <1>;
+			};
+
+			scmi_perf: protocol@13 {
+				reg = <0x13>;
+				#power-domain-cells = <1>;
+			};
+
+			scmi_sensors: protocol@15 {
+				reg = <0x15>;
+				#thermal-sensor-cells = <1>;
+			};
+		};
+	};
+
+	soc {
+		/*
+		 * NS SCMI payload SRAM.  Ends at 0xFFFE7800, so the secure
+		 * windows at 0xFFFE7800 / 0xFFFE7A00 stay outside it.
+		 */
+		sram: sram@fffe7000 {
+			compatible = "mmio-sram";
+			reg = <0x0 0xfffe7000 0x0 0x800>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0 0x0 0xfffe7000 0x800>;
+
+			cpu_scp_hpri: scp-shmem@600 {
+				compatible = "arm,scmi-shmem";
+				reg = <0x600 0x200>;
+			};
+
+			/*
+			 * Reserved from the sram pool: the kernel heartbeat word
+			 * and the SC's publish (sc-heartbeat@fffe7200 below).
+			 */
+			sc-heartbeat-sram@200 {
+				reg = <0x200 0x20>;
+			};
+		};
+
+		/*
+		 * Kernel heartbeat the open SC watches (SCP_G12A_AP_HEARTBEAT):
+		 * a board opts in by setting "okay".  Disabled until the operator
+		 * decides which boards ship it (claude amlogic/software/boot/g12/
+		 * plan/sm1-two-stage-watchdog.md, open decision 1).  Inside the
+		 * sram window above; the driver maps it without requesting it.
+		 */
+		sc_heartbeat: sc-heartbeat@fffe7200 {
+			compatible = "amlogic,sm1-sc-heartbeat";
+			reg = <0x0 0xfffe7200 0x0 0x20>;
+			status = "disabled";
+		};
+
+		/*
+		 * HP 210 and LP 209 are the vendor SM1 tree's; SEC 208 is the
+		 * AXG-class value and uncited on SM1.  Only HP is ever used.
+		 */
+		mailbox: mailbox@ff63c404 {
+			compatible = "amlogic,meson-gxbb-mhu";
+			reg = <0x0 0xff63c404 0x0 0x4c>;
+			interrupts = <GIC_SPI 208 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 209 IRQ_TYPE_EDGE_RISING>,
+				     <GIC_SPI 210 IRQ_TYPE_EDGE_RISING>;
+			#mbox-cells = <1>;
+			status = "disabled";
+		};
+	};
+};

@@ -13,7 +13,7 @@
 #define AFBC_DATA_BLOCK_WIDTH 32
 #define AFBC_DATA_BLOCK_HEIGHT 8
 #define AFBC_HEADER_BLOCK_SIZE 16
-#define AFBC_HEADER_ALIGNMENT 1024
+#define AFBC_HEADER_ALIGNMENT 128
 
 struct mtk_plane_pending_state {
 	bool				config;

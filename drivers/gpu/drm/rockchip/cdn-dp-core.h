@@ -56,6 +56,7 @@ struct cdn_firmware_header {
 struct cdn_dp_port {
 	struct cdn_dp_device *dp;
 	struct notifier_block event_nb;
+	struct notifier_block phy_hpd_nb;
 	struct extcon_dev *extcon;
 	struct phy *phy;
 	u8 lanes;
@@ -74,6 +75,7 @@ struct cdn_dp_device {
 
 	struct mutex lock;
 	bool connected;
+	bool audio_plugged;
 	bool active;
 	bool suspended;
 

@@ -165,6 +165,7 @@ else
 	packageversion=${upstream_version}-${debian_revision}
 fi
 sourcename=${KDEB_SOURCENAME:-linux-upstream}
+version=$KERNELRELEASE
 
 if [ "$ARCH" = "um" ] ; then
 	packagename=user-mode-linux
@@ -174,6 +175,10 @@ fi
 
 debarch=
 set_debarch
+
+# Meta-package suffix for the libretech meta-package stanza below.
+# Defaults to the Debian arch (linux-image-arm64 / -amd64); env-overridable.
+META_SUFFIX=${META_SUFFIX:-$debarch}
 
 # Try to determine distribution
 if [ "${KDEB_CHANGELOG_DIST:+set}" ]; then
@@ -213,28 +218,29 @@ Build-Depends-Arch: bc, bison, flex,
  kmod, libdw-dev:native, libelf-dev:native,
  libssl-dev:native, libssl-dev <!pkg.${sourcename}.nokernelheaders>,
  python3:native, rsync
-Homepage: https://www.kernel.org/
+Homepage: https://github.com/libre-computer-project/libretech-linux
 
-Package: $packagename-${KERNELRELEASE}
+Package: $packagename-$version
+Section: kernel
+Priority: optional
 Architecture: $debarch
-Description: Linux kernel, version ${KERNELRELEASE}
+Provides: linux-image-generic, wireguard-modules
+Description: Libre Computer Linux $version for $debarch
  This package contains the Linux kernel, modules and corresponding other
- files, version: ${KERNELRELEASE}.
+ files, version: $version ($META_SUFFIX).
+
+Package: $packagename-$META_SUFFIX
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Depends: $packagename-$version
+Recommends: libretech-keyring
+Suggests: linux-headers-$META_SUFFIX, xserver-xorg-video-libretech, libretech-alsa-ucm-conf
+Description: Libre Computer Linux $META_SUFFIX (meta-package)
 EOF
+
 
 if [ "${SRCARCH}" != um ]; then
-cat <<EOF >> debian/control
-
-Package: linux-libc-dev
-Section: devel
-Provides: linux-kernel-headers
-Architecture: $debarch
-Description: Linux support headers for userspace development
- This package provides userspaces headers from the Linux kernel.  These headers
- are used by the installed headers for GNU glibc and other system libraries.
-Multi-Arch: same
-EOF
-
 if is_enabled CONFIG_MODULES; then
 cat <<EOF >> debian/control
 
@@ -245,6 +251,15 @@ Description: Linux kernel headers for ${KERNELRELEASE} on $debarch
  This package provides kernel header files for ${KERNELRELEASE} on $debarch
  .
  This is useful for people who need to build external modules
+
+Package: linux-headers-$META_SUFFIX
+Section: kernel
+Priority: optional
+Architecture: $debarch
+Provides: linux-headers-generic
+Depends: linux-headers-$version
+Suggests: $packagename-$META_SUFFIX
+Description: Libre Computer Linux Headers $META_SUFFIX (meta-package)
 EOF
 fi
 fi
@@ -265,6 +280,7 @@ fi
 cat <<EOF > debian/rules.vars
 ARCH := ${ARCH}
 KERNELRELEASE := ${KERNELRELEASE}
+META_SUFFIX := ${META_SUFFIX}
 EOF
 
 cp "${srctree}/scripts/package/debian/copyright" debian/

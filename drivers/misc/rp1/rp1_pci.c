@@ -148,6 +148,7 @@ static int rp1_irq_activate(struct irq_domain *d, struct irq_data *irqd,
 	struct rp1_dev *rp1 = d->host_data;
 
 	msix_cfg_set(rp1, (unsigned int)irqd->hwirq, MSIX_CFG_ENABLE);
+	msix_cfg_set(rp1, (unsigned int)irqd->hwirq, MSIX_CFG_IACK);
 
 	return 0;
 }
@@ -288,6 +289,9 @@ static int rp1_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		dev_err_probe(&pdev->dev, err, "Error populating devicetree\n");
 		goto err_unload_overlay;
 	}
+
+	if (skip_ovl)
+		of_node_put(rp1_node);
 
 	return 0;
 

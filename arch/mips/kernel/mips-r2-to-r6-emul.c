@@ -56,7 +56,7 @@ extern const unsigned int fpucondbit[8];
 
 #define MIPS_R2_EMUL_TOTAL_PASS	10
 
-int mipsr2_emulation = 0;
+int mipsr2_emulation = 1;
 
 static int __init mipsr2emu_enable(char *s)
 {

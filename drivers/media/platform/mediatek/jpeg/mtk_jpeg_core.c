@@ -1090,7 +1090,17 @@ static int mtk_jpeg_queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	dst_vq->io_modes = VB2_DMABUF | VB2_MMAP;
 	dst_vq->drv_priv = ctx;
-	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
+	/*
+	 * The multi-core enc/dec access the CAPTURE buffer as a
+	 * struct mtk_jpeg_src_buf (mtk_jpeg_vb2_to_srcbuf): the worker writes
+	 * ->curr_ctx/->frame_num and mtk_jpegenc_put_buf links ->list into
+	 * ctx->dst_done_queue. Those fields live past the end of a
+	 * struct v4l2_m2m_buffer, so sizing the queue for the smaller struct
+	 * overflows the allocation and corrupts the adjacent vb2 buffer's
+	 * dma-contig cookie -> ___free_pages() oops at vb2_queue_release()
+	 * (mt8195 KI-E004). Size it like the OUTPUT queue (src_vq above).
+	 */
+	dst_vq->buf_struct_size = sizeof(struct mtk_jpeg_src_buf);
 	dst_vq->ops = jpeg->variant->qops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
@@ -1167,7 +1177,8 @@ static int mtk_jpeg_open(struct file *file)
 		goto free;
 	}
 
-	INIT_WORK(&ctx->jpeg_work, jpeg->variant->jpeg_worker);
+	if (jpeg->variant->jpeg_worker)
+		INIT_WORK(&ctx->jpeg_work, jpeg->variant->jpeg_worker);
 	INIT_LIST_HEAD(&ctx->dst_done_queue);
 	spin_lock_init(&ctx->done_queue_lock);
 	v4l2_fh_init(&ctx->fh, vfd);
@@ -1209,6 +1220,8 @@ static int mtk_jpeg_release(struct file *file)
 	struct mtk_jpeg_dev *jpeg = video_drvdata(file);
 	struct mtk_jpeg_ctx *ctx = mtk_jpeg_file_to_ctx(file);
 
+	if (jpeg->variant->jpeg_worker)
+		cancel_work_sync(&ctx->jpeg_work);
 	mutex_lock(&jpeg->lock);
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
@@ -1309,6 +1322,20 @@ static int mtk_jpeg_probe(struct platform_device *pdev)
 	spin_lock_init(&jpeg->hw_lock);
 	jpeg->dev = &pdev->dev;
 	jpeg->variant = of_device_get_match_data(jpeg->dev);
+
+	/*
+	 * The mt8188 MM IOMMU places the VENC/JPEG SMI larb in iova region 1
+	 * (4G-8G, mt8188_larb_region_msk). The default 32-bit DMA mask cannot
+	 * allocate there, so the engine is handed a region-0 (<4G) iova its
+	 * larb cannot translate -- the DMA faults (pa=0x0) and the output is
+	 * all-zeros. A 34-bit mask (matching IOVA_34_EN) lets the iommu honour
+	 * the region. Harmless on single-region SoCs (region 0 caps at 4G).
+	 */
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(34));
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to set DMA mask\n");
+		return ret;
+	}
 
 	platform_set_drvdata(pdev, jpeg);
 
@@ -1604,8 +1631,9 @@ static void mtk_jpegenc_worker(struct work_struct *work)
 retry_select:
 	hw_id = mtk_jpegenc_get_hw(ctx);
 	if (hw_id < 0) {
-		ret = wait_event_interruptible(jpeg->hw_wq,
-					       atomic_read(&jpeg->hw_rdy) > 0);
+		ret = wait_event_interruptible_timeout(jpeg->hw_wq,
+						       atomic_read(&jpeg->hw_rdy) > 0,
+						       MTK_JPEG_HW_TIMEOUT_MSEC);
 		if (ret != 0 || (i++ > MTK_JPEG_MAX_RETRY_TIME)) {
 			dev_err(jpeg->dev, "%s : %d, all HW are busy\n",
 				__func__, __LINE__);
@@ -1888,6 +1916,28 @@ static const struct mtk_jpeg_variant mt8173_jpeg_drvdata = {
 	.cap_q_default_fourcc = V4L2_PIX_FMT_YUV420M,
 };
 
+/*
+ * mt8188 single-core jpeg decoder: like the mt8173/mt2701 decoder variant but
+ * its SMI larb is in MM-IOMMU iova region 1 (4G-8G), so it must program the
+ * 34-bit destination/bitstream address-extension registers (support_34bit) or
+ * the region-1 iova is truncated to 32 bits and the engine faults (pa=0x0).
+ */
+static const struct mtk_jpeg_variant mt8188_jpegdec_drvdata = {
+	.clks = mt8173_jpeg_dec_clocks,
+	.num_clks = ARRAY_SIZE(mt8173_jpeg_dec_clocks),
+	.formats = mtk_jpeg_dec_formats,
+	.num_formats = MTK_JPEG_DEC_NUM_FORMATS,
+	.qops = &mtk_jpeg_dec_qops,
+	.irq_handler = mtk_jpeg_dec_irq,
+	.hw_reset = mtk_jpeg_dec_reset,
+	.m2m_ops = &mtk_jpeg_dec_m2m_ops,
+	.dev_name = "mtk-jpeg-dec",
+	.ioctl_ops = &mtk_jpeg_dec_ioctl_ops,
+	.out_q_default_fourcc = V4L2_PIX_FMT_JPEG,
+	.cap_q_default_fourcc = V4L2_PIX_FMT_YUV420M,
+	.support_34bit = true,
+};
+
 static const struct mtk_jpeg_variant mtk_jpeg_drvdata = {
 	.clks = mtk_jpeg_clocks,
 	.num_clks = ARRAY_SIZE(mtk_jpeg_clocks),
@@ -1902,6 +1952,29 @@ static const struct mtk_jpeg_variant mtk_jpeg_drvdata = {
 	.out_q_default_fourcc = V4L2_PIX_FMT_YUYV,
 	.cap_q_default_fourcc = V4L2_PIX_FMT_JPEG,
 	.multi_core = false,
+};
+
+/*
+ * mt8188 single-core jpeg encoder: same as the generic single-core variant
+ * but its SMI larb sits in MM-IOMMU iova region 1 (4G-8G), so the engine must
+ * program the 34-bit address-extension registers (support_34bit) or it
+ * truncates the region-1 iova to 32 bits and faults (pa=0x0, all-zero output).
+ */
+static const struct mtk_jpeg_variant mt8188_jpegenc_drvdata = {
+	.clks = mtk_jpeg_clocks,
+	.num_clks = ARRAY_SIZE(mtk_jpeg_clocks),
+	.formats = mtk_jpeg_enc_formats,
+	.num_formats = MTK_JPEG_ENC_NUM_FORMATS,
+	.qops = &mtk_jpeg_enc_qops,
+	.irq_handler = mtk_jpeg_enc_irq,
+	.hw_reset = mtk_jpeg_enc_reset,
+	.m2m_ops = &mtk_jpeg_enc_m2m_ops,
+	.dev_name = "mtk-jpeg-enc",
+	.ioctl_ops = &mtk_jpeg_enc_ioctl_ops,
+	.out_q_default_fourcc = V4L2_PIX_FMT_YUYV,
+	.cap_q_default_fourcc = V4L2_PIX_FMT_JPEG,
+	.multi_core = false,
+	.support_34bit = true,
 };
 
 static struct mtk_jpeg_variant mtk8195_jpegenc_drvdata = {
@@ -1938,6 +2011,14 @@ static const struct of_device_id mtk_jpeg_match[] = {
 	{
 		.compatible = "mediatek,mt2701-jpgdec",
 		.data = &mt8173_jpeg_drvdata,
+	},
+	{
+		.compatible = "mediatek,mt8188-jpgdec",
+		.data = &mt8188_jpegdec_drvdata,
+	},
+	{
+		.compatible = "mediatek,mt8188-jpgenc",
+		.data = &mt8188_jpegenc_drvdata,
 	},
 	{
 		.compatible = "mediatek,mtk-jpgenc",

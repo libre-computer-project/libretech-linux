@@ -46,6 +46,21 @@ struct vb2_dc_buf {
 	bool				non_coherent_mem;
 };
 
+/*
+ * VB2DC-IOVATRACE (WIP-DIAG, default off): log the imported-dmabuf IOMMU
+ * mapping lifetime -- MAP (dma_buf_map_attachment sets buf->dma_addr, the iova
+ * the consumer's DMA engine reads) and UNMAP (dma_buf_unmap_attachment clears
+ * it). Armed together with mdp_iova_trace, this is the mechanism-2 confirmation
+ * for the MT8195 SVPP2 MDP_RDMA region-2 fault: if the faulting iova was UNMAPPED
+ * (VB2DC-UNMAP dev=...:iova=X) shortly before the mtk-iommu fault on that same X
+ * (pa=0), the async RDMA read the buffer after its mapping was torn down
+ * (use-after-unmap). journald timestamps give the ordering; dev= lets you filter
+ * to the MDP larb/smi devices. Not for mainline. */
+static int vb2_dc_iovatrace;
+module_param(vb2_dc_iovatrace, int, 0644);
+MODULE_PARM_DESC(vb2_dc_iovatrace,
+		 "trace imported-dmabuf iova MAP/UNMAP lifetime (0=off, 1=on)");
+
 /*********************************************/
 /*        scatterlist table functions        */
 /*********************************************/
@@ -258,6 +273,7 @@ static void *vb2_dc_alloc(struct vb2_buffer *vb,
 
 	if (ret) {
 		dev_err(dev, "dma alloc of size %lu failed\n", size);
+		put_device(buf->dev);
 		kfree(buf);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -724,6 +740,12 @@ static int vb2_dc_map_dmabuf(void *mem_priv)
 	buf->dma_sgt = sgt;
 	buf->vaddr = NULL;
 
+	if (vb2_dc_iovatrace)
+		dev_info(buf->dev,
+			 "VB2DC-MAP dev=%s iova=%pad size=%lu dir=%d\n",
+			 dev_name(buf->dev), &buf->dma_addr, buf->size,
+			 buf->dma_dir);
+
 	return 0;
 }
 
@@ -747,6 +769,12 @@ static void vb2_dc_unmap_dmabuf(void *mem_priv)
 		dma_buf_vunmap_unlocked(buf->db_attach->dmabuf, &map);
 		buf->vaddr = NULL;
 	}
+	if (vb2_dc_iovatrace)
+		dev_info(buf->dev,
+			 "VB2DC-UNMAP dev=%s iova=%pad size=%lu dir=%d\n",
+			 dev_name(buf->dev), &buf->dma_addr, buf->size,
+			 buf->dma_dir);
+
 	dma_buf_unmap_attachment_unlocked(buf->db_attach, sgt, buf->dma_dir);
 
 	buf->dma_addr = 0;

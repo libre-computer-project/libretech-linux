@@ -5,3 +5,19 @@ config MT7601U
 	depends on USB
 	help
 	  This adds support for MT7601U-based USB wireless dongles.
+
+config MT7601U_RESEARCH
+	bool "MT7601U research / experimental features (raw TX, RF test, MAC-rand, CSI probe)"
+	depends on MT7601U
+	default n
+	help
+	  Compile the surface-A research feature set into the mt7601u driver:
+	  raw packet injection from a monitor vif, RF/baseband test modes
+	  (continuous-TX / single-tone -- these EMIT a carrier on 2.4 GHz and are
+	  LAB / SHIELDED-CHAMBER ONLY, subject to RF regulation), silent-capture
+	  (auto-ACK disable), fast MAC randomization, and the CSI-feasibility
+	  BBP-block-dump probe. All are exposed via debugfs / module params and
+	  are for RF bring-up and security research, NOT normal operation.
+
+	  If unsure, say N. The fleet production kernel MUST keep this N so the
+	  emitting / spoofing / raw-TX surface is not compiled into shipped images.

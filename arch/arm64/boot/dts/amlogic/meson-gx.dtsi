@@ -21,9 +21,10 @@
 	#size-cells = <2>;
 
 	aliases {
-		mmc0 = &sd_emmc_b; /* SD card */
-		mmc1 = &sd_emmc_c; /* eMMC */
+		mmc0 = &sd_emmc_c; /* SD card */
+		mmc1 = &sd_emmc_b; /* eMMC */
 		mmc2 = &sd_emmc_a; /* SDIO */
+		rtc1 = &vrtc;
 	};
 
 	reserved-memory {
@@ -31,35 +32,36 @@
 		#size-cells = <2>;
 		ranges;
 
-		/* 16 MiB reserved for Hardware ROM Firmware */
+		/*
+		 * 1 MiB secure range at the bottom of DRAM.
+		 *
+		 * This was 16 MiB, which is simply everything below BL33's load
+		 * address rather than a measured extent. The range that actually
+		 * exists ends at 1 MiB: measured on AML-S905X-CC-V2 from u-boot
+		 * proper, a non-secure read below 0x00100000 takes a synchronous
+		 * external abort (esr 0x96000210, DFSC 0x10) while 0xFFFF0 faults
+		 * and 0x100000 reads, pinning the boundary exactly. The 15 MiB
+		 * above it was written in full and read back with BL31 and the SCP
+		 * still answering PSCI afterwards -- it is ordinary DRAM.
+		 */
 		hwrom_reserved: hwrom@0 {
-			reg = <0x0 0x0 0x0 0x1000000>;
+			reg = <0x0 0x0 0x0 0x100000>;
 			no-map;
 		};
 
-		/* 2 MiB reserved for ARM Trusted Firmware (BL31) */
-		secmon_reserved: secmon@10000000 {
-			reg = <0x0 0x10000000 0x0 0x200000>;
-			no-map;
-		};
-
-		/* Alternate 3 MiB reserved for ARM Trusted Firmware (BL31) */
-		secmon_reserved_alt: secmon@5000000 {
-			reg = <0x0 0x05000000 0x0 0x300000>;
-			no-map;
-		};
-
-		/* 32 MiB reserved for ARM Trusted Firmware (BL32) */
-		secmon_reserved_bl32: secmon@5300000 {
-			reg = <0x0 0x05300000 0x0 0x2000000>;
-			no-map;
-		};
+		/*
+		 * The firmware reservations above the ROM mirror depend on
+		 * which boot chain the board runs, so each leaf includes one
+		 * of meson-gx-vendor-firmware.dtsi or
+		 * meson-gx-libre-firmware.dtsi.
+		 */
 
 		linux,cma {
 			compatible = "shared-dma-pool";
 			reusable;
 			size = <0x0 0x10000000>;
 			alignment = <0x0 0x400000>;
+			alloc-ranges = <0x0 0x00000000 0x0 0x40000000>;
 			linux,cma-default;
 		};
 	};
@@ -101,6 +103,7 @@
 			i-cache-line-size = <32>;
 			i-cache-size = <0x8000>;
 			i-cache-sets = <32>;
+			cpu-idle-states = <&CPU_SLEEP_0>;
 			next-level-cache = <&l2>;
 			clocks = <&scpi_dvfs 0>;
 			#cooling-cells = <2>;
@@ -117,6 +120,7 @@
 			i-cache-line-size = <32>;
 			i-cache-size = <0x8000>;
 			i-cache-sets = <32>;
+			cpu-idle-states = <&CPU_SLEEP_0>;
 			next-level-cache = <&l2>;
 			clocks = <&scpi_dvfs 0>;
 			#cooling-cells = <2>;
@@ -133,6 +137,7 @@
 			i-cache-line-size = <32>;
 			i-cache-size = <0x8000>;
 			i-cache-sets = <32>;
+			cpu-idle-states = <&CPU_SLEEP_0>;
 			next-level-cache = <&l2>;
 			clocks = <&scpi_dvfs 0>;
 			#cooling-cells = <2>;
@@ -149,6 +154,7 @@
 			i-cache-line-size = <32>;
 			i-cache-size = <0x8000>;
 			i-cache-sets = <32>;
+			cpu-idle-states = <&CPU_SLEEP_0>;
 			next-level-cache = <&l2>;
 			clocks = <&scpi_dvfs 0>;
 			#cooling-cells = <2>;
@@ -161,6 +167,18 @@
 			cache-size = <0x80000>; /* L2. 512 KB */
 			cache-line-size = <64>;
 			cache-sets = <512>;
+		};
+	};
+
+	idle-states {
+		entry-method = "arm,psci";
+		CPU_SLEEP_0: cpu-sleep-0 {
+			compatible = "arm,idle-state";
+			arm,psci-suspend-param = <0x0010000>;
+			local-timer-stop;
+			entry-latency-us = <8000>;
+			exit-latency-us = <8000>;
+			min-residency-us = <20000>;
 		};
 	};
 
@@ -207,6 +225,11 @@
 							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
+
+				map_vdec {
+					trip = <&cpu_hot>;
+					cooling-device = <&vdec THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
 			};
 		};
 	};
@@ -221,7 +244,7 @@
 	};
 
 	psci {
-		compatible = "arm,psci-0.2";
+		compatible = "arm,psci-1.0";
 		method = "smc";
 	};
 
@@ -248,6 +271,10 @@
 		sm: secure-monitor {
 			compatible = "amlogic,meson-gx-sm", "amlogic,meson-gxbb-sm";
 		};
+	};
+
+	system-suspend {
+		compatible = "amlogic,meson-gx-pm";
 	};
 
 	efuse: efuse {
@@ -468,6 +495,7 @@
 				compatible = "amlogic,meson-gxbb-scp-shmem";
 				reg = <0x13400 0x400>;
 			};
+
 		};
 
 		aobus: bus@c8100000 {
@@ -486,6 +514,11 @@
 					#clock-cells = <1>;
 					#reset-cells = <1>;
 				};
+			};
+
+			vrtc: rtc@a8 {
+				compatible = "amlogic,meson-vrtc";
+				reg = <0x0 0x000a8 0x0 0x4>;
 			};
 
 			cec_AO: cec@100 {
@@ -551,6 +584,7 @@
 
 			amlogic,ao-sysctrl = <&sysctrl_AO>;
 			amlogic,canvas = <&canvas>;
+			#cooling-cells = <2>;
 		};
 
 		periphs: bus@c8834000 {
@@ -563,6 +597,7 @@
 			hwrng: rng@0 {
 				compatible = "amlogic,meson-rng";
 				reg = <0x0 0x0 0x0 0x4>;
+				quality = <1000>;
 			};
 		};
 
@@ -652,13 +687,14 @@
 
 		vpu: vpu@d0100000 {
 			compatible = "amlogic,meson-gx-vpu";
-			reg = <0x0 0xd0100000 0x0 0x100000>,
+			reg = <0x0 0xd0100000 0x0 0x40000>,
 			      <0x0 0xc883c000 0x0 0x1000>;
 			reg-names = "vpu", "hhi";
 			interrupts = <GIC_SPI 3 IRQ_TYPE_EDGE_RISING>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			amlogic,canvas = <&canvas>;
+			amlogic,hhi = <&sysctrl>;
 
 			/* CVBS VDAC output port */
 			cvbs_vdac_port: port@0 {

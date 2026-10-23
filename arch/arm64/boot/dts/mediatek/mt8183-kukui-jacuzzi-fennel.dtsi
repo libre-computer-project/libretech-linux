@@ -10,6 +10,14 @@
 	mediatek,dmic-mode = <1>; /* one-wire */
 };
 
+/*
+ * PWR-002 (deterministic mtk-svs GPU-bank bind) is now handled family-wide
+ * in mt8183-kukui.dtsi -- the vsram_gpu 900 mV floor + regulator-boot-on on
+ * the coupled vgpu/vsram_gpu rails moved up there so every MT8183
+ * kukui/jacuzzi board inherits it. HW-verified 6/6 BOUND on this Fennel; the
+ * fully-resolved Fennel DTB is unchanged by the relocation.
+ */
+
 &i2c2 {
 	trackpad@2c {
 		compatible = "hid-over-i2c";

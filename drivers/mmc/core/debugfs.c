@@ -344,6 +344,31 @@ DEFINE_DEBUGFS_ATTRIBUTE(mmc_caps_fops, mmc_caps_get, mmc_caps_set,
 DEFINE_DEBUGFS_ATTRIBUTE(mmc_caps2_fops, mmc_caps_get, mmc_caps2_set,
 			 "0x%08llx\n");
 
+/*
+ * On-demand signal-integrity "eye" diagnostic. Present only when the host
+ * driver supplies an ->eye_scan callback. The scan drives tuning commands and
+ * pokes the controller's PHY/delay registers, so it must run without racing an
+ * in-flight request or a re-tune: claim the host and hold off re-tuning around
+ * the callback. mmc_claim_host()/mmc_retune_hold() are core-private, which is
+ * why the facility is plumbed here rather than in the host driver. The callback
+ * is responsible for saving/restoring any register it touches.
+ */
+static int mmc_eye_scan_show(struct seq_file *s, void *data)
+{
+	struct mmc_host *host = s->private;
+
+	mmc_claim_host(host);
+	mmc_retune_hold(host);
+
+	host->ops->eye_scan(host, s);
+
+	mmc_retune_release(host);
+	mmc_release_host(host);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mmc_eye_scan);
+
 void mmc_add_host_debugfs(struct mmc_host *host)
 {
 	struct dentry *root;
@@ -362,6 +387,13 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 			    &mmc_err_state);
 	debugfs_create_file("err_stats", 0600, root, host,
 			    &mmc_err_stats_fops);
+
+	if (host->ops->eye_scan)
+		debugfs_create_file("eye_scan", 0400, root, host,
+				    &mmc_eye_scan_fops);
+
+	/* Platform-agnostic read+write eye facility (eye.c), if the host opts in */
+	mmc_add_eye_debugfs(host, root);
 
 #ifdef CONFIG_FAIL_MMC_REQUEST
 	if (fail_request)

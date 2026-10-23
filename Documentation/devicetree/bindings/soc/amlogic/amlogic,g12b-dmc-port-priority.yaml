@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/amlogic/amlogic,g12b-dmc-port-priority.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Amlogic G12B DMC per-port DDR arbitration priority
+
+maintainers:
+  - Libre Computer <hello@libre.computer>
+
+description: |
+  The G12B DDR memory controller (DMC) arbitrates its requester ports through
+  one CHAN_CTRL register per port, whose bits [18:16] carry a 3-bit priority
+  weight. Firmware leaves every port at 0. This node covers the channel-control
+  register window (DMC_AM0_CHAN_CTRL through DMC_AXI11_HOLD_CTRL) and lists the
+  ports a board raises at boot. Without amlogic,port-priority nothing is
+  written.
+
+  Port numbers follow the DMC's requester numbering, which is also the bit
+  numbering of the amlogic,g12b-ddr-pmu config1 axi-line filter: 0 ARM,
+  1 MALI, 3 HDCP, 4 HEVC front, 5 TEST, 6 USB3.0, 7 DEVICE, 8 HEVC back,
+  9 H265ENC, 10 NNA, 11 GDC, 16/17/18 VPU0/1/2 read, 19/20 VPU0/1 write,
+  21 VDEC, 22 HCODEC, 23 GE2D. Ports 2, 12 and 13 have no usable priority
+  register and are refused.
+
+properties:
+  compatible:
+    const: amlogic,g12b-dmc-port-priority
+
+  reg:
+    maxItems: 1
+    description: DMC channel-control register window.
+
+  amlogic,port-priority:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    description: (port, priority) pairs applied at boot and on resume.
+    items:
+      items:
+        - description: DMC requester port number
+          minimum: 0
+          maximum: 23
+        - description: priority weight, 0 (lowest, the firmware default) to 7
+          minimum: 0
+          maximum: 7
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    bus {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        qos@180 {
+            compatible = "amlogic,g12b-dmc-port-priority";
+            reg = <0x0 0x180 0x0 0x140>;
+            amlogic,port-priority = <10 4>;
+        };
+    };

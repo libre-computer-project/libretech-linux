@@ -14,6 +14,8 @@
 
 #include <video/mipi_display.h>
 
+#include <linux/aperture.h>
+
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
@@ -79,12 +81,19 @@ static int waveshare_command(struct mipi_dbi *mipi, u8 *cmd, u8 *par,
 	/*
 	 * Check whether pixel data bytes needs to be swapped or not
 	 */
-	if (*cmd == MIPI_DCS_WRITE_MEMORY_START && !mipi->swap_bytes)
-		bpw = 16;
+	if (*cmd == MIPI_DCS_WRITE_MEMORY_START){
+		pr_debug("ili9486: pixel-buffer-size: %zuB\n", num);
+		if (!mipi->swap_bytes) bpw = 16;
+	}
+
+	pr_debug("ili9486: bits-per-word: %u\n", bpw);
 
 	spi_bus_lock(spi->controller);
 	gpiod_set_value_cansleep(mipi->dc, 1);
 	speed_hz = mipi_dbi_spi_cmd_max_speed(spi, num);
+
+	pr_debug("ili9486: spi-frequency: %u\n", speed_hz);
+
 	ret = mipi_dbi_spi_transfer(spi, speed_hz, bpw, data, num);
 	spi_bus_unlock(spi->controller);
  free:
@@ -163,7 +172,13 @@ static const struct drm_simple_display_pipe_funcs waveshare_pipe_funcs = {
 	DRM_MIPI_DBI_SIMPLE_DISPLAY_PIPE_FUNCS(waveshare_enable),
 };
 
-static const struct drm_display_mode waveshare_mode = {
+/*
+ * Default mode uses DRM_SIMPLE_MODE (clock=1, 0 Hz refresh).
+ * The probe function reads "refresh-rate-hz" from the device tree
+ * and creates a proper mode with a real pixel clock if specified.
+ * This allows Chromium to vsync properly instead of spinning at 100% CPU.
+ */
+static const struct drm_display_mode waveshare_mode_default = {
 	DRM_SIMPLE_MODE(480, 320, 73, 49),
 };
 
@@ -202,8 +217,11 @@ static int ili9486_probe(struct spi_device *spi)
 	struct mipi_dbi_dev *dbidev;
 	struct drm_device *drm;
 	struct mipi_dbi *dbi;
+	struct drm_display_mode *custom_mode;
+	const struct drm_display_mode *mode;
 	struct gpio_desc *dc;
 	u32 rotation = 0;
+	u32 refresh_hz = 0;
 	int ret;
 
 	dbidev = devm_drm_dev_alloc(dev, &ili9486_driver,
@@ -235,10 +253,45 @@ static int ili9486_probe(struct spi_device *spi)
 	dbi->command = waveshare_command;
 	dbi->read_commands = NULL;
 
+	/*
+	 * Read refresh rate from device tree. If specified, create a mode
+	 * with a proper pixel clock so compositors can vsync correctly.
+	 * Without this, SPI displays report 0 Hz which breaks vsync.
+	 */
+	device_property_read_u32(dev, "refresh-rate-hz", &refresh_hz);
+	if (refresh_hz > 0) {
+		custom_mode = devm_kzalloc(dev, sizeof(*custom_mode), GFP_KERNEL);
+		if (!custom_mode)
+			return -ENOMEM;
+		custom_mode->type = DRM_MODE_TYPE_DRIVER;
+		custom_mode->clock = 480 * 320 * refresh_hz / 1000;
+		custom_mode->hdisplay = 480;
+		custom_mode->hsync_start = 480;
+		custom_mode->hsync_end = 480;
+		custom_mode->htotal = 480;
+		custom_mode->vdisplay = 320;
+		custom_mode->vsync_start = 320;
+		custom_mode->vsync_end = 320;
+		custom_mode->vtotal = 320;
+		custom_mode->width_mm = 73;
+		custom_mode->height_mm = 49;
+		mode = custom_mode;
+		dev_info(dev, "Using refresh rate %u Hz (clock %u kHz)\n",
+			 refresh_hz, custom_mode->clock);
+	} else {
+		mode = &waveshare_mode_default;
+		dev_info(dev, "No refresh-rate-hz property, using default mode\n");
+	}
+
 	ret = mipi_dbi_dev_init(dbidev, &waveshare_pipe_funcs,
-				&waveshare_mode, rotation);
+				mode, rotation);
 	if (ret)
 		return ret;
+
+	ret = aperture_remove_all_conflicting_devices(ili9486_driver.name);
+
+	if (ret)
+		goto free_drm;
 
 	drm_mode_config_reset(drm);
 
@@ -251,6 +304,10 @@ static int ili9486_probe(struct spi_device *spi)
 	drm_client_setup(drm, NULL);
 
 	return 0;
+
+free_drm:
+	drm_dev_put(drm);
+	return ret;
 }
 
 static void ili9486_remove(struct spi_device *spi)

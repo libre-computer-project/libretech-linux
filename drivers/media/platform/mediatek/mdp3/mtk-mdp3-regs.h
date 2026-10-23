@@ -317,6 +317,8 @@ struct mdp_frame {
 	u32			dre:1;
 	u32			sharpness:1;
 	u32			dither:1;
+	u32			crop_set:1;	/* client set CROP via S_SELECTION */
+	u32			compose_set:1;	/* client set COMPOSE via S_SELECTION */
 };
 
 static inline bool mdp_target_is_crop(u32 target)

@@ -59,10 +59,10 @@ enum emc230x_product_id {
 };
 
 static const struct i2c_device_id emc2305_ids[] = {
-	{ "emc2305" },
-	{ "emc2303" },
-	{ "emc2302" },
 	{ "emc2301" },
+	{ "emc2302" },
+	{ "emc2303" },
+	{ "emc2305" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, emc2305_ids);
@@ -578,6 +578,7 @@ static int emc2305_of_parse_pwm_child(struct device *dev,
 		data->pwm_output_mask |= EMC2305_OPEN_DRAIN << ch;
 	}
 
+	of_node_put(args.np);
 	return 0;
 }
 
@@ -593,10 +594,8 @@ static int emc2305_probe_childs_from_dt(struct device *dev)
 	for_each_child_of_node(dev->of_node, child) {
 		if (of_property_present(child, "reg")) {
 			ret = emc2305_of_parse_pwm_child(dev, child, data);
-			if (ret) {
-				of_node_put(child);
+			if (ret)
 				continue;
-			}
 			count++;
 		}
 	}
@@ -617,6 +616,9 @@ static int emc2305_probe(struct i2c_client *client)
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA))
 		return -ENODEV;
+
+	i2c_smbus_xfer(client->adapter, client->addr, 0, I2C_SMBUS_WRITE,
+                         0, I2C_SMBUS_QUICK, NULL);
 
 	vendor = i2c_smbus_read_byte_data(client, EMC2305_REG_VENDOR);
 	if (vendor != EMC2305_VENDOR)
@@ -685,8 +687,10 @@ static int emc2305_probe(struct i2c_client *client)
 			i = 0;
 			for_each_child_of_node(dev->of_node, child) {
 				ret = emc2305_set_single_tz(dev, child, i);
-				if (ret != 0)
+				if (ret != 0) {
+					of_node_put(child);
 					return ret;
+				}
 				i++;
 			}
 		} else {
@@ -717,6 +721,9 @@ static int emc2305_probe(struct i2c_client *client)
 }
 
 static const struct of_device_id of_emc2305_match_table[] = {
+	{ .compatible = "microchip,emc2301", },
+	{ .compatible = "microchip,emc2302", },
+	{ .compatible = "microchip,emc2303", },
 	{ .compatible = "microchip,emc2305", },
 	{},
 };

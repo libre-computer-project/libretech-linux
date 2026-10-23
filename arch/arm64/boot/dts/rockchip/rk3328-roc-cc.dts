@@ -9,8 +9,8 @@
 #include "rk3328-roc.dtsi"
 
 / {
-	model = "Firefly ROC-RK3328-CC";
-	compatible = "firefly,roc-rk3328-cc", "rockchip,rk3328";
+	model = "Libre Computer ROC-RK3328-CC";
+	compatible = "libre-computer,roc-rk3328-cc", "firefly,roc-rk3328-cc", "rockchip,rk3328";
 };
 
 &rk805 {

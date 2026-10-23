@@ -8,6 +8,8 @@
 #define __QCOM_UBWC_H__
 
 #include <linux/bits.h>
+#include <linux/err.h>
+#include <linux/printk.h>
 #include <linux/types.h>
 
 struct qcom_ubwc_cfg_data {

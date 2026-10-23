@@ -153,6 +153,8 @@
 #define		VD1_AXI_SEL_AFBC		(1 << 12)
 #define		AFBC_VD1_SEL			(1 << 10)
 #define VD2_AFBCD1_MISC_CTRL 0x1a0b
+#define		VD2_AXI_SEL_AFBC		(1 << 12) /* axi sel: vd2 afbc (else mif) */
+#define		AFBC_VD2_SEL			(1 << 10) /* data sel: afbc1 (else vd2) */
 #define VIU_OSD1_CTRL_STAT 0x1a10
 #define		VIU_OSD1_OSD_BLK_ENABLE         BIT(0)
 #define		VIU_OSD1_OSD_MEM_MODE_LINEAR	BIT(2)
@@ -394,6 +396,28 @@
 #define AFBC_PIXEL_VER_SCOPE 0x1af0
 #define AFBC_VD_CFMT_H 0x1af1
 
+/* VD2 AFBC decoder (AFBCD1) -- 1:1 mirror of the VD1 AFBC block above at
+ * +0x6a0 (AFBCD-002). Verified against BSP viu_regs.h (G12/SM1 0x318x bank;
+ * the SC2_VD2_AFBC_* 0x48c0 bank is for newer SoCs, not ours). */
+#define VD2_AFBC_ENABLE 0x3180
+#define VD2_AFBC_MODE 0x3181
+#define VD2_AFBC_SIZE_IN 0x3182
+#define VD2_AFBC_DEC_DEF_COLOR 0x3183
+#define VD2_AFBC_CONV_CTRL 0x3184
+#define VD2_AFBC_LBUF_DEPTH 0x3185
+#define VD2_AFBC_HEAD_BADDR 0x3186
+#define VD2_AFBC_BODY_BADDR 0x3187
+#define VD2_AFBC_SIZE_OUT 0x3188
+#define VD2_AFBC_OUT_YSCOPE 0x3189
+#define VD2_AFBC_STAT 0x318a
+#define VD2_AFBC_VD_CFMT_CTRL 0x318b
+#define VD2_AFBC_VD_CFMT_W 0x318c
+#define VD2_AFBC_MIF_HOR_SCOPE 0x318d
+#define VD2_AFBC_MIF_VER_SCOPE 0x318e
+#define VD2_AFBC_PIXEL_HOR_SCOPE 0x318f
+#define VD2_AFBC_PIXEL_VER_SCOPE 0x3190
+#define VD2_AFBC_VD_CFMT_H 0x3191
+
 /* vpp */
 #define VPP_DUMMY_DATA 0x1d00
 #define VPP_LINE_IN_LENGTH 0x1d01
@@ -442,12 +466,26 @@
 #define VPP_PREBLEND_CURRENT_XY 0x1d24
 #define VPP_POSTBLEND_CURRENT_XY 0x1d25
 #define VPP_MISC 0x1d26
+/* Legacy (pre-G12A: GXL/GXM/TXL) OSD1/OSD2 z-order select. VPP_OSD2_POSTBLEND
+ * alone only lets OSD2 participate in the blend -- it does NOT make OSD2 the
+ * top layer. Without both FG bits set, legacy hardware defaults to OSD1 on
+ * top, so a full-screen opaque OSD1 completely occludes OSD2 regardless of
+ * the (immutable, always OSD2 > OSD1) zpos property exposed to userspace on
+ * every platform. G12A+ uses the VIU OSD blender (VIU_OSD_BLEND_CTRL REORDER
+ * fields, see meson_g12a_crtc_set_osd_order) instead -- these bits are
+ * legacy-only. Confirmed against the vendor BSP (osd_hw.c osd_update_order(),
+ * OSD_ORDER_10 case: "OSD2 is top").  */
+#define		VPP_PRE_FG_OSD2                 BIT(5)
+#define		VPP_POST_FG_OSD2                BIT(4)
 #define		VPP_PREBLEND_ENABLE             BIT(6)
 #define		VPP_POSTBLEND_ENABLE            BIT(7)
 #define		VPP_OSD2_ALPHA_PREMULT          BIT(8)
 #define		VPP_OSD1_ALPHA_PREMULT          BIT(9)
 #define		VPP_VD1_POSTBLEND               BIT(10)
 #define		VPP_VD2_POSTBLEND               BIT(11)
+/* VD2 layer alpha in VPP_MISC [26:18] (legacy VD2 blend); 0x100 = opaque. */
+#define		VPP_VD2_ALPHA_SHIFT             18
+#define		VPP_VD2_ALPHA_MASK             (0x1ff << 18)
 #define		VPP_OSD1_POSTBLEND              BIT(12)
 #define		VPP_OSD2_POSTBLEND              BIT(13)
 #define		VPP_VD1_PREBLEND                BIT(14)
@@ -455,6 +493,12 @@
 #define		VPP_OSD1_PREBLEND               BIT(16)
 #define		VPP_OSD2_PREBLEND               BIT(17)
 #define		VPP_COLOR_MNG_ENABLE            BIT(28)
+/* VD1 post-blend layer alpha (G12/SM1). Reset value (0x0f000000) is wrong for a
+ * VD1 source routed into a premultiplied OSD port: the post-blend then ADDs the
+ * layer below through the video. BSP writes vd_layer[0].layer_alpha here; 0x100
+ * is fully opaque (9-bit alpha, 1.0). Used by meson_g12a_crtc_set_vd_order. */
+#define VPP_MISC1 0x1d76
+#define		VPP_VD1_ALPHA_MAX               0x100
 #define VPP_OFIFO_SIZE 0x1d27
 #define		VPP_OFIFO_SIZE_MASK             GENMASK(13, 0)
 #define		VPP_OFIFO_SIZE_DEFAULT          (0xfff << 20 | 0x1000)
@@ -473,9 +517,32 @@
 #define VPP_HSC_PHASE_CTRL1 0x1d34
 #define VPP_HSC_INI_PAT_CTRL 0x1d35
 #define VPP_VADJ_CTRL 0x1d40
+#define		VPP_VADJ1_EN BIT(0)	/* pre-G12A vadj1 enable (G12A+ uses VPP_VADJ1_MISC) */
 #define		VPP_MINUS_BLACK_LVL_VADJ1_ENABLE BIT(1)
+#define		VPP_VADJ2_EN BIT(2)	/* pre-G12A vadj2 (2nd stage) enable (G12A+ uses VPP_VADJ2_MISC) */
 
+/* VPP_VADJ1_Y: post-blend brightness/contrast. bits[17:8] = brightness
+ * (10-bit signed, the BSP halves the input on G12/SM1); bits[7:0] = contrast
+ * (signed, 0 = neutral gain). */
 #define VPP_VADJ1_Y 0x1d41
+
+/* VPP_VADJ1_MISC: on G12A and later the vadj1 block enable moved here (bit 0);
+ * the pre-G12A VPP_VADJ_CTRL bit 0 is a no-op on these SoCs. (BSP amvecm:
+ * get_cpu_type() >= G12A -> VPP_VADJ1_MISC, else VPP_VADJ_CTRL.) */
+#define VPP_VADJ1_MISC 0x3280
+#define		VPP_VADJ1_MISC_VADJ_EN BIT(0)
+/* VPP_VADJ1_Y_2: the G12A+ vadj1 brightness/contrast register (paired with the
+ * 0x3280 bank). bits[18:8] = brightness (11-bit signed, NO halving -- the >>1
+ * is the pre-G12A 0x1d41 path); bits[7:0] = contrast (0 = neutral). The legacy
+ * VPP_VADJ1_Y (0x1d41) is inert on G12A+. (BSP amvecm vpp_vd_adj1_brightness.) */
+#define VPP_VADJ1_Y_2 0x3282
+/* VPP_VADJ1_MA_MB_2 / MC_MD_2: the G12A+ vadj1 saturation/hue 2x2 chroma matrix
+ * [[ma,mb],[mc,md]] (paired with the 0x3280 bank). Each reg packs two 10-bit
+ * signed coefs: (c0 & 0x3ff) << 16 | (c1 & 0x3ff). Neutral = ma=md=256 (1.0),
+ * mb=mc=0. (BSP amvecm vpp_vd_adj1_saturation_hue.) RE 2026-06-07: the chroma
+ * gain (ma) overflows the datapath to black above ~384 (1.5x) -- clamp ma<=384. */
+#define VPP_VADJ1_MA_MB_2 0x3283
+#define VPP_VADJ1_MC_MD_2 0x3284
 #define VPP_VADJ1_MA_MB 0x1d42
 #define VPP_VADJ1_MC_MD 0x1d43
 #define VPP_VADJ2_Y 0x1d44
@@ -548,6 +615,7 @@
 #define VPP_BLUE_STRETCH_3 0x1d9e
 #define VPP_CCORING_CTRL 0x1da0
 #define VPP_VE_ENABLE_CTRL 0x1da1
+#define		VPP_VE_BEXT_EN BIT(3)	/* black-extension enable (bit2 = DNLP) */
 #define VPP_VE_DEMO_LEFT_TOP_SCREEN_WIDTH 0x1da2
 #define VPP_VE_DEMO_CENTER_BAR 0x1da3
 #define VPP_VE_H_V_SIZE 0x1da4
@@ -562,7 +630,9 @@
 #define VPP_PEAKING_SAT_THD4 0x1db0
 #define VPP_PEAKING_SAT_THD5 0x1db1
 #define VPP_PEAKING_SAT_THD6 0x1db2
+#define VPP_RO_CRCSUM        0x1db2  /* VPP post-blend CRC result (read-only) */
 #define VPP_PEAKING_SAT_THD7 0x1db3
+#define VPP_CRC_CHK          0x1db3  /* VPP CRC trigger (write 1 to start) */
 #define VPP_PEAKING_SAT_THD8 0x1db4
 #define VPP_PEAKING_SAT_THD9 0x1db5
 #define VPP_PEAKING_GAIN_ADD1 0x1db6
@@ -638,6 +708,99 @@
 #define OSD1_HDR2_CTRL 0x38a0
 #define OSD1_HDR2_CTRL_VDIN0_HDR2_TOP_EN       BIT(13)
 #define OSD1_HDR2_CTRL_REG_ONLY_MAT            BIT(16)
+
+/*
+ * Per-plane HDR2 tone-mapping block (G12A/G12B/SM1). Each video plane has an
+ * identical HDR2 instance: input CSC (MATRIXI, YUV->RGB) -> EOTF LUT (linearize)
+ * -> gamut 3x3 (e.g. BT.2020->BT.709) -> OOTF LUT (tone-map) -> OETF LUT
+ * (re-gamma) -> CGAIN LUT -> output CSC (MATRIXO, RGB->YUV). Instance bases:
+ * VD1 0x3800, VD2 0x3850 (stride 0x50), OSD1 0x38a0. Values are VPP word offsets
+ * (the driver writes reg << 2 from io_base). Reverse-engineered from the BSP
+ * amvecm set_hdr2_v0.c; the full register map, programming sequence and
+ * PQ->SDR coefficient/LUT references are in our internal HDR2 plan.
+ */
+/* HDR2_CTRL bitfields (shared layout across all instances) */
+#define HDR2_CTRL_CGAIN_EN             BIT(0)  /* chroma-gain LUT enable */
+#define HDR2_CTRL_OGAIN_LUT_EN         BIT(1)  /* OOTF / o-gain LUT enable */
+#define HDR2_CTRL_OETF_LUT_EN          BIT(2)  /* OETF (re-gamma) LUT enable */
+#define HDR2_CTRL_EOTF_LUT_EN          BIT(3)  /* EOTF (linearize) LUT enable */
+#define HDR2_CTRL_IN_MTX_EN            BIT(4)  /* input matrix (MATRIXI) enable */
+#define HDR2_CTRL_GMUT_MODE(x)         ((x) << 6) /* 1=before OOTF, 2=after, 0/3=off */
+#define HDR2_CTRL_CGAIN_MODE           BIT(12) /* chroma-gain mode (0=Y, 1=RGB-max) */
+#define HDR2_CTRL_TOP_EN               BIT(13) /* HDR2 core master enable */
+#define HDR2_CTRL_IN_MTX_VALID         BIT(14) /* input-matrix valid latch */
+#define HDR2_CTRL_OUT_MTX_VALID        BIT(15) /* output-matrix valid latch */
+#define HDR2_CTRL_ONLY_MAT             BIT(16) /* matrix-only (LUTs bypassed) */
+#define HDR2_CLK_GATE_FORCE_ON         0xaaa   /* write to CLK_GATE[11:0] to force clock on */
+
+/* VD1 HDR2 instance (base 0x3800) */
+#define VD1_HDR2_CTRL                  0x3800  /* master control (HDR2_CTRL_* bits) */
+#define VD1_HDR2_CLK_GATE              0x3801  /* clock-gate ctrl (HDR2_CLK_GATE_FORCE_ON) */
+#define VD1_HDR2_MATRIXI_COEF00_01     0x3802  /* input YUV->RGB 3x3, 2 coef/word (13-bit, 1.0=1024) */
+#define VD1_HDR2_MATRIXI_COEF02_10     0x3803
+#define VD1_HDR2_MATRIXI_COEF11_12     0x3804
+#define VD1_HDR2_MATRIXI_COEF20_21     0x3805
+#define VD1_HDR2_MATRIXI_COEF22        0x3806
+#define VD1_HDR2_MATRIXI_OFFSET0_1     0x380a  /* input matrix post-offset (Y,Cb) */
+#define VD1_HDR2_MATRIXI_OFFSET2       0x380b  /* input matrix post-offset (Cr) */
+#define VD1_HDR2_MATRIXI_PRE_OFFSET0_1 0x380c  /* input matrix pre-offset (Y,Cb) */
+#define VD1_HDR2_MATRIXI_PRE_OFFSET2   0x380d  /* input matrix pre-offset (Cr) */
+#define VD1_HDR2_MATRIXO_COEF00_01     0x380e  /* output RGB->YUV 3x3, 2 coef/word */
+#define VD1_HDR2_MATRIXO_COEF02_10     0x380f
+#define VD1_HDR2_MATRIXO_COEF11_12     0x3810
+#define VD1_HDR2_MATRIXO_COEF20_21     0x3811
+#define VD1_HDR2_MATRIXO_COEF22        0x3812
+#define VD1_HDR2_MATRIXO_OFFSET0_1     0x3816  /* output matrix post-offset */
+#define VD1_HDR2_MATRIXO_OFFSET2       0x3817
+#define VD1_HDR2_MATRIXO_PRE_OFFSET0_1 0x3818  /* output matrix pre-offset */
+#define VD1_HDR2_MATRIXO_PRE_OFFSET2   0x3819
+#define VD1_HDR2_MATRIXI_CLIP          0x381a
+#define VD1_HDR2_MATRIXO_CLIP          0x381b
+#define VD1_HDR2_CGAIN_OFFT            0x381c  /* chroma-gain offsets */
+#define VD1_HDR2_EOTF_LUT_ADDR_PORT    0x381e  /* EOTF LUT addr; write 0, stream 143 to DATA */
+#define VD1_HDR2_EOTF_LUT_DATA_PORT    0x381f
+#define VD1_HDR2_OETF_LUT_ADDR_PORT    0x3820  /* OETF LUT addr; 149 entries (74 packed + tail) */
+#define VD1_HDR2_OETF_LUT_DATA_PORT    0x3821
+#define VD1_HDR2_CGAIN_LUT_ADDR_PORT   0x3822  /* CGAIN LUT addr; 65 entries */
+#define VD1_HDR2_CGAIN_LUT_DATA_PORT   0x3823
+#define VD1_HDR2_CGAIN_COEF0           0x3824
+#define VD1_HDR2_CGAIN_COEF1           0x3825  /* [28:16] = norm (0x400 @10-bit) */
+#define VD1_HDR2_OGAIN_LUT_ADDR_PORT   0x3826  /* OOTF/o-gain LUT addr; 149 entries */
+#define VD1_HDR2_OGAIN_LUT_DATA_PORT   0x3827
+#define VD1_HDR2_GMUT_CTRL             0x3830  /* gamut coef right-shift (0 = integer mode) */
+#define VD1_HDR2_GMUT_COEF0            0x3831  /* gamut 3x3, 2 coef/word */
+#define VD1_HDR2_GMUT_COEF1            0x3832
+#define VD1_HDR2_GMUT_COEF2            0x3833
+#define VD1_HDR2_GMUT_COEF3            0x3834
+#define VD1_HDR2_GMUT_COEF4            0x3835
+#define VD1_HDR2_MATRIXI_EN_CTRL       0x383b  /* input-matrix enable */
+#define VD1_HDR2_MATRIXO_EN_CTRL       0x383c  /* output-matrix enable */
+
+/* VD2 HDR2 instance (base 0x3850 = VD1 + 0x50; identical layout) */
+#define VD2_HDR2_CTRL                  0x3850
+#define VD2_HDR2_CLK_GATE              0x3851
+#define VD2_HDR2_MATRIXI_COEF00_01     0x3852
+#define VD2_HDR2_MATRIXI_COEF02_10     0x3853
+#define VD2_HDR2_MATRIXI_COEF11_12     0x3854
+#define VD2_HDR2_MATRIXI_COEF20_21     0x3855
+#define VD2_HDR2_MATRIXI_COEF22        0x3856
+#define VD2_HDR2_MATRIXI_OFFSET0_1     0x385a
+#define VD2_HDR2_MATRIXI_OFFSET2       0x385b
+#define VD2_HDR2_MATRIXI_PRE_OFFSET0_1 0x385c
+#define VD2_HDR2_MATRIXI_PRE_OFFSET2   0x385d
+#define VD2_HDR2_MATRIXO_COEF00_01     0x385e
+#define VD2_HDR2_MATRIXO_COEF02_10     0x385f
+#define VD2_HDR2_MATRIXO_COEF11_12     0x3860
+#define VD2_HDR2_MATRIXO_COEF20_21     0x3861
+#define VD2_HDR2_MATRIXO_COEF22        0x3862
+#define VD2_HDR2_MATRIXO_OFFSET0_1     0x3866
+#define VD2_HDR2_MATRIXO_OFFSET2       0x3867
+#define VD2_HDR2_MATRIXO_PRE_OFFSET0_1 0x3868
+#define VD2_HDR2_MATRIXO_PRE_OFFSET2   0x3869
+#define VD2_HDR2_CGAIN_OFFT            0x386c
+#define VD2_HDR2_GMUT_CTRL             0x3880
+#define VD2_HDR2_MATRIXI_EN_CTRL       0x388b
+#define VD2_HDR2_MATRIXO_EN_CTRL       0x388c
 
 /* osd2 scaler */
 #define OSD2_VSC_PHASE_STEP 0x3d00
@@ -1685,6 +1848,21 @@
 #define VPU_RDARB_MODE_L2C1 0x279d
 #define VPU_WRARB_MODE_L2C1 0x27a2
 #define		VPU_RDARB_SLAVE_TO_MASTER_PORT(dc, port) (port << (16 + dc))
+/*
+ * VPU_HDMI_DITH_CNTL -- VENC->HDMI-TX dither control (GXM/G12A/SM1+).
+ * Not present in the upstream meson register map; sourced from the vendor
+ * BSP hdmitx20 (hdmi_tx_hw.c, the ">= GXM" colordepth path) and the
+ * S905D3/A311D VPU_HDMI datasheet register audit. Word offset 0x27fc.
+ *
+ * Bit [4] (dith10_en): enable the 10-bit -> 8-bit output dither. Set for an
+ * 8-bit link (COLORDEPTH_24B); CLEAR it for a 10/12-bit link (30B/36B/48B)
+ * so the VPU's native 10-bit pixels reach the HDMI-TX undithered. This bit
+ * (together with VPU_HDMI_FMT_CTRL[10] 12->10 rounding) is the single
+ * decisive VENC-side change that lets deep color out of the pixel bus; the
+ * GCP/link color depth itself is derived by dw-hdmi from the bus format
+ * (RGB101010_1X30 -> 30BPP). Other bits are dither tuning, left at reset.
+ */
+#define VPU_HDMI_DITH_CNTL 0x27fc
 
 /* osd super scale */
 #define OSDSR_HV_SIZEIN 0x3130
@@ -1872,6 +2050,8 @@
 
 #define VPP_OUT_H_V_SIZE 0x1da5
 
+#define VPP_VD1_HDR_IN_SIZE 0x1a57	/* VD1 HDR2 input size = (height << 16) | width;
+					 * gates the HDR2 block -- 0 => VD1 bypasses HDR2 */
 #define VPP_VD2_HDR_IN_SIZE 0x1df0
 #define VPP_OSD1_IN_SIZE 0x1df1
 #define VPP_GCLK_CTRL2 0x1df2
@@ -1889,21 +2069,40 @@
 #define		VD_BLEND_PREBLD_SRC_OSD1        (3 << 0)
 #define		VD_BLEND_PREBLD_SRC_OSD2        (4 << 0)
 #define		VD_BLEND_PREBLD_PREMULT_EN      BIT(4)
+#define		VD_BLEND_POSTBLD_SRC_MASK       (0xf << 8) /* post-blend port source selector */
 #define		VD_BLEND_POSTBLD_SRC_VD1        (1 << 8)
 #define		VD_BLEND_POSTBLD_SRC_VD2        (2 << 8)
 #define		VD_BLEND_POSTBLD_SRC_OSD1       (3 << 8)
 #define		VD_BLEND_POSTBLD_SRC_OSD2       (4 << 8)
 #define		VD_BLEND_POSTBLD_PREMULT_EN     BIT(16)
+/* SM1/G12 legacy VD2 blend: the VD2 post-blend port needs this path-select bit.
+ * The VD2 layer alpha is separate, in VPP_MISC [26:18] (VPP_VD2_ALPHA_*). */
+#define		VD_BLEND_VD2_PATH_SEL           BIT(20)
 #define OSD1_BLEND_SRC_CTRL 0x1dfd
 #define OSD2_BLEND_SRC_CTRL 0x1dfe
+/*
+ * Third VPP post-blend video port. In the post-blend port array
+ * {VD1,VD2,VD3,OSD2}_BLEND_SRC_CTRL it sits ABOVE the OSD-dout's slot (OSD1),
+ * so routing a video source here composites it above the OSD. Upstream omitted
+ * it; offset from BSP vpp_regs.h (V2603). G12A/G12B/SM1.
+ */
+#define VD3_BLEND_SRC_CTRL 0x1def
 #define		OSD_BLEND_POSTBLD_SRC_VD1       (1 << 8)
 #define		OSD_BLEND_POSTBLD_SRC_VD2       (2 << 8)
 #define		OSD_BLEND_POSTBLD_SRC_OSD1      (3 << 8)
 #define		OSD_BLEND_POSTBLD_SRC_OSD2      (4 << 8)
 #define		OSD_BLEND_PATH_SEL_ENABLE       BIT(20)
 
+/* VPP post-blend background: the full-canvas base layer the post-blender shows
+ * wherever no enabled plane covers a pixel. DATA is YCbCr (Y[23:16] Cb[15:8]
+ * Cr[7:0]); the reset default 0x00008080 is Y=0 (NOT studio-black Y=16) which
+ * the output YUV->RGB CSC turns into a full-screen GREEN field -- visible only
+ * when no opaque plane covers the canvas (e.g. VD1 disabled, VD2-only PiP).
+ * Init both to studio-black + opaque so the exposed background is black. */
 #define VPP_POST_BLEND_BLEND_DUMMY_DATA 0x3968
+#define		VPP_POST_BLEND_DUMMY_YUV_BLACK  0x00108080 /* Y=16 Cb=Cr=128 */
 #define VPP_POST_BLEND_DUMMY_ALPHA 0x3969
+#define		VPP_POST_BLEND_DUMMY_ALPHA_OPAQUE 0x7fffffff /* BSP default */
 #define VPP_RDARB_MODE 0x3978
 #define VPP_RDARB_REQEN_SLV 0x3979
 

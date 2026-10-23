@@ -14,8 +14,10 @@
 struct drm_crtc;
 struct drm_device;
 struct drm_plane;
+struct drm_writeback_connector;
 struct meson_drm;
 struct meson_afbcd_ops;
+struct meson_ge2d_dev;
 
 enum vpu_compatible {
 	VPU_COMPATIBLE_GXBB = 0,
@@ -49,15 +51,22 @@ struct meson_drm {
 
 	struct meson_canvas *canvas;
 	u8 canvas_id_osd1;
+	u8 canvas_id_osd2;
 	u8 canvas_id_vd1_0;
 	u8 canvas_id_vd1_1;
 	u8 canvas_id_vd1_2;
+	u8 canvas_id_vd2_0;
+	u8 canvas_id_vd2_1;
+	u8 canvas_id_vd2_2;
 
 	struct drm_device *drm;
 	struct drm_crtc *crtc;
 	struct drm_plane *primary_plane;
 	struct drm_plane *overlay_plane;
+	struct drm_plane *overlay2_plane;
 	void *encoders[MESON_ENC_LAST];
+	struct drm_writeback_connector *writeback;
+	struct meson_ge2d_dev *ge2d;
 
 	const struct meson_drm_soc_limits *limits;
 
@@ -90,6 +99,38 @@ struct meson_drm {
 		uint32_t osd_blend_din0_scope_v;
 		uint32_t osb_blend0_size;
 		uint32_t osb_blend1_size;
+
+		/* Plane z-order (raw zpos property values). osd1/osd2 drive the
+		 * OSD-blender REORDER (stage 1); vd1/vd2 + the OSDs drive the VPP
+		 * post-blend port assignment (stage 2). G12A commit path only. */
+		uint32_t osd1_zpos;
+		uint32_t osd2_zpos;
+		uint32_t vd1_zpos;
+		uint32_t vd2_zpos;
+
+		bool osd2_enabled;
+		bool osd2_commit;
+		uint32_t osd2_ctrl_stat;
+		uint32_t osd2_ctrl_stat2;
+		uint32_t osd2_blk0_cfg[5];
+		uint32_t osd2_addr;
+		uint32_t osd2_stride;
+		uint32_t osd2_height;
+		uint32_t osd2_width;
+		uint32_t osd_blend_din1_scope_h;
+		uint32_t osd_blend_din1_scope_v;
+		uint32_t osd2_bld_h_scope;	/* VPP-level OSD2 blend output window */
+		uint32_t osd2_bld_v_scope;
+		uint32_t osd2_sc_ctrl0;
+		uint32_t osd2_sc_i_wh_m1;
+		uint32_t osd2_sc_o_h_start_end;
+		uint32_t osd2_sc_o_v_start_end;
+		uint32_t osd2_sc_v_ctrl0;
+		uint32_t osd2_sc_v_phase_step;
+		uint32_t osd2_sc_v_ini_phase;
+		uint32_t osd2_sc_h_ctrl0;
+		uint32_t osd2_sc_h_phase_step;
+		uint32_t osd2_sc_h_ini_phase;
 
 		bool vd1_enabled;
 		bool vd1_commit;
@@ -154,6 +195,78 @@ struct meson_drm {
 		uint32_t vpp_hsc_phase_ctrl;
 		uint32_t vpp_blend_vd2_h_start_end;
 		uint32_t vpp_blend_vd2_v_start_end;
+
+		/* VD2: independent second video overlay plane (1:1, no scaling) */
+		bool vd2_enabled;
+		bool vd2_commit;
+		unsigned int vd2_planes;
+		uint32_t vd2_if0_gen_reg;
+		uint32_t vd2_if0_gen_reg2;
+		uint32_t vd2_if0_canvas0;
+		uint32_t viu_vd2_fmt_ctrl;
+		uint32_t viu_vd2_fmt_w;
+		uint32_t vd2_if0_luma_x0;
+		uint32_t vd2_if0_luma_y0;
+		uint32_t vd2_if0_chroma_x0;
+		uint32_t vd2_if0_chroma_y0;
+		uint32_t vd2_if0_repeat_loop;
+		uint32_t vd2_if0_luma0_rpt_pat;
+		uint32_t vd2_if0_chroma0_rpt_pat;
+		uint32_t vd2_addr0;
+		uint32_t vd2_addr1;
+		uint32_t vd2_addr2;
+		uint32_t vd2_stride0;
+		uint32_t vd2_stride1;
+		uint32_t vd2_stride2;
+		uint32_t vd2_height0;
+		uint32_t vd2_height1;
+		uint32_t vd2_height2;
+		uint32_t vd2_dst_h_start_end;
+		uint32_t vd2_dst_v_start_end;
+
+		/* VD2 AFBC (AFBC-002), mirror of the vd1_afbc_* state */
+		bool vd2_afbc;
+		uint32_t vd2_afbc_mode;
+		uint32_t vd2_afbc_en;
+		uint32_t vd2_afbc_head_addr;
+		uint32_t vd2_afbc_body_addr;
+		uint32_t vd2_afbc_conv_ctrl;
+		uint32_t vd2_afbc_dec_def_color;
+		uint32_t vd2_afbc_vd_cfmt_ctrl;
+		uint32_t vd2_afbc_vd_cfmt_w;
+		uint32_t vd2_afbc_vd_cfmt_h;
+		uint32_t vd2_afbc_mif_hor_scope;
+		uint32_t vd2_afbc_mif_ver_scope;
+		uint32_t vd2_afbc_size_out;
+		uint32_t vd2_afbc_pixel_hor_scope;
+		uint32_t vd2_afbc_pixel_ver_scope;
+		uint32_t vd2_afbc_size_in;
+
+		/*
+		 * Colour-management state cache (audit #6/#7/#8/#9/#10). The
+		 * active CTM/gamma LUT are cached here -- not read back from
+		 * drm_crtc_state, which the vsync IRQ must never touch
+		 * unlocked (#26) -- so they can be:
+		 *   - written by the vsync IRQ instead of synchronously from
+		 *     atomic_flush, deferred like every other register in
+		 *     this driver (#8);
+		 *   - reapplied after meson_viu_osd1_reset() rewrites the
+		 *     EOTF matrix to bypass (#6, GXL/GXM only);
+		 *   - reapplied after meson_viu_init() runs at probe/resume,
+		 *     when hardware is neutral again but drm_crtc_state /
+		 *     the user's last CTM/gamma still report the old values
+		 *     (#10).
+		 * Protected by priv->drm->event_lock -- see meson_crtc.c
+		 * atomic_flush (writer) and meson_crtc_irq (reader), #26.
+		 */
+		bool cm_commit;		/* pending write, consumed by the vsync IRQ */
+		bool cm_ctm_active;	/* false: EOTF matrix bypassed */
+		int cm_ctm_coeffs[10];	/* must match EOTF_COEFF_SIZE in meson_viu.c */
+		bool cm_gamma_active;	/* false: L_GAMMA disabled */
+		unsigned int cm_gamma_size;
+		u16 cm_gamma_r[256];
+		u16 cm_gamma_g[256];
+		u16 cm_gamma_b[256];
 	} viu;
 
 	struct {
@@ -161,6 +274,13 @@ struct meson_drm {
 		bool hdmi_repeat;
 		bool venc_repeat;
 		bool hdmi_use_enci;
+
+		/* VENC test-pattern-generator debugfs state (audit #25): the
+		 * ENCP_VIDEO_MODE_ADV bit3 gate value saved when the TPG is
+		 * turned on, so "off" can restore exactly that value instead
+		 * of force-setting bit3. */
+		bool tpg_active;
+		u32 tpg_saved_mode_adv;
 	} venc;
 
 	struct {

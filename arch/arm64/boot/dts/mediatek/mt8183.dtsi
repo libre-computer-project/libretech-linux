@@ -1593,6 +1593,10 @@
 				reg = <0x060 0x4>;
 			};
 
+			unique_id: unique-id@140 {
+				reg = <0x140 0x8>;
+			};
+
 			thermal_calibration: calib@180 {
 				reg = <0x180 0xc>;
 			};
@@ -1812,15 +1816,23 @@
 				#size-cells = <0>;
 
 				port@0 {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					reg = <0>;
-					ovl_2l1_in: endpoint {
+
+					ovl_2l1_in: endpoint@1 {
+						reg = <1>;
 						remote-endpoint = <&mmsys_ep_ext>;
 					};
 				};
 
 				port@1 {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					reg = <1>;
-					ovl_2l1_out: endpoint {
+
+					ovl_2l1_out: endpoint@1 {
+						reg = <1>;
 						remote-endpoint = <&rdma1_in>;
 					};
 				};
@@ -1872,15 +1884,23 @@
 				#size-cells = <0>;
 
 				port@0 {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					reg = <0>;
-					rdma1_in: endpoint {
+
+					rdma1_in: endpoint@1 {
+						reg = <1>;
 						remote-endpoint = <&ovl_2l1_out>;
 					};
 				};
 
 				port@1 {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					reg = <1>;
-					rdma1_out: endpoint {
+
+					rdma1_out: endpoint@1 {
+						reg = <1>;
 						remote-endpoint = <&dpi_in>;
 					};
 				};
@@ -2076,15 +2096,24 @@
 				#size-cells = <0>;
 
 				port@0 {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					reg = <0>;
-					dpi_in: endpoint {
+
+					dpi_in: endpoint@1 {
+						reg = <1>;
 						remote-endpoint = <&rdma1_out>;
 					};
 				};
 
 				port@1 {
+					#address-cells = <1>;
+					#size-cells = <0>;
 					reg = <1>;
-					dpi_out: endpoint { };
+
+					dpi_out: endpoint@1  {
+						reg = <1>;
+					};
 				};
 			};
 		};
@@ -2266,6 +2295,100 @@
 			compatible = "mediatek,mt8183-ipu_core1", "syscon";
 			reg = <0 0x19280000 0 0x1000>;
 			#clock-cells = <1>;
+		};
+
+		/*
+		 * Experimental VP6/IPU reachability probe (CONFIG_MTK_MT8183_IPU_PROBE,
+		 * tristate=m). Consumer-only node: powers on VPU_CORE0 (genpd pulls in
+		 * its VPU_TOP parent + the ipu_conn AHB/AXI clocks) and reads ipu_conn /
+		 * ipu_core0 to confirm the VP6 block is reachable. Not a functional VPU
+		 * driver (no firmware). Harmless when the module is not loaded.
+		 */
+		ipu_probe: ipu-probe {
+			compatible = "mediatek,mt8183-ipu-probe";
+			power-domains = <&spm MT8183_POWER_DOMAIN_VPU_CORE0>;
+			mediatek,ipu-conn = <&ipu_conn>;
+			mediatek,ipu-core0 = <&ipu_core0>;
+		};
+
+		/*
+		 * Functional VP6 (IPU / Cadence Vision-P6) DSP cores
+		 * (CONFIG_MTK_MT8183_VP6, tristate=m). Each is a consumer node that
+		 * reaches its ipu_core0/1 cfg block + the shared ipu_conn fabric via
+		 * regmap phandles (same pattern as ipu_probe), powers its VPU_CORE
+		 * domain, and exposes /dev/vp6-N (firmware-load + mailbox + shared
+		 * buffers). No firmware exists yet; harmless when the module is not
+		 * loaded.
+		 *
+		 * interrupts: the core->host mailbox is interrupt-driven by IP design.
+		 * The GIC SPIs are grounded from the mt6771 (== MT8183 die) Android BSP
+		 * DTS -- vpu_core0@0x19100000 = GIC_SPI 292, vpu_core1@0x19200000 =
+		 * GIC_SPI 293 (OrangePi_4G-IOT_Android_8.1_BSP kernel-4.4
+		 * arch/arm64/boot/dts/mediatek/mt6771.dts:2718-2817). The BSP DTS wrote
+		 * LEVEL_LOW; mainline normalises GIC SPIs to LEVEL_HIGH (matching the
+		 * mt8173 VPU -- same VP6 IP -- vpu@10020000 GIC_SPI 166 LEVEL_HIGH).
+		 *
+		 * iommus: the VP6 fetches boot code + data through the M4U (mt6771
+		 * vpu_hw.c:2065-2070 sets "AXI Request via M4U"; reset vector fetched
+		 * from an M4U-mapped MVA). mainline mt8183-larb-port.h labels larb2 as
+		 * "VPU0" and larb3 as "VPU1" -- attach core0/1 to those so the DMA API
+		 * hands out M4U IOVAs the DSP can fetch from via altresetvec.
+		 */
+		vp6_core0: vp6-core0 {
+			compatible = "mediatek,mt8183-vp6";
+			power-domains = <&spm MT8183_POWER_DOMAIN_VPU_CORE0>;
+			clocks = <&ipu_core0 CLK_IPU_CORE0_AXI>,
+				 <&ipu_core0 CLK_IPU_CORE0_IPU>,
+				 <&ipu_core0 CLK_IPU_CORE0_JTAG>,
+				 <&ipu_conn CLK_IPU_CONN_DAP_RX>,
+				 <&ipu_conn CLK_IPU_CONN_APB2AXI>,
+				 <&ipu_conn CLK_IPU_CONN_APB2AHB>,
+				 <&ipu_conn CLK_IPU_CONN_IPU_CAB1TO2>,
+				 <&ipu_conn CLK_IPU_CONN_IPU1_CAB1TO2>,
+				 <&ipu_conn CLK_IPU_CONN_IPU2_CAB1TO2>,
+				 <&ipu_conn CLK_IPU_CONN_CAB3TO3>,
+				 <&ipu_conn CLK_IPU_CONN_CAB2TO1>,
+				 <&ipu_conn CLK_IPU_CONN_CAB3TO1_SLICE>;
+			clock-names = "axi", "ipu", "jtag",
+				      "dap_rx", "apb2axi", "apb2ahb",
+				      "ipu_cab1to2", "ipu1_cab1to2", "ipu2_cab1to2",
+				      "cab3to3", "cab2to1", "cab3to1_slice";
+			interrupts = <GIC_SPI 292 IRQ_TYPE_LEVEL_HIGH>;
+			iommus = <&iommu M4U_PORT_IMG_IPUO>;
+			resets = <&infracfg MT8183_INFRACFG_AO_IPU_GALS_SW_RST>,
+				 <&watchdog MT8183_TOPRGU_IPU0_SW_RST>;
+			reset-names = "ipu_gals", "ipu0";
+			mediatek,core-index = <0>;
+			mediatek,ipu-core = <&ipu_core0>;
+			mediatek,ipu-conn = <&ipu_conn>;
+			status = "disabled";
+		};
+
+		vp6_core1: vp6-core1 {
+			compatible = "mediatek,mt8183-vp6";
+			power-domains = <&spm MT8183_POWER_DOMAIN_VPU_CORE1>;
+			clocks = <&ipu_core1 CLK_IPU_CORE1_AXI>,
+				 <&ipu_core1 CLK_IPU_CORE1_IPU>,
+				 <&ipu_core1 CLK_IPU_CORE1_JTAG>,
+				 <&ipu_conn CLK_IPU_CONN_DAP_RX>,
+				 <&ipu_conn CLK_IPU_CONN_APB2AXI>,
+				 <&ipu_conn CLK_IPU_CONN_APB2AHB>,
+				 <&ipu_conn CLK_IPU_CONN_IPU_CAB1TO2>,
+				 <&ipu_conn CLK_IPU_CONN_IPU1_CAB1TO2>,
+				 <&ipu_conn CLK_IPU_CONN_IPU2_CAB1TO2>,
+				 <&ipu_conn CLK_IPU_CONN_CAB3TO3>,
+				 <&ipu_conn CLK_IPU_CONN_CAB2TO1>,
+				 <&ipu_conn CLK_IPU_CONN_CAB3TO1_SLICE>;
+			clock-names = "axi", "ipu", "jtag",
+				      "dap_rx", "apb2axi", "apb2ahb",
+				      "ipu_cab1to2", "ipu1_cab1to2", "ipu2_cab1to2",
+				      "cab3to3", "cab2to1", "cab3to1_slice";
+			interrupts = <GIC_SPI 293 IRQ_TYPE_LEVEL_HIGH>;
+			iommus = <&iommu M4U_PORT_CAM_IPUO>;
+			mediatek,core-index = <1>;
+			mediatek,ipu-core = <&ipu_core1>;
+			mediatek,ipu-conn = <&ipu_conn>;
+			status = "disabled";
 		};
 
 		camsys: syscon@1a000000 {

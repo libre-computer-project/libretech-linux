@@ -2529,6 +2529,7 @@ nv170_chipset = {
 	.vfn      = { 0x00000001, ga100_vfn_new },
 	.ce       = { 0x000003ff, ga100_ce_new },
 	.fifo     = { 0x00000001, ga100_fifo_new },
+	.sec2     = { 0x00000001, tu102_sec2_new },
 };
 
 static const struct nvkm_device_chip
@@ -2844,7 +2845,7 @@ nv1b2_chipset = {
 	.pci      = { 0x00000001, gh100_pci_new },
 	.timer    = { 0x00000001, gk20a_timer_new },
 	.vfn      = { 0x00000001, ga100_vfn_new },
-	.disp     = { 0x00000001, ga102_disp_new },
+	.disp     = { 0x00000001, gb202_disp_new },
 	.fifo     = { 0x00000001, ga102_fifo_new },
 };
 
@@ -2860,7 +2861,7 @@ nv1b3_chipset = {
 	.pci      = { 0x00000001, gh100_pci_new },
 	.timer    = { 0x00000001, gk20a_timer_new },
 	.vfn      = { 0x00000001, ga100_vfn_new },
-	.disp     = { 0x00000001, ga102_disp_new },
+	.disp     = { 0x00000001, gb202_disp_new },
 	.fifo     = { 0x00000001, ga102_fifo_new },
 };
 
@@ -2876,7 +2877,7 @@ nv1b5_chipset = {
 	.pci      = { 0x00000001, gh100_pci_new },
 	.timer    = { 0x00000001, gk20a_timer_new },
 	.vfn      = { 0x00000001, ga100_vfn_new },
-	.disp     = { 0x00000001, ga102_disp_new },
+	.disp     = { 0x00000001, gb202_disp_new },
 	.fifo     = { 0x00000001, ga102_fifo_new },
 };
 
@@ -2892,7 +2893,7 @@ nv1b6_chipset = {
 	.pci      = { 0x00000001, gh100_pci_new },
 	.timer    = { 0x00000001, gk20a_timer_new },
 	.vfn      = { 0x00000001, ga100_vfn_new },
-	.disp     = { 0x00000001, ga102_disp_new },
+	.disp     = { 0x00000001, gb202_disp_new },
 	.fifo     = { 0x00000001, ga102_fifo_new },
 };
 
@@ -2908,7 +2909,7 @@ nv1b7_chipset = {
 	.pci      = { 0x00000001, gh100_pci_new },
 	.timer    = { 0x00000001, gk20a_timer_new },
 	.vfn      = { 0x00000001, ga100_vfn_new },
-	.disp     = { 0x00000001, ga102_disp_new },
+	.disp     = { 0x00000001, gb202_disp_new },
 	.fifo     = { 0x00000001, ga102_fifo_new },
 };
 
@@ -2935,13 +2936,25 @@ nvkm_device_engine(struct nvkm_device *device, int type, int inst)
 }
 
 int
-nvkm_device_fini(struct nvkm_device *device, bool suspend)
+nvkm_device_fini(struct nvkm_device *device, enum nvkm_suspend_state suspend)
 {
-	const char *action = suspend ? "suspend" : "fini";
+	const char *action;
 	struct nvkm_subdev *subdev;
 	int ret;
 	s64 time;
 
+	switch (suspend) {
+	case NVKM_POWEROFF:
+	default:
+		action = "fini";
+		break;
+	case NVKM_SUSPEND:
+		action = "suspend";
+		break;
+	case NVKM_RUNTIME_SUSPEND:
+		action = "runtime";
+		break;
+	}
 	nvdev_trace(device, "%s running...\n", action);
 	time = ktime_to_us(ktime_get());
 
@@ -3031,7 +3044,7 @@ nvkm_device_init(struct nvkm_device *device)
 	if (ret)
 		return ret;
 
-	nvkm_device_fini(device, false);
+	nvkm_device_fini(device, NVKM_POWEROFF);
 
 	nvdev_trace(device, "init running...\n");
 	time = ktime_to_us(ktime_get());
@@ -3059,9 +3072,9 @@ nvkm_device_init(struct nvkm_device *device)
 
 fail_subdev:
 	list_for_each_entry_from(subdev, &device->subdev, head)
-		nvkm_subdev_fini(subdev, false);
+		nvkm_subdev_fini(subdev, NVKM_POWEROFF);
 fail:
-	nvkm_device_fini(device, false);
+	nvkm_device_fini(device, NVKM_POWEROFF);
 
 	nvdev_error(device, "init failed with %d\n", ret);
 	return ret;

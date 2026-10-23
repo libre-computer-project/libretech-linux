@@ -80,6 +80,7 @@ patternProperties:
             - allwinner,sun4i-a10-sram-d
             - allwinner,sun9i-a80-smp-sram
             - allwinner,sun50i-a64-sram-c
+            - amlogic,gxl-pubmon-sc-shmem
             - amlogic,meson8-ao-arc-sram
             - amlogic,meson8b-ao-arc-sram
             - amlogic,meson8-smp-sram

@@ -379,10 +379,27 @@ static u32 mdp_fmt_get_plane_size(const struct mdp_format *fmt,
 	return 0;
 }
 
+/*
+ * Tiled (block-mode) formats such as MM21 store the frame as a grid of
+ * 16xN tiles, so the plane height handed to the SCP/VPU MDP must be a whole
+ * number of tile rows -- i.e. rounded up to the format's vertical alignment
+ * (fmt->halign, log2). A non-tile-aligned source height (e.g. a 720-line
+ * display height for a 32-line MM21 tile) is an invalid 22.5-tile-row frame
+ * that the VPU MDP rejects with state=234 / -EINVAL (decoder KI-001). Linear
+ * formats use halign=1 and are returned unchanged.
+ */
+static u32 mdp_block_aligned_height(const struct mdp_format *fmt, u32 height)
+{
+	if (MDP_COLOR_IS_BLOCK_MODE(fmt->mdp_color))
+		return ALIGN(height, 1 << fmt->halign);
+	return height;
+}
+
 static void mdp_prepare_buffer(struct img_image_buffer *b,
 			       struct mdp_frame *frame, struct vb2_buffer *vb)
 {
 	struct v4l2_pix_format_mplane *pix_mp = &frame->format.fmt.pix_mp;
+	u32 height = mdp_block_aligned_height(frame->mdp_fmt, pix_mp->height);
 	unsigned int i;
 
 	b->format.colorformat = frame->mdp_fmt->mdp_color;
@@ -394,7 +411,7 @@ static void mdp_prepare_buffer(struct img_image_buffer *b,
 		b->format.plane_fmt[i].stride = stride;
 		b->format.plane_fmt[i].size =
 			mdp_fmt_get_plane_size(frame->mdp_fmt, stride,
-					       pix_mp->height, i);
+					       height, i);
 		b->iova[i] = vb2_dma_contig_plane_dma_addr(vb, i);
 	}
 	for (; i < MDP_COLOR_GET_PLANE_COUNT(b->format.colorformat); ++i) {
@@ -404,7 +421,7 @@ static void mdp_prepare_buffer(struct img_image_buffer *b,
 		b->format.plane_fmt[i].stride = stride;
 		b->format.plane_fmt[i].size =
 			mdp_fmt_get_plane_size(frame->mdp_fmt, stride,
-					       pix_mp->height, i);
+					       height, i);
 		b->iova[i] = b->iova[i - 1] + b->format.plane_fmt[i - 1].size;
 	}
 	b->usage = frame->usage;
@@ -414,7 +431,9 @@ void mdp_set_src_config(struct img_input *in,
 			struct mdp_frame *frame, struct vb2_buffer *vb)
 {
 	in->buffer.format.width = frame->format.fmt.pix_mp.width;
-	in->buffer.format.height = frame->format.fmt.pix_mp.height;
+	in->buffer.format.height =
+		mdp_block_aligned_height(frame->mdp_fmt,
+					 frame->format.fmt.pix_mp.height);
 	mdp_prepare_buffer(&in->buffer, frame, vb);
 }
 
@@ -468,12 +487,66 @@ static void mdp_set_orientation(struct img_output *out,
 		out->flags &= ~IMG_CTRL_FLAG_HFLIP;
 }
 
+/*
+ * Bias each output plane's iova by the COMPOSE placement offset (left,top), so a
+ * client that set a sub-region V4L2_SEL_TGT_COMPOSE on the CAPTURE queue gets the
+ * (scaled) result written at (left,top) inside the destination buffer rather than
+ * at the buffer origin. Without this, mdp_set_dst_config only honoured the compose
+ * SIZE (out->buffer.format.width/height = compose.width/height); the left/top
+ * placement was silently dropped for every client (the N3 bug -- it was never a
+ * REQBUFS-vs-CREATE_BUFS divergence, both lost placement identically). The WROT
+ * (mt8195) / WDMA (mt8183) base address comes from out->buffer.iova[], with the
+ * SCP/kernel-direct config computing a frame-origin-relative VIDO/WDMA offset on
+ * top, so biasing the base places the whole write region without disturbing the
+ * per-tile offsets. The destination stride stays the full buffer pitch
+ * (mdp_prepare_buffer derives it from frame->format), so compose.width-wide rows
+ * land at the right pitch.
+ *
+ * Per-plane byte offset = (top >> vsub) * stride + (left >> hsub) * bytes_per_col:
+ *   plane 0      : vsub=hsub=0, bytes_per_col = row_depth[0]/8 (NV12=1, RGB24=3,
+ *                  YUYV=2, ARGB=4 ...).
+ *   chroma plane : vsub/hsub from the colour format; an interleaved UV co-plane
+ *                  (NV12/NV16) packs both samples per chroma column = 2 bytes,
+ *                  a separate U/V plane (I420/YV12) = 1 byte.
+ * For a full-frame compose (left==top==0, every existing validated op) the offset
+ * is 0, so all current paths are byte-identical.
+ */
+static void mdp_apply_compose_offset(struct img_image_buffer *b,
+				     struct mdp_frame *frame)
+{
+	const struct mdp_format *fmt = frame->mdp_fmt;
+	enum mdp_color c = fmt->mdp_color;
+	u32 left = frame->compose.left;
+	u32 top = frame->compose.top;
+	unsigned int i;
+
+	if (!frame->compose_set || (!left && !top))
+		return;
+
+	for (i = 0; i < MDP_COLOR_GET_PLANE_COUNT(c); ++i) {
+		u32 vsub = i ? MDP_COLOR_GET_V_SUBSAMPLE(c) : 0;
+		u32 hsub = i ? MDP_COLOR_GET_H_SUBSAMPLE(c) : 0;
+		u32 bytes_per_col;
+		u32 ofst;
+
+		if (i == 0)
+			bytes_per_col = fmt->row_depth[0] / 8;
+		else
+			bytes_per_col = MDP_COLOR_IS_UV_COPLANE(c) ? 2 : 1;
+
+		ofst = (top >> vsub) * b->format.plane_fmt[i].stride +
+		       (left >> hsub) * bytes_per_col;
+		b->iova[i] += ofst;
+	}
+}
+
 void mdp_set_dst_config(struct img_output *out,
 			struct mdp_frame *frame, struct vb2_buffer *vb)
 {
 	out->buffer.format.width = frame->compose.width;
 	out->buffer.format.height = frame->compose.height;
 	mdp_prepare_buffer(&out->buffer, frame, vb);
+	mdp_apply_compose_offset(&out->buffer, frame);
 	mdp_set_src_crop(&out->crop, &frame->crop);
 	mdp_set_orientation(out, frame->rotation, frame->hflip, frame->vflip);
 }
@@ -509,6 +582,12 @@ int mdp_frameparam_init(struct mdp_dev *mdp, struct mdp_frameparam *param)
 	frame->crop.c.height = param->output.format.fmt.pix_mp.height;
 	frame->compose.width = frame->format.fmt.pix_mp.width;
 	frame->compose.height = frame->format.fmt.pix_mp.height;
+	/* No client S_SELECTION yet: S_FMT defaults crop/compose to the full
+	 * frame rather than keeping this minimum-format default (see
+	 * mdp_default_or_keep_rect / KI-009).
+	 */
+	frame->crop_set = 0;
+	frame->compose_set = 0;
 
 	return 0;
 }

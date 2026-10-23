@@ -9,6 +9,7 @@
 
 #include "meson-g12b-w400.dtsi"
 #include <dt-bindings/sound/meson-g12a-tohdmitx.h>
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "azw,gtking", "amlogic,s922x", "amlogic,g12b";

@@ -9,3 +9,17 @@ config MESON_SM
 	depends on ARM64_4K_PAGES
 	help
 	  Say y here to enable the Amlogic secure monitor driver
+
+config MESON_SM_DEVID
+	tristate "Amlogic EL3 device credential service"
+	depends on MESON_SM && ARM64
+	help
+	  /dev/devid-enroll (Identify, Burn) and /dev/devid (Answer) for the
+	  device credential service in our TF-A (AML_DEVID).  The nodes appear
+	  only when the firmware answers the service's VERSION call.
+
+config MESON_GX_PM
+	bool
+	default ARCH_MESON if ARM64
+	help
+	  Say y here to enable the Amlogic GX SoC Power Management
