@@ -228,6 +228,12 @@ enum v4l2_colorfx {
  */
 #define V4L2_CID_USER_RKISP1_BASE		(V4L2_CID_USER_BASE + 0x1220)
 
+/*
+ * The base for the MediaTek MDP3 (Media Data Path) m2m driver controls.
+ * See drivers/media/platform/mediatek/mdp3/. We reserve 16 controls.
+ */
+#define V4L2_CID_USER_MTK_MDP_BASE		(V4L2_CID_USER_BASE + 0x1230)
+
 /* MPEG-class control IDs */
 /* The MPEG controls are applicable to all codec controls
  * and the 'MPEG' part of the define is historical */

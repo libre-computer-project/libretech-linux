@@ -80,6 +80,8 @@ struct vdec_h264_vsi {
  * @vsi_ctx  : Local VSI data for this decoding context
  * @h264_slice_param : the parameters that hardware use to decode
  * @dpb : decoded picture buffer used to store reference buffer information
+ * @mono_cand : decoded pictures whose SPS has chroma_format_idc 0
+ * @mono_hit  : of those, pictures whose chroma plane was filled
  */
 struct vdec_h264_slice_inst {
 	unsigned int num_nalu;
@@ -91,7 +93,40 @@ struct vdec_h264_slice_inst {
 	struct mtk_h264_dec_slice_param h264_slice_param;
 
 	struct v4l2_h264_dpb_entry dpb[16];
+
+	unsigned int mono_cand;
+	unsigned int mono_hit;
 };
+
+/*
+ * Monochrome (4:0:0) chroma-plane fill, MT8365 N94's form for the SCP path.
+ *
+ * A chroma_format_idc 0 bitstream codes no chroma samples, so the decoder
+ * writes only the luma plane and the CAPTURE buffer's chroma plane keeps
+ * whatever it held (0 on MT8183, kukui FX1: luma bit-exact, chroma 0, on the
+ * open SCP image and on the stock one). A 4:0:0 picture is presented with
+ * neutral chroma, 128.
+ *
+ * The fill covers fb->base_c.size (the CAPTURE format's sizeimage[1]), the
+ * whole padded MM21 chroma plane the driver itself sized, so no second
+ * geometry is computed here. A constant byte is invariant under the MM21
+ * tiling and the U/V interleave, so a plain memset is exact.
+ *
+ * It runs after the decode-done interrupt, per picture: CAPTURE buffers are
+ * recycled and nothing the hardware writes can follow it. The V4L2 core sets
+ * chroma_format_idc to 1 for every profile that does not code it
+ * (v4l2-ctrls-core.c, V4L2_H264_SPS_HAS_CHROMA_FORMAT), so only a High-family
+ * SPS that codes 0 reaches the fill.
+ */
+static int h264_slice_mono = 1;
+module_param(h264_slice_mono, int, 0644);
+MODULE_PARM_DESC(h264_slice_mono,
+		 "H.264 (SCP) chroma_format_idc 0: fill the CAPTURE chroma plane with h264_slice_monoval after decode (default 1)");
+
+static int h264_slice_monoval = 0x80;
+module_param(h264_slice_monoval, int, 0644);
+MODULE_PARM_DESC(h264_slice_monoval,
+		 "H.264 (SCP) byte written by the h264_slice_mono fill (default 0x80, neutral chroma)");
 
 static int get_vdec_decode_parameters(struct vdec_h264_slice_inst *inst)
 {
@@ -107,6 +142,9 @@ static int get_vdec_decode_parameters(struct vdec_h264_slice_inst *inst)
 	u8 *p0_reflist = slice_param->decode_params.ref_pic_list_p0;
 	u8 *b0_reflist = slice_param->decode_params.ref_pic_list_b0;
 	u8 *b1_reflist = slice_param->decode_params.ref_pic_list_b1;
+	/* Only a firmware that says it reads the field ABI gets it. */
+	bool field_abi = inst->ctx->dev->dec_capability &
+			 MTK_VDEC_IS_SUPPORT_H264_FIELD;
 
 	dec_params =
 		mtk_vdec_h264_get_ctrl_ptr(inst->ctx, V4L2_CID_STATELESS_H264_DECODE_PARAMS);
@@ -132,7 +170,7 @@ static int get_vdec_decode_parameters(struct vdec_h264_slice_inst *inst)
 	mtk_vdec_h264_copy_pps_params(&slice_param->pps, pps);
 	mtk_vdec_h264_copy_scaling_matrix(&slice_param->scaling_matrix, scaling_matrix);
 	mtk_vdec_h264_copy_decode_params(&slice_param->decode_params,
-					 dec_params, inst->dpb);
+					 dec_params, inst->dpb, field_abi);
 	mtk_vdec_h264_fill_dpb_info(inst->ctx, &slice_param->decode_params,
 				    slice_param->h264_dpb_info);
 
@@ -144,9 +182,12 @@ static int get_vdec_decode_parameters(struct vdec_h264_slice_inst *inst)
 				    v4l2_b1_reflist);
 
 	/* Adapt the built lists to the firmware's expectations */
-	mtk_vdec_h264_get_ref_list(p0_reflist, v4l2_p0_reflist, reflist_builder.num_valid);
-	mtk_vdec_h264_get_ref_list(b0_reflist, v4l2_b0_reflist, reflist_builder.num_valid);
-	mtk_vdec_h264_get_ref_list(b1_reflist, v4l2_b1_reflist, reflist_builder.num_valid);
+	mtk_vdec_h264_get_ref_list(p0_reflist, v4l2_p0_reflist,
+				   reflist_builder.num_valid, field_abi);
+	mtk_vdec_h264_get_ref_list(b0_reflist, v4l2_b0_reflist,
+				   reflist_builder.num_valid, field_abi);
+	mtk_vdec_h264_get_ref_list(b1_reflist, v4l2_b1_reflist,
+				   reflist_builder.num_valid, field_abi);
 
 	memcpy(&inst->vsi_ctx.h264_slice_params, slice_param,
 	       sizeof(inst->vsi_ctx.h264_slice_params));
@@ -319,6 +360,12 @@ static void vdec_h264_slice_deinit(void *h_vdec)
 {
 	struct vdec_h264_slice_inst *inst = h_vdec;
 
+	if (inst->mono_cand)
+		dev_info(&inst->ctx->dev->plat_dev->dev,
+			 "vdec h264 4:0:0 chroma fill: ctx %d pictures %u filled %u value 0x%02x\n",
+			 inst->ctx->id, inst->mono_cand, inst->mono_hit,
+			 h264_slice_monoval & 0xff);
+
 	vpu_dec_deinit(&inst->vpu);
 	free_prediction_buf(inst);
 	free_mv_buf(inst);
@@ -332,6 +379,7 @@ static int vdec_h264_slice_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	struct vdec_h264_slice_inst *inst = h_vdec;
 	const struct v4l2_ctrl_h264_decode_params *dec_params =
 		mtk_vdec_h264_get_ctrl_ptr(inst->ctx, V4L2_CID_STATELESS_H264_DECODE_PARAMS);
+	const struct v4l2_ctrl_h264_sps *sps;
 	struct vdec_vpu_inst *vpu = &inst->vpu;
 	struct mtk_video_dec_buf *src_buf_info;
 	struct mtk_video_dec_buf *dst_buf_info;
@@ -406,6 +454,17 @@ static int vdec_h264_slice_decode(void *h_vdec, struct mtk_vcodec_mem *bs,
 	if (err)
 		goto err_free_fb_out;
 	vpu_dec_end(vpu);
+
+	/* 4:0:0: the hardware wrote no chroma; see h264_slice_mono. */
+	sps = mtk_vdec_h264_get_ctrl_ptr(inst->ctx, V4L2_CID_STATELESS_H264_SPS);
+	if (!IS_ERR_OR_NULL(sps) && sps->chroma_format_idc == 0) {
+		inst->mono_cand++;
+		if ((h264_slice_mono & 1) && fb->base_c.va && fb->base_c.size) {
+			memset(fb->base_c.va, h264_slice_monoval & 0xff,
+			       fb->base_c.size);
+			inst->mono_hit++;
+		}
+	}
 
 	memcpy(&inst->vsi_ctx, inst->vpu.vsi, sizeof(inst->vsi_ctx));
 	mtk_vdec_debug(inst->ctx, "\n - NALU[%d]", inst->num_nalu);

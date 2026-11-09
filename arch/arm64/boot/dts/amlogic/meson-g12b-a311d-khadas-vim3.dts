@@ -10,6 +10,7 @@
 #include "meson-g12b-a311d.dtsi"
 #include "meson-khadas-vim3.dtsi"
 #include "meson-g12b-khadas-vim3.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "khadas,vim3", "amlogic,a311d", "amlogic,g12b";

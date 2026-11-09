@@ -23,6 +23,7 @@ enum mtk_vcodec_dec_chip_name {
 	MTK_VDEC_INVAL = 0,
 	MTK_VDEC_MT8173 = 8173,
 	MTK_VDEC_MT8183 = 8183,
+	MTK_VDEC_MT8365 = 8365,
 	MTK_VDEC_MT8186 = 8186,
 	MTK_VDEC_MT8188 = 8188,
 	MTK_VDEC_MT8192 = 8192,
@@ -41,6 +42,8 @@ enum mtk_vdec_format_types {
 	MTK_VDEC_FORMAT_VP9_FRAME = 0x400,
 	MTK_VDEC_FORMAT_AV1_FRAME = 0x800,
 	MTK_VDEC_FORMAT_HEVC_FRAME = 0x1000,
+	MTK_VDEC_FORMAT_MPEG2_SLICE = 0x2000,
+	MTK_VDEC_IS_SUPPORT_H264_FIELD = 0x4000,
 	MTK_VCODEC_INNER_RACING = 0x20000,
 	MTK_VDEC_IS_SUPPORT_10BIT = 0x40000,
 	MTK_VDEC_IS_SUPPORT_EXT = 0x80000,
@@ -126,6 +129,13 @@ struct mtk_vcodec_dec_pdata {
 
 	bool is_subdev_supported;
 	bool uses_stateless_api;
+	/*
+	 * MT8365 (mt8167 family): no SCP and no codec firmware -- the decoder is
+	 * driven by direct register programming (vdec_h264_mt8365_if). When set,
+	 * the probe skips firmware select/load/capability and the dispatch selects
+	 * the direct-register backend.
+	 */
+	bool no_firmware;
 };
 
 /**
@@ -285,7 +295,7 @@ struct mtk_vcodec_dec_dev {
 	/* decoder hardware mutex lock */
 	struct mutex dec_mutex[MTK_VDEC_HW_MAX];
 	struct mutex dev_mutex;
-	struct mutex dev_ctx_lock;
+	spinlock_t dev_ctx_lock;
 	struct workqueue_struct *decode_workqueue;
 
 	spinlock_t irqlock;
@@ -307,6 +317,17 @@ struct mtk_vcodec_dec_dev {
 	struct mtk_vcodec_dbgfs dbgfs;
 
 	enum mtk_vcodec_dec_chip_name chip_name;
+
+	/*
+	 * Set by remove() the instant the video node is unregistered, and never
+	 * cleared (the struct is freed, not reused). A file handle can outlive
+	 * the driver binding -- v4l2 refuses NEW opens and NEW ioctls once the
+	 * node is unregistered, but the release() of an fd that is already open
+	 * still runs, and an ioctl that was already inside still finishes. Those
+	 * two must not touch the hardware, because remove() has taken the power
+	 * domain, the clocks, the IRQ and the register windows away.
+	 */
+	bool unplugged;
 };
 
 static inline struct mtk_vcodec_dec_ctx *fh_to_dec_ctx(struct v4l2_fh *fh)

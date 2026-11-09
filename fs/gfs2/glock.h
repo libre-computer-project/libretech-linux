@@ -136,7 +136,7 @@ struct lm_lockops {
 	void (*lm_first_done) (struct gfs2_sbd *sdp);
 	void (*lm_recovery_result) (struct gfs2_sbd *sdp, unsigned int jid,
 				    unsigned int result);
-	void (*lm_unmount) (struct gfs2_sbd *sdp);
+	void (*lm_unmount) (struct gfs2_sbd *sdp, bool clean);
 	void (*lm_withdraw) (struct gfs2_sbd *sdp);
 	void (*lm_put_lock) (struct gfs2_glock *gl);
 	int (*lm_lock) (struct gfs2_glock *gl, unsigned int req_state,
@@ -204,7 +204,8 @@ int gfs2_glock_poll(struct gfs2_holder *gh);
 int gfs2_instantiate(struct gfs2_holder *gh);
 int gfs2_glock_holder_ready(struct gfs2_holder *gh);
 int gfs2_glock_wait(struct gfs2_holder *gh);
-int gfs2_glock_async_wait(unsigned int num_gh, struct gfs2_holder *ghs);
+int gfs2_glock_async_wait(unsigned int num_gh, struct gfs2_holder *ghs,
+			  unsigned int retries);
 void gfs2_glock_dq(struct gfs2_holder *gh);
 void gfs2_glock_dq_wait(struct gfs2_holder *gh);
 void gfs2_glock_dq_uninit(struct gfs2_holder *gh);

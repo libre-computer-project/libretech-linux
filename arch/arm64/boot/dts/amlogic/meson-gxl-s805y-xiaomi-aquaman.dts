@@ -14,6 +14,7 @@
 #include <dt-bindings/sound/meson-aiu.h>
 
 #include "meson-gxl-s805y.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "xiaomi,aquaman", "amlogic,s805y", "amlogic,meson-gxl";

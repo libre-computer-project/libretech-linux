@@ -133,6 +133,36 @@ struct dw_hdmi_plat_data {
 	bool ycbcr_420_allowed;
 
 	/*
+	 * Source HDMI-TX PHY ceiling in Hz (= pixel_clock * 10). When non-zero and
+	 * a mode's 4:4:4 PHY clock would exceed it, the bridge offers a fallback
+	 * YUV420 output format (half the TMDS) so a PHY-limited source can still
+	 * drive the mode. 0 = no limit (default; no behaviour change).
+	 */
+	unsigned long long max_hdmi_phy_freq;
+
+	/*
+	 * DC-001 opt-in for YUV-native sources (e.g. meson VENC): the source
+	 * blender emits LIMITED-range YUV, so for deep color (>8bpc) the bridge
+	 * should (a) prefer a YUV444 sink format so no CSC is inserted, (b) use
+	 * the limited-range YUV->RGB matrix when an RGB sink IS chosen, and (c)
+	 * keep the CSC block in-path for RGB deep color. Off (default) restores
+	 * the upstream YUV422-first ordering + full-range CSC for RGB-native
+	 * users (rockchip/sun4i/imx/...).
+	 */
+	bool yuv_deep_color_first;
+
+	/*
+	 * FR-001: emit the AMD FreeSync (pre-HDMI-2.1) advertisement on modeset
+	 * so a FreeSync sink enters variable-refresh mode. Emitted only when the
+	 * sink advertises a FreeSync range AND VRR_ENABLED is set on the driving
+	 * CRTC; otherwise transmission is stopped. The paired per-frame vtotal
+	 * modulation is the source's (meson VRR_ENABLED path). Platforms setting
+	 * this must force a modeset when VRR_ENABLED changes, since the packet is
+	 * (re)programmed only from the bridge enable path.
+	 */
+	bool amd_freesync_hdmi;
+
+	/*
 	 * Private data passed to all the .mode_valid() and .configure_phy()
 	 * callback functions.
 	 */
@@ -171,8 +201,20 @@ void dw_hdmi_unbind(struct dw_hdmi *hdmi);
 struct dw_hdmi *dw_hdmi_bind(struct platform_device *pdev,
 			     struct drm_encoder *encoder,
 			     const struct dw_hdmi_plat_data *plat_data);
-
+void dw_hdmi_poweron(struct dw_hdmi *hdmi);
+void dw_hdmi_poweroff(struct dw_hdmi *hdmi);
 void dw_hdmi_resume(struct dw_hdmi *hdmi);
+bool dw_hdmi_is_bridge_on(struct dw_hdmi *hdmi);
+
+/*
+ * D4: dw_hdmi_poweron()/poweroff() above have no locking of their own -- an
+ * out-of-tree caller (e.g. a bridge's suspend/resume PM path) must serialize
+ * against the HPD/rxsense threaded IRQ, which also calls them under
+ * hdmi->mutex. hdmi->mutex is private to dw-hdmi.c, so export lock/unlock
+ * instead of the mutex itself.
+ */
+void dw_hdmi_lock(struct dw_hdmi *hdmi);
+void dw_hdmi_unlock(struct dw_hdmi *hdmi);
 
 void dw_hdmi_setup_rx_sense(struct dw_hdmi *hdmi, bool hpd, bool rx_sense);
 
@@ -184,6 +226,13 @@ void dw_hdmi_set_sample_rate(struct dw_hdmi *hdmi, unsigned int rate);
 void dw_hdmi_set_channel_count(struct dw_hdmi *hdmi, unsigned int cnt);
 void dw_hdmi_set_channel_status(struct dw_hdmi *hdmi, u8 *channel_status);
 void dw_hdmi_set_channel_allocation(struct dw_hdmi *hdmi, unsigned int ca);
+/*
+ * FR-001: arm (vrr_enabled) or stop (!vrr_enabled) the AMD FreeSync
+ * advertisement. min_hz/max_hz must be the SINK's own advertised FreeSync
+ * range. Ignored unless the platform set plat_data->amd_freesync_hdmi.
+ */
+void dw_hdmi_set_amd_freesync(struct dw_hdmi *hdmi, u8 min_hz, u8 max_hz,
+			     bool vrr_enabled);
 void dw_hdmi_audio_enable(struct dw_hdmi *hdmi);
 void dw_hdmi_audio_disable(struct dw_hdmi *hdmi);
 void dw_hdmi_set_high_tmds_clock_ratio(struct dw_hdmi *hdmi,
@@ -207,5 +256,7 @@ void dw_hdmi_phy_update_hpd(struct dw_hdmi *hdmi, void *data,
 void dw_hdmi_phy_setup_hpd(struct dw_hdmi *hdmi, void *data);
 
 bool dw_hdmi_bus_fmt_is_420(struct dw_hdmi *hdmi);
+unsigned int dw_hdmi_bus_fmt_color_depth(struct dw_hdmi *hdmi);
+bool dw_hdmi_bus_fmt_is_422(struct dw_hdmi *hdmi);
 
 #endif /* __IMX_HDMI_H__ */

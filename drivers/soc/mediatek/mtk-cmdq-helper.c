@@ -457,6 +457,60 @@ int cmdq_pkt_poll_addr(struct cmdq_pkt *pkt, dma_addr_t addr, u32 value, u32 mas
 }
 EXPORT_SYMBOL(cmdq_pkt_poll_addr);
 
+/*
+ * OOT VCU codec (mtk-vcu-mt8395) basic-op backport from BSP mtk-v6.6
+ * drivers/soc/mediatek/mtk-cmdq-helper.c. These are non-secure basic CMDQ ops
+ * the upstream-derived 6.18 CMDQ dropped; the mt8395 /dev/vcu provider calls
+ * them on the normal (non-secure) codec submission path.
+ */
+int cmdq_pkt_move(struct cmdq_pkt *pkt, u8 gpr_idx, u32 value)
+{
+	struct cmdq_instruction inst = { {0} };
+
+	inst.op = CMDQ_CODE_MOVE;
+	inst.value = value;
+	inst.subsys = gpr_idx;
+	return cmdq_pkt_append_command(pkt, inst);
+}
+EXPORT_SYMBOL(cmdq_pkt_move);
+
+/*
+ * cmdq_pkt_poll_timeout: faithful thin shim over cmdq_pkt_poll_addr for the
+ * only case the VCU exercises -- subsys == SUBSYS_NO_SUPPORT (absolute register
+ * address, no subsys) and count == ~0 (no finite timeout): block until
+ * (reg & mask) == value. The BSP's full conditional-jump/sleep retry loop
+ * (cmdq_pkt_cond_jump_abs/cmdq_pkt_sleep/CMDQ_GET_ARG_*) is not reproduced
+ * because the VCU never passes a finite count or a real subsys.
+ */
+int cmdq_pkt_poll_timeout(struct cmdq_pkt *pkt, u32 value, u8 subsys,
+			  u32 addr, u32 mask, u16 count, u16 reg_gpr)
+{
+	return cmdq_pkt_poll_addr(pkt, (dma_addr_t)addr, value, mask);
+}
+EXPORT_SYMBOL(cmdq_pkt_poll_timeout);
+
+int cmdq_pkt_finalize(struct cmdq_pkt *pkt)
+{
+	struct cmdq_instruction inst = { {0} };
+	int err;
+
+	/* insert EOC and generate IRQ for each command iteration */
+	inst.op = CMDQ_CODE_EOC;
+	inst.value = CMDQ_EOC_IRQ_EN;
+	err = cmdq_pkt_append_command(pkt, inst);
+	if (err < 0)
+		return err;
+
+	/* JUMP to end */
+	inst.op = CMDQ_CODE_JUMP;
+	inst.value = CMDQ_JUMP_PASS >>
+		cmdq_get_shift_pa(((struct cmdq_client *)pkt->cl)->chan);
+	err = cmdq_pkt_append_command(pkt, inst);
+
+	return err;
+}
+EXPORT_SYMBOL(cmdq_pkt_finalize);
+
 int cmdq_pkt_logic_command(struct cmdq_pkt *pkt, u16 result_reg_idx,
 			   struct cmdq_operand *left_operand,
 			   enum cmdq_logic_op s_op,

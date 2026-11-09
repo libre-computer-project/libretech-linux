@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt8188-aie.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek AI Engine (AIE) for Face Detection
+
+maintainers:
+  - Fish Wu <fish.wu@mediatek.com>
+  - Bo Kong <bo.kong@mediatek.com>
+
+description: |
+  The MediaTek AI Engine (AIE) provides hardware-accelerated face detection,
+  facial landmark detection, and face attribute analysis. It is found in the
+  IPE (Image Processing Engine) subsystem of MediaTek SoCs.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt8188-aie
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: clock for imgsys main ipe
+      - description: clock for ipe fdvt
+      - description: clock for ipe smi larb12
+      - description: clock for ipe top
+
+  clock-names:
+    items:
+      - const: img-ipe
+      - const: ipe-fdvt
+      - const: ipe-smi-larb12
+      - const: ipe-top
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 4
+    description:
+      The FDVT ports of larb 12 that bus-master for a job. RDA_0 and RDB_0 read
+      the source luma and chroma, WRA_0 and WRB_0 write the detections and the
+      attribute output; all four must be in the domain the job runs in, so a
+      node that lists only RDA_0 leaves the other three unmapped.
+
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: phandle to the local arbiter (LARB) node
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/mediatek,mt8188-clk.h>
+    #include <dt-bindings/memory/mediatek,mt8188-memory-port.h>
+    #include <dt-bindings/power/mediatek,mt8188-power.h>
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        aie@15310000 {
+            compatible = "mediatek,mt8188-aie";
+            reg = <0 0x15310000 0 0x1000>;
+            interrupts = <GIC_SPI 787 IRQ_TYPE_LEVEL_HIGH 0>;
+            clocks = <&imgsys CLK_IMGSYS_MAIN_IPE>,
+                     <&ipesys CLK_IPE_FDVT>,
+                     <&ipesys CLK_IPE_SMI_LARB12>,
+                     <&ipesys CLK_IPESYS_TOP>;
+            clock-names = "img-ipe", "ipe-fdvt",
+                          "ipe-smi-larb12", "ipe-top";
+            power-domains = <&spm MT8188_POWER_DOMAIN_IPE>;
+            iommus = <&vpp_iommu M4U_PORT_L12_FDVT_RDA_0>,
+                     <&vpp_iommu M4U_PORT_L12_FDVT_RDB_0>,
+                     <&vpp_iommu M4U_PORT_L12_FDVT_WRA_0>,
+                     <&vpp_iommu M4U_PORT_L12_FDVT_WRB_0>;
+            mediatek,larb = <&larb12>;
+        };
+    };

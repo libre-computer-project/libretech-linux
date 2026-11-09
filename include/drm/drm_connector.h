@@ -815,6 +815,30 @@ struct drm_display_info {
 	struct drm_monitor_range_info monitor_range;
 
 	/**
+	 * @has_freesync: Sink advertises variable refresh in a vendor-specific
+	 * data block of its CTA-861 extension -- either the AMD FreeSync VSDB
+	 * or the HDMI Forum VSDB/SCDB (HDMI 2.1 VRR); either block alone is
+	 * sufficient. This -- not @monitor_range -- is the authoritative signal
+	 * that a sink will accept a varying frame rate: an ordinary monitor
+	 * range descriptor only describes the modes the sink can lock to, not a
+	 * range it tolerates being swept continuously. Drivers should gate VRR
+	 * on this.
+	 */
+	bool has_freesync;
+
+	/**
+	 * @freesync_range: Refresh range, in Hz, the sink accepts under
+	 * variable refresh, parsed from the AMD FreeSync vendor block and/or
+	 * the HDMI Forum VRR fields; when both are present the two are
+	 * intersected, so the range never exceeds what either block advertised.
+	 * Only valid when @has_freesync is set; zeroed otherwise. Driving the
+	 * sink outside this range can drop the link entirely (and on some HDMI
+	 * transmitters wedges the TX until a controller re-init), so a VRR
+	 * implementation must clamp to it rather than to a mode-derived guess.
+	 */
+	struct drm_monitor_range_info freesync_range;
+
+	/**
 	 * @luminance_range: Luminance range supported by panel
 	 */
 	struct drm_luminance_range_info luminance_range;
@@ -2147,6 +2171,20 @@ struct drm_connector {
 	enum drm_connector_force force;
 
 	/**
+	 * @force_bus_format: Debug/test override pinning the negotiated output
+	 * bus format (a MEDIA_BUS_FMT_* value) for this connector. 0 = auto
+	 * (normal bridge bus-format negotiation). Set via the per-connector
+	 * "force_bus_format" debugfs file. Honored by
+	 * drm_atomic_bridge_chain_select_bus_fmts() for bridge-based pipelines:
+	 * only the matching format from the last bridge's offered list is
+	 * selected, so the value must be one the sink + max-bpc can actually
+	 * produce (widen what is offered with "edid_override" / "max bpc").
+	 * Vendor-agnostic bring-up/test knob -- NOT UAPI; a modeset must be
+	 * re-triggered for a change to take effect.
+	 */
+	u32 force_bus_format;
+
+	/**
 	 * @edid_override: Override EDID set via debugfs.
 	 *
 	 * Do not modify or access outside of the drm_edid_override_* family of
@@ -2502,13 +2540,13 @@ struct drm_tile_group {
 	struct kref refcount;
 	struct drm_device *dev;
 	int id;
-	u8 group_data[8];
+	u8 group_data[9];
 };
 
 struct drm_tile_group *drm_mode_create_tile_group(struct drm_device *dev,
-						  const char topology[8]);
+						  const char topology_id[9]);
 struct drm_tile_group *drm_mode_get_tile_group(struct drm_device *dev,
-					       const char topology[8]);
+					       const char topology_id[9]);
 void drm_mode_put_tile_group(struct drm_device *dev,
 			     struct drm_tile_group *tg);
 

@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt8188-dpe.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT8188 Depth Engine (DPE)
+
+maintainers:
+  - Yansheng Xue <da@lessconfused.com>
+
+description: |
+  The depth engine in the IPE subsystem of MT8188. Its DVS block matches a
+  rectified left/right image pair and writes a disparity map; its DVP block
+  post-processes that map. DVS signals a finished job on a level interrupt.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt8188-dpe
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: clock for imgsys main ipe
+      - description: clock for ipe smi larb12
+      - description: clock for ipe top
+      - description: clock for ipe dpe
+
+  clock-names:
+    items:
+      - const: img-ipe
+      - const: ipe-smi-larb12
+      - const: ipe-top
+      - const: ipe-dpe
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 4
+    description:
+      The DVS and DVP read and write ports of larb 12.
+
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: phandle to the local arbiter (LARB) node
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - iommus
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/mediatek,mt8188-clk.h>
+    #include <dt-bindings/memory/mediatek,mt8188-memory-port.h>
+    #include <dt-bindings/power/mediatek,mt8188-power.h>
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        dpe@15300000 {
+            compatible = "mediatek,mt8188-dpe";
+            reg = <0 0x15300000 0 0x1000>;
+            interrupts = <GIC_SPI 789 IRQ_TYPE_LEVEL_HIGH 0>;
+            clocks = <&imgsys CLK_IMGSYS_MAIN_IPE>,
+                     <&ipesys CLK_IPE_SMI_LARB12>,
+                     <&ipesys CLK_IPESYS_TOP>,
+                     <&ipesys CLK_IPE_DPE>;
+            clock-names = "img-ipe", "ipe-smi-larb12", "ipe-top", "ipe-dpe";
+            power-domains = <&spm MT8188_POWER_DOMAIN_IPE>;
+            iommus = <&vpp_iommu M4U_PORT_L12_DVS_RDMA>,
+                     <&vpp_iommu M4U_PORT_L12_DVS_WDMA>,
+                     <&vpp_iommu M4U_PORT_L12_DVP_RDMA>,
+                     <&vpp_iommu M4U_PORT_L12_DVP_WDMA>;
+            mediatek,larb = <&larb12>;
+        };
+    };

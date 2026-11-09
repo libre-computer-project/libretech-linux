@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# JESD204B link-layer + transceiver (PHY) IP cores
+#
+# Ported from the ADI fork adi-6.12.0. Only the Xilinx/AXI path is carried:
+# the altera_* files and the legacy axi_jesd204b_gt/v51 cores are not needed
+# by the ADRV9009 (Zynq-7100 GTX) design.
+
+menu "JESD204B AXI IP cores"
+
+config AXI_ADXCVR
+	tristate "Analog Devices AXI ADXCVR PHY Support"
+	depends on COMMON_CLK
+	select XILINX_TRANSCEIVER
+	help
+	  Say yes here to build support for the Analog Devices AXI ADXCVR
+	  transceiver-configuration core, which drives the FPGA serdes
+	  (Xilinx GTX/GTH/GTY) used by a JESD204B link.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called axi_adxcvr_drv.
+
+config AXI_JESD204_TX
+	tristate "Analog Devices AXI JESD204B TX Support"
+	depends on COMMON_CLK
+	select REGMAP_MMIO
+	help
+	  Say yes here to build support for the Analog Devices AXI JESD204B
+	  transmit link layer core.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called axi_jesd204_tx.
+
+config AXI_JESD204_RX
+	tristate "Analog Devices AXI JESD204B RX Support"
+	depends on COMMON_CLK
+	select REGMAP_MMIO
+	help
+	  Say yes here to build support for the Analog Devices AXI JESD204B
+	  receive link layer core.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called axi_jesd204_rx.
+
+config XILINX_TRANSCEIVER
+	tristate
+
+endmenu

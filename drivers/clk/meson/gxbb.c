@@ -13,6 +13,7 @@
 #include "clk-regmap.h"
 #include "clk-pll.h"
 #include "clk-mpll.h"
+#include "clk-mali.h"
 #include "meson-clkc-utils.h"
 #include "vid-pll-div.h"
 
@@ -349,12 +350,23 @@ static struct clk_regmap gxbb_hdmi_pll = {
 	},
 };
 
+/*
+ * GXL hdmi OD dividers are POWER_OF_TWO dividers but limited to /4.
+ * A divider value of 3 should map to /8 but instead map /4 so ignore it.
+ */
+static const struct clk_div_table gxl_hdmi_pll_od_div_table[] = {
+	{ .val = 0, .div = 1 },
+	{ .val = 1, .div = 2 },
+	{ .val = 2, .div = 4 },
+	{ /* sentinel */ }
+};
+
 static struct clk_regmap gxl_hdmi_pll_od = {
 	.data = &(struct clk_regmap_div_data){
 		.offset = HHI_HDMI_PLL_CNTL + 8,
 		.shift = 21,
 		.width = 2,
-		.flags = CLK_DIVIDER_POWER_OF_TWO,
+		.table = gxl_hdmi_pll_od_div_table,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "hdmi_pll_od",
@@ -372,7 +384,7 @@ static struct clk_regmap gxl_hdmi_pll_od2 = {
 		.offset = HHI_HDMI_PLL_CNTL + 8,
 		.shift = 23,
 		.width = 2,
-		.flags = CLK_DIVIDER_POWER_OF_TWO,
+		.table = gxl_hdmi_pll_od_div_table,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "hdmi_pll_od2",
@@ -390,7 +402,7 @@ static struct clk_regmap gxl_hdmi_pll = {
 		.offset = HHI_HDMI_PLL_CNTL + 8,
 		.shift = 19,
 		.width = 2,
-		.flags = CLK_DIVIDER_POWER_OF_TWO,
+		.table = gxl_hdmi_pll_od_div_table,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "hdmi_pll",
@@ -438,13 +450,52 @@ static struct clk_regmap gxbb_sys_pll_dco = {
 			.fw_name = "xtal",
 		},
 		.num_parents = 1,
+		/*
+		 * This PLL is read-only to Linux and WRITTEN BY FIRMWARE: it is
+		 * the CPU PLL, reprogrammed by the SCP/BL30 on every DVFS
+		 * transition, so the cached rate goes stale the first time
+		 * anything changes frequency and never recovers. The value is
+		 * then wrong in a way that looks entirely plausible -- it
+		 * reports the boot rate forever.
+		 *
+		 * NOCACHE makes clk_get_rate() re-run recalc_rate, which reads
+		 * the register. It is set on the DCO rather than on sys_pll
+		 * because __clk_recalc_rates() refreshes a clock and its
+		 * CHILDREN from the parent's cached rate -- flagging the child
+		 * alone would recompute the divider against a stale DCO. With
+		 * it here, one recalc fixes both, and clk_summary (which calls
+		 * clk_core_get_rate_recalc() per clock, parent first) prints
+		 * the truth.
+		 */
+		.flags = CLK_GET_RATE_NOCACHE,
 	},
 };
 
 static struct clk_regmap gxbb_sys_pll = {
 	.data = &(struct clk_regmap_div_data){
 		.offset = HHI_SYS_PLL_CNTL,
-		.shift = 10,
+		/*
+		 * OD is bits[17:16], not bits[11:10].  The old shift of 10 put
+		 * this divider INSIDE sys_pll_dco's own N field (shift 9,
+		 * width 5), which an output divider cannot be, and it read a
+		 * spurious 1 out of the N value: sys_pll then reported half the
+		 * true rate whenever OD was actually 0.
+		 *
+		 * gp0_pll in this same file, on an identically laid out PLL
+		 * CNTL register (m shift 0 width 9, n shift 9 width 5), uses
+		 * shift 16 width 2 POWER_OF_TWO for exactly this field, as does
+		 * gxbb_hdmi_pll_od.
+		 *
+		 * Confirmed against hardware on a GXL board whose CPU PLL is
+		 * driven by firmware, comparing the register with the measured
+		 * CPU frequency:
+		 *   0xC0000696  m 150 n 3 od 0 -> 1200 MHz  (old model: 600)
+		 *   0xC00106A7  m 167 n 3 od 1 ->  668 MHz  (old model: 668)
+		 *   0xC000067D  m 125 n 3 od 0 -> 1000 MHz  (old model: 500)
+		 * The od=1 case agreed by coincidence, which is how the wrong
+		 * shift survived.
+		 */
+		.shift = 16,
 		.width = 2,
 		.flags = CLK_DIVIDER_POWER_OF_TWO,
 	},
@@ -1090,9 +1141,13 @@ static struct clk_regmap gxbb_sar_adc_clk = {
 
 /*
  * The MALI IP is clocked by two identical clocks (mali_0 and mali_1)
- * muxed by a glitch-free switch. The CCF can manage this glitch-free
- * mux because it does top-to-bottom updates the each clock tree and
- * switches to the "inactive" one when CLK_SET_RATE_GATE is set.
+ * muxed by a glitch-free switch on bit 31 of HHI_MALI_CLK_CNTL.
+ *
+ * Naive CCF handling via CLK_SET_RATE_GATE causes clock glitches during
+ * parent changes that crash the Mali-450.  The sub-clocks are registered
+ * as read-only for introspection; all rate changes go through the final
+ * "mali" composite which performs the dual-path switch atomically:
+ * configure the inactive path while gated, then flip the mux bit.
  */
 
 static const struct clk_parent_data gxbb_mali_parents[] = {
@@ -1114,15 +1169,9 @@ static struct clk_regmap gxbb_mali_0_sel = {
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali_0_sel",
-		.ops = &clk_regmap_mux_ops,
+		.ops = &clk_regmap_mux_ro_ops,
 		.parent_data = gxbb_mali_parents,
 		.num_parents = ARRAY_SIZE(gxbb_mali_parents),
-		/*
-		 * Don't request the parent to change the rate because
-		 * all GPU frequencies can be derived from the fclk_*
-		 * clocks and one special GP0_PLL setting. This is
-		 * important because we need the MPLL clocks for audio.
-		 */
 		.flags = 0,
 	},
 };
@@ -1135,12 +1184,12 @@ static struct clk_regmap gxbb_mali_0_div = {
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali_0_div",
-		.ops = &clk_regmap_divider_ops,
+		.ops = &clk_regmap_divider_ro_ops,
 		.parent_hws = (const struct clk_hw *[]) {
 			&gxbb_mali_0_sel.hw
 		},
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = 0,
 	},
 };
 
@@ -1151,12 +1200,12 @@ static struct clk_regmap gxbb_mali_0 = {
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali_0",
-		.ops = &clk_regmap_gate_ops,
+		.ops = &clk_regmap_gate_ro_ops,
 		.parent_hws = (const struct clk_hw *[]) {
 			&gxbb_mali_0_div.hw
 		},
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_GATE | CLK_SET_RATE_PARENT,
+		.flags = 0,
 	},
 };
 
@@ -1168,15 +1217,9 @@ static struct clk_regmap gxbb_mali_1_sel = {
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali_1_sel",
-		.ops = &clk_regmap_mux_ops,
+		.ops = &clk_regmap_mux_ro_ops,
 		.parent_data = gxbb_mali_parents,
 		.num_parents = ARRAY_SIZE(gxbb_mali_parents),
-		/*
-		 * Don't request the parent to change the rate because
-		 * all GPU frequencies can be derived from the fclk_*
-		 * clocks and one special GP0_PLL setting. This is
-		 * important because we need the MPLL clocks for audio.
-		 */
 		.flags = 0,
 	},
 };
@@ -1189,12 +1232,12 @@ static struct clk_regmap gxbb_mali_1_div = {
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali_1_div",
-		.ops = &clk_regmap_divider_ops,
+		.ops = &clk_regmap_divider_ro_ops,
 		.parent_hws = (const struct clk_hw *[]) {
 			&gxbb_mali_1_sel.hw
 		},
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_PARENT,
+		.flags = 0,
 	},
 };
 
@@ -1205,30 +1248,43 @@ static struct clk_regmap gxbb_mali_1 = {
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali_1",
-		.ops = &clk_regmap_gate_ops,
+		.ops = &clk_regmap_gate_ro_ops,
 		.parent_hws = (const struct clk_hw *[]) {
 			&gxbb_mali_1_div.hw
 		},
 		.num_parents = 1,
-		.flags = CLK_SET_RATE_GATE | CLK_SET_RATE_PARENT,
+		.flags = 0,
 	},
 };
 
 static struct clk_regmap gxbb_mali = {
-	.data = &(struct clk_regmap_mux_data){
+	.data = &(struct meson_mali_clk_data){
 		.offset = HHI_MALI_CLK_CNTL,
-		.mask = 1,
-		.shift = 31,
 	},
 	.hw.init = &(struct clk_init_data){
 		.name = "mali",
-		.ops = &clk_regmap_mux_ops,
-		.parent_hws = (const struct clk_hw *[]) {
-			&gxbb_mali_0.hw,
-			&gxbb_mali_1.hw,
-		},
-		.num_parents = 2,
-		.flags = CLK_SET_RATE_PARENT,
+		.ops = &meson_mali_clk_ops,
+		.parent_data = gxbb_mali_parents,
+		.num_parents = ARRAY_SIZE(gxbb_mali_parents),
+		/*
+		 * CLK_OPS_PARENT_ENABLE: have CCF enable the new parent
+		 * (e.g. GP0_PLL) BEFORE invoking our set_rate/set_parent
+		 * callback. Without this, OF's `assigned-clock-parents`
+		 * processing of the mali node flips the dual-mux to a
+		 * not-yet-locked GP0_PLL and the GPU APB bridge starves --
+		 * any subsequent MMIO traps with a 0x96000210 SError.
+		 *
+		 * CLK_SET_RATE_PARENT: allow clk_set_rate on this composite
+		 * to propagate up to gp0_pll so the OC OPPs (1008/1200/
+		 * 1392/1584 MHz) become exactly reachable via PLL
+		 * reprogramming. Without it, intermediate OC OPPs would
+		 * round down to whatever divisor of the current gp0_pll
+		 * rate is achievable. The smart iteration in
+		 * meson_mali_determine_rate prefers fixed parents
+		 * (fclk_div3/4/5, mpllX) for low rates so the propagation
+		 * only fires for OC targets above 666 MHz.
+		 */
+		.flags = CLK_OPS_PARENT_ENABLE | CLK_SET_RATE_PARENT,
 	},
 };
 
@@ -1383,7 +1439,7 @@ static struct clk_regmap gxbb_32k_clk_sel = {
 		.name = "32k_clk_sel",
 		.ops = &clk_regmap_mux_ops,
 		.parent_data = gxbb_32k_clk_parents,
-		.num_parents = 4,
+		.num_parents = ARRAY_SIZE(gxbb_32k_clk_parents),
 		.flags = CLK_SET_RATE_PARENT,
 	},
 };
@@ -1736,7 +1792,7 @@ static struct clk_regmap gxbb_vapb_0_sel = {
 		 */
 		.parent_hws = gxbb_vapb_parents,
 		.num_parents = ARRAY_SIZE(gxbb_vapb_parents),
-		.flags = CLK_SET_RATE_NO_REPARENT,
+		.flags = 0,
 	},
 };
 
@@ -1788,7 +1844,7 @@ static struct clk_regmap gxbb_vapb_1_sel = {
 		 */
 		.parent_hws = gxbb_vapb_parents,
 		.num_parents = ARRAY_SIZE(gxbb_vapb_parents),
-		.flags = CLK_SET_RATE_NO_REPARENT,
+		.flags = 0,
 	},
 };
 
@@ -1843,7 +1899,7 @@ static struct clk_regmap gxbb_vapb_sel = {
 			&gxbb_vapb_1.hw
 		},
 		.num_parents = 2,
-		.flags = CLK_SET_RATE_NO_REPARENT,
+		.flags = CLK_SET_RATE_PARENT,
 	},
 };
 
@@ -2652,6 +2708,57 @@ static struct clk_regmap gxbb_vdec_hevc = {
 	},
 };
 
+/* HCODEC clock: upper half of HHI_VDEC_CLK_CNTL (bits 31:16) */
+static struct clk_regmap gxbb_vdec_hcodec_sel = {
+	.data = &(struct clk_regmap_mux_data){
+		.offset = HHI_VDEC_CLK_CNTL,
+		.mask = 0x3,
+		.shift = 25,
+		.flags = CLK_MUX_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "vdec_hcodec_sel",
+		.ops = &clk_regmap_mux_ops,
+		.parent_hws = gxbb_vdec_parents,
+		.num_parents = ARRAY_SIZE(gxbb_vdec_parents),
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap gxbb_vdec_hcodec_div = {
+	.data = &(struct clk_regmap_div_data){
+		.offset = HHI_VDEC_CLK_CNTL,
+		.shift = 16,
+		.width = 7,
+		.flags = CLK_DIVIDER_ROUND_CLOSEST,
+	},
+	.hw.init = &(struct clk_init_data){
+		.name = "vdec_hcodec_div",
+		.ops = &clk_regmap_divider_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&gxbb_vdec_hcodec_sel.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
+static struct clk_regmap gxbb_vdec_hcodec = {
+	.data = &(struct clk_regmap_gate_data){
+		.offset = HHI_VDEC_CLK_CNTL,
+		.bit_idx = 24,
+	},
+	.hw.init = &(struct clk_init_data) {
+		.name = "vdec_hcodec",
+		.ops = &clk_regmap_gate_ops,
+		.parent_hws = (const struct clk_hw *[]) {
+			&gxbb_vdec_hcodec_div.hw
+		},
+		.num_parents = 1,
+		.flags = CLK_SET_RATE_PARENT,
+	},
+};
+
 static u32 gxbb_gen_clk_parents_val_table[] = { 0, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, };
 static const struct clk_parent_data gxbb_gen_clk_parents[] = {
 	{ .fw_name = "xtal", },
@@ -2993,6 +3100,9 @@ static struct clk_hw *gxbb_hw_clks[] = {
 	[CLKID_VDEC_HEVC_SEL]	    = &gxbb_vdec_hevc_sel.hw,
 	[CLKID_VDEC_HEVC_DIV]	    = &gxbb_vdec_hevc_div.hw,
 	[CLKID_VDEC_HEVC]	    = &gxbb_vdec_hevc.hw,
+	[CLKID_VDEC_HCODEC_SEL]    = &gxbb_vdec_hcodec_sel.hw,
+	[CLKID_VDEC_HCODEC_DIV]    = &gxbb_vdec_hcodec_div.hw,
+	[CLKID_VDEC_HCODEC]	    = &gxbb_vdec_hcodec.hw,
 	[CLKID_GEN_CLK_SEL]	    = &gxbb_gen_clk_sel.hw,
 	[CLKID_GEN_CLK_DIV]	    = &gxbb_gen_clk_div.hw,
 	[CLKID_GEN_CLK]		    = &gxbb_gen_clk.hw,
@@ -3200,6 +3310,9 @@ static struct clk_hw *gxl_hw_clks[] = {
 	[CLKID_VDEC_HEVC_SEL]	    = &gxbb_vdec_hevc_sel.hw,
 	[CLKID_VDEC_HEVC_DIV]	    = &gxbb_vdec_hevc_div.hw,
 	[CLKID_VDEC_HEVC]	    = &gxbb_vdec_hevc.hw,
+	[CLKID_VDEC_HCODEC_SEL]    = &gxbb_vdec_hcodec_sel.hw,
+	[CLKID_VDEC_HCODEC_DIV]    = &gxbb_vdec_hcodec_div.hw,
+	[CLKID_VDEC_HCODEC]	    = &gxbb_vdec_hcodec.hw,
 	[CLKID_GEN_CLK_SEL]	    = &gxbb_gen_clk_sel.hw,
 	[CLKID_GEN_CLK_DIV]	    = &gxbb_gen_clk_div.hw,
 	[CLKID_GEN_CLK]		    = &gxbb_gen_clk.hw,
@@ -3250,6 +3363,9 @@ static struct clk_hw *gxl_hw_clks[] = {
 	[CLKID_HDMI_DIV]	    = &gxbb_hdmi_div.hw,
 	[CLKID_HDMI]		    = &gxbb_hdmi.hw,
 	[CLKID_ACODEC]		    = &gxl_acodec.hw,
+	[CLKID_VDEC_HCODEC_SEL]    = &gxbb_vdec_hcodec_sel.hw,
+	[CLKID_VDEC_HCODEC_DIV]    = &gxbb_vdec_hcodec_div.hw,
+	[CLKID_VDEC_HCODEC]	    = &gxbb_vdec_hcodec.hw,
 };
 
 static const struct meson_clkc_data gxbb_clkc_data = {

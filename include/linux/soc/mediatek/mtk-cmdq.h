@@ -18,6 +18,8 @@
  * Every cmdq thread has its own SPRs (Specific Purpose Registers),
  * so there are 4 * N (threads) SPRs in GCE that shares the same indexes below.
  */
+#define SUBSYS_NO_SUPPORT	99
+
 #define CMDQ_THR_SPR_IDX0	(0)
 #define CMDQ_THR_SPR_IDX1	(1)
 #define CMDQ_THR_SPR_IDX2	(2)
@@ -391,6 +393,12 @@ int cmdq_pkt_jump_rel(struct cmdq_pkt *pkt, s32 offset, u8 shift_pa);
  */
 int cmdq_pkt_eoc(struct cmdq_pkt *pkt);
 
+/* OOT VCU codec (mtk-vcu-mt8395) basic-op backport from BSP mtk-v6.6 */
+int cmdq_pkt_move(struct cmdq_pkt *pkt, u8 gpr_idx, u32 value);
+int cmdq_pkt_poll_timeout(struct cmdq_pkt *pkt, u32 value, u8 subsys,
+			  u32 addr, u32 mask, u16 count, u16 reg_gpr);
+int cmdq_pkt_finalize(struct cmdq_pkt *pkt);
+
 #else /* IS_ENABLED(CONFIG_MTK_CMDQ) */
 
 static inline int cmdq_dev_get_client_reg(struct device *dev,
@@ -502,6 +510,22 @@ static inline int cmdq_pkt_jump(struct cmdq_pkt *pkt, dma_addr_t addr, u8 shift_
 }
 
 static inline int cmdq_pkt_jump_rel(struct cmdq_pkt *pkt, s32 offset, u8 shift_pa)
+{
+	return -EINVAL;
+}
+
+static inline int cmdq_pkt_move(struct cmdq_pkt *pkt, u8 gpr_idx, u32 value)
+{
+	return -EINVAL;
+}
+
+static inline int cmdq_pkt_poll_timeout(struct cmdq_pkt *pkt, u32 value, u8 subsys,
+					u32 addr, u32 mask, u16 count, u16 reg_gpr)
+{
+	return -EINVAL;
+}
+
+static inline int cmdq_pkt_finalize(struct cmdq_pkt *pkt)
 {
 	return -EINVAL;
 }

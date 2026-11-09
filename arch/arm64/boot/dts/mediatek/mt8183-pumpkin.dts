@@ -25,7 +25,7 @@
 	};
 
 	chosen {
-		stdout-path = "serial0:921600n8";
+		stdout-path = "serial0:115200n8";
 	};
 
 	reserved-memory {
@@ -138,9 +138,22 @@
 	it66121hdmitx: hdmitx@4c {
 		compatible = "ite,it66121";
 		reg = <0x4c>;
+		/*
+		 * #sound-dai-cells registers the it66121 hdmi-codec
+		 * (ite-it66121.c it66121_audio_codec_init) so the AFE
+		 * I2S5 BE can route audio to HDMI. The machine card
+		 * references this node via "mediatek,hdmi-codec".
+		 */
+		#sound-dai-cells = <0>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&ite_pins>;
-		reset-gpios = <&pio 160 GPIO_ACTIVE_LOW>;
+		/*
+		 * No reset-gpios: GPIO160 is not a usable it66121 reset on this
+		 * board -- pulsing it (since the 6.18.34 "acquire reset GPIO in
+		 * probe" change) leaves the chip unresponsive on i2c6, so the
+		 * bridge never binds and the DPI defers. The chip self-inits
+		 * from power-on; the driver makes reset-gpios optional.
+		 */
 		interrupt-parent = <&pio>;
 		interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
 		vcn33-supply = <&mt6358_vcn33_reg>;
@@ -197,6 +210,11 @@
 	no-sdio;
 	no-sd;
 	hs400-ds-delay = <0x12814>;
+	/* §3.1 DRAM-read-concurrency boot-mitigation (i500-only): shrink the MSDC
+	 * DMA burst 64B->8B so the eMMC read footprint stays under the depth-4
+	 * read-queue floor.
+	 * Absent on all other boards -> unchanged MSDC_BURST_64B behaviour. */
+	mediatek,dma-max-burst = <3>;
 	vmmc-supply = <&mt6358_vemc_reg>;
 	vqmmc-supply = <&mt6358_vio18_reg>;
 	assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC50_0>;
@@ -217,11 +235,44 @@
 	cap-sdio-irq;
 	no-mmc;
 	no-sd;
+	/* §3.1 boot-mitigation (i500-only): shrink the WiFi-SDIO MSDC DMA burst
+	 * 64B->8B (the boot/apt read-storm is WiFi-SDIO + eMMC DMA driven). Absent
+	 * on other boards -> unchanged MSDC_BURST_64B. */
+	mediatek,dma-max-burst = <3>;
 	vmmc-supply = <&mt6358_vmch_reg>;
 	vqmmc-supply = <&mt6358_vmc_reg>;
 	keep-power-in-suspend;
 	wakeup-source;
 	non-removable;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* mt7668 SDIO WiFi (function 1, 037A:7608). Gives the out-of-tree
+	 * fullmac (gen4m) driver an of_node carrying local-mac-address; the
+	 * chip has no MAC/serial, so the driver derives a stable MAC from the
+	 * per-die efuse cal. Add a local-mac-address here to provision one.
+	 * The driver itself ships out-of-tree (libretech-mt7668-dkms). */
+	wifi@1 {
+		reg = <1>;
+	};
+};
+
+/ {
+	/* mt7668 WiFi 3.3V DC/DC rail (GPIO166) -- the combo card needs this
+	 * powered to enumerate on SDIO. */
+	wifi_3v3: regulator-wifi-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi_3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&pio 166 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_en_pins>;
+	};
 };
 
 &mt6358_vgpu_reg {
@@ -238,6 +289,23 @@
 
 	regulator-coupled-with = <&mt6358_vgpu_reg>;
 	regulator-coupled-max-spread = <100000>;
+};
+
+&uart1 {
+	/* No pinctrl here: the bluetooth child owns the UART1 pins (its
+	 * "default"/boot + "runtime" states), per the mt76xx-bt binding.
+	 * Claiming them on the uart node too makes the child fail with
+	 * "pin GPIO121 already requested by 11003000.serial". */
+	status = "okay";
+
+	bluetooth {
+		compatible = "mediatek,mt7668u-bluetooth";
+		vcc-supply = <&wifi_3v3>;
+		pinctrl-names = "default", "runtime";
+		pinctrl-0 = <&bt_pins_boot>;
+		pinctrl-1 = <&uart1_pins>;
+		current-speed = <921600>;
+	};
 };
 
 &pio {
@@ -392,6 +460,13 @@
 		};
 	};
 
+	wifi_en_pins: wifi-en-pins {
+		pins-wifi-en {
+			pinmux = <PINMUX_GPIO166__FUNC_GPIO166>;
+			output-high;
+		};
+	};
+
 	mmc1_pins_uhs: mmc1-pins-uhs {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO31__FUNC_MSDC1_CMD>,
@@ -427,7 +502,8 @@
 
 	dpi_func_pins: dpi-func-pins {
 		pins-dpi {
-			pinmux = <PINMUX_GPIO12__FUNC_I2S5_BCK>,
+			pinmux = <PINMUX_GPIO11__FUNC_I2S5_MCK>,
+				 <PINMUX_GPIO89__FUNC_I2S5_BCK>,
 				 <PINMUX_GPIO46__FUNC_I2S5_LRCK>,
 				 <PINMUX_GPIO47__FUNC_I2S5_DO>,
 				 <PINMUX_GPIO13__FUNC_DBPI_D0>,
@@ -451,7 +527,8 @@
 
 	dpi_idle_pins: dpi-idle-pins {
 		pins-idle {
-			pinmux = <PINMUX_GPIO12__FUNC_GPIO12>,
+			pinmux = <PINMUX_GPIO11__FUNC_GPIO11>,
+				 <PINMUX_GPIO89__FUNC_GPIO89>,
 				 <PINMUX_GPIO46__FUNC_GPIO46>,
 				 <PINMUX_GPIO47__FUNC_GPIO47>,
 				 <PINMUX_GPIO13__FUNC_GPIO13>,
@@ -472,10 +549,28 @@
 				 <PINMUX_GPIO28__FUNC_GPIO28>;
 		};
 	};
+
+	bt_pins_boot: bt-boot-pins {
+		pins-bt-rxd {
+			pinmux = <PINMUX_GPIO121__FUNC_GPIO121>;
+			output-low;
+		};
+	};
+
+	uart1_pins: uart1-pins {
+		pins-uart {
+			pinmux = <PINMUX_GPIO115__FUNC_UTXD1>,
+				 <PINMUX_GPIO121__FUNC_URXD1>;
+		};
+	};
 };
 
 &pmic {
 	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&mfg_async {
+	domain-supply = <&mt6358_vsram_gpu_reg>;
 };
 
 &mfg {
@@ -522,8 +617,21 @@
 	status = "okay";
 };
 
+/*
+ * firmware-name is load-bearing here and its absence is a silent trap.
+ * scp_rproc_init() pre-initialises fw_name to the BARE string "scp.img"
+ * (drivers/remoteproc/mtk_scp.c:1188) and then tolerates -EINVAL from
+ * rproc_of_parse_firmware() (:1193), so without the property the driver asks
+ * request_firmware() for "scp.img" at the TOP of the firmware search path.
+ * No such file ships: linux-firmware puts the MT8183 image at
+ * mediatek/mt8183/scp.img and there is no top-level scp.img. request_firmware()
+ * does a literal path lookup with no subdirectory search, so the load fails and
+ * both vcodec nodes -- which mt8183.dtsi wires to &scp unconditionally -- abort
+ * probe. mt8183-kukui.dtsi and mt8183-med-mt83-ace.dts both set the property.
+ */
 &scp {
 	status = "okay";
+	firmware-name = "mediatek/mt8183/scp.img";
 };
 
 &dpi0 {
@@ -535,4 +643,106 @@
 
 &dpi_out {
 	remote-endpoint = <&it66121_in>;
+};
+
+/* Genio 500 / i500: MT6358 internal-codec ALSA card (no external amp/jack). */
+/ {
+	sound {
+		compatible = "mediatek,mt8183-mt6358-sound";
+		mediatek,platform = <&afe>;
+		/*
+		 * HDMI audio: routes AFE I2S5 (pinned in dpi_func_pins) to
+		 * the it66121 hdmi-codec DAI ("i2s-hifi"). The bare mt8183_mt6358
+		 * card enables its Playback_HDMI FE + I2S5 BE only when this
+		 * phandle is present (mt8183-mt6358-ts3a227-max98357.c probe).
+		 */
+		mediatek,hdmi-codec = <&it66121hdmitx>;
+		status = "okay";
+	};
+};
+
+&mt6358codec {
+	Avdd-supply = <&mt6358_vaud28_reg>;
+};
+
+/* i500: MT8183 has no SoC Ethernet MAC; networking is a USB device on the single
+ * SSUSB (mtu3) controller. Dual-role (OTG) so userspace can hot-swap host<->device
+ * via /sys/class/usb_role/<sw>/role; default = host (the working path + what the
+ * USB-Ethernet use case needs).
+ *
+ * Why mediatek,u3p-dis-msk: the MT8183 SSUSB IP reports a U3 (SuperSpeed) device port
+ * in SSUSB_IP_DEV_CAP, so mtu->u3_capable defaults to 1 (mtu3_core.c:864). But the
+ * board is USB2-only (no U3 PHY), so device-mode init (mtu3_device_enable) would wait
+ * on SSUSB_U3_MAC_RST_B_STS, which never asserts -> ssusb_check_clocks() returns -110
+ * "clks of sts1 not stable" (the historical OTG/device wall). Disabling U3 port0 makes
+ * mtu3_core.c:825 clear u3_capable -> the device clock check drops the U3-MAC bit and
+ * becomes the same common+U2 check the host path already passes. maximum-speed caps the
+ * advertised speed to match (U2-only). */
+&ssusb {
+	dr_mode = "otg";
+	maximum-speed = "high-speed";
+	mediatek,u3p-dis-msk = <0x1>;
+	usb-role-switch;
+	role-switch-default-mode = "host";
+	vusb33-supply = <&mt6358_vusb_reg>;
+	status = "okay";
+};
+
+&usb_host {
+	vusb33-supply = <&mt6358_vusb_reg>;
+	status = "okay";
+};
+
+/* CC-driven USB role: hd3ss3220 (register-compat with the TUSB322i @0x47) as the
+ * usb-role-switch source; polled (no interrupts -> avoids the GPIO166/wifi_3v3
+ * IRQ conflict), edge-triggered so a userspace override (/sys/class/usb_role)
+ * holds. The &ssusb above is already dr_mode=otg + usb-role-switch. */
+&i2c0 {
+	typec@47 {
+		compatible = "ti,hd3ss3220";
+		reg = <0x47>;
+		connector {
+			compatible = "usb-c-connector";
+			label = "usb-c";
+			data-role = "dual";
+			power-role = "dual";
+			port {
+				hd3ss3220_ep: endpoint {
+					remote-endpoint = <&ssusb_role_ep>;
+				};
+			};
+		};
+	};
+};
+
+&ssusb {
+	port {
+		ssusb_role_ep: endpoint {
+			remote-endpoint = <&hd3ss3220_ep>;
+		};
+	};
+};
+
+/* LAN9512 hub-enablement (df7763d): force-vbus for host-mode VBUS-valid + GPIO9
+ * hub-reset (output-low releases it) + GPIO42. Needed so cable-out -> host -> the
+ * LAN9512 enumerates; coexists with the hd3ss3220 CC role-switch above. */
+&ssusb {
+	mediatek,force-vbus;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pins_usb &pins_hub_rst>;
+};
+
+&pio {
+	pins_usb: usb-pins {
+		pins-vbus {
+			pinmux = <PINMUX_GPIO42__FUNC_GPIO42>;
+			output-low;
+		};
+	};
+	pins_hub_rst: usb-hub-rst-pins {
+		pins-hub-rst {
+			pinmux = <PINMUX_GPIO9__FUNC_GPIO9>;
+			output-low;
+		};
+	};
 };

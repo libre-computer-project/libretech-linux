@@ -6,6 +6,7 @@
 /dts-v1/;
 
 #include "meson-gxbb-vega-s95.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "tronsmart,vega-s95-meta", "tronsmart,vega-s95", "amlogic,meson-gxbb";

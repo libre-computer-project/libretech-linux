@@ -99,6 +99,44 @@ enum drm_edid_internal_quirk {
 };
 
 #define MICROSOFT_IEEE_OUI	0xca125c
+#define AMD_IEEE_OUI		0x00001a
+
+/* AMD FreeSync vendor block, payload bytes after the 3-byte OUI */
+#define AMD_VSDB_VERSION		3	/* payload[3] */
+#define AMD_VSDB_FEATURE_CAPS		4	/* payload[4] */
+#define AMD_VSDB_MIN_REFRESH		5	/* payload[5], Hz */
+#define AMD_VSDB_MAX_REFRESH		6	/* payload[6], Hz */
+/* payload[4] bit 0: sink supports FreeSync variable refresh */
+#define AMD_VSDB_FREESYNC_SUPPORTED	BIT(0)
+/*
+ * The payload layout is version-dependent, so the fixed offsets above are only
+ * meaningful for the versions that are known to use them. The in-tree amdgpu
+ * driver recognises exactly versions 1-3 (it selects FreeSync infoframe
+ * PACKET_TYPE_FS_V1/V2/V3 from them, see amdgpu_dm.c), and it does the block
+ * decode itself in DMCU/DMUB firmware, so the kernel carries no per-version
+ * field map we could branch on. Refuse to decode any other version rather than
+ * trust a guessed offset: a bogus range is worse than no VRR, since a driver
+ * clamping to it can sweep the sink past its real floor and drop the link.
+ */
+#define AMD_VSDB_VERSION_MIN		1
+#define AMD_VSDB_VERSION_MAX		3
+
+/*
+ * HDMI Forum VSDB / SCDB (HDMI 2.1) variable refresh range. Byte numbering is
+ * the same as the rest of drm_parse_hdmi_forum_scds(), i.e. byte 0 is the
+ * tag/length byte:
+ *
+ *   byte 9: VRR_min in bits [5:0], VRR_max bits [9:8] in bits [7:6]
+ *   byte 10: VRR_max bits [7:0]
+ *
+ * The bit fields come from the DRM_EDID_VRR_* masks in drm_edid.h; the byte
+ * positions are bracketed by the two bytes this file already decodes -- byte 7
+ * (Max_FRL_Rate + YCbCr420 deep colour) and byte 11 (DSC caps) -- with byte 8
+ * holding the FAPA/ALLM/FVA/CNMVRR/CinemaVRR/M_Delta flags whose masks are also
+ * already defined in drm_edid.h.
+ */
+#define HF_VSDB_VRR_MIN			9
+#define HF_VSDB_VRR_MAX_LO		10
 
 struct detailed_mode_closure {
 	struct drm_connector *connector;
@@ -5202,6 +5240,13 @@ static bool cea_db_is_microsoft_vsdb(const struct cea_db *db)
 		cea_db_payload_len(db) == 21;
 }
 
+static bool cea_db_is_amd_vsdb(const struct cea_db *db)
+{
+	/* OUI + version + feature caps + min + max == 7 payload bytes */
+	return cea_db_is_vendor(db, AMD_IEEE_OUI) &&
+		cea_db_payload_len(db) >= 7;
+}
+
 static bool cea_db_is_vcdb(const struct cea_db *db)
 {
 	return cea_db_is_extended_tag(db, CTA_EXT_DB_VIDEO_CAP) &&
@@ -6220,6 +6265,88 @@ static void drm_parse_dsc_info(struct drm_hdmi_dsc_cap *hdmi_dsc,
 		hdmi_dsc->total_chunk_kbytes = hf_scds[13] & DRM_EDID_DSC_TOTAL_CHUNK_KBYTES;
 }
 
+/*
+ * Record a variable-refresh range the sink advertised.
+ *
+ * Two independent EDID blocks can carry one: the AMD FreeSync VSDB and the
+ * HDMI Forum VSDB/SCDB (HDMI 2.1 VRR). Either block on its own is a complete
+ * declaration, so both feed @has_freesync -- a sink that implements only
+ * HDMI-Forum VRR must not be refused variable refresh, which is exactly what
+ * happened while @has_freesync was fed from the AMD block alone.
+ *
+ * If a sink carries both and they disagree, take the INTERSECTION: the range
+ * both blocks agree the sink tolerates. Intersecting is order-independent (the
+ * CTA data block order is not fixed, so the parse order of the two blocks is
+ * not either) and it can only narrow, never widen. Widening is the dangerous
+ * direction -- a range beyond what the sink advertised invites timings it
+ * cannot lock to, and sweeping a sink below its real floor drops the link.
+ *
+ * A disjoint pair means the EDID contradicts itself; there is no defensible
+ * merge, so keep whichever range was parsed first and log it.
+ */
+static void drm_edid_set_vrr_range(struct drm_connector *connector,
+				   const char *source,
+				   u16 min_vfreq, u16 max_vfreq)
+{
+	struct drm_display_info *info = &connector->display_info;
+
+	/* A zero or inverted range is unusable -- treat the sink as non-VRR. */
+	if (!min_vfreq || !max_vfreq || min_vfreq >= max_vfreq) {
+		drm_dbg_kms(connector->dev,
+			    "[CONNECTOR:%d:%s] %s advertises an unusable variable refresh range %u-%u Hz, ignoring\n",
+			    connector->base.id, connector->name, source,
+			    min_vfreq, max_vfreq);
+		return;
+	}
+
+	if (info->has_freesync) {
+		u16 lo = max(info->freesync_range.min_vfreq, min_vfreq);
+		u16 hi = min(info->freesync_range.max_vfreq, max_vfreq);
+
+		if (lo >= hi) {
+			drm_dbg_kms(connector->dev,
+				    "[CONNECTOR:%d:%s] %s variable refresh range %u-%u Hz is disjoint from the already parsed %u-%u Hz, keeping the latter\n",
+				    connector->base.id, connector->name, source,
+				    min_vfreq, max_vfreq,
+				    info->freesync_range.min_vfreq,
+				    info->freesync_range.max_vfreq);
+			return;
+		}
+
+		min_vfreq = lo;
+		max_vfreq = hi;
+	}
+
+	info->has_freesync = true;
+	info->freesync_range.min_vfreq = min_vfreq;
+	info->freesync_range.max_vfreq = max_vfreq;
+
+	drm_dbg_kms(connector->dev,
+		    "[CONNECTOR:%d:%s] %s: variable refresh range is now %u-%u Hz\n",
+		    connector->base.id, connector->name, source,
+		    min_vfreq, max_vfreq);
+}
+
+static void drm_parse_hf_vrr_range(struct drm_connector *connector,
+				   const u8 *hf_scds)
+{
+	u16 min_vfreq, max_vfreq;
+
+	/* Both VRR bytes must be inside the block's payload. */
+	if (cea_db_payload_len(hf_scds) < HF_VSDB_VRR_MAX_LO)
+		return;
+
+	min_vfreq = hf_scds[HF_VSDB_VRR_MIN] & DRM_EDID_VRR_MIN_MASK;
+	max_vfreq = ((hf_scds[HF_VSDB_VRR_MIN] & DRM_EDID_VRR_MAX_UPPER_MASK) << 2) |
+		    (hf_scds[HF_VSDB_VRR_MAX_LO] & DRM_EDID_VRR_MAX_LOWER_MASK);
+
+	/* All-zero means the sink does not support VRR -- not a broken range. */
+	if (!min_vfreq && !max_vfreq)
+		return;
+
+	drm_edid_set_vrr_range(connector, "HF-VSDB VRR", min_vfreq, max_vfreq);
+}
+
 /* Sink Capability Data Structure */
 static void drm_parse_hdmi_forum_scds(struct drm_connector *connector,
 				      const u8 *hf_scds)
@@ -6274,6 +6401,8 @@ static void drm_parse_hdmi_forum_scds(struct drm_connector *connector,
 	}
 
 	drm_parse_ycbcr420_deep_color_info(connector, hf_scds);
+
+	drm_parse_hf_vrr_range(connector, hf_scds);
 
 	if (cea_db_payload_len(hf_scds) >= 11 && hf_scds[11]) {
 		drm_parse_dsc_info(hdmi_dsc, hf_scds);
@@ -6398,6 +6527,46 @@ static void drm_parse_microsoft_vsdb(struct drm_connector *connector,
 		    connector->base.id, connector->name, version, db[5]);
 }
 
+/*
+ * AMD FreeSync vendor-specific data block: the sink's declaration that it
+ * tolerates a continuously varying frame rate, plus the range over which it
+ * does. This is what a VRR implementation must clamp to -- a monitor range
+ * descriptor is not a substitute, as it only bounds the modes the sink can
+ * lock to. Sweeping a sink below its FreeSync floor drops the link, and on
+ * some HDMI transmitters wedges the TX until a controller re-init.
+ */
+static void drm_parse_amd_vsdb(struct drm_connector *connector,
+			       const struct cea_db *db)
+{
+	const u8 *payload = cea_db_data(db);
+	u8 version = payload[AMD_VSDB_VERSION];
+	u8 min_vfreq, max_vfreq;
+
+	if (!(payload[AMD_VSDB_FEATURE_CAPS] & AMD_VSDB_FREESYNC_SUPPORTED))
+		return;
+
+	/*
+	 * Only decode the min/max offsets for the versions known to define them
+	 * there -- see the AMD_VSDB_VERSION_* comment above.
+	 */
+	if (version < AMD_VSDB_VERSION_MIN || version > AMD_VSDB_VERSION_MAX) {
+		drm_dbg_kms(connector->dev,
+			    "[CONNECTOR:%d:%s] unknown FreeSync VSDB version %u, refusing to decode its refresh range\n",
+			    connector->base.id, connector->name, version);
+		return;
+	}
+
+	min_vfreq = payload[AMD_VSDB_MIN_REFRESH];
+	max_vfreq = payload[AMD_VSDB_MAX_REFRESH];
+
+	drm_dbg_kms(connector->dev,
+		    "[CONNECTOR:%d:%s] FreeSync VSDB version %u, advertised variable refresh range %u-%u Hz\n",
+		    connector->base.id, connector->name,
+		    version, min_vfreq, max_vfreq);
+
+	drm_edid_set_vrr_range(connector, "FreeSync VSDB", min_vfreq, max_vfreq);
+}
+
 static void drm_parse_cea_ext(struct drm_connector *connector,
 			      const struct drm_edid *drm_edid)
 {
@@ -6446,6 +6615,8 @@ static void drm_parse_cea_ext(struct drm_connector *connector,
 			drm_parse_hdmi_forum_scds(connector, data);
 		else if (cea_db_is_microsoft_vsdb(db))
 			drm_parse_microsoft_vsdb(connector, data);
+		else if (cea_db_is_amd_vsdb(db))
+			drm_parse_amd_vsdb(connector, db);
 		else if (cea_db_is_y420cmdb(db))
 			parse_cta_y420cmdb(connector, db, &y420cmdb_map);
 		else if (cea_db_is_y420vdb(db))
@@ -6625,6 +6796,8 @@ static void drm_reset_display_info(struct drm_connector *connector)
 
 	info->non_desktop = 0;
 	memset(&info->monitor_range, 0, sizeof(info->monitor_range));
+	info->has_freesync = false;
+	memset(&info->freesync_range, 0, sizeof(info->freesync_range));
 	memset(&info->luminance_range, 0, sizeof(info->luminance_range));
 
 	info->mso_stream_count = 0;
@@ -7499,6 +7672,14 @@ static void drm_parse_tiled_block(struct drm_connector *connector,
 	u8 tile_v_loc, tile_h_loc;
 	u8 num_v_tile, num_h_tile;
 	struct drm_tile_group *tg;
+
+	/* tiled block payload per spec: cap 1 + topo 3 + size 4 + bezel 5 + id 9 = 22 */
+	if (block->num_bytes < 22) {
+		drm_dbg_kms(connector->dev,
+			    "[CONNECTOR:%d:%s] Unexpected tiled block size %u\n",
+			    connector->base.id, connector->name, block->num_bytes);
+		return;
+	}
 
 	w = tile->tile_size[0] | tile->tile_size[1] << 8;
 	h = tile->tile_size[2] | tile->tile_size[3] << 8;

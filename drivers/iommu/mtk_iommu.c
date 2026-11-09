@@ -139,6 +139,7 @@
 /* 2 bits: iommu type */
 #define MTK_IOMMU_TYPE_MM		(0x0 << 13)
 #define MTK_IOMMU_TYPE_INFRA		(0x1 << 13)
+#define MTK_IOMMU_TYPE_APU		(0x2 << 13)
 #define MTK_IOMMU_TYPE_MASK		(0x3 << 13)
 /* PM and clock always on. e.g. infra iommu */
 #define PM_CLK_AO			BIT(15)
@@ -336,6 +337,7 @@ static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int ban
 #define MTK_IOMMU_4GB_MODE_REMAP_BASE	 0x140000000UL
 
 static LIST_HEAD(m4ulist);	/* List all the M4U HWs */
+static LIST_HEAD(apulist);	/* List the APU (MDLA/APUSYS NPU) IOMMU HWs */
 
 #define for_each_m4u(data, head)  list_for_each_entry(data, head, list)
 
@@ -705,7 +707,7 @@ static void mtk_iommu_domain_free(struct iommu_domain *domain)
 }
 
 static int mtk_iommu_attach_device(struct iommu_domain *domain,
-				   struct device *dev)
+				   struct device *dev, struct iommu_domain *old)
 {
 	struct mtk_iommu_data *data = dev_iommu_priv_get(dev), *frstdata;
 	struct mtk_iommu_domain *dom = to_mtk_domain(domain);
@@ -752,6 +754,11 @@ static int mtk_iommu_attach_device(struct iommu_domain *domain,
 		}
 		bank->m4u_dom = dom;
 		writel(dom->cfg.arm_v7s_cfg.ttbr, bank->base + REG_MMU_PT_BASE_ADDR);
+		if (MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_APU))
+			dev_info(m4udev,
+				 "APU attach: bank%u PT_BASE<=0x%x readback=0x%x\n",
+				 bankid, dom->cfg.arm_v7s_cfg.ttbr,
+				 readl_relaxed(bank->base + REG_MMU_PT_BASE_ADDR));
 
 		pm_runtime_put(m4udev);
 	}
@@ -773,12 +780,12 @@ err_unlock:
 }
 
 static int mtk_iommu_identity_attach(struct iommu_domain *identity_domain,
-				     struct device *dev)
+				     struct device *dev,
+				     struct iommu_domain *old)
 {
-	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
 	struct mtk_iommu_data *data = dev_iommu_priv_get(dev);
 
-	if (domain == identity_domain || !domain)
+	if (old == identity_domain || !old)
 		return 0;
 
 	mtk_iommu_config(data, dev, false, 0);
@@ -974,6 +981,8 @@ static int mtk_iommu_of_xlate(struct device *dev,
 			return -EINVAL;
 
 		dev_iommu_priv_set(dev, platform_get_drvdata(m4updev));
+
+		put_device(&m4updev->dev);
 	}
 
 	return iommu_fwspec_add_ids(dev, args->args, 1);
@@ -1009,8 +1018,25 @@ static void mtk_iommu_get_resv_regions(struct device *dev,
 	}
 }
 
+static int mtk_iommu_def_domain_type(struct device *dev)
+{
+	/*
+	 * MediaTek M4U-backed multimedia devices (VDEC/VENC, MDP, display,
+	 * camera) require IOMMU translation: they have a limited IOVA window and
+	 * e.g. the SCP-driven VDEC core walks decode buffers by translated IOVA.
+	 * They cannot use an identity/passthrough mapping. Force a paging (DMA)
+	 * domain regardless of the kernel's global IOMMU default -- the arm64
+	 * defconfig sets CONFIG_IOMMU_DEFAULT_PASSTHROUGH, and under passthrough
+	 * these devices are handed unreachable physical addresses, stalling the
+	 * SCP/VDEC core (decoder KI-003) and the MDP. Returning IOMMU_DOMAIN_DMA
+	 * here overrides the global default per-device.
+	 */
+	return IOMMU_DOMAIN_DMA;
+}
+
 static const struct iommu_ops mtk_iommu_ops = {
 	.identity_domain = &mtk_iommu_identity_domain,
+	.def_domain_type = mtk_iommu_def_domain_type,
 	.domain_alloc_paging = mtk_iommu_domain_alloc_paging,
 	.probe_device	= mtk_iommu_probe_device,
 	.release_device	= mtk_iommu_release_device,
@@ -1030,7 +1056,14 @@ static const struct iommu_ops mtk_iommu_ops = {
 	}
 };
 
-static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int bankid)
+/*
+ * Program M4U control registers for one bank (everything hw_init does
+ * except the IRQ request). The APU M4U is powered out-of-band AFTER
+ * boot-time attach, so resume must re-apply this once the block is live.
+ * G510 KEEP (53f257b): CTRL_rb=0x1020 + PT_BASE_rb==ttbr. G5 measured
+ * 2026-08-28: CTRL_rb stays 0x1000 (reset) if resume only writes PT_BASE.
+ */
+static void __mtk_iommu_hw_prog(const struct mtk_iommu_data *data, unsigned int bankid)
 {
 	const struct mtk_iommu_bank_data *bankx = &data->bank[bankid];
 	const struct mtk_iommu_bank_data *bank0 = &data->bank[0];
@@ -1106,6 +1139,13 @@ static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int ban
 		regval = lower_32_bits(data->protect_base) |
 			 upper_32_bits(data->protect_base);
 	writel_relaxed(regval, bankx->base + REG_MMU_IVRP_PADDR);
+}
+
+static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int bankid)
+{
+	const struct mtk_iommu_bank_data *bankx = &data->bank[bankid];
+
+	__mtk_iommu_hw_prog(data, bankid);
 
 	if (devm_request_irq(bankx->parent_dev, bankx->irq, mtk_iommu_isr, 0,
 			     dev_name(bankx->parent_dev), (void *)bankx)) {
@@ -1211,16 +1251,19 @@ static int mtk_iommu_mm_dts_parse(struct device *dev, struct component_match **m
 		}
 
 		component_match_add(dev, match, component_compare_dev, &plarbdev->dev);
-		platform_device_put(plarbdev);
 	}
 
-	if (!frst_avail_smicomm_node)
-		return -EINVAL;
+	if (!frst_avail_smicomm_node) {
+		ret = -EINVAL;
+		goto err_larbdev_put;
+	}
 
 	pcommdev = of_find_device_by_node(frst_avail_smicomm_node);
 	of_node_put(frst_avail_smicomm_node);
-	if (!pcommdev)
-		return -ENODEV;
+	if (!pcommdev) {
+		ret = -ENODEV;
+		goto err_larbdev_put;
+	}
 	data->smicomm_dev = &pcommdev->dev;
 
 	link = device_link_add(data->smicomm_dev, dev,
@@ -1228,7 +1271,8 @@ static int mtk_iommu_mm_dts_parse(struct device *dev, struct component_match **m
 	platform_device_put(pcommdev);
 	if (!link) {
 		dev_err(dev, "Unable to link %s.\n", dev_name(data->smicomm_dev));
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_larbdev_put;
 	}
 	return 0;
 
@@ -1400,8 +1444,12 @@ out_sysfs_remove:
 	iommu_device_sysfs_remove(&data->iommu);
 out_list_del:
 	list_del(&data->list);
-	if (MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_MM))
+	if (MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_MM)) {
 		device_link_remove(data->smicomm_dev, dev);
+
+		for (i = 0; i < MTK_LARB_NR_MAX; i++)
+			put_device(data->larb_imu[i].dev);
+	}
 out_runtime_disable:
 	pm_runtime_disable(dev);
 	return ret;
@@ -1421,6 +1469,9 @@ static void mtk_iommu_remove(struct platform_device *pdev)
 	if (MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_MM)) {
 		device_link_remove(data->smicomm_dev, &pdev->dev);
 		component_master_del(&pdev->dev, &mtk_iommu_com_ops);
+
+		for (i = 0; i < MTK_LARB_NR_MAX; i++)
+			put_device(data->larb_imu[i].dev);
 	}
 	pm_runtime_disable(&pdev->dev);
 	for (i = 0; i < data->plat_data->banks_num; i++) {
@@ -1473,7 +1524,57 @@ static int __maybe_unused mtk_iommu_runtime_resume(struct device *dev)
 	/*
 	 * Uppon first resume, only enable the clk and return, since the values of the
 	 * registers are not yet set.
+	 *
+	 * TYPE_APU (the APU/MDLA M4U on mt8195) is the exception: its register
+	 * file lives inside the APU power domain, which the dedicated apusys
+	 * power driver (out-of-tree apu_top.ko) brings up *after* this IOMMU
+	 * device first probed and ran its boot-time attach. That boot-time
+	 * mtk_iommu_attach_device() programmed REG_MMU_PT_BASE_ADDR while the
+	 * domain was still dark, so the write was lost when the bank reset on
+	 * power-up; nothing re-programs it because the IOMMU device carries no
+	 * power-domain phandle (the APU domain is gated out-of-band). The
+	 * mainline reprogram hook for a powered-down-then-up bank is exactly
+	 * this runtime_resume, which the apusys driver triggers via
+	 * pm_runtime_get_sync() on the apu_iommu device once the domain is up.
+	 * So for TYPE_APU we must (re)write PT_BASE from the live io-pgtable
+	 * TTBR on every resume that has an attached domain -- including the
+	 * first one after power-up, where reg->wr_len_ctrl has not been saved
+	 * yet (the boot-time save read a dark bank). See APU-008.
 	 */
+	if (MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_APU) &&
+	    data->bank[0].m4u_dom) {
+		/*
+		 * Only reach the bank registers once a domain has attached:
+		 * the very first boot-time resume happens before attach (and
+		 * with the APU domain still dark), so bank[0].m4u_dom is NULL
+		 * there and we fall through to the normal first-resume path
+		 * below -- never touching an unpowered bank.
+		 */
+		i = 0;
+		do {
+			u32 ctrl_pre, pt_pre, ctrl_rb, pt_rb;
+
+			m4u_dom = data->bank[i].m4u_dom;
+			if (!data->plat_data->banks_enable[i] || !m4u_dom)
+				continue;
+			base = data->bank[i].base;
+			ctrl_pre = readl_relaxed(base + REG_MMU_CTRL_REG);
+			pt_pre = readl_relaxed(base + REG_MMU_PT_BASE_ADDR);
+			__mtk_iommu_hw_prog(data, i);
+			writel(m4u_dom->cfg.arm_v7s_cfg.ttbr,
+			       base + REG_MMU_PT_BASE_ADDR);
+			ctrl_rb = readl_relaxed(base + REG_MMU_CTRL_REG);
+			pt_rb = readl_relaxed(base + REG_MMU_PT_BASE_ADDR);
+			dev_info(data->dev,
+				 "APU resume: bank%u ttbr=0x%x CTRL_pre=0x%x PT_pre=0x%x CTRL_rb=0x%x PT_BASE_rb=0x%x wr_len=0x%x\n",
+				 i, m4u_dom->cfg.arm_v7s_cfg.ttbr,
+				 ctrl_pre, pt_pre, ctrl_rb, pt_rb,
+				 reg->wr_len_ctrl);
+		} while (++i < data->plat_data->banks_num);
+		mtk_iommu_tlb_flush_all(data);
+		return 0;
+	}
+
 	if (!reg->wr_len_ctrl)
 		return 0;
 
@@ -1695,6 +1796,46 @@ static const struct mtk_iommu_plat_data mt8188_data_vpp = {
 			   27, 28 /* ccu0 */, MTK_INVALID_LARBID}, {4, 6}},
 };
 
+/*
+ * APU (MDLA 3.0 / APUSYS NPU) IOMMU for MT8188 / MT8370 (Genio 510).
+ *
+ * From topic/lc618-apudt 76513c9 (SHARE_PGTABLE | STD_AXI_MODE, no
+ * PGTABLE_PA_35_EN -- BSP 6.6.22 mt8188_data_apu). Two HW instances
+ * (apu_iommu0@19010000 / apu_iommu1@19015000) share one io-pgtable.
+ * DATA port (fwspec 0x340) is routed to sub-4GB Region1 so the 32-bit
+ * RV33 sees a representable conf/IPI IOVA. TYPE_APU runtime-resume
+ * already rewrites PT_BASE (APU-008 / 62b9aa16f1146).
+ */
+static const struct mtk_iommu_iova_region mt8188_multi_dom_apu[] = {
+	{ .iova_base = 0x200000ULL,	.size = SZ_512M},	/* Region0: APU SECURE */
+#if IS_ENABLED(CONFIG_ARCH_DMA_ADDR_T_64BIT)
+	{ .iova_base = SZ_1G,		.size = 0xc0000000},	/* Region1: APU CODE */
+	{ .iova_base = 0x70000000ULL,	.size = 0x12600000},	/* Region2: APU VLM */
+	{ .iova_base = SZ_4G,		.size = SZ_4G * 3},	/* Region3: APU DATA/VPU (4..16 GB) */
+#endif
+};
+
+static const u32 mt8188_apu_region_msk[][MTK_LARB_NR_MAX] = {
+	[0] = {[26] = BIT(2)},			/* Region0 SECURE: larb26 port2 */
+	[1] = {[26] = BIT(0) | BIT(1), [27] = BIT(0)},	/* Region1 CODE: DATA port sub-4GB */
+	[2] = {[26] = BIT(3)},			/* Region2 VLM:    larb26 port3 */
+	[3] = {[26] = BIT(0), [27] = BIT(0)},	/* Region3 DATA:   unused in 6.18 port */
+};
+
+static const struct mtk_iommu_plat_data mt8188_data_apu = {
+	.m4u_plat             = M4U_MT8188,
+	.flags                = DCM_DISABLE | MTK_IOMMU_TYPE_APU |
+				SHARE_PGTABLE | IOVA_34_EN | STD_AXI_MODE,
+	.hw_list              = &apulist,
+	.inv_sel_reg          = REG_MMU_INV_SEL_GEN2,
+	.banks_num            = 1,
+	.banks_enable         = {true},
+	.iova_region          = mt8188_multi_dom_apu,
+	.iova_region_nr       = ARRAY_SIZE(mt8188_multi_dom_apu),
+	.iova_region_larb_msk = mt8188_apu_region_msk,
+	.larbid_remap         = {{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}},
+};
+
 static const struct mtk_iommu_plat_data mt8192_data = {
 	.m4u_plat       = M4U_MT8192,
 	.flags          = HAS_BCLK | HAS_SUB_COMM_2BITS | OUT_ORDER_WR_EN |
@@ -1773,6 +1914,101 @@ static const struct mtk_iommu_plat_data mt8195_data_vpp = {
 			   {4, MTK_INVALID_LARBID, MTK_INVALID_LARBID, MTK_INVALID_LARBID, 6}},
 };
 
+/*
+ * APU (MDLA 2.0 / APUSYS NPU) IOMMU for MT8195 (== MT8395 / Genio-1200 die).
+ *
+ * Real MTK_IOMMU_TYPE_APU plat data, modeled on the mt8188/mt8370 APU M4U port
+ * (topic/lc618-apudt mt8188_data_apu) -- the MT8195 APU subsystem reg layout is
+ * SHARED with mt8188 (apu_iommu0@19010000 / apu_iommu1@19015000, same 0x1000
+ * banks). The two instances each own one 0x1000 bank. The APU masters
+ * (apusys_rv, reviser, mdla, vpu, mem_code/data) attach via the literal fwspec
+ * ids written in mt8195-apusys.dtsi (mainline has no IOMMU_PORT_APU_* macros):
+ *   0x340 = larb26 port0 (APU_DATA) -> Region3 (DATA/VPU)
+ *   0x341 = larb26 port1 (APU_VLM)  -> Region1 (CODE)   [mem_data]
+ *   0x342 = larb26 port2 (SECURE)   -> Region0
+ *   0x343 = larb26 port3 (APU_VPU)  -> Region2 (VLM window the VP6 uses)
+ *   0x360 = larb27 port0 (apu_iommu1 DATA) -> Region3
+ *
+ * The RV33's conf/ipi/code buffers (apusys_rv: iommus = <&iommu_apu0 0x340>,
+ * port0 -> Region3) come back as >4 GB IOVAs, so IOVA_34_EN + a 4..16 GB
+ * Region3 are mandatory: without them dma_alloc_coherent on apu->dev can't
+ * allocate and the RV faults on every config/IPI access. TYPE_APU takes neither
+ * the MM (larb/SMI) nor INFRA (pericfg/ATF) probe; the kernel's job is the
+ * io-pgtable (34-bit IAS, TTBR_EXT) + REG_MMU_PT_BASE_ADDR on resume, both
+ * type-agnostic in 6.18. The per-port larb translation enable on this NS path
+ * is done by the out-of-tree apusys driver's reviser, not by this driver.
+ *
+ * Not yet hardware-verified for the full RV attach -> WIP.
+ */
+static const struct mtk_iommu_iova_region mt8195_multi_dom_apu[] = {
+	{ .iova_base = 0x200000ULL,	.size = SZ_512M},	/* Region0: APU SECURE */
+#if IS_ENABLED(CONFIG_ARCH_DMA_ADDR_T_64BIT)
+	{ .iova_base = SZ_1G,		.size = 0xc0000000},	/* Region1: APU CODE */
+	{ .iova_base = 0x70000000ULL,	.size = 0x12600000},	/* Region2: APU VLM */
+	{ .iova_base = SZ_4G,		.size = SZ_4G * 3},	/* Region3: APU DATA/VPU (4..16 GB) */
+#endif
+};
+
+static const u32 mt8195_apu_region_msk[][MTK_LARB_NR_MAX] = {
+	[0] = {[26] = BIT(2)},			/* Region0 SECURE: larb26 port2 */
+	/*
+	 * Region1 CODE is sub-4 GB (1..4 GB). Route the apusys_rv / reviser
+	 * DATA port (larb26/27 port0, fwspec id 0x340) HERE rather than into
+	 * the 4..16 GB Region3 DATA window. mtk_iommu_get_iova_region_id()
+	 * returns the FIRST matching region in array order, so placing port0
+	 * in Region1 (before Region3) makes dma_alloc_coherent on the
+	 * apusys_rv device hand back a 32-bit IOVA, which the 32-bit RV33 core
+	 * can actually address.
+	 *
+	 * The INIT_ACK handshake passes the config buffer to the RV via the
+	 * 32-bit apu_mbox+0x48 (MBOX_HOST_CONFIG_ADDR) register: the driver
+	 * writes (u32)conf_da there (apu_config.c). With the DATA port in
+	 * Region3, dma_alloc_coherent returned conf_da = 0x3fffff000 (34-bit),
+	 * which the (u32) write TRUNCATED to 0xfffff000 -- an IOVA the APU-M4U
+	 * does not map (iova_to_phys(0xfffff000)=0 while iova_to_phys(0x3fffff000)
+	 * is valid). The RV read the truncated config addr, could not reach its
+	 * config/IPI buffers, and stayed silent after START_MP ("APU
+	 * initialization timeout!!", apu_ipi irq count 0, outbox never written).
+	 * Hardware-confirmed on demo-mt8195-chromebook 2026-06-20. Mirrors the
+	 * mt8188 fix above; same root cause + same one-line remedy. Region3 has
+	 * no active consumer in the 6.18 port (VPU dropped), so nothing regresses.
+	 */
+	[1] = {[26] = BIT(0) | BIT(1), [27] = BIT(0)},	/* Region1 CODE:   larb26 port0+1, larb27 port0 (DATA routed here, sub-4GB) */
+	[2] = {[26] = BIT(3)},			/* Region2 VLM:    larb26 port3 */
+	[3] = {[26] = BIT(0), [27] = BIT(0)},	/* Region3 DATA:   larb26 port0 + larb27 port0 (no active consumer in 6.18 port) */
+};
+
+static const struct mtk_iommu_plat_data mt8195_data_apu = {
+	.m4u_plat             = M4U_MT8195,
+	/*
+	 * SHARE_PGTABLE is mandatory and was missing in the original port:
+	 * the APU subsystem has two M4U HW instances (apu_iommu0 @ 0x19010000,
+	 * apu_iommu1 @ 0x19015000) that MUST translate through one shared
+	 * io-pgtable. The apusys_rv firmware is iommu_map()'d only through
+	 * apu_iommu0's domain (apusys_rv: iommus = <&iommu_apu0 0x340>), but
+	 * the RV33 reviser routes the uP instruction/data transactions through
+	 * BOTH instances, so apu_iommu1 must answer the same IOVAs. Without
+	 * SHARE_PGTABLE the two instances allocate independent page tables
+	 * (different TTBRs, e.g. i0=0x09ba0001 / i1=0x09bb0001), apu_iommu1's
+	 * table lacks the firmware mapping, and the RV faults into its
+	 * sync-trap handler at the first transaction routed through it
+	 * (TBUF pc=0x22f48 loop -> INIT timeout). With SHARE_PGTABLE both
+	 * instances point at the single share_dom TTBR (verified on
+	 * demo-mt8195-chromebook: forcing both banks to apu_iommu0's TTBR makes
+	 * the RV execute the firmware). Mirrors mt8188_data_apu, which carries
+	 * SHARE_PGTABLE for the same dual-instance APU M4U. See APU-008.
+	 */
+	.flags                = IOVA_34_EN | DCM_DISABLE | SHARE_PGTABLE |
+				MTK_IOMMU_TYPE_APU | PGTABLE_PA_35_EN,
+	.hw_list              = &apulist,
+	.inv_sel_reg          = REG_MMU_INV_SEL_GEN2,
+	.banks_num            = 1,
+	.banks_enable         = {true},
+	.iova_region          = mt8195_multi_dom_apu,
+	.iova_region_nr       = ARRAY_SIZE(mt8195_multi_dom_apu),
+	.iova_region_larb_msk = mt8195_apu_region_msk,
+};
+
 static const struct mtk_iommu_plat_data mt8365_data = {
 	.m4u_plat	= M4U_MT8365,
 	.flags		= RESET_AXI | INT_ID_PORT_WIDTH_6,
@@ -1796,10 +2032,12 @@ static const struct of_device_id mtk_iommu_of_ids[] = {
 	{ .compatible = "mediatek,mt8188-iommu-infra", .data = &mt8188_data_infra},
 	{ .compatible = "mediatek,mt8188-iommu-vdo",   .data = &mt8188_data_vdo},
 	{ .compatible = "mediatek,mt8188-iommu-vpp",   .data = &mt8188_data_vpp},
+	{ .compatible = "mediatek,mt8188-iommu-apu",   .data = &mt8188_data_apu},
 	{ .compatible = "mediatek,mt8192-m4u", .data = &mt8192_data},
 	{ .compatible = "mediatek,mt8195-iommu-infra", .data = &mt8195_data_infra},
 	{ .compatible = "mediatek,mt8195-iommu-vdo",   .data = &mt8195_data_vdo},
 	{ .compatible = "mediatek,mt8195-iommu-vpp",   .data = &mt8195_data_vpp},
+	{ .compatible = "mediatek,mt8195-iommu-apu",   .data = &mt8195_data_apu},
 	{ .compatible = "mediatek,mt8365-m4u", .data = &mt8365_data},
 	{}
 };

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MEDIATEK_DPE7
+	tristate "MediaTek MT8188 DPE stereo disparity (DVS) driver"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on VIDEO_DEV
+	depends on OF
+	select V4L2_MEM2MEM_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  V4L2 memory-to-memory driver for the DVS engine of the MT8188
+	  depth engine (DPE): it matches a rectified left/right image pair
+	  and returns a disparity map in 1/8 pixel.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mtk_dpe7.

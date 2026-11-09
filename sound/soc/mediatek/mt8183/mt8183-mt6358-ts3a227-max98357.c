@@ -295,6 +295,15 @@ SND_SOC_DAILINK_DEFS(i2s5,
 	DAILINK_COMP_ARRAY(COMP_CODEC("bt-sco", "bt-sco-pcm-wb")),
 	DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * i500 (Pumpkin MT8183): AFE I2S5 -> it66121 hdmi-codec ("i2s-hifi") BE.
+ * The codec of_node is filled in at probe from "mediatek,hdmi-codec".
+ */
+SND_SOC_DAILINK_DEFS(i2s5_hdmi,
+	DAILINK_COMP_ARRAY(COMP_CPU("I2S5")),
+	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "i2s-hifi")),
+	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
 SND_SOC_DAILINK_DEFS(tdm,
 	DAILINK_COMP_ARRAY(COMP_CPU("TDM")),
 	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "i2s-hifi")),
@@ -695,6 +704,11 @@ static struct snd_soc_aux_dev mt8183_mt6358_ts3a227_max98357_headset_dev = {
 	.init = mt8183_mt6358_ts3a227_max98357_headset_init,
 };
 
+#ifdef CONFIG_OF
+/* Forward decl: the bare i500 card is defined below, after probe. */
+static struct snd_soc_card mt8183_mt6358_card;
+#endif
+
 static int
 mt8183_mt6358_ts3a227_max98357_dev_probe(struct platform_device *pdev)
 {
@@ -791,6 +805,23 @@ mt8183_mt6358_ts3a227_max98357_dev_probe(struct platform_device *pdev)
 			dai_link->ignore = 0;
 		}
 
+#ifdef CONFIG_OF
+		/*
+		 * i500 bare card: HDMI audio rides AFE I2S5 (not TDM, which the
+		 * ts3a227/da7219 boards use). Enable the Playback_HDMI FE + the
+		 * I2S5 BE and wire the BE codec to the it66121 only when
+		 * "mediatek,hdmi-codec" is present.
+		 */
+		if (hdmi_codec && card == &mt8183_mt6358_card) {
+			if (strcmp(dai_link->name, "I2S5") == 0) {
+				dai_link->codecs->of_node = hdmi_codec;
+				dai_link->ignore = 0;
+			}
+			if (strcmp(dai_link->name, "Playback_HDMI") == 0)
+				dai_link->ignore = 0;
+		}
+#endif
+
 		if (!dai_link->platforms->name)
 			dai_link->platforms->of_node = platform_node;
 	}
@@ -813,13 +844,16 @@ mt8183_mt6358_ts3a227_max98357_dev_probe(struct platform_device *pdev)
 
 	priv->pinctrl = devm_pinctrl_get(&pdev->dev);
 	if (IS_ERR(priv->pinctrl)) {
-		dev_err(&pdev->dev, "%s devm_pinctrl_get failed\n",
-			__func__);
 		ret = PTR_ERR(priv->pinctrl);
-		goto out;
+		if (ret == -EPROBE_DEFER)
+			goto out;
+		/* MT6358-internal-codec card declares no audio pins: not fatal. */
+		dev_info(&pdev->dev, "%s no pinctrl (%d), skipping pin setup\n",
+			 __func__, ret);
+		priv->pinctrl = NULL;
 	}
 
-	for (i = 0; i < PIN_STATE_MAX; i++) {
+	for (i = 0; priv->pinctrl && i < PIN_STATE_MAX; i++) {
 		priv->pin_states[i] = pinctrl_lookup_state(priv->pinctrl,
 							   mt8183_pin_str[i]);
 		if (IS_ERR(priv->pin_states[i])) {
@@ -829,7 +863,7 @@ mt8183_mt6358_ts3a227_max98357_dev_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (!IS_ERR(priv->pin_states[PIN_TDM_OUT_OFF])) {
+	if (priv->pinctrl && !IS_ERR(priv->pin_states[PIN_TDM_OUT_OFF])) {
 		ret = pinctrl_select_state(priv->pinctrl,
 					   priv->pin_states[PIN_TDM_OUT_OFF]);
 		if (ret)
@@ -838,7 +872,7 @@ mt8183_mt6358_ts3a227_max98357_dev_probe(struct platform_device *pdev)
 				 __func__, ret);
 	}
 
-	if (!IS_ERR(priv->pin_states[PIN_STATE_DEFAULT])) {
+	if (priv->pinctrl && !IS_ERR(priv->pin_states[PIN_STATE_DEFAULT])) {
 		ret = pinctrl_select_state(priv->pinctrl,
 					   priv->pin_states[PIN_STATE_DEFAULT]);
 		if (ret)
@@ -857,6 +891,95 @@ out:
 }
 
 #ifdef CONFIG_OF
+/* Genio 500 / i500 (MT6358 internal codec only -- no external amp/jack/HDMI) */
+static struct snd_soc_dai_link mt8183_mt6358_dai_links[] = {
+	/* FE */
+	{
+		.name = "Playback_1",
+		.stream_name = "Playback_1",
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.playback_only = 1,
+		.ops = &mt8183_mt6358_ops,
+		SND_SOC_DAILINK_REG(playback1),
+	},
+	{
+		.name = "Playback_3",
+		.stream_name = "Playback_3",
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.playback_only = 1,
+		SND_SOC_DAILINK_REG(playback3),
+	},
+	{
+		.name = "Capture_2",
+		.stream_name = "Capture_2",
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.capture_only = 1,
+		SND_SOC_DAILINK_REG(capture2),
+	},
+	{
+		.name = "Capture_3",
+		.stream_name = "Capture_3",
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.capture_only = 1,
+		.ops = &mt8183_mt6358_ops,
+		SND_SOC_DAILINK_REG(capture3),
+	},
+	{
+		.name = "Capture_Mono_1",
+		.stream_name = "Capture_Mono_1",
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.capture_only = 1,
+		SND_SOC_DAILINK_REG(capture_mono),
+	},
+	/*
+	 * i500 HDMI audio FE. Uses the DL2 memif (otherwise unused on this
+	 * card) as a dedicated HDMI PCM; the AFE routes DL2 -> I2S5 via the
+	 * I2S5_CHx mixers. Enabled (ignore=0) at probe iff mediatek,hdmi-codec.
+	 */
+	{
+		.name = "Playback_HDMI",
+		.stream_name = "Playback_HDMI",
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.playback_only = 1,
+		.ignore = 1,
+		SND_SOC_DAILINK_REG(playback2),
+	},
+	/* BE -- MT6358 internal codec */
+	{
+		.name = "Primary Codec",
+		.no_pcm = 1,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(primary_codec),
+	},
+	/*
+	 * i500 HDMI audio BE: AFE I2S5 -> it66121 hdmi-codec. The codec
+	 * of_node + ignore=0 are set at probe iff mediatek,hdmi-codec.
+	 */
+	{
+		.name = "I2S5",
+		.no_pcm = 1,
+		.playback_only = 1,
+		.ignore_suspend = 1,
+		.ignore = 1,
+		.be_hw_params_fixup = mt8183_i2s_hw_params_fixup,
+		.ops = &mt8183_mt6358_i2s_ops,
+		SND_SOC_DAILINK_REG(i2s5_hdmi),
+	},
+};
+
+static struct snd_soc_card mt8183_mt6358_card = {
+	.name = "mt8183_mt6358",
+	.owner = THIS_MODULE,
+	.dai_link = mt8183_mt6358_dai_links,
+	.num_links = ARRAY_SIZE(mt8183_mt6358_dai_links),
+};
+
 static const struct of_device_id mt8183_mt6358_ts3a227_max98357_dt_match[] = {
 	{
 		.compatible = "mediatek,mt8183_mt6358_ts3a227_max98357",
@@ -873,6 +996,10 @@ static const struct of_device_id mt8183_mt6358_ts3a227_max98357_dt_match[] = {
 	{
 		.compatible = "mediatek,mt8183_mt6358_ts3a227_rt1015p",
 		.data = &mt8183_mt6358_ts3a227_rt1015p_card,
+	},
+	{
+		.compatible = "mediatek,mt8183-mt6358-sound",
+		.data = &mt8183_mt6358_card,
 	},
 	{}
 };

@@ -10,7 +10,7 @@ for pkg in $_extrapackages; do
 	pkgname+=("${pkgbase}-${pkg}")
 done
 
-pkgver="${KERNELRELEASE//-/_}"
+pkgver="$(echo "${KERNELRELEASE}" | sed 's/-\(rc[0-9]\+\)/\1/;s/-/_/g')"
 # The PKGBUILD is evaluated multiple times.
 # Running scripts/build-version from here would introduce inconsistencies.
 pkgrel="${KBUILD_REVISION}"
@@ -40,8 +40,9 @@ _prologue() {
 	# Bypass this override with a custom variable.
 	export MAKEFLAGS="${KBUILD_MAKEFLAGS}"
 
-	# Kbuild works in the output directory, where this PKGBUILD is located.
-	cd "$(dirname "${BASH_SOURCE[0]}")"
+	# Kbuild works in the output directory, where this PKGBUILD is located
+	# unless makepkg runs elsewhere (PACMAN_STARTDIR).
+	cd "${KBUILD_OBJTREE:-$(dirname "${BASH_SOURCE[0]}")}"
 }
 
 build() {
@@ -56,6 +57,11 @@ _package() {
 	local modulesdir="${pkgdir}/usr/lib/modules/${KERNELRELEASE}"
 
 	_prologue
+
+	# lc-livepatch installs this kernel's livepatches as they are published; optional (the host's choice)
+	if grep -q CONFIG_LIVEPATCH=y include/config/auto.conf; then
+		optdepends=('lc-livepatch: install the livepatches for this kernel as they are published')
+	fi
 
 	echo "Installing boot image..."
 	# systemd expects to find the kernel here to allow hibernation

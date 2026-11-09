@@ -79,6 +79,14 @@ properties:
       - const: tx
       - const: rx
 
+  mediatek,rx-dma-cpu-latency-us:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      CPU wakeup latency, in microseconds, to hold while DMA traffic flows on
+      this port. For SoCs whose UART APDMA can signal RX completion before
+      its writes reach memory while a CPU cluster powers down; set it below
+      the exit latency of the cluster idle states.
+
   interrupts:
     minItems: 1
     maxItems: 2

@@ -16,6 +16,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <linux/suspend.h>
 #include <linux/thermal.h>
 #include <linux/mfd/syscon.h>
 #include <linux/pinctrl/consumer.h>
@@ -97,6 +98,12 @@ struct rockchip_tsadc_chip {
 	int tshut_temp;
 	enum tshut_mode tshut_mode;
 	enum tshut_polarity tshut_polarity;
+	/*
+	 * Two channels on one die read within this many codes of each other;
+	 * further apart, the hotter reads falsely and gets no tshut route.
+	 * 0: no check (the routes are set before the first conversion).
+	 */
+	u32 tshut_spread;
 
 	/* GRF availability */
 	bool grf_required;
@@ -155,6 +162,7 @@ struct rockchip_thermal_sensor {
  * @trim_temp: the fallback trim temperature for the whole sensor
  * @tshut_mode: the hardware-controlled shutdown mode (0:CRU 1:GPIO)
  * @tshut_polarity: the hardware-controlled active polarity (0:LOW 1:HIGH)
+ * @kept_on: suspended to idle with the TSADC left converting and armed
  */
 struct rockchip_thermal_data {
 	const struct rockchip_tsadc_chip *chip;
@@ -177,6 +185,7 @@ struct rockchip_thermal_data {
 	int trim_temp;
 	enum tshut_mode tshut_mode;
 	enum tshut_polarity tshut_polarity;
+	bool kept_on;
 };
 
 /*
@@ -1265,6 +1274,7 @@ static const struct rockchip_tsadc_chip rk3399_tsadc_data = {
 	.tshut_mode = TSHUT_MODE_GPIO, /* default TSHUT via GPIO give PMIC */
 	.tshut_polarity = TSHUT_LOW_ACTIVE, /* default TSHUT LOW ACTIVE */
 	.tshut_temp = 95000,
+	.tshut_spread = 64, /* healthy within 25 codes, measured under GPU load */
 	.initialize = rk_tsadcv3_initialize,
 	.irq_ack = rk_tsadcv3_irq_ack,
 	.control = rk_tsadcv3_control,
@@ -1619,6 +1629,48 @@ static int rockchip_configure_from_dt(struct device *dev,
 	return 0;
 }
 
+/*
+ * For a chip with a spread check, route each channel's hardware shutdown
+ * once the controller has a first reading (one 2.5 ms period): both
+ * channels, unless they read more than tshut_spread codes apart. Two
+ * channels on one die do not: one of them reads falsely, and a false hot
+ * one at the shutdown temperature would reset the SoC at every arm, a loop
+ * that never boots. Then only the cooler one gets the route. A channel with
+ * no reading leaves both routed. Firmware on the ROC-RK3399-PC applies the
+ * same rule (rockchip B186 F31).
+ */
+static void rockchip_thermal_route_tshut(struct device *dev,
+					 struct rockchip_thermal_data *thermal)
+{
+	const struct rockchip_tsadc_chip *tsadc = thermal->chip;
+	int i, skip = -1;
+	u32 d0 = 0, d1 = 0;
+
+	if (!tsadc->tshut_spread)
+		return;
+
+	usleep_range(10000, 12000);
+	if (tsadc->chn_num == 2) {
+		d0 = readl_relaxed(thermal->regs + TSADCV2_DATA(tsadc->chn_offset)) &
+		     tsadc->table.data_mask;
+		d1 = readl_relaxed(thermal->regs + TSADCV2_DATA(tsadc->chn_offset + 1)) &
+		     tsadc->table.data_mask;
+		if (d0 && d1 && abs_diff(d0, d1) > tsadc->tshut_spread)
+			skip = tsadc->chn_offset + (d0 > d1 ? 0 : 1);
+	}
+
+	for (i = 0; i < tsadc->chn_num; i++) {
+		int id = thermal->sensors[i].id;
+
+		if (id == skip) {
+			dev_warn(dev, "sensor %d reads %u codes from the other: no hardware shutdown from it\n",
+				 id, abs_diff(d0, d1));
+			continue;
+		}
+		tsadc->set_tshut_mode(id, thermal->regs, thermal->tshut_mode);
+	}
+}
+
 static int
 rockchip_thermal_register_sensor(struct platform_device *pdev,
 				 struct rockchip_thermal_data *thermal,
@@ -1656,7 +1708,9 @@ rockchip_thermal_register_sensor(struct platform_device *pdev,
 
 	tshut_temp = min(thermal->tshut_temp + sensor->trim_temp, RK_MAX_TEMP);
 
-	tsadc->set_tshut_mode(id, thermal->regs, thermal->tshut_mode);
+	/* with a spread check, routed once there is a reading */
+	if (!tsadc->tshut_spread)
+		tsadc->set_tshut_mode(id, thermal->regs, thermal->tshut_mode);
 
 	error = tsadc->set_tshut_temp(&tsadc->table, id, thermal->regs, tshut_temp);
 	if (error)
@@ -1777,6 +1831,7 @@ static int rockchip_thermal_probe(struct platform_device *pdev)
 				     "failed to request tsadc irq.\n");
 
 	thermal->chip->control(thermal->regs, true);
+	rockchip_thermal_route_tshut(&pdev->dev, thermal);
 
 	for (i = 0; i < thermal->chip->chn_num; i++) {
 		rockchip_thermal_toggle_sensor(&thermal->sensors[i], true);
@@ -1815,6 +1870,16 @@ static int __maybe_unused rockchip_thermal_suspend(struct device *dev)
 	for (i = 0; i < thermal->chip->chn_num; i++)
 		rockchip_thermal_toggle_sensor(&thermal->sensors[i], false);
 
+	/*
+	 * Suspend to idle keeps the SoC running, and the hardware shutdown is
+	 * its only over-temperature protection then: leave the controller
+	 * converting and armed, its clocks on. Only the alarm interrupts, off
+	 * above, stop. Deeper suspend powers the TSADC's domain down anyway.
+	 */
+	thermal->kept_on = pm_suspend_target_state == PM_SUSPEND_TO_IDLE;
+	if (thermal->kept_on)
+		return 0;
+
 	thermal->chip->control(thermal->regs, false);
 
 	clk_disable(thermal->pclk);
@@ -1833,6 +1898,14 @@ static int __maybe_unused rockchip_thermal_resume(struct device *dev)
 	int tshut_temp;
 	int error;
 	int i;
+
+	/* left running through suspend to idle: only the alarms come back */
+	if (thermal->kept_on) {
+		thermal->kept_on = false;
+		for (i = 0; i < thermal->chip->chn_num; i++)
+			rockchip_thermal_toggle_sensor(&thermal->sensors[i], true);
+		return 0;
+	}
 
 	error = clk_enable(thermal->clk);
 	if (error)
@@ -1854,7 +1927,8 @@ static int __maybe_unused rockchip_thermal_resume(struct device *dev)
 		tshut_temp = min(thermal->tshut_temp + sensor->trim_temp,
 				 RK_MAX_TEMP);
 
-		tsadc->set_tshut_mode(sensor->id, thermal->regs,
+		if (!tsadc->tshut_spread)
+			tsadc->set_tshut_mode(sensor->id, thermal->regs,
 					      thermal->tshut_mode);
 
 		error = tsadc->set_tshut_temp(&thermal->chip->table,
@@ -1866,6 +1940,7 @@ static int __maybe_unused rockchip_thermal_resume(struct device *dev)
 	}
 
 	thermal->chip->control(thermal->regs, true);
+	rockchip_thermal_route_tshut(dev, thermal);
 
 	for (i = 0; i < thermal->chip->chn_num; i++)
 		rockchip_thermal_toggle_sensor(&thermal->sensors[i], true);

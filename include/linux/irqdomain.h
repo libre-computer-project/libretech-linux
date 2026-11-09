@@ -438,6 +438,7 @@ void irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 unsigned int irq_create_mapping_affinity(struct irq_domain *domain, irq_hw_number_t hwirq,
 					 const struct irq_affinity_desc *affinity);
 unsigned int irq_create_fwspec_mapping(struct irq_fwspec *fwspec);
+unsigned int irq_find_fwspec_mapping(struct irq_fwspec *fwspec);
 void irq_dispose_mapping(unsigned int virq);
 
 /**

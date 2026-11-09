@@ -86,6 +86,7 @@ clk_get_regmap_div_data(struct clk_regmap *clk)
 }
 
 extern const struct clk_ops clk_regmap_divider_ops;
+extern const struct clk_ops clk_regmap_divider_retune_ops;
 extern const struct clk_ops clk_regmap_divider_ro_ops;
 
 /**
@@ -116,6 +117,7 @@ clk_get_regmap_mux_data(struct clk_regmap *clk)
 }
 
 extern const struct clk_ops clk_regmap_mux_ops;
+extern const struct clk_ops clk_regmap_mux_retune_ops;
 extern const struct clk_ops clk_regmap_mux_ro_ops;
 
 #endif /* __CLK_REGMAP_H */

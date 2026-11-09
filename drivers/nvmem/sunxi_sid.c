@@ -15,6 +15,10 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/random.h>
+#include <linux/crc32.h>
+#include <linux/ctype.h>
+#include <linux/sys_soc.h>
+#include <linux/unaligned.h>
 
 /* Registers and special values for doing register-based SID readout on H3 */
 #define SUN8I_SID_PRCTL		0x40
@@ -29,6 +33,8 @@ struct sunxi_sid_cfg {
 	u32	value_offset;
 	u32	size;
 	bool	need_register_readout;
+	/* serial word 1 is the crc32 of SID words 1-3 (U-Boot, newer SoCs) */
+	bool	serial_crc;
 };
 
 struct sunxi_sid {
@@ -121,6 +127,61 @@ static int sun8i_sid_read_by_reg(void *context, unsigned int offset,
 	return 0;
 }
 
+static void sunxi_sid_socinfo_unregister(void *soc_dev)
+{
+	soc_device_unregister(soc_dev);
+}
+
+/*
+ * soc0 from the SID: soc_id from the compatible ("allwinner,sun8i-h3-sid" ->
+ * "H3"), serial_number the board serial# U-Boot derives from the same words
+ * (board/sunxi/board.c get_unique_sid, setup_environment): "%08x%08x" of
+ * word 0 and word 3, where on newer SoCs word 3 is first replaced by the
+ * crc32 of words 1-3 and has bit 23 set if its low 24 bits are zero.
+ */
+static void sunxi_sid_add_socinfo(struct device *dev,
+				  const struct sunxi_sid_cfg *cfg,
+				  const u8 *raw)
+{
+	struct soc_device_attribute *attr;
+	struct soc_device *soc_dev;
+	const char *compat, *p, *end;
+	u32 w0, w3;
+	char *soc_id;
+	int i;
+
+	w0 = get_unaligned_le32(raw);
+	if (!w0)
+		return;
+	w3 = cfg->serial_crc ? ~crc32_le(~0, raw + 4, 12) :
+			       get_unaligned_le32(raw + 12);
+	if (!(w3 & 0xffffff))
+		w3 |= 0x800000;
+
+	attr = devm_kzalloc(dev, sizeof(*attr), GFP_KERNEL);
+	if (!attr)
+		return;
+	attr->family = "Allwinner";
+	if (!of_property_read_string(dev->of_node, "compatible", &compat) &&
+	    (p = strchr(compat, '-')) && (end = strstr(p, "-sid"))) {
+		soc_id = devm_kasprintf(dev, GFP_KERNEL, "%.*s",
+					(int)(end - p - 1), p + 1);
+		for (i = 0; soc_id && soc_id[i]; i++)
+			soc_id[i] = toupper(soc_id[i]);
+		attr->soc_id = soc_id;
+	}
+	attr->serial_number = devm_kasprintf(dev, GFP_KERNEL, "%08x%08x", w0, w3);
+	if (!attr->serial_number)
+		return;
+
+	soc_dev = soc_device_register(attr);
+	if (IS_ERR(soc_dev)) {
+		dev_warn(dev, "soc device: %pe\n", soc_dev);
+		return;
+	}
+	devm_add_action_or_reset(dev, sunxi_sid_socinfo_unregister, soc_dev);
+}
+
 static int sunxi_sid_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -155,6 +216,8 @@ static int sunxi_sid_probe(struct platform_device *pdev)
 	nvmem_cfg->type = NVMEM_TYPE_OTP;
 	nvmem_cfg->add_legacy_fixed_of_cells = true;
 	nvmem_cfg->read_only = true;
+	/* the dump is the chip's unique SID: it identifies the board */
+	nvmem_cfg->root_only = true;
 	nvmem_cfg->size = cfg->size;
 	nvmem_cfg->word_size = 1;
 	nvmem_cfg->stride = 4;
@@ -174,6 +237,7 @@ static int sunxi_sid_probe(struct platform_device *pdev)
 
 	nvmem_cfg->reg_read(sid, 0, randomness, size);
 	add_device_randomness(randomness, size);
+	sunxi_sid_add_socinfo(dev, cfg, randomness);
 	kfree(randomness);
 
 	platform_set_drvdata(pdev, nvmem);
@@ -193,16 +257,19 @@ static const struct sunxi_sid_cfg sun8i_h3_cfg = {
 	.value_offset = 0x200,
 	.size = 0x100,
 	.need_register_readout = true,
+	.serial_crc = true,
 };
 
 static const struct sunxi_sid_cfg sun50i_a64_cfg = {
 	.value_offset = 0x200,
 	.size = 0x100,
+	.serial_crc = true,
 };
 
 static const struct sunxi_sid_cfg sun50i_h6_cfg = {
 	.value_offset = 0x200,
 	.size = 0x200,
+	.serial_crc = true,
 };
 
 static const struct of_device_id sunxi_sid_of_match[] = {

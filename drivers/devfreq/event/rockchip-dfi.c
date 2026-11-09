@@ -312,7 +312,13 @@ static int rockchip_dfi_get_event(struct devfreq_event_dev *edev,
 		}
 	}
 
-	edata->load_count = access * 4;
+	/*
+	 * One access moves burst_len beats, two per clock: burst_len / 2 busy
+	 * clocks. The old fixed 4 is BL8 (DDR3/LPDDR2/3) and reads an LPDDR4
+	 * (BL16) bus as half as busy as it is -- an RK3399 LPDDR4 board under a
+	 * memory-bound load measured 14-16 % at 200 MHz and never left it.
+	 */
+	edata->load_count = access * (dfi->burst_len ? dfi->burst_len / 2 : 4);
 	edata->total_count = clock_cycles;
 
 	dfi->last_event_count = count;
@@ -683,18 +689,6 @@ static int rockchip_ddr_perf_init(struct rockchip_dfi *dfi)
 
 	hrtimer_setup(&dfi->timer, rockchip_dfi_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
-	switch (dfi->ddr_type) {
-	case ROCKCHIP_DDRTYPE_LPDDR2:
-	case ROCKCHIP_DDRTYPE_LPDDR3:
-		dfi->burst_len = 8;
-		break;
-	case ROCKCHIP_DDRTYPE_LPDDR4:
-	case ROCKCHIP_DDRTYPE_LPDDR4X:
-	case ROCKCHIP_DDRTYPE_LPDDR5:
-		dfi->burst_len = 16;
-		break;
-	}
-
 	if (!dfi->count_multiplier)
 		dfi->count_multiplier = 1;
 
@@ -857,6 +851,22 @@ static int rockchip_dfi_probe(struct platform_device *pdev)
 	ret = soc_init(dfi);
 	if (ret)
 		return ret;
+
+	/*
+	 * Set here, not in the perf PMU setup: the devfreq load below needs it
+	 * too, with or without CONFIG_PERF_EVENTS.
+	 */
+	switch (dfi->ddr_type) {
+	case ROCKCHIP_DDRTYPE_LPDDR2:
+	case ROCKCHIP_DDRTYPE_LPDDR3:
+		dfi->burst_len = 8;
+		break;
+	case ROCKCHIP_DDRTYPE_LPDDR4:
+	case ROCKCHIP_DDRTYPE_LPDDR4X:
+	case ROCKCHIP_DDRTYPE_LPDDR5:
+		dfi->burst_len = 16;
+		break;
+	}
 
 	dfi->edev = devm_devfreq_event_add_edev(&pdev->dev, desc);
 	if (IS_ERR(dfi->edev)) {

@@ -986,7 +986,7 @@ int kgd2kfd_pre_reset(struct kfd_dev *kfd,
  * wait the process to be terminated.
  */
 
-int kgd2kfd_post_reset(struct kfd_dev *kfd)
+int kgd2kfd_post_reset(struct kfd_dev *kfd, bool hw_reset_done)
 {
 	int ret;
 	struct kfd_node *node;
@@ -1000,6 +1000,30 @@ int kgd2kfd_post_reset(struct kfd_dev *kfd)
 		if (ret)
 			return ret;
 	}
+
+	/*
+	 * If this device's MES hang was contained (kfd_hws_hang()), the DQM is
+	 * still halted and the amdgpu module is still pinned -- state that
+	 * nothing else ever clears, which is why the documented recovery for
+	 * that class is a reboot. When the hardware really was reset, MES has
+	 * been reprogrammed and the rings re-initialised, so leaving the halt
+	 * set would silently swallow every future queue op instead of
+	 * protecting anything. Re-arm dispatch (opt-in, amdgpu.mes_hang_rearm=1);
+	 * this is a no-op on any device that never contained a hang.
+	 *
+	 * hw_reset_done gates it because post_reset is also reached when NO
+	 * reset was performed (a guilty job that had already signalled) or on a
+	 * path that cannot vouch for the hardware (PCIe error recovery). There
+	 * the MES may still be dead, and clearing the halt would send every
+	 * subsequent queue op into a dead scheduler for a full poll timeout --
+	 * the multi-second stall cascade that reads as a hung host, which is
+	 * precisely what the containment exists to prevent.
+	 *
+	 * Must run after kfd_resume() above: start_cpsch() sets sched_running.
+	 */
+	if (hw_reset_done)
+		for (i = 0; i < kfd->num_nodes; i++)
+			kfd_dqm_rearm_contained_mes(kfd->nodes[i]->dqm);
 
 	mutex_lock(&kfd_processes_mutex);
 	--kfd_locked;
@@ -1704,6 +1728,30 @@ bool kgd2kfd_vmfault_fast_path(struct amdgpu_device *adev, struct amdgpu_iv_entr
 		kfd_unref_process(p);
 	}
 	return false;
+}
+
+int kgd2kfd_reset_mes_queue(struct kfd_dev *kfd, uint32_t node_id,
+			    int queue_type, int pipe, int queue,
+			    unsigned int db)
+{
+	struct kfd_node *node;
+	int ret;
+
+	if (!kfd->init_complete)
+		return 0;
+
+	if (node_id >= kfd->num_nodes) {
+		dev_warn(kfd->adev->dev, "Invalid node ID: %u exceeds %u\n",
+			 node_id, kfd->num_nodes ? kfd->num_nodes - 1 : 0);
+		return -EINVAL;
+	}
+	node = kfd->nodes[node_id];
+
+	ret = kfd_reset_queue_mes(node->dqm, queue_type, pipe, queue, db);
+	if (ret)
+		dev_err(kfd_device, "Error resetting MES queue (db=0x%x)\n", db);
+
+	return ret;
 }
 
 #if defined(CONFIG_DEBUG_FS)

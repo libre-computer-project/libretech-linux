@@ -1,4 +1,3 @@
-#!/usr/bin/perl -w
 # SPDX-License-Identifier: GPL-2.0-only
 # (c) 2010, Tom Zanussi <tzanussi@gmail.com>
 

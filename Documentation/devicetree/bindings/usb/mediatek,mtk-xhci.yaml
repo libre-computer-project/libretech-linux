@@ -180,6 +180,14 @@ properties:
     description: The mask to disable u2ports, bit0 for u2port0,
       bit1 for u2port1, ... etc
 
+  mediatek,usb3-power-after-usb2:
+    type: boolean
+    description:
+      Keep the USB3 root ports unpowered until a device has been added on
+      the USB2 root hub of the same controller, with a timeout fallback.
+      For an onboard USB3 hub that only keeps a working SuperSpeed link
+      when it has been attached over USB2 before USB3 link training starts.
+
   "#address-cells":
     const: 1
 

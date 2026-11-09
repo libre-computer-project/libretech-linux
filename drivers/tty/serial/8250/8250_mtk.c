@@ -12,6 +12,7 @@
 #include <linux/of_platform.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
+#include <linux/pm_qos.h>
 #include <linux/pm_runtime.h>
 #include <linux/serial_8250.h>
 #include <linux/serial_reg.h>
@@ -74,6 +75,12 @@ struct mtk8250_data {
 	struct uart_8250_dma	*dma;
 #ifdef CONFIG_SERIAL_8250_DMA
 	enum dma_rx_status	rx_status;
+	/* CPU-latency hold while DMA traffic flows (see mtk8250_dma_qos_arm()) */
+	u32			dma_qos_us;
+	struct pm_qos_request	dma_qos;
+	struct delayed_work	dma_qos_release;
+	unsigned long		dma_qos_last;
+	bool			dma_qos_held;
 #endif
 	int			rx_wakeup_irq;
 };
@@ -87,6 +94,59 @@ enum {
 
 #ifdef CONFIG_SERIAL_8250_DMA
 static void mtk8250_rx_dma(struct uart_8250_port *up);
+
+/*
+ * On MT8183 the UART APDMA RX engine can raise its completion before its
+ * writes to the ring have reached memory while a CPU cluster powers down,
+ * so the CPU copies stale bytes. Where the DT sets
+ * "mediatek,rx-dma-cpu-latency-us", hold that CPU-latency request while DMA
+ * traffic flows (armed on every TX start and RX completion, released after
+ * 100 ms without traffic), so cluster-level idle states are skipped only
+ * then. Called with the port lock held.
+ */
+#define MTK_UART_DMA_QOS_IDLE_MS	100
+
+static void mtk8250_dma_qos_arm(struct mtk8250_data *data)
+{
+	if (!data->dma_qos_us)
+		return;
+
+	data->dma_qos_last = jiffies;
+	if (!data->dma_qos_held) {
+		cpu_latency_qos_update_request(&data->dma_qos, data->dma_qos_us);
+		data->dma_qos_held = true;
+	}
+	mod_delayed_work(system_wq, &data->dma_qos_release,
+			 msecs_to_jiffies(MTK_UART_DMA_QOS_IDLE_MS));
+}
+
+static void mtk8250_dma_qos_release(struct work_struct *work)
+{
+	struct mtk8250_data *data = container_of(to_delayed_work(work),
+						 struct mtk8250_data,
+						 dma_qos_release);
+	struct uart_8250_port *up = serial8250_get_port(data->line);
+	unsigned long flags, idle_end;
+
+	uart_port_lock_irqsave(&up->port, &flags);
+	idle_end = data->dma_qos_last + msecs_to_jiffies(MTK_UART_DMA_QOS_IDLE_MS);
+	if (time_before(jiffies, idle_end)) {
+		/* traffic since this release was queued: keep holding */
+		mod_delayed_work(system_wq, &data->dma_qos_release,
+				 idle_end - jiffies);
+	} else if (data->dma_qos_held) {
+		cpu_latency_qos_update_request(&data->dma_qos,
+					       PM_QOS_DEFAULT_VALUE);
+		data->dma_qos_held = false;
+	}
+	uart_port_unlock_irqrestore(&up->port, flags);
+}
+
+static int mtk8250_tx_dma(struct uart_8250_port *up)
+{
+	mtk8250_dma_qos_arm(up->port.private_data);
+	return serial8250_tx_dma(up);
+}
 
 static void mtk8250_dma_rx_complete(void *param)
 {
@@ -103,6 +163,8 @@ static void mtk8250_dma_rx_complete(void *param)
 		return;
 
 	uart_port_lock_irqsave(&up->port, &flags);
+
+	mtk8250_dma_qos_arm(data);
 
 	dmaengine_tx_status(dma->rxchan, dma->rx_cookie, &state);
 	total = dma->rx_size - state.residue;
@@ -129,6 +191,19 @@ static void mtk8250_dma_rx_complete(void *param)
 	mtk8250_rx_dma(up);
 
 	uart_port_unlock_irqrestore(&up->port, flags);
+}
+
+/*
+ * The 8250 core's interrupt path calls dma->rx_dma() for an RX interrupt
+ * and defaults it to serial8250_rx_dma(), which queues its own descriptor
+ * (with its own completion) on the RX channel this driver already keeps
+ * running from mtk8250_rx_dma(); a later RX timeout then makes the core
+ * terminate the channel, and this driver's RX loop is gone. RX DMA is
+ * owned here: tell the core it is running and leave the channel alone.
+ */
+static int mtk8250_rx_dma_owned(struct uart_8250_port *up)
+{
+	return 0;
 }
 
 static void mtk8250_rx_dma(struct uart_8250_port *up)
@@ -176,6 +251,16 @@ static void mtk8250_dma_enable(struct uart_8250_port *up)
 	serial_out(up, MTK_UART_EFR, UART_EFR_ECB);
 	serial_out(up, UART_LCR, lcr);
 
+	/*
+	 * RX now goes through the DMA channel, which raises its own
+	 * completions. Leave the UART's RX data and line-status interrupts
+	 * off: the 8250 core answers them by reading the FIFO with PIO
+	 * (serial8250_rx_chars), taking bytes out from under the DMA stream.
+	 * up->ier is written to the port by serial8250_do_set_termios().
+	 */
+	up->ier &= ~(UART_IER_RLSI | UART_IER_RDI);
+	serial_out(up, UART_IER, up->ier);
+
 	if (dmaengine_slave_config(dma->rxchan, &dma->rxconf) != 0)
 		pr_err("failed to configure rx dma channel\n");
 	if (dmaengine_slave_config(dma->txchan, &dma->txconf) != 0)
@@ -200,6 +285,11 @@ static int mtk8250_startup(struct uart_port *port)
 	if (up->dma) {
 		data->rx_status = DMA_RX_START;
 		kfifo_reset(&port->state->port.xmit_fifo);
+		if (data->dma_qos_us) {
+			data->dma_qos_held = false;
+			cpu_latency_qos_add_request(&data->dma_qos,
+						    PM_QOS_DEFAULT_VALUE);
+		}
 	}
 #endif
 	memset(&port->icount, 0, sizeof(port->icount));
@@ -219,6 +309,15 @@ static void mtk8250_shutdown(struct uart_port *port)
 #endif
 
 	serial8250_do_shutdown(port);
+
+#ifdef CONFIG_SERIAL_8250_DMA
+	if (up->dma && data->dma_qos_us &&
+	    cpu_latency_qos_request_active(&data->dma_qos)) {
+		cancel_delayed_work_sync(&data->dma_qos_release);
+		cpu_latency_qos_remove_request(&data->dma_qos);
+		data->dma_qos_held = false;
+	}
+#endif
 
 	if (irq >= 0)
 		serial8250_do_set_mctrl(&up->port, TIOCM_RTS);
@@ -506,9 +605,20 @@ static int mtk8250_probe_of(struct platform_device *pdev, struct uart_port *p,
 			return -ENOMEM;
 
 		data->dma->fn = mtk8250_dma_filter;
+		/* RX DMA is driven by mtk8250_rx_dma() alone (see the hook) */
+		data->dma->rx_dma = mtk8250_rx_dma_owned;
 		data->dma->rx_size = MTK_UART_RX_SIZE;
 		data->dma->rxconf.src_maxburst = MTK_UART_RX_TRIGGER;
 		data->dma->txconf.dst_maxburst = MTK_UART_TX_TRIGGER;
+
+		of_property_read_u32(pdev->dev.of_node,
+				     "mediatek,rx-dma-cpu-latency-us",
+				     &data->dma_qos_us);
+		if (data->dma_qos_us) {
+			data->dma->tx_dma = mtk8250_tx_dma;
+			INIT_DELAYED_WORK(&data->dma_qos_release,
+					  mtk8250_dma_qos_release);
+		}
 	}
 #endif
 

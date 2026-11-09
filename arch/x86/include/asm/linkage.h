@@ -68,7 +68,7 @@
  * Depending on -fpatchable-function-entry=N,N usage (CONFIG_CALL_PADDING) the
  * CFI symbol layout changes.
  *
- * Without CALL_THUNKS:
+ * Without CALL_PADDING:
  *
  * 	.align	FUNCTION_ALIGNMENT
  * __cfi_##name:
@@ -77,7 +77,7 @@
  * 	.long	__kcfi_typeid_##name
  * name:
  *
- * With CALL_THUNKS:
+ * With CALL_PADDING:
  *
  * 	.align FUNCTION_ALIGNMENT
  * __cfi_##name:
@@ -103,7 +103,7 @@
 	.byte 0xb8 ASM_NL					\
 	.long __kcfi_typeid_##name ASM_NL			\
 	CFI_POST_PADDING					\
-	SYM_FUNC_END(__cfi_##name)
+	SYM_END(__cfi_##name, SYM_T_FUNC)
 
 /* UML needs to be able to override memcpy() and friends for KASAN. */
 #ifdef CONFIG_UML

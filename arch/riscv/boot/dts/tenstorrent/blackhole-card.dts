@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/dts-v1/;
+
+#include "blackhole.dtsi"
+
+/ {
+	model = "Tenstorrent Blackhole";
+	compatible = "tenstorrent,blackhole-card", "tenstorrent,blackhole";
+
+	/*
+	 * DRAM region split (U3): the guest cedes bank-local 0 to tt-metal
+	 * and occupies the top 512 MiB of its adjacent controller.
+	 * L2CPU_GUEST_BASE = 0xE0000000. AXI = 0x4000_3000_0000 + base.
+	 * Virtio stays in the top 6 MiB of the old 4 GiB node, which is
+	 * still the top of this window. Authority for the split: this
+	 * memory node. tt-metal dram_view_size must equal GUEST_BASE.
+	 */
+	memory@400110000000 {
+		device_type = "memory";
+		reg = <0x4001 0x10000000 0x0 0x20000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		virtio_devices: memory@40012fa00000 {
+			reg = <0x4001 0x2fa00000 0x00 0x600000>;
+			no-map;
+		};
+
+		/* 1 MiB handshake below virtio: Tensix DRAM write / guest AXI read. */
+		handshake: memory@40012f000000 {
+			reg = <0x4001 0x2f000000 0x00 0x100000>;
+			no-map;
+		};
+	};
+
+	virtio_net_0@40012fc00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x2fc00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 32>;
+	};
+
+	virtio_blk_0@40012fe00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x2fe00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 33>;
+	};
+
+	virtio_blk_1@40012fa00000 {
+		compatible = "virtio,mmio";
+		reg = <0x4001 0x2fa00000 0x00 0x200000>;
+		interrupts-extended = <&plic0 31>;
+	};
+
+	/*
+	 * Completion doorbell (plumbing P3): a dedicated PLIC source a NOC agent raises by writing 1 << (34 - 5) and
+	 * then 0 to the L2CPU-local 0x2FF10404 (the register the host's virtio doorbell uses). Owned by a userspace
+	 * driver through uio_pdrv_genirq (of_id from CONFIG_CMDLINE), so the line is never left without a handler.
+	 */
+	completion-doorbell {
+		compatible = "generic-uio";
+		interrupts-extended = <&plic0 34>;
+	};
+};

@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Libre Computer Cottonwood V0.1 (pre-production) CC board differences.
+ * Include AFTER cottonwood.dtsi to override V1 nodes.
+ *
+ * V0.1 hardware differences from V1:
+ * - LEDs: V01 uses GPIOAO_11 (dual blue/orange) + GPIOAO_9 (disk blue)
+ *   V1 uses GPIOX_3 (green), GPIOX_6 (orange), GPIOX_7 (blue)
+ * - 40-pin header: 10 signal pins differ
+ * - SD card power: VCC_CARD on GPIOA_8 (high = 3.3V), VDDIO_C on
+ *   GPIOA_7 (high = 1.8V, the production vddio_c states order)
+ *   (V1: GPIOX_2, GPIOX_4). The VCC_CARD open-drain flag is kept from
+ *   V1; the V0.1 drawing does not mark the pin's drive type.
+ * - Audio amplifier enable: GPIOAO_2 (V1: GPIOX_0), high = enabled
+ *
+ * Read from the AML-A311D-CC V0.1 drawing; no S905D3-CC V0.1 drawing is
+ * on file, so the Solitude V0.1 GPIOs assume the same PCB.
+ */
+
+#include <dt-bindings/gpio/meson-g12a-gpio.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	/* Remove the V1 LEDs by overriding with disabled status */
+	led-blue {
+		status = "disabled";
+	};
+
+	led-green {
+		status = "disabled";
+	};
+
+	led-orange {
+		status = "disabled";
+	};
+
+	/* V01 LEDs on AO-domain GPIOs */
+	leds-v01 {
+		compatible = "gpio-leds";
+
+		/* GPIOAO_11: LOW=blue (running), HIGH=orange (standby) */
+		led-sys {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio_ao GPIOAO_11 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "default-on";
+		};
+
+		/*
+		 * GPIOAO_9: blue LED, labelled DISK_LED on the drawing. Driven as a
+		 * CPU activity LED, like the production blue LED: the disk trigger
+		 * follows ATA disks only, and this board has none.
+		 */
+		led-disk {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_ACTIVITY;
+			gpios = <&gpio_ao GPIOAO_9 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "activity";
+		};
+	};
+};
+
+&dioo2133 {
+	enable-gpios = <&gpio_ao GPIOAO_2 GPIO_ACTIVE_HIGH>;
+};
+
+&vcc_card {
+	gpio = <&gpio GPIOA_8 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+};
+
+&vddio_c {
+	gpios = <&gpio GPIOA_7 GPIO_ACTIVE_HIGH>;
+};

@@ -45,8 +45,18 @@ static int ssusb_port0_switch(struct ssusb_mtk *ssusb,
 		/* 2. power on, enable u2 port0 and select its mode */
 		value = mtu3_readl(ibase, SSUSB_U2_CTRL(0));
 		value &= ~(SSUSB_U2_PORT_PDN | SSUSB_U2_PORT_DIS);
-		value = tohost ? (value | SSUSB_U2_PORT_HOST_SEL) :
-			(value & (~SSUSB_U2_PORT_HOST_SEL));
+		/*
+		 * HOST_SEL and OTG_SEL are mutually exclusive: a stale OTG_SEL
+		 * (set by mtu3_device_enable) keeps the port OTG-select even with
+		 * HOST_SEL set, so it won't drive a downstream device. Toggle both
+		 * so host is pure-host and device restores OTG_SEL.
+		 */
+		if (tohost)
+			value = (value | SSUSB_U2_PORT_HOST_SEL) &
+				~SSUSB_U2_PORT_OTG_SEL;
+		else
+			value = (value & ~SSUSB_U2_PORT_HOST_SEL) |
+				SSUSB_U2_PORT_OTG_SEL;
 		mtu3_writel(ibase, SSUSB_U2_CTRL(0), value);
 	} else {
 		/* 1. power off and disable u3 port0 */

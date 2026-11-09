@@ -8,6 +8,7 @@
 
 #include "meson-g12b-s922x.dtsi"
 #include "meson-g12b-odroid-n2.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "hardkernel,odroid-n2", "amlogic,s922x", "amlogic,g12b";

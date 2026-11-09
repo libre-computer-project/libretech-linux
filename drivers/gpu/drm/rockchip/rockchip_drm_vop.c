@@ -6,7 +6,9 @@
 
 #include <linux/clk.h>
 #include <linux/component.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/devfreq.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/log2.h>
@@ -14,8 +16,10 @@
 #include <linux/of.h>
 #include <linux/overflow.h>
 #include <linux/platform_device.h>
+#include <linux/pm_qos.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
+#include <linux/seq_file.h>
 
 #include <drm/drm.h>
 #include <drm/drm_atomic.h>
@@ -183,6 +187,15 @@ struct vop {
 
 	/* optional internal rgb encoder */
 	struct rockchip_rgb *rgb;
+
+	/* frames in which each FIFO underrun flag was seen, since boot */
+	unsigned int underrun_frames[VOP_UNDERRUN_NUM];
+	/* false until the first frame after a CRTC enable has been seen */
+	bool underrun_armed;
+
+	/* the DDR devfreq's device, once a floor request is registered on it */
+	struct device *ddr_dev;
+	struct dev_pm_qos_request ddr_floor;
 
 	struct vop_win win[];
 };
@@ -726,6 +739,43 @@ static void rockchip_drm_set_win_enabled(struct drm_crtc *crtc, bool enabled)
         spin_unlock(&vop->reg_lock);
 }
 
+/*
+ * A mode set or a resume loads the memory bus at once, and the DDR
+ * governor raises the DDR rate only at its next sample: at the lowest rate
+ * the first frames of a large mode run dry (RK3399, 3440x1440 at 200 MHz).
+ * Hold the DDR devfreq named by the VOP's "rockchip,dmc-devfreq" at the SoC's
+ * floor while the CRTC is on. The devfreq is looked up at the first enable,
+ * so a DDR driver that probes after the VOP still gets the request.
+ */
+static void vop_ddr_floor_set(struct vop *vop, bool on)
+{
+	struct devfreq *df;
+
+	if (!vop->data->ddr_floor_khz)
+		return;
+
+	if (!vop->ddr_dev) {
+		if (!on)
+			return;
+		df = devfreq_get_devfreq_by_phandle(vop->dev,
+						    "rockchip,dmc-devfreq", 0);
+		if (IS_ERR(df))
+			return;
+		vop->ddr_dev = get_device(df->dev.parent);
+		if (dev_pm_qos_add_request(vop->ddr_dev, &vop->ddr_floor,
+					   DEV_PM_QOS_MIN_FREQUENCY,
+					   PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE) < 0) {
+			put_device(vop->ddr_dev);
+			vop->ddr_dev = NULL;
+			return;
+		}
+	}
+
+	dev_pm_qos_update_request(&vop->ddr_floor,
+				  on ? vop->data->ddr_floor_khz :
+				       PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE);
+}
+
 static void vop_crtc_atomic_disable(struct drm_crtc *crtc,
 				    struct drm_atomic_state *state)
 {
@@ -774,6 +824,8 @@ static void vop_crtc_atomic_disable(struct drm_crtc *crtc,
 	clk_disable(vop->dclk);
 	vop_core_clks_disable(vop);
 	pm_runtime_put(vop->dev);
+
+	vop_ddr_floor_set(vop, false);
 
 	mutex_unlock(&vop->vop_lock);
 
@@ -1391,8 +1443,12 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 
 	WARN_ON(vop->event);
 
+	/* before scan-out starts, so the DDR is up for the first frame */
+	vop_ddr_floor_set(vop, true);
+
 	ret = vop_enable(crtc, old_state);
 	if (ret) {
+		vop_ddr_floor_set(vop, false);
 		mutex_unlock(&vop->vop_lock);
 		DRM_DEV_ERROR(vop->dev, "Failed to enable vop (%d)\n", ret);
 		return;
@@ -1476,6 +1532,8 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	clk_set_rate(vop->dclk, adjusted_mode->clock * 1000);
 
 	VOP_REG_SET(vop, common, standby, 0);
+	/* the flags latched while the mode was being set are not a glitch */
+	vop->underrun_armed = false;
 	mutex_unlock(&vop->vop_lock);
 
 	/*
@@ -1734,6 +1792,8 @@ vop_crtc_verify_crc_source(struct drm_crtc *crtc, const char *source_name,
 }
 #endif
 
+static int vop_crtc_late_register(struct drm_crtc *crtc);
+
 static const struct drm_crtc_funcs vop_crtc_funcs = {
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
@@ -1745,6 +1805,7 @@ static const struct drm_crtc_funcs vop_crtc_funcs = {
 	.disable_vblank = vop_crtc_disable_vblank,
 	.set_crc_source = vop_crtc_set_crc_source,
 	.verify_crc_source = vop_crtc_verify_crc_source,
+	.late_register = vop_crtc_late_register,
 };
 
 static void vop_fb_unref_worker(struct drm_flip_work *work, void *val)
@@ -1771,6 +1832,68 @@ static void vop_handle_vblank(struct vop *vop)
 
 	if (test_and_clear_bit(VOP_PENDING_FB_UNREF, &vop->pending))
 		drm_flip_work_commit(&vop->fb_unref_work, system_unbound_wq);
+}
+
+static const char * const vop_underrun_names[VOP_UNDERRUN_NUM] = {
+	"win0", "win1", "win2", "win3", "hwc", "post_buf",
+};
+
+/*
+ * Once a frame, read and clear the latched FIFO underrun flags. An
+ * underrun is a visible glitch (flicker, a torn or blank line), so it is
+ * logged and counted rather than ignored; the counts are in debugfs.
+ */
+static void vop_check_underrun(struct vop *vop)
+{
+	uint32_t raw;
+	int i;
+
+	if (!VOP_HAS_REG(vop, intr, raw_status))
+		return;
+
+	spin_lock(&vop->irq_lock);
+	raw = VOP_INTR_GET_TYPE(vop, raw_status, UNDERRUN_INTR_MASK);
+	if (raw)
+		VOP_INTR_SET_TYPE(vop, clear, raw, 1);
+	spin_unlock(&vop->irq_lock);
+
+	if (!vop->underrun_armed) {
+		vop->underrun_armed = true;
+		return;
+	}
+	if (!raw)
+		return;
+
+	for (i = 0; i < VOP_UNDERRUN_NUM; i++)
+		if (raw & (WIN0_EMPTY_INTR << i))
+			vop->underrun_frames[i]++;
+
+	dev_warn_ratelimited(vop->dev, "FIFO underrun (flags %#x, post_buf frames %u)\n",
+			     raw, vop->underrun_frames[VOP_UNDERRUN_NUM - 1]);
+}
+
+static int vop_underrun_show(struct seq_file *s, void *data)
+{
+	struct vop *vop = s->private;
+	int i;
+
+	for (i = 0; i < VOP_UNDERRUN_NUM; i++)
+		seq_printf(s, "%s %u\n", vop_underrun_names[i],
+			   vop->underrun_frames[i]);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(vop_underrun);
+
+static int vop_crtc_late_register(struct drm_crtc *crtc)
+{
+	struct vop *vop = to_vop(crtc);
+
+	if (VOP_HAS_REG(vop, intr, raw_status))
+		debugfs_create_file("underrun", 0444, crtc->debugfs_entry, vop,
+				    &vop_underrun_fops);
+
+	return 0;
 }
 
 static irqreturn_t vop_isr(int irq, void *data)
@@ -1824,6 +1947,7 @@ static irqreturn_t vop_isr(int irq, void *data)
 	if (active_irqs & FS_INTR) {
 		drm_crtc_handle_vblank(crtc);
 		vop_handle_vblank(vop);
+		vop_check_underrun(vop);
 		active_irqs &= ~FS_INTR;
 		ret = IRQ_HANDLED;
 	}
@@ -2283,6 +2407,12 @@ static void vop_unbind(struct device *dev, struct device *master, void *data)
 
 	pm_runtime_disable(dev);
 	vop_destroy_crtc(vop);
+
+	if (vop->ddr_dev) {
+		dev_pm_qos_remove_request(&vop->ddr_floor);
+		put_device(vop->ddr_dev);
+		vop->ddr_dev = NULL;
+	}
 
 	clk_unprepare(vop->aclk);
 	clk_unprepare(vop->hclk);

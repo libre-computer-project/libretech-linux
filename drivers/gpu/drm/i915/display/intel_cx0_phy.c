@@ -225,6 +225,8 @@ static int __intel_cx0_read_once(struct intel_encoder *encoder,
 		return -ETIMEDOUT;
 	}
 
+	intel_clear_response_ready_flag(encoder, lane);
+
 	intel_de_write(display, XELPDP_PORT_M2P_MSGBUS_CTL(display, port, lane),
 		       XELPDP_PORT_M2P_TRANSACTION_PENDING |
 		       XELPDP_PORT_M2P_COMMAND_READ |
@@ -296,6 +298,8 @@ static int __intel_cx0_write_once(struct intel_encoder *encoder,
 		intel_cx0_bus_reset(encoder, lane);
 		return -ETIMEDOUT;
 	}
+
+	intel_clear_response_ready_flag(encoder, lane);
 
 	intel_de_write(display, XELPDP_PORT_M2P_MSGBUS_CTL(display, port, lane),
 		       XELPDP_PORT_M2P_TRANSACTION_PENDING |

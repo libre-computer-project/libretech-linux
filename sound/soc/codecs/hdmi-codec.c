@@ -344,6 +344,10 @@ static void hdmi_codec_eld_chmap(struct hdmi_codec_priv *hcp)
 	u8 spk_alloc;
 	unsigned long spk_mask;
 
+	/* chmap ctls belong to another hdmi-codec sharing this PCM */
+	if (!hcp->chmap_info)
+		return;
+
 	spk_alloc = drm_eld_get_spk_alloc(hcp->eld);
 	spk_mask = hdmi_codec_spk_mask_from_alloc(spk_alloc);
 
@@ -425,10 +429,14 @@ static int hdmi_codec_iec958_default_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct hdmi_codec_priv *hcp = snd_soc_component_get_drvdata(component);
 
+	if (!memcmp(hcp->iec_status, ucontrol->value.iec958.status,
+		    sizeof(hcp->iec_status)))
+		return 0;
+
 	memcpy(hcp->iec_status, ucontrol->value.iec958.status,
 	       sizeof(hcp->iec_status));
 
-	return 0;
+	return 1;
 }
 
 static int hdmi_codec_iec958_mask_get(struct snd_kcontrol *kcontrol,
@@ -796,22 +804,34 @@ static int hdmi_codec_pcm_new(struct snd_soc_pcm_runtime *rtd,
 {
 	struct snd_soc_dai_driver *drv = dai->driver;
 	struct hdmi_codec_priv *hcp = snd_soc_dai_get_drvdata(dai);
+	struct snd_soc_dai *codec_dai;
 	unsigned int i;
+	int dai_idx = 0;
 	int ret;
 
-	ret =  snd_pcm_add_chmap_ctls(rtd->pcm, SNDRV_PCM_STREAM_PLAYBACK,
-				      NULL, drv->playback.channels_max, 0,
-				      &hcp->chmap_info);
-	if (ret < 0)
-		return ret;
+	/* a multi-codec link puts several hdmi-codec DAIs on one PCM */
+	if (!rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].chmap_kctl) {
+		ret =  snd_pcm_add_chmap_ctls(rtd->pcm, SNDRV_PCM_STREAM_PLAYBACK,
+					      NULL, drv->playback.channels_max, 0,
+					      &hcp->chmap_info);
+		if (ret < 0)
+			return ret;
 
-	/* override handlers */
-	hcp->chmap_info->private_data = hcp;
-	hcp->chmap_info->kctl->get = hdmi_codec_chmap_ctl_get;
+		/* override handlers */
+		hcp->chmap_info->private_data = hcp;
+		hcp->chmap_info->kctl->get = hdmi_codec_chmap_ctl_get;
 
-	/* default chmap supported is stereo */
-	hcp->chmap_info->chmap = hdmi_codec_stereo_chmaps;
+		/* default chmap supported is stereo */
+		hcp->chmap_info->chmap = hdmi_codec_stereo_chmaps;
+	}
 	hcp->chmap_idx = HDMI_CODEC_CHMAP_IDX_UNKNOWN;
+
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		if (codec_dai == dai) {
+			dai_idx = i;
+			break;
+		}
+	}
 
 	for (i = 0; i < ARRAY_SIZE(hdmi_codec_controls); i++) {
 		struct snd_kcontrol *kctl;
@@ -822,6 +842,7 @@ static int hdmi_codec_pcm_new(struct snd_soc_pcm_runtime *rtd,
 			return -ENOMEM;
 
 		kctl->id.device = rtd->pcm->device;
+		kctl->id.index = dai_idx;
 		ret = snd_ctl_add(rtd->card->snd_card, kctl);
 		if (ret < 0)
 			return ret;
@@ -848,21 +869,28 @@ static int hdmi_dai_proc_new(struct hdmi_codec_priv *hcp,
 	struct snd_soc_pcm_runtime *rtd;
 	struct snd_info_entry *entry;
 	char name[32];
-	int err, i, id = 0;
+	int err, i, id = 0, idx = 0;
+	bool multi = false;
 
 	/*
 	 * To avoid duplicate proc entry, find its rtd and use rtd->id
-	 * instead of dai->id
+	 * instead of dai->id. Several codecs on one link share the rtd,
+	 * so those also get their codec index in the name.
 	 */
 	for_each_card_rtds(card, rtd) {
-		for_each_rtd_dais(rtd, i, d)
+		for_each_rtd_codec_dais(rtd, i, d)
 			if (d == dai) {
 				id = rtd->id;
+				idx = i;
+				multi = rtd->dai_link->num_codecs > 1;
 				goto found;
 			}
 	}
 found:
-	snprintf(name, sizeof(name), "eld#%d", id);
+	if (multi)
+		snprintf(name, sizeof(name), "eld#%d.%d", id, idx);
+	else
+		snprintf(name, sizeof(name), "eld#%d", id);
 	err = snd_card_proc_new(card->snd_card, name, &entry);
 	if (err < 0)
 		return err;

@@ -17,7 +17,12 @@ properties:
   compatible:
     oneOf:
       - enum:
+          # EE/CBUS watchdog
           - amlogic,meson-gxbb-wdt
+          # Always-on watchdog, a separate block from the EE one above and
+          # the one the BootROM arms. Register-compatible with it over CTRL,
+          # TCNT and RSET; it additionally has a CNTL1 register at +0x4.
+          - amlogic,meson-gxl-ao-wdt
           - amlogic,t7-wdt
       - items:
           - enum:

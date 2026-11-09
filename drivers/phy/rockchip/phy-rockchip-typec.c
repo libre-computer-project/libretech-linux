@@ -45,15 +45,19 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <linux/usb/typec_dp.h>
+#include <linux/usb/typec_mux.h>
 
 #include <linux/mfd/syscon.h>
 #include <linux/phy/phy.h>
+#include <linux/phy/rockchip-typec-phy.h>
 
 #define CMN_SSM_BANDGAP			(0x21 << 2)
 #define CMN_SSM_BIAS			(0x22 << 2)
@@ -383,7 +387,24 @@ struct rockchip_typec_phy {
 	struct mutex lock;
 
 	bool flip;
+	/*
+	 * "libretech,typec-orientation-inverted": the receptacle's lanes sit
+	 * the other way round from what its CC pins report. @flip is the LANE
+	 * orientation (lane mux, DP lane map); the AUX polarity bit keeps the
+	 * value the CC orientation selects.
+	 */
+	bool orient_inverted;
 	u8 mode;
+
+	/* typec mux/switch API (alternative to extcon) */
+	struct typec_switch_dev *sw;
+	struct typec_mux_dev *mux;
+	bool typec_api;		/* true when using typec API instead of extcon */
+	bool dp_connected;	/* DP HPD state from typec_mux_set */
+	u8 dp_lanes;		/* DP lane count from typec state */
+	bool mode_change;	/* set when mode changed, cleared by PHY power_on */
+	struct blocking_notifier_head dp_nh; /* HPD notification to cdn-dp */
+	struct phy *phy_dp;	/* reference to DP phy for exported functions */
 };
 
 struct phy_reg {
@@ -578,7 +599,7 @@ static void tcphy_dp_aux_set_flip(struct rockchip_typec_phy *tcphy)
 	 * aux_p)
 	 */
 	tx_ana_ctrl_reg_1 = readl(tcphy->base + TX_ANA_CTRL_REG_1);
-	if (!tcphy->flip)
+	if (!(tcphy->flip ^ tcphy->orient_inverted))
 		tx_ana_ctrl_reg_1 |= AUXDA_POLARITY;
 	else
 		tx_ana_ctrl_reg_1 &= ~AUXDA_POLARITY;
@@ -719,6 +740,201 @@ static void tcphy_dp_aux_calibration(struct rockchip_typec_phy *tcphy)
 	writel(val, tcphy->base + TX_DIG_CTRL_REG_2);
 }
 
+/*
+ * typec_switch/typec_mux API support.
+ *
+ * When the board uses a TCPM-based Type-C controller (e.g., FUSB302) instead
+ * of an extcon provider, DP alt-mode lane muxing and orientation come through
+ * the typec_mux/typec_switch framework.  The PHY registers as a typec switch
+ * (orientation) and typec mux (DP alt-mode) provider, translating the typec
+ * states into the existing mode configuration functions.
+ */
+
+static int rk_typec_orien_sw_set(struct typec_switch_dev *sw,
+				 enum typec_orientation orien)
+{
+	struct rockchip_typec_phy *tcphy = typec_switch_get_drvdata(sw);
+
+	mutex_lock(&tcphy->lock);
+
+	if (orien == TYPEC_ORIENTATION_NONE) {
+		/* Cable detached */
+		mutex_unlock(&tcphy->lock);
+		return 0;
+	}
+
+	tcphy->flip = (orien == TYPEC_ORIENTATION_REVERSE) ^
+		      tcphy->orient_inverted;
+
+	mutex_unlock(&tcphy->lock);
+	return 0;
+}
+
+static void rk_typec_orien_switch_unregister(void *data)
+{
+	struct rockchip_typec_phy *tcphy = data;
+
+	typec_switch_unregister(tcphy->sw);
+}
+
+static int rk_typec_setup_orien_switch(struct rockchip_typec_phy *tcphy,
+				       struct fwnode_handle *fwnode)
+{
+	struct typec_switch_desc sw_desc = { };
+
+	sw_desc.drvdata = tcphy;
+	sw_desc.fwnode = fwnode;
+	sw_desc.set = rk_typec_orien_sw_set;
+
+	tcphy->sw = typec_switch_register(tcphy->dev, &sw_desc);
+	if (IS_ERR(tcphy->sw)) {
+		dev_err(tcphy->dev,
+			"Error register typec orientation switch: %ld\n",
+			PTR_ERR(tcphy->sw));
+		return PTR_ERR(tcphy->sw);
+	}
+
+	return devm_add_action_or_reset(tcphy->dev,
+					rk_typec_orien_switch_unregister,
+					tcphy);
+}
+
+static int rk_typec_mux_set(struct typec_mux_dev *mux,
+			    struct typec_mux_state *state)
+{
+	struct rockchip_typec_phy *tcphy = typec_mux_get_drvdata(mux);
+	u8 new_mode;
+
+	mutex_lock(&tcphy->lock);
+
+	switch (state->mode) {
+	case TYPEC_DP_STATE_C:
+	case TYPEC_DP_STATE_E:
+		/* 4-lane DP, no USB3 */
+		new_mode = MODE_DFP_DP;
+		tcphy->dp_lanes = 4;
+		break;
+
+	case TYPEC_DP_STATE_D:
+		/* 2-lane DP + 2-lane USB3 */
+		new_mode = MODE_DFP_DP | MODE_DFP_USB;
+		tcphy->dp_lanes = 2;
+		break;
+
+	default:
+		/* Safe/USB-only state or state we don't handle */
+		new_mode = MODE_DFP_USB;
+		tcphy->dp_lanes = 0;
+		break;
+	}
+
+	if (state->alt && state->alt->svid == USB_TYPEC_DP_SID) {
+		struct typec_displayport_data *data = state->data;
+
+		if (!data) {
+			/* DP alt-mode exited */
+			tcphy->dp_connected = false;
+		} else if (data->status & DP_STATUS_IRQ_HPD) {
+			/* IRQ_HPD: deassert then reassert */
+			tcphy->dp_connected = false;
+			blocking_notifier_call_chain(&tcphy->dp_nh,
+				ROCKCHIP_TYPEC_PHY_EVENT_HPD, tcphy);
+			usleep_range(750, 800);
+			tcphy->dp_connected = true;
+		} else if (data->status & DP_STATUS_HPD_STATE) {
+			/* HPD asserted -- configure mode */
+			if (tcphy->mode != new_mode) {
+				tcphy->mode_change = true;
+			}
+			tcphy->dp_connected = true;
+		} else {
+			/* HPD deasserted */
+			tcphy->dp_connected = false;
+		}
+	}
+
+	mutex_unlock(&tcphy->lock);
+
+	/* Notify DP controller outside the lock */
+	blocking_notifier_call_chain(&tcphy->dp_nh,
+				     ROCKCHIP_TYPEC_PHY_EVENT_HPD, tcphy);
+
+	return 0;
+}
+
+static void rk_typec_mux_unregister(void *data)
+{
+	struct rockchip_typec_phy *tcphy = data;
+
+	typec_mux_unregister(tcphy->mux);
+}
+
+static int rk_typec_setup_typec_mux(struct rockchip_typec_phy *tcphy,
+				    struct fwnode_handle *fwnode)
+{
+	struct typec_mux_desc mux_desc = {};
+
+	mux_desc.drvdata = tcphy;
+	mux_desc.fwnode = fwnode;
+	mux_desc.set = rk_typec_mux_set;
+
+	tcphy->mux = typec_mux_register(tcphy->dev, &mux_desc);
+	if (IS_ERR(tcphy->mux)) {
+		dev_err(tcphy->dev, "Error register typec mux: %ld\n",
+			PTR_ERR(tcphy->mux));
+		return PTR_ERR(tcphy->mux);
+	}
+
+	return devm_add_action_or_reset(tcphy->dev,
+					rk_typec_mux_unregister, tcphy);
+}
+
+/*
+ * Exported functions for cdn-dp-core.c to query DP state and register
+ * for HPD notifications when using the typec API path.
+ */
+int rockchip_typec_phy_get_dp_state(struct phy *phy,
+				    struct rockchip_typec_phy_dp_state *state)
+{
+	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
+
+	if (!tcphy || !tcphy->typec_api)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&tcphy->lock);
+	state->dp_connected = tcphy->dp_connected;
+	state->lanes = tcphy->dp_lanes;
+	state->flip = tcphy->flip;
+	mutex_unlock(&tcphy->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rockchip_typec_phy_get_dp_state);
+
+int rockchip_typec_phy_register_notify(struct phy *phy,
+				       struct notifier_block *nb)
+{
+	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
+
+	if (!tcphy || !tcphy->typec_api)
+		return -EOPNOTSUPP;
+
+	return blocking_notifier_chain_register(&tcphy->dp_nh, nb);
+}
+EXPORT_SYMBOL_GPL(rockchip_typec_phy_register_notify);
+
+int rockchip_typec_phy_unregister_notify(struct phy *phy,
+					 struct notifier_block *nb)
+{
+	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
+
+	if (!tcphy || !tcphy->typec_api)
+		return -EOPNOTSUPP;
+
+	return blocking_notifier_chain_unregister(&tcphy->dp_nh, nb);
+}
+EXPORT_SYMBOL_GPL(rockchip_typec_phy_unregister_notify);
+
 static int tcphy_phy_init(struct rockchip_typec_phy *tcphy, u8 mode)
 {
 	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
@@ -811,6 +1027,21 @@ static int tcphy_get_mode(struct rockchip_typec_phy *tcphy)
 	u8 mode;
 	int ret, ufp, dp;
 
+	/*
+	 * When using the typec API, mode and flip are set by the
+	 * typec_mux_set / typec_switch_set callbacks.  Return the
+	 * mode derived from the most recent typec state.
+	 */
+	if (tcphy->typec_api) {
+		if (tcphy->dp_connected) {
+			if (tcphy->dp_lanes == 4)
+				return MODE_DFP_DP;
+			else
+				return MODE_DFP_DP | MODE_DFP_USB;
+		}
+		return MODE_DFP_USB;
+	}
+
 	if (!edev)
 		return MODE_DFP_USB;
 
@@ -845,7 +1076,7 @@ static int tcphy_get_mode(struct rockchip_typec_phy *tcphy)
 		return ret;
 	}
 
-	tcphy->flip = property.intval ? 1 : 0;
+	tcphy->flip = !!property.intval ^ tcphy->orient_inverted;
 
 	return mode;
 }
@@ -867,7 +1098,7 @@ static int rockchip_usb3_phy_power_on(struct phy *phy)
 	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
 	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
 	const struct usb3phy_reg *reg = &cfg->pipe_status;
-	int timeout, new_mode, ret = 0;
+	int attempt, new_mode, ret = 0;
 	u32 val;
 
 	mutex_lock(&tcphy->lock);
@@ -887,27 +1118,41 @@ static int rockchip_usb3_phy_power_on(struct phy *phy)
 	if (tcphy->mode == new_mode)
 		goto unlock_ret;
 
-	if (tcphy->mode == MODE_DISCONNECT) {
-		ret = tcphy_phy_init(tcphy, new_mode);
-		if (ret)
-			goto unlock_ret;
-	}
+	/*
+	 * Bringing the PHY up from cold (after a resume from S3, when its
+	 * power domain was off) occasionally fails: either the PMA never
+	 * reports ready, or the PIPE status does not clear in time. Both are
+	 * transient, so give the PIPE wait the same budget as the other mode
+	 * waits and re-init the PHY once before giving up.
+	 */
+	for (attempt = 0; attempt < 2; attempt++) {
+		if (attempt)
+			dev_warn(tcphy->dev, "usb3 phy not ready, retrying init\n");
 
-	/* wait TCPHY for pipe ready */
-	for (timeout = 0; timeout < 100; timeout++) {
-		regmap_read(tcphy->grf_regs, reg->offset, &val);
-		if (!(val & BIT(reg->enable_bit))) {
+		if (tcphy->mode == MODE_DISCONNECT) {
+			ret = tcphy_phy_init(tcphy, new_mode);
+			if (ret == -ETIMEDOUT)
+				continue;
+			if (ret)
+				goto unlock_ret;
+		}
+
+		/* wait TCPHY for pipe ready */
+		ret = regmap_read_poll_timeout(tcphy->grf_regs, reg->offset,
+					       val,
+					       !(val & BIT(reg->enable_bit)),
+					       10, PHY_MODE_SET_TIMEOUT);
+		if (!ret) {
 			tcphy->mode |= new_mode & (MODE_DFP_USB | MODE_UFP_USB);
 
 			/* enable usb3 host */
 			tcphy_cfg_usb3_to_usb2_only(tcphy, false);
 			goto unlock_ret;
 		}
-		usleep_range(10, 20);
-	}
 
-	if (tcphy->mode == MODE_DISCONNECT)
-		tcphy_phy_deinit(tcphy);
+		if (tcphy->mode == MODE_DISCONNECT)
+			tcphy_phy_deinit(tcphy);
+	}
 
 	ret = -ETIMEDOUT;
 
@@ -946,6 +1191,7 @@ static int rockchip_dp_phy_power_on(struct phy *phy)
 	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
 	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
 	int new_mode, ret = 0;
+	bool reinit = false;
 	u32 val;
 
 	mutex_lock(&tcphy->lock);
@@ -970,12 +1216,29 @@ static int rockchip_dp_phy_power_on(struct phy *phy)
 	 */
 	if (new_mode == MODE_DFP_DP && tcphy->mode != MODE_DISCONNECT) {
 		tcphy_phy_deinit(tcphy);
+		reinit = true;
 		ret = tcphy_phy_init(tcphy, new_mode);
 	} else if (tcphy->mode == MODE_DISCONNECT) {
 		ret = tcphy_phy_init(tcphy, new_mode);
 	}
-	if (ret)
+	/*
+	 * The PMA does not always report ready, as on the USB3 path. A timeout
+	 * leaves the PHY in reset with its clocks off and the mode unchanged,
+	 * so init it once more, without a second deinit.
+	 */
+	if (ret == -ETIMEDOUT) {
+		dev_warn(tcphy->dev, "dp phy not ready, retrying init\n");
+		ret = tcphy_phy_init(tcphy, new_mode);
+	}
+	if (ret) {
+		/*
+		 * The deinit above took the PHY down. Left at the USB mode, a
+		 * later USB power-off would deinit it a second time.
+		 */
+		if (reinit)
+			tcphy->mode = MODE_DISCONNECT;
 		goto unlock_ret;
+	}
 
 	property_enable(tcphy, &cfg->uphy_dp_sel, 1);
 
@@ -1142,8 +1405,12 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 		return ret;
 
 	tcphy->dev = dev;
+	tcphy->orient_inverted =
+		of_property_read_bool(dev->of_node,
+				      "libretech,typec-orientation-inverted");
 	platform_set_drvdata(pdev, tcphy);
 	mutex_init(&tcphy->lock);
+	BLOCKING_INIT_NOTIFIER_HEAD(&tcphy->dp_nh);
 
 	typec_phy_pre_init(tcphy);
 
@@ -1162,15 +1429,55 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 
 	for_each_available_child_of_node(np, child_np) {
 		struct phy *phy;
+		struct fwnode_handle *fwnode = of_fwnode_handle(child_np);
 
-		if (of_node_name_eq(child_np, "dp-port"))
+		if (of_node_name_eq(child_np, "dp-port")) {
 			phy = devm_phy_create(dev, child_np,
 					      &rockchip_dp_phy_ops);
-		else if (of_node_name_eq(child_np, "usb3-port"))
+			if (!IS_ERR(phy)) {
+				tcphy->phy_dp = phy;
+				/*
+				 * If the dp-port child has 'mode-switch',
+				 * register as a typec mux provider for DP
+				 * alt-mode lane muxing.
+				 */
+				if (fwnode_property_present(fwnode,
+							    "mode-switch")) {
+					ret = rk_typec_setup_typec_mux(tcphy,
+								       fwnode);
+					if (ret) {
+						pm_runtime_disable(dev);
+						of_node_put(child_np);
+						return ret;
+					}
+					tcphy->typec_api = true;
+				}
+			}
+		} else if (of_node_name_eq(child_np, "usb3-port")) {
 			phy = devm_phy_create(dev, child_np,
 					      &rockchip_usb3_phy_ops);
-		else
+			if (!IS_ERR(phy)) {
+				/*
+				 * If the usb3-port child has
+				 * 'orientation-switch', register as a
+				 * typec switch provider for CC
+				 * orientation.
+				 */
+				if (fwnode_property_present(fwnode,
+							    "orientation-switch")) {
+					ret = rk_typec_setup_orien_switch(
+								tcphy, fwnode);
+					if (ret) {
+						pm_runtime_disable(dev);
+						of_node_put(child_np);
+						return ret;
+					}
+					tcphy->typec_api = true;
+				}
+			}
+		} else {
 			continue;
+		}
 
 		if (IS_ERR(phy)) {
 			dev_err(dev, "failed to create phy: %pOFn\n",
@@ -1182,6 +1489,9 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 
 		phy_set_drvdata(phy, tcphy);
 	}
+
+	if (tcphy->typec_api)
+		dev_info(dev, "using typec mux/switch API for DP alt-mode\n");
 
 	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 	if (IS_ERR(phy_provider)) {

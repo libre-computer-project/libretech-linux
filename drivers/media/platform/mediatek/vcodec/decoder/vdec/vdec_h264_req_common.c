@@ -14,18 +14,24 @@
 
 void mtk_vdec_h264_get_ref_list(u8 *ref_list,
 				const struct v4l2_h264_reference *v4l2_ref_list,
-				int num_valid)
+				int num_valid, bool field_abi)
 {
 	u32 i;
 
 	/*
-	 * TODO The firmware does not support field decoding. Future
-	 * implementation must use v4l2_ref_list[i].fields to obtain
-	 * the reference field parity.
+	 * A firmware that advertises MTK_VDEC_IS_SUPPORT_H264_FIELD reads the
+	 * parity of each entry: bit 6 set on a bottom-field reference. Only a
+	 * field picture's list holds one (the builder gives every entry of a
+	 * frame picture's list V4L2_H264_FRAME_REF), so a frame picture's list
+	 * is the index alone either way. Without the capability the list is
+	 * the index alone on every picture.
 	 */
-
-	for (i = 0; i < num_valid; i++)
+	for (i = 0; i < num_valid; i++) {
 		ref_list[i] = v4l2_ref_list[i].index;
+		if (field_abi &&
+		    v4l2_ref_list[i].fields == V4L2_H264_BOTTOM_FIELD_REF)
+			ref_list[i] |= MTK_H264_REF_BOTTOM_FIELD;
+	}
 
 	/*
 	 * The firmware expects unused reflist entries to have the value 0x20.
@@ -195,7 +201,8 @@ void mtk_vdec_h264_copy_scaling_matrix(struct slice_api_h264_scaling_matrix *dst
 void
 mtk_vdec_h264_copy_decode_params(struct slice_api_h264_decode_param *dst_params,
 				 const struct v4l2_ctrl_h264_decode_params *src_params,
-				 const struct v4l2_h264_dpb_entry dpb[V4L2_H264_NUM_DPB_ENTRIES])
+				 const struct v4l2_h264_dpb_entry dpb[V4L2_H264_NUM_DPB_ENTRIES],
+				 bool field_abi)
 {
 	struct slice_h264_dpb_entry *dst_entry;
 	const struct v4l2_h264_dpb_entry *src_entry;
@@ -212,6 +219,14 @@ mtk_vdec_h264_copy_decode_params(struct slice_api_h264_decode_param *dst_params,
 		dst_entry->bottom_field_order_cnt =
 			src_entry->bottom_field_order_cnt;
 		dst_entry->flags = src_entry->flags;
+		/*
+		 * Field ABI: which parities of an active entry are reference,
+		 * in bits 8-9 (bits 0-3 are the V4L2 DPB flags).
+		 */
+		if (field_abi &&
+		    (src_entry->flags & V4L2_H264_DPB_ENTRY_FLAG_ACTIVE))
+			dst_entry->flags |= (u32)(src_entry->fields & 3) <<
+					    MTK_H264_DPB_FIELDS_SHIFT;
 	}
 
 	/* num_slices is a leftover from the old H.264 support and is ignored

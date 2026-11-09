@@ -145,8 +145,11 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 	    !host->retune_crc_disable &&
 	    (err == -EILSEQ || (mrq->sbc && mrq->sbc->error == -EILSEQ) ||
 	    (mrq->data && mrq->data->error == -EILSEQ) ||
-	    (mrq->stop && mrq->stop->error == -EILSEQ)))
+	    (mrq->stop && mrq->stop->error == -EILSEQ))) {
+		/* Count CRCs in this speed interval to drive the downgrade ladder */
+		host->crc_storm_cnt++;
 		mmc_retune_needed(host);
+	}
 
 	if (err && cmd->retries && mmc_host_is_spi(host)) {
 		if (cmd->resp[0] & R1_SPI_ILLEGAL_COMMAND)
@@ -1372,6 +1375,14 @@ void mmc_power_off(struct mmc_host *host)
 {
 	if (host->ios.power_mode == MMC_POWER_OFF)
 		return;
+
+	mmc_set_initial_signal_voltage(host);
+
+	/*
+	 * This delay should be sufficient to allow the power supply
+	 * to reach the minimum voltage.
+	 */
+	mmc_delay(host->ios.power_delay_ms);
 
 	mmc_pwrseq_power_off(host);
 

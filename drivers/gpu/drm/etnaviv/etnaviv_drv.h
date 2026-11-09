@@ -70,6 +70,7 @@ int etnaviv_gem_new_handle(struct drm_device *dev, struct drm_file *file,
 int etnaviv_gem_new_userptr(struct drm_device *dev, struct drm_file *file,
 	uintptr_t ptr, u32 size, u32 flags, u32 *handle);
 u16 etnaviv_buffer_init(struct etnaviv_gpu *gpu);
+u16 etnaviv_buffer_flush_cache(struct etnaviv_gpu *gpu);
 u16 etnaviv_buffer_config_mmuv2(struct etnaviv_gpu *gpu, u32 mtlb_addr, u32 safe_addr);
 u16 etnaviv_buffer_config_pta(struct etnaviv_gpu *gpu, unsigned short id);
 void etnaviv_buffer_end(struct etnaviv_gpu *gpu);

@@ -241,7 +241,7 @@ unsigned int dev_pm_opp_get_level(struct dev_pm_opp *opp)
 {
 	if (IS_ERR_OR_NULL(opp) || !opp->available) {
 		pr_err("%s: Invalid parameters\n", __func__);
-		return 0;
+		return U32_MAX;
 	}
 
 	return opp->level;
@@ -1296,10 +1296,19 @@ static int _set_opp(struct device *dev, struct opp_table *opp_table,
 		    struct dev_pm_opp *opp, void *clk_data, bool forced)
 {
 	struct dev_pm_opp *old_opp;
+	unsigned int volt_gen;
 	int scaling_down, ret;
 
 	if (unlikely(!opp))
 		return _disable_opp_table(dev, opp_table);
+
+	/*
+	 * Sample the voltage generation before the supplies are read below.
+	 * Pairs with the smp_store_release() in dev_pm_opp_adjust_voltage():
+	 * if an adjust races with this set, the generation recorded on success
+	 * is older than the adjust's, so the next set of this OPP re-applies.
+	 */
+	volt_gen = smp_load_acquire(&opp_table->volt_gen);
 
 	/* Find the currently set OPP if we don't know already */
 	if (unlikely(!opp_table->current_opp))
@@ -1307,8 +1316,12 @@ static int _set_opp(struct device *dev, struct opp_table *opp_table,
 
 	old_opp = opp_table->current_opp;
 
-	/* Return early if nothing to do */
-	if (!forced && old_opp == opp && opp_table->enabled) {
+	/*
+	 * Return early if nothing to do: same OPP, and no OPP voltage has been
+	 * adjusted since it was programmed.
+	 */
+	if (!forced && old_opp == opp && opp_table->enabled &&
+	    opp_table->current_volt_gen == volt_gen) {
 		dev_dbg_ratelimited(dev, "%s: OPPs are same, nothing to do\n", __func__);
 		return 0;
 	}
@@ -1393,6 +1406,7 @@ static int _set_opp(struct device *dev, struct opp_table *opp_table,
 
 	/* Make sure current_opp doesn't get freed */
 	opp_table->current_opp = dev_pm_opp_get(opp);
+	opp_table->current_volt_gen = volt_gen;
 
 	return ret;
 }
@@ -2084,10 +2098,9 @@ int _opp_add(struct device *dev, struct dev_pm_opp *new_opp,
 			return ret;
 
 		list_add(&new_opp->node, head);
+		new_opp->opp_table = opp_table;
+		kref_init(&new_opp->kref);
 	}
-
-	new_opp->opp_table = opp_table;
-	kref_init(&new_opp->kref);
 
 	opp_debug_create_one(new_opp, opp_table);
 
@@ -2741,8 +2754,8 @@ struct dev_pm_opp *dev_pm_opp_xlate_required_opp(struct opp_table *src_table,
 					break;
 				}
 			}
-			break;
 		}
+		break;
 	}
 
 	if (IS_ERR(dest_opp)) {
@@ -2959,6 +2972,15 @@ int dev_pm_opp_adjust_voltage(struct device *dev, unsigned long freq,
 				opp->supplies->u_volt = u_volt;
 				opp->supplies->u_volt_min = u_volt_min;
 				opp->supplies->u_volt_max = u_volt_max;
+
+				/*
+				 * Publish the new supplies before the new
+				 * generation; pairs with the smp_load_acquire()
+				 * in _set_opp(). A set of the running OPP then
+				 * re-applies instead of being skipped.
+				 */
+				smp_store_release(&opp_table->volt_gen,
+						  opp_table->volt_gen + 1);
 
 				break;
 			}

@@ -193,9 +193,6 @@ static int autospoll_thread(void *board_void)
 		}
 		if (retval <= 0) {
 			dev_err(board->gpib_dev, "stuck SRQ\n");
-
-			atomic_set(&board->stuck_srq, 1);	// XXX could be better
-			set_bit(SRQI_NUM, &board->status);
 		}
 	}
 	return retval;
@@ -227,11 +224,10 @@ int ibonline(struct gpib_board *board)
 #ifndef CONFIG_NIOS2
 	board->autospoll_task = kthread_run(&autospoll_thread, board,
 					    "gpib%d_autospoll_kthread", board->minor);
-	retval = IS_ERR(board->autospoll_task);
-	if (retval) {
+	if (IS_ERR(board->autospoll_task)) {
 		dev_err(board->gpib_dev, "failed to create autospoll thread\n");
 		board->interface->detach(board);
-		return retval;
+		return PTR_ERR(board->autospoll_task);
 	}
 #endif
 	board->online = 1;

@@ -91,6 +91,7 @@ static void amdgpu_mes_doorbell_free(struct amdgpu_device *adev)
 int amdgpu_mes_init(struct amdgpu_device *adev)
 {
 	int i, r, num_pipes;
+	int num_queues = 0, num_xcc = 1;
 
 	adev->mes.adev = adev;
 
@@ -191,6 +192,25 @@ int amdgpu_mes_init(struct amdgpu_device *adev)
 	if (r)
 		goto error_doorbell;
 
+	if (amdgpu_ip_version(adev, GC_HWIP, 0) >= IP_VERSION(11, 0, 0)) {
+		/* When queue/pipe reset is done in MES instead of in the
+		 * driver, MES passes hung queues information to the driver in
+		 * hung_queue_hqd_info. Calculate required space to store this
+		 * information.
+		 */
+		for (i = 0; i < AMDGPU_MES_MAX_GFX_PIPES; i++)
+			num_queues += hweight32(adev->mes.gfx_hqd_mask[i]);
+
+		for (i = 0; i < AMDGPU_MES_MAX_COMPUTE_PIPES; i++)
+			num_queues += hweight32(adev->mes.compute_hqd_mask[i]);
+
+		for (i = 0; i < AMDGPU_MES_MAX_SDMA_PIPES; i++)
+			num_queues += hweight32(adev->mes.sdma_hqd_mask[i]) * num_xcc;
+
+		adev->mes.hung_queue_hqd_info_offset = num_queues;
+		adev->mes.hung_queue_db_array_size = num_queues * 2;
+	}
+
 	if (adev->mes.hung_queue_db_array_size) {
 		r = amdgpu_bo_create_kernel(adev,
 					    adev->mes.hung_queue_db_array_size * sizeof(u32),
@@ -204,6 +224,10 @@ int amdgpu_mes_init(struct amdgpu_device *adev)
 			goto error_doorbell;
 		}
 	}
+
+	adev->gfx.mec.mes_hung_db_array =
+		kcalloc(amdgpu_mes_get_hung_queue_db_array_size(adev),
+			sizeof(u32), GFP_KERNEL);
 
 	return 0;
 
@@ -228,6 +252,9 @@ error:
 
 void amdgpu_mes_fini(struct amdgpu_device *adev)
 {
+	kfree(adev->gfx.mec.mes_hung_db_array);
+	adev->gfx.mec.mes_hung_db_array = NULL;
+
 	int i;
 
 	amdgpu_bo_free_kernel(&adev->mes.hung_queue_db_array_gpu_obj,
@@ -380,6 +407,61 @@ int amdgpu_mes_reset_legacy_queue(struct amdgpu_device *adev,
 	amdgpu_mes_unlock(&adev->mes);
 	if (r)
 		dev_err(adev->dev, "failed to reset legacy queue\n");
+
+	return r;
+}
+
+int amdgpu_mes_reset_queue_mmio(struct amdgpu_device *adev,
+				int queue_type,
+				unsigned int vmid,
+				unsigned int me,
+				unsigned int pipe,
+				unsigned int queue,
+				uint32_t xcc_id)
+{
+	struct mes_reset_queue_input queue_input;
+	int r;
+
+	memset(&queue_input, 0, sizeof(queue_input));
+
+	/* xcc_id is unused on this tree: mes_reset_queue_input has no xcc_id */
+	(void)xcc_id;
+	queue_input.me_id = me;
+	queue_input.pipe_id = pipe;
+	queue_input.queue_id = queue;
+	queue_input.vmid = vmid;
+	queue_input.queue_type = queue_type;
+	queue_input.use_mmio = true;
+
+	amdgpu_mes_lock(&adev->mes);
+	r = adev->mes.funcs->reset_hw_queue(&adev->mes, &queue_input);
+	amdgpu_mes_unlock(&adev->mes);
+	if (r)
+		dev_err(adev->dev, "failed to reset legacy queue\n");
+
+	return r;
+}
+
+int amdgpu_mes_reset_user_queue(struct amdgpu_device *adev,
+				int queue_type,
+				unsigned int doorbell_index,
+				unsigned int xcc_id)
+{
+	struct mes_reset_queue_input queue_input;
+	int r;
+
+	memset(&queue_input, 0, sizeof(queue_input));
+
+	/* xcc_id is unused on this tree: mes_reset_queue_input has no xcc_id */
+	(void)xcc_id;
+	queue_input.queue_type = queue_type;
+	queue_input.doorbell_offset = doorbell_index;
+
+	amdgpu_mes_lock(&adev->mes);
+	r = adev->mes.funcs->reset_hw_queue(&adev->mes, &queue_input);
+	amdgpu_mes_unlock(&adev->mes);
+	if (r)
+		dev_err(adev->dev, "failed to reset user queue\n");
 
 	return r;
 }
@@ -696,6 +778,32 @@ bool amdgpu_mes_suspend_resume_all_supported(struct amdgpu_device *adev)
 		 amdgpu_ip_version(adev, GC_HWIP, 0) < IP_VERSION(12, 0, 0) &&
 		 mes_rev >= 0x63) ||
 		amdgpu_ip_version(adev, GC_HWIP, 0) >= IP_VERSION(12, 0, 0));
+}
+
+bool amdgpu_mes_queue_reset_by_mes_supported(struct amdgpu_device *adev)
+{
+	/*
+	 * pipe-reset series 0042 + R9700 (gfx1201) fix:
+	 * Upstream listed exact IP_VERSION(12, 0, 0) / (12, 1, 0) only.
+	 * Navi48 is GC IP_VERSION(12, 0, 1) with MES 0x8b — the 12.0.0 exact
+	 * match missed 12.0.1, so kfd_hws_hang never attempted per-queue reset
+	 * and went straight to contain (measured 2026-08-12 on aitop).
+	 */
+	uint32_t gc = amdgpu_ip_version(adev, GC_HWIP, 0);
+	uint32_t mes_rev = adev->mes.sched_version & AMDGPU_MES_VERSION_MASK;
+
+	/* GC11.x: MES >= 0x8a */
+	if (IP_VERSION_MAJ(gc) == 11 && mes_rev >= 0x8a)
+		return true;
+	/* GC12.0.x (incl. 12.0.1 / Navi48): MES >= 0x8b */
+	if (gc >= IP_VERSION(12, 0, 0) && gc < IP_VERSION(12, 1, 0) &&
+	    mes_rev >= 0x8b)
+		return true;
+	/* GC12.1.0: MES >= 0x73 */
+	if (gc == IP_VERSION(12, 1, 0) && mes_rev >= 0x73)
+		return true;
+
+	return false;
 }
 
 /* Fix me -- node_id is used to identify the correct MES instances in the future */

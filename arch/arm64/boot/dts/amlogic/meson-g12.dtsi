@@ -371,6 +371,10 @@
 	power-domains = <&pwrc PWRC_G12A_VPU_ID>;
 };
 
+&ge2d {
+	power-domains = <&pwrc PWRC_G12A_VPU_ID>;
+};
+
 &sd_emmc_a {
 	amlogic,dram-access-quirk;
 };

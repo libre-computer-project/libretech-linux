@@ -9,9 +9,12 @@
 #include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/cleanup.h>
 #include <linux/cpu.h>
+#include <linux/cpufreq.h>
 #include <linux/cpuidle.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -383,6 +386,8 @@ struct svs_fusemap {
  * @tefuse: thermal efuse data received from NVMEM framework
  * @ts_coeff: thermal sensors coefficient
  * @bank_max: total number of svs banks
+ * @vboot_retries: quirk -- how many times init01 re-pins a bank whose buck
+ *		   has not reached vboot before failing (0: fail at once)
  */
 struct svs_platform {
 	void __iomem *base;
@@ -397,6 +402,7 @@ struct svs_platform {
 	u32 *tefuse;
 	u32 ts_coeff;
 	u16 bank_max;
+	u8 vboot_retries;
 };
 
 struct svs_platform_data {
@@ -408,6 +414,7 @@ struct svs_platform_data {
 	const u32 *regs;
 	u32 ts_coeff;
 	u16 bank_max;
+	u8 vboot_retries;
 };
 
 /**
@@ -501,6 +508,9 @@ struct svs_bank_pdata {
  * @dcmdet: svs efuse data
  * @turn_pt: 2-line turn point tells which opp_volt calculated by high/low bank
  * @vbin_turn_pt: voltage bin turn point helps know which svsb_volt should be overridden
+ * @pin_policy: CPU bank only -- the cpufreq policy capped while init01 pins
+ *		the bank to vboot (a reference is held until the cap is removed)
+ * @pin_qos: CPU bank only -- the FREQ_QOS_MAX request that cap is
  *
  * Svs bank will generate suitable voltages by below general math equation
  * and provide these voltages to opp voltage table.
@@ -543,6 +553,8 @@ struct svs_bank {
 	u8 mtdes;
 	u8 dcbdet;
 	u8 dcmdet;
+	struct cpufreq_policy *pin_policy;
+	struct freq_qos_request pin_qos;
 };
 
 static u32 percent(u32 numerator, u32 denominator)
@@ -789,7 +801,7 @@ static ssize_t svs_enable_debug_write(struct file *filp,
 	struct svs_bank *svsb = file_inode(filp)->i_private;
 	struct svs_platform *svsp = dev_get_drvdata(svsb->dev);
 	int enabled, ret;
-	char *buf = NULL;
+	char *buf __free(kfree) = NULL;
 
 	if (count >= PAGE_SIZE)
 		return -EINVAL;
@@ -806,8 +818,6 @@ static ssize_t svs_enable_debug_write(struct file *filp,
 		svs_bank_disable_and_restore_default_volts(svsp, svsb);
 		svsb->mode_support = SVSB_MODE_ALL_DISABLE;
 	}
-
-	kfree(buf);
 
 	return count;
 }
@@ -1432,14 +1442,118 @@ static bool svs_mode_available(struct svs_platform *svsp, u8 mode)
 	return false;
 }
 
+/* Time for the bank's consumers and its buck to settle after (re)pinning. */
+#define SVS_VBOOT_SETTLE_MS	20
+
+/*
+ * Pin one bank to vboot: adjust the fastest OPP that runs at or below vboot to
+ * exactly vboot and disable every other OPP, so that the bank's consumers
+ * (cpufreq, devfreq) move onto it and its buck settles at vboot.
+ */
+static int svs_bank_pin_vboot(struct svs_bank *svsb, u32 opp_vboot)
+{
+	const struct svs_bank_pdata *bdata = &svsb->pdata;
+	bool search_done = false;
+	u32 opp_freq, i;
+	int ret;
+
+	for (i = 0; i < bdata->opp_count; i++) {
+		opp_freq = svsb->opp_dfreq[i];
+		if (!search_done && svsb->opp_dvolt[i] <= opp_vboot) {
+			ret = dev_pm_opp_adjust_voltage(svsb->opp_dev, opp_freq,
+							opp_vboot, opp_vboot,
+							opp_vboot);
+			if (ret) {
+				dev_err(svsb->dev, "set opp %uuV vboot fail: %d\n",
+					opp_vboot, ret);
+				return ret;
+			}
+
+			search_done = true;
+		} else {
+			ret = dev_pm_opp_disable(svsb->opp_dev, opp_freq);
+			if (ret) {
+				dev_err(svsb->dev, "opp %uHz disable fail: %d\n",
+					opp_freq, ret);
+				return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
+/* Undo svs_bank_pin_vboot()'s disables (the vboot adjust is kept). */
+static void svs_bank_unpin(struct svs_bank *svsb)
+{
+	u32 i;
+
+	for (i = 0; i < svsb->pdata.opp_count; i++)
+		dev_pm_opp_enable(svsb->opp_dev, svsb->opp_dfreq[i]);
+}
+
+/*
+ * While init01 pins a CPU bank, every OPP above the vboot one is disabled,
+ * but cpufreq's frequency table still lists them: a governor request above
+ * the pinned OPP then finds no OPP and fails (-ERANGE). Cap the CPU's
+ * policy at the pinned frequency for the pin window, applied synchronously
+ * before the disables, so cpufreq never asks for a disabled OPP. No policy
+ * (cpufreq not bound yet) needs no cap.
+ */
+static void svs_bank_cap_cpufreq(struct svs_bank *svsb, u32 opp_vboot)
+{
+	const struct svs_bank_pdata *bdata = &svsb->pdata;
+	struct cpufreq_policy *policy;
+	u32 i;
+	int ret;
+
+	if (bdata->sw_id != SVSB_SWID_CPU_LITTLE &&
+	    bdata->sw_id != SVSB_SWID_CPU_BIG)
+		return;
+
+	if (svsb->pin_policy)
+		return;
+
+	for (i = 0; i < bdata->opp_count; i++)
+		if (svsb->opp_dvolt[i] <= opp_vboot)
+			break;
+
+	if (i == bdata->opp_count)
+		return;
+
+	policy = cpufreq_cpu_get(bdata->cpu_id);
+	if (!policy)
+		return;
+
+	ret = freq_qos_add_request(&policy->constraints, &svsb->pin_qos,
+				   FREQ_QOS_MAX, svsb->opp_dfreq[i] / 1000);
+	if (ret < 0) {
+		dev_notice(svsb->dev, "cpufreq cap fail: %d\n", ret);
+		cpufreq_cpu_put(policy);
+		return;
+	}
+
+	svsb->pin_policy = policy;
+	cpufreq_update_limits(bdata->cpu_id);
+}
+
+static void svs_bank_uncap_cpufreq(struct svs_bank *svsb)
+{
+	if (!svsb->pin_policy)
+		return;
+
+	freq_qos_remove_request(&svsb->pin_qos);
+	cpufreq_cpu_put(svsb->pin_policy);
+	svsb->pin_policy = NULL;
+}
+
 static int svs_init01(struct svs_platform *svsp)
 {
 	const struct svs_bank_pdata *bdata;
 	struct svs_bank *svsb;
 	unsigned long flags, time_left;
-	bool search_done;
 	int ret = 0, r;
-	u32 opp_freq, opp_vboot, buck_volt, idx, i;
+	u32 opp_vboot, buck_volt, idx, i, tries;
 
 	if (!svs_mode_available(svsp, SVSB_MODE_INIT01))
 		return 0;
@@ -1497,38 +1611,14 @@ static int svs_init01(struct svs_platform *svsp)
 		 * Find the fastest freq that can be run at vboot and
 		 * fix to that freq until svs_init01 is done.
 		 */
-		search_done = false;
 		opp_vboot = svs_bank_volt_to_opp_volt(bdata->vboot,
 						      bdata->volt_step,
 						      bdata->volt_base);
 
-		for (i = 0; i < bdata->opp_count; i++) {
-			opp_freq = svsb->opp_dfreq[i];
-			if (!search_done && svsb->opp_dvolt[i] <= opp_vboot) {
-				ret = dev_pm_opp_adjust_voltage(svsb->opp_dev,
-								opp_freq,
-								opp_vboot,
-								opp_vboot,
-								opp_vboot);
-				if (ret) {
-					dev_err(svsb->dev,
-						"set opp %uuV vboot fail: %d\n",
-						opp_vboot, ret);
-					goto svs_init01_finish;
-				}
-
-				search_done = true;
-			} else {
-				ret = dev_pm_opp_disable(svsb->opp_dev,
-							 svsb->opp_dfreq[i]);
-				if (ret) {
-					dev_err(svsb->dev,
-						"opp %uHz disable fail: %d\n",
-						svsb->opp_dfreq[i], ret);
-					goto svs_init01_finish;
-				}
-			}
-		}
+		svs_bank_cap_cpufreq(svsb, opp_vboot);
+		ret = svs_bank_pin_vboot(svsb, opp_vboot);
+		if (ret)
+			goto svs_init01_finish;
 	}
 
 	/* Svs bank init01 begins */
@@ -1543,7 +1633,33 @@ static int svs_init01(struct svs_platform *svsp)
 						      bdata->volt_step,
 						      bdata->volt_base);
 
-		buck_volt = regulator_get_voltage(svsb->buck);
+		/*
+		 * Quirk (vboot_retries): a consumer of this bank may not have
+		 * left its earlier vote yet -- a frequency change in flight, a
+		 * voltage held from boot, a regulator still ramping. Re-pin the
+		 * bank, which re-sends every OPP disable to its consumers, let
+		 * it settle and look again before failing the whole device.
+		 */
+		for (tries = 0; ; tries++) {
+			buck_volt = regulator_get_voltage(svsb->buck);
+			if (buck_volt == opp_vboot)
+				break;
+
+			if (tries >= svsp->vboot_retries)
+				break;
+
+			dev_info(svsb->dev,
+				 "buck voltage: %uuV, expected vboot: %uuV, re-pinning (%u/%u)\n",
+				 buck_volt, opp_vboot, tries + 1,
+				 svsp->vboot_retries);
+			svs_bank_unpin(svsb);
+			msleep(SVS_VBOOT_SETTLE_MS);
+			ret = svs_bank_pin_vboot(svsb, opp_vboot);
+			if (ret)
+				goto svs_init01_finish;
+			msleep(SVS_VBOOT_SETTLE_MS);
+		}
+
 		if (buck_volt != opp_vboot) {
 			dev_err(svsb->dev,
 				"buck voltage: %uuV, expected vboot: %uuV\n",
@@ -1580,6 +1696,8 @@ svs_init01_finish:
 				dev_err(svsb->dev, "opp %uHz enable fail: %d\n",
 					svsb->opp_dfreq[i], r);
 		}
+
+		svs_bank_uncap_cpufreq(svsb);
 
 		if (svsb->volt_flags & SVSB_INIT01_PD_REQ) {
 			r = pm_runtime_put_sync(svsb->opp_dev);
@@ -2509,7 +2627,7 @@ static struct svs_bank svs_mt8186_banks[] = {
 			.set_freq_pct		= svs_set_bank_freq_pct_v3,
 			.get_volts		= svs_get_bank_volts_v3,
 			.cpu_id			= 6,
-			.tzone_name		= "cpu-big",
+			.tzone_name		= "cpu-big0",
 			.opp_count		= MAX_OPP_ENTRIES,
 			.turn_freq_base		= 1670000000,
 			.volt_step		= 6250,
@@ -2543,7 +2661,7 @@ static struct svs_bank svs_mt8186_banks[] = {
 			.set_freq_pct		= svs_set_bank_freq_pct_v2,
 			.get_volts		= svs_get_bank_volts_v2,
 			.cpu_id			= 0,
-			.tzone_name		= "cpu-little",
+			.tzone_name		= "cpu-little0",
 			.opp_count		= MAX_OPP_ENTRIES,
 			.volt_step		= 6250,
 			.volt_base		= 400000,
@@ -2575,7 +2693,8 @@ static struct svs_bank svs_mt8186_banks[] = {
 			.sw_id			= SVSB_SWID_CCI,
 			.set_freq_pct		= svs_set_bank_freq_pct_v2,
 			.get_volts		= svs_get_bank_volts_v2,
-			.tzone_name		= "cci",
+			/* CCI shares the little cluster's rail; MT8186 has no CCI sensor */
+			.tzone_name		= "cpu-little0",
 			.opp_count		= MAX_OPP_ENTRIES,
 			.volt_step		= 6250,
 			.volt_base		= 400000,
@@ -2622,7 +2741,7 @@ static struct svs_bank svs_mt8186_banks[] = {
 			.tzone_ltemp		= 25000,
 			.tzone_ltemp_voffset	= 7,
 			.dev_fuse_map		= (const struct svs_fusemap[BDEV_MAX]) {
-				{ 6, 16 }, { 6, 24 }, { 6, 0 }, { 15, 8 }, { 15, 0 }
+				{ 6, 16 }, { 6, 24 }, { 6, 0 }, { 15, 0 }, { 15, 8 }
 			}
 		},
 		.volt_flags	= SVSB_REMOVE_DVTFIXED_VOLT | SVSB_MON_VOLT_IGNORE,
@@ -2807,6 +2926,7 @@ static const struct svs_platform_data svs_mt8186_platform_data = {
 	.probe = svs_mt8192_platform_probe,
 	.regs = svs_regs_v2,
 	.bank_max = ARRAY_SIZE(svs_mt8186_banks),
+	.vboot_retries = 3,
 	.ts_coeff = SVSB_TS_COEFF_MT8186,
 	.glb_fuse_map = (const struct svs_fusemap[GLB_MAX]) {
 		/* FT_PGM and VMIN not present */
@@ -2821,6 +2941,7 @@ static const struct svs_platform_data svs_mt8183_platform_data = {
 	.probe = svs_mt8183_platform_probe,
 	.regs = svs_regs_v2,
 	.bank_max = ARRAY_SIZE(svs_mt8183_banks),
+	.vboot_retries = 3,
 	.glb_fuse_map = (const struct svs_fusemap[GLB_MAX]) {
 		/* VMIN not present */
 		{ 0, 4 }, { -1, 0 }
@@ -2854,6 +2975,7 @@ static int svs_probe(struct platform_device *pdev)
 	svsp->regs = svsp_data->regs;
 	svsp->bank_max = svsp_data->bank_max;
 	svsp->ts_coeff = svsp_data->ts_coeff;
+	svsp->vboot_retries = svsp_data->vboot_retries;
 
 	ret = svsp_data->probe(svsp);
 	if (ret)

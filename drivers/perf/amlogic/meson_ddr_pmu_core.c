@@ -20,8 +20,10 @@
 struct ddr_pmu {
 	struct pmu pmu;
 	struct dmc_info info;
-	struct dmc_counter counters;	/* save counters from hw */
-	bool pmu_enabled;
+	struct dmc_counter counters;	/* running total: folded overflows + residue */
+	/* guards counters, active_events and every access to the hw counters */
+	spinlock_t counters_lock;
+	unsigned int active_events;	/* events currently enabled on this pmu */
 	struct device *dev;
 	char *name;
 	struct hlist_node node;
@@ -34,35 +36,6 @@ struct ddr_pmu {
 
 #define to_ddr_pmu(p)		container_of(p, struct ddr_pmu, pmu)
 #define dmc_info_to_pmu(p)	container_of(p, struct ddr_pmu, info)
-
-static void dmc_pmu_enable(struct ddr_pmu *pmu)
-{
-	if (!pmu->pmu_enabled)
-		pmu->info.hw_info->enable(&pmu->info);
-
-	pmu->pmu_enabled = true;
-}
-
-static void dmc_pmu_disable(struct ddr_pmu *pmu)
-{
-	if (pmu->pmu_enabled)
-		pmu->info.hw_info->disable(&pmu->info);
-
-	pmu->pmu_enabled = false;
-}
-
-static void meson_ddr_set_axi_filter(struct perf_event *event, u8 axi_id)
-{
-	struct ddr_pmu *pmu = to_ddr_pmu(event->pmu);
-	int chann;
-
-	if (event->attr.config > ALL_CHAN_COUNTER_ID &&
-	    event->attr.config < COUNTER_MAX_ID) {
-		chann = event->attr.config - CHAN1_COUNTER_ID;
-
-		pmu->info.hw_info->set_axi_filter(&pmu->info, axi_id, chann);
-	}
-}
 
 static void ddr_cnt_addition(struct dmc_counter *sum,
 			     struct dmc_counter *add1,
@@ -82,23 +55,31 @@ static void ddr_cnt_addition(struct dmc_counter *sum,
 	}
 }
 
-static void meson_ddr_perf_event_update(struct perf_event *event)
+/*
+ * The pmu-wide count of one counter id: everything the timer irq has folded
+ * into pmu->counters plus whatever the hardware has counted since the last
+ * counting window. The hardware registers are never folded here -- the irq
+ * handler accounts for them, so folding would double count them.
+ *
+ * The whole pmu shares one set of counter registers, so this is a pmu-wide
+ * quantity, not a per-session one: callers turn it into a per-event count by
+ * subtracting the value they sampled when the event was enabled.
+ *
+ * Caller must hold pmu->counters_lock.
+ */
+static u64 ddr_pmu_total(struct ddr_pmu *pmu, u64 config)
 {
-	struct ddr_pmu *pmu = to_ddr_pmu(event->pmu);
-	u64 new_raw_count = 0;
 	struct dmc_counter dc = {0}, sum_dc = {0};
 	int idx;
-	int chann_nr = pmu->info.hw_info->chann_nr;
 
-	/* get the remain counters in register. */
 	pmu->info.hw_info->get_counters(&pmu->info, &dc);
 
-	ddr_cnt_addition(&sum_dc, &pmu->counters, &dc, chann_nr);
+	ddr_cnt_addition(&sum_dc, &pmu->counters, &dc,
+			 pmu->info.hw_info->chann_nr);
 
-	switch (event->attr.config) {
+	switch (config) {
 	case ALL_CHAN_COUNTER_ID:
-		new_raw_count = sum_dc.all_cnt;
-		break;
+		return sum_dc.all_cnt;
 	case CHAN1_COUNTER_ID:
 	case CHAN2_COUNTER_ID:
 	case CHAN3_COUNTER_ID:
@@ -107,12 +88,94 @@ static void meson_ddr_perf_event_update(struct perf_event *event)
 	case CHAN6_COUNTER_ID:
 	case CHAN7_COUNTER_ID:
 	case CHAN8_COUNTER_ID:
-		idx = event->attr.config - CHAN1_COUNTER_ID;
-		new_raw_count = sum_dc.channel_cnt[idx];
-		break;
+		idx = config - CHAN1_COUNTER_ID;
+		return sum_dc.channel_cnt[idx];
 	}
 
-	local64_set(&event->count, new_raw_count);
+	return 0;
+}
+
+/*
+ * One set of counter registers is shared by every open session, so the
+ * hardware is brought up by the first event that starts and taken down by the
+ * last one that stops. A nested or overlapping session must not re-zero what
+ * a live session is counting, which is what the refcount is for.
+ *
+ * Called with pmu->counters_lock held.
+ */
+static void dmc_pmu_enable(struct ddr_pmu *pmu)
+{
+	struct dmc_counter drained = {0};
+
+	if (pmu->active_events++ != 0)
+		return;
+
+	/*
+	 * Fold whatever residue the hardware still holds into the running
+	 * total, then clear the counter registers: the total stays monotonic
+	 * and the residue cannot be counted a second time through this
+	 * session's reads.
+	 */
+	if (pmu->info.hw_info->clear_counters)
+		pmu->info.hw_info->clear_counters(&pmu->info, &drained);
+
+	ddr_cnt_addition(&pmu->counters, &pmu->counters, &drained,
+			 pmu->info.hw_info->chann_nr);
+
+	pmu->info.hw_info->enable(&pmu->info);
+}
+
+/* Called with pmu->counters_lock held. */
+static void dmc_pmu_disable(struct ddr_pmu *pmu)
+{
+	if (WARN_ON(!pmu->active_events))
+		return;
+
+	if (--pmu->active_events == 0)
+		pmu->info.hw_info->disable(&pmu->info);
+}
+
+static void meson_ddr_set_axi_filter(struct perf_event *event, u8 axi_id)
+{
+	struct ddr_pmu *pmu = to_ddr_pmu(event->pmu);
+	int chann;
+
+	if (event->attr.config > ALL_CHAN_COUNTER_ID &&
+	    event->attr.config < COUNTER_MAX_ID) {
+		chann = event->attr.config - CHAN1_COUNTER_ID;
+
+		pmu->info.hw_info->set_axi_filter(&pmu->info, axi_id, chann);
+	}
+}
+
+static void meson_ddr_perf_event_update(struct perf_event *event)
+{
+	struct ddr_pmu *pmu = to_ddr_pmu(event->pmu);
+	struct hw_perf_event *hwc = &event->hw;
+	unsigned long flags;
+	u64 new_total;
+
+	/*
+	 * A stopped event has already had its last delta accounted by
+	 * ..._event_stop(). Reading it again would fold in whatever another
+	 * session has moved the shared counter by since then.
+	 */
+	if (hwc->state & PERF_HES_STOPPED)
+		return;
+
+	spin_lock_irqsave(&pmu->counters_lock, flags);
+
+	new_total = ddr_pmu_total(pmu, event->attr.config);
+
+	/*
+	 * Publish what this event has been enabled for, never the pmu-wide
+	 * absolute: an event enabled after some other session already moved
+	 * the counter must not report those earlier bytes as its own.
+	 */
+	local64_add(new_total - local64_read(&hwc->prev_count), &event->count);
+	local64_set(&hwc->prev_count, new_total);
+
+	spin_unlock_irqrestore(&pmu->counters_lock, flags);
 }
 
 static int meson_ddr_perf_event_init(struct perf_event *event)
@@ -137,15 +200,33 @@ static int meson_ddr_perf_event_init(struct perf_event *event)
 
 	event->cpu = pmu->cpu;
 
+	/* the counter state machine below starts from "not counting" */
+	event->hw.state = PERF_HES_STOPPED;
+
 	return 0;
 }
 
 static void meson_ddr_perf_event_start(struct perf_event *event, int flags)
 {
 	struct ddr_pmu *pmu = to_ddr_pmu(event->pmu);
+	struct hw_perf_event *hwc = &event->hw;
+	unsigned long irqflags;
 
-	memset(&pmu->counters, 0, sizeof(pmu->counters));
+	if (!(hwc->state & PERF_HES_STOPPED))
+		return;
+
+	hwc->state &= ~PERF_HES_STOPPED;
+
+	spin_lock_irqsave(&pmu->counters_lock, irqflags);
 	dmc_pmu_enable(pmu);
+	/*
+	 * Baseline this event on the pmu-wide total as of now. From here on it
+	 * reports only what moves the shared counter while it is enabled, so a
+	 * session that starts inside another one -- or right after one that
+	 * never got its hardware cleared -- reads its own traffic.
+	 */
+	local64_set(&hwc->prev_count, ddr_pmu_total(pmu, event->attr.config));
+	spin_unlock_irqrestore(&pmu->counters_lock, irqflags);
 }
 
 static int meson_ddr_perf_event_add(struct perf_event *event, int flags)
@@ -173,11 +254,21 @@ static int meson_ddr_perf_event_add(struct perf_event *event, int flags)
 static void meson_ddr_perf_event_stop(struct perf_event *event, int flags)
 {
 	struct ddr_pmu *pmu = to_ddr_pmu(event->pmu);
+	struct hw_perf_event *hwc = &event->hw;
+	unsigned long irqflags;
+
+	/* ..._event_del() stops an event that disable() may already have stopped */
+	if (hwc->state & PERF_HES_STOPPED)
+		return;
 
 	if (flags & PERF_EF_UPDATE)
 		meson_ddr_perf_event_update(event);
 
+	hwc->state |= PERF_HES_STOPPED;
+
+	spin_lock_irqsave(&pmu->counters_lock, irqflags);
 	dmc_pmu_disable(pmu);
+	spin_unlock_irqrestore(&pmu->counters_lock, irqflags);
 }
 
 static void meson_ddr_perf_event_del(struct perf_event *event, int flags)
@@ -356,6 +447,13 @@ static irqreturn_t dmc_irq_handler(int irq, void *dev_id)
 	if (info->hw_info->irq_handler(info, &counters) != 0)
 		goto out;
 
+	/*
+	 * The running total is shared with every event callback, so it is
+	 * updated under the same lock -- and the refcount that decides whether
+	 * the one-shot timer is re-armed is read there too.
+	 */
+	spin_lock(&pmu->counters_lock);
+
 	sum_cnter = &pmu->counters;
 	sum_cnter->all_cnt += counters.all_cnt;
 	sum_cnter->all_req += counters.all_req;
@@ -363,13 +461,14 @@ static irqreturn_t dmc_irq_handler(int irq, void *dev_id)
 	for (i = 0; i < pmu->info.hw_info->chann_nr; i++)
 		sum_cnter->channel_cnt[i] += counters.channel_cnt[i];
 
-	if (pmu->pmu_enabled)
+	if (pmu->active_events) {
 		/*
 		 * the timer interrupt only supprt
 		 * one shot mode, we have to re-enable
 		 * it in ISR to support continue mode.
 		 */
 		info->hw_info->enable(info);
+	}
 
 	dev_dbg(pmu->dev, "counts: %llu %llu %llu, %llu, %llu, %llu\t\t"
 			"sum: %llu %llu %llu, %llu, %llu, %llu\n",
@@ -386,6 +485,8 @@ static irqreturn_t dmc_irq_handler(int irq, void *dev_id)
 			pmu->counters.channel_cnt[1],
 			pmu->counters.channel_cnt[2],
 			pmu->counters.channel_cnt[3]);
+
+	spin_unlock(&pmu->counters_lock);
 out:
 	return IRQ_HANDLED;
 }
@@ -489,6 +590,8 @@ int meson_ddr_pmu_create(struct platform_device *pdev)
 	if (!pmu)
 		return -ENOMEM;
 
+	spin_lock_init(&pmu->counters_lock);
+
 	*pmu = (struct ddr_pmu) {
 		.pmu = {
 			.module		= THIS_MODULE,
@@ -537,7 +640,6 @@ int meson_ddr_pmu_create(struct platform_device *pdev)
 
 	pmu->name = name;
 	pmu->dev = &pdev->dev;
-	pmu->pmu_enabled = false;
 
 	platform_set_drvdata(pdev, pmu);
 

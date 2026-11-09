@@ -55,11 +55,17 @@ struct vdec_fb_node {
 extern const struct vdec_common_if vdec_h264_if;
 extern const struct vdec_common_if vdec_h264_slice_if;
 extern const struct vdec_common_if vdec_h264_slice_multi_if;
+extern const struct vdec_common_if vdec_h264_mt8365_if;
 extern const struct vdec_common_if vdec_vp8_if;
+extern const struct vdec_common_if vdec_vp8_mt8365_if;
+extern const struct vdec_common_if vdec_vp9_mt8365_if;
 extern const struct vdec_common_if vdec_vp8_slice_if;
 extern const struct vdec_common_if vdec_vp9_if;
 extern const struct vdec_common_if vdec_vp9_slice_lat_if;
 extern const struct vdec_common_if vdec_hevc_slice_multi_if;
+extern const struct vdec_common_if vdec_hevc_slice_if;
+extern const struct vdec_common_if vdec_hevc_mt8365_if;
+extern const struct vdec_common_if vdec_mpeg2_mt8365_if;
 extern const struct vdec_common_if vdec_av1_slice_lat_if;
 
 /**

@@ -24,7 +24,13 @@
 #define GE2D_SRC2_8B_MODE_SEL		GENMASK(16, 15)
 #define GE2D_SRC2_FILL_MODE		BIT(14)
 #define GE2D_SRC2_PIC_STRUCT		GENMASK(13, 12)
-#define GE2D_SRC2_X_YC_RATIO		BIT(11)
+/*
+ * Despite the SRC2 position in the register, bits 10-11 control the SRC1
+ * chroma subsampling ratios per the BSP (ge2d_hw.c:418-420).  The hardware
+ * uses these to configure the SRC1 horizontal/vertical chroma formatter
+ * and the extra coordinate bits in SRC1_X/Y_START_END.
+ */
+#define GE2D_SRC1_X_YC_RATIO		BIT(11)
 #define GE2D_SRC1_8B_MODE_SEL		GENMASK(6, 5)
 #define GE2D_SRC1_FILL_MODE		BIT(4)
 #define GE2D_SRC1_LUT_EN		BIT(3)
@@ -189,6 +195,14 @@
 
 #define GE2D_SRC1_LUT_DAT GE2D_REG(0x0d)
 #define GE2D_SRC1_FMT_CTRL GE2D_REG(0x0e)
+
+#define GE2D_SRC1_CHFMT_RPT_PIX	BIT(19)
+#define GE2D_SRC1_HFMT_EN		BIT(18)
+#define GE2D_SRC1_CVFMT_RPT_PIX	BIT(17)
+#define GE2D_SRC1_VFMT_EN		BIT(16)
+#define GE2D_SRC1_X_CHR_PHASE		GENMASK(15, 8)
+#define GE2D_SRC1_Y_CHR_PHASE		GENMASK(7, 0)
+
 #define GE2D_SRC2_DEF_COLOR GE2D_REG(0x0f)
 #define GE2D_SRC2_CLIPX_START_END GE2D_REG(0x10)
 #define GE2D_SRC2_CLIPY_START_END GE2D_REG(0x11)
@@ -212,6 +226,26 @@
 #define GE2D_HSC_INI_CTRL GE2D_REG(0x1e)
 #define GE2D_HSC_ADV_CTRL GE2D_REG(0x1f)
 #define GE2D_SC_MISC_CTRL GE2D_REG(0x20)
+
+#define GE2D_SC_HSC_DIV_EN		BIT(28)
+#define GE2D_SC_HSC_DIV_LENGTH		GENMASK(27, 15)
+#define GE2D_SC_PREHSC_EN		BIT(14)
+#define GE2D_SC_PREVSC_EN		BIT(13)
+#define GE2D_SC_VSC_EN			BIT(12)
+#define GE2D_SC_HSC_EN			BIT(11)
+#define GE2D_SC_VSC_BANK_LENGTH		GENMASK(7, 4)
+#define GE2D_SC_HSC_BANK_LENGTH		GENMASK(3, 0)
+
+/*
+ * GE2D_HSC_ADV_CTRL: horizontal scaler advance controller, driven by
+ * hsc_div_length / hsc_phase_step via BSP ge2d_hw.c:1246-1264. Programmed
+ * in tandem with SC_HSC_DIV_EN/LENGTH above to keep the pre-decimator and
+ * polyphase kernel pipelined; without these, >2x downscale hangs the
+ * GE2D pipeline on GXL (KI-2026-04-24-B).
+ */
+#define GE2D_HSC_ADV_NUM		GENMASK(31, 24)
+#define GE2D_HSC_ADV_PHASE		GENMASK(23, 0)
+
 #define GE2D_VSC_NRND_POINT GE2D_REG(0x21)
 #define GE2D_VSC_NRND_PHASE GE2D_REG(0x22)
 #define GE2D_HSC_NRND_POINT GE2D_REG(0x23)
@@ -222,11 +256,19 @@
 #define GE2D_MATRIX_COEF11_12 GE2D_REG(0x28)
 #define GE2D_MATRIX_COEF20_21 GE2D_REG(0x29)
 #define GE2D_MATRIX_COEF22_CTRL GE2D_REG(0x2a)
+
+#define GE2D_MATRIX_SAT_IN_EN		BIT(7)
+#define GE2D_MATRIX_EN			BIT(0)
+
 #define GE2D_MATRIX_OFFSET GE2D_REG(0x2b)
 #define GE2D_ALU_OP_CTRL GE2D_REG(0x2c)
 
+#define GE2D_SRC2_COLOR_MULT_ALPHA_DIR	BIT(27)   /* SM1/G12B+ only: src2 mult alpha direction */
 #define GE2D_SRC1_COLOR_MULT_ALPHA_SEL	GENMASK(26, 25)
+/* Standard layout (GXL/AXG): src2_cmult_asel is 1-bit at [24] */
 #define GE2D_SRC2_COLOR_MULT_ALPHA_SEL	BIT(24)
+/* Extended layout (G12A/G12B/SM1): src2_cmult_asel is 2-bit at [24:23] */
+#define GE2D_SRC2_COLOR_MULT_ALPHA_SEL_EXT	GENMASK(24, 23)
 #define GE2D_ALU_BLEND_MODE		GENMASK(22, 20)
 
 #define OPERATION_ADD           0    /* Cd = Cs*Fs+Cd*Fd */
@@ -347,6 +389,14 @@
 
 #define GE2D_STATUS2 GE2D_REG(0x49)
 #define GE2D_GEN_CTRL4 GE2D_REG(0x4a)
+
+/* GEN_CTRL5: SRC2 global alpha (G12B/SM1+ only, register 0x4b).
+ * Bits [7:0] = SRC2 global alpha value (0-255).
+ * Bit [8] = SRC2 global alpha enable.
+ * When enabled, SRC2 pixels are modulated by this alpha before the ALU blend.
+ */
+#define GE2D_GEN_CTRL5 GE2D_REG(0x4b)
+
 #define GE2D_DST1_BADDR_CTRL  GE2D_REG(0x51)
 #define GE2D_DST1_STRIDE_CTRL GE2D_REG(0x52)
 
@@ -357,4 +407,33 @@
 #define GE2D_SRC2_BADDR_CTRL  GE2D_REG(0x55)
 #define GE2D_SRC2_STRIDE_CTRL GE2D_REG(0x56)
 
+/* C1 multi-plane BADDR registers (G12A/SM1) */
+#define GE2D_C1_DST1_BADDR_CTRL	GE2D_REG(0xf2)
+#define GE2D_C1_DST1_STRIDE_CTRL	GE2D_REG(0xf3)
+#define GE2D_C1_DST2_BADDR_CTRL	GE2D_REG(0xf4)
+#define GE2D_C1_DST2_STRIDE_CTRL	GE2D_REG(0xf5)
+#define GE2D_C1_SRC1_BADDR_CTRL_Y	GE2D_REG(0xf6)
+#define GE2D_C1_SRC1_STRIDE_CTRL_Y	GE2D_REG(0xf7)
+#define GE2D_C1_SRC1_BADDR_CTRL_CB	GE2D_REG(0xf8)
+#define GE2D_C1_SRC1_STRIDE_CTRL_CB	GE2D_REG(0xf9)
+#define GE2D_C1_SRC1_BADDR_CTRL_CR	GE2D_REG(0xfa)
+#define GE2D_C1_SRC1_STRIDE_CTRL_CR	GE2D_REG(0xfb)
+
+/* 8-bit color maps for NV12/NV21 */
+#define GE2D_COLOR_MAP_NV21	14
+#define GE2D_COLOR_MAP_NV12	15
+
+/* GEN_CTRL0: SRC1 Y chroma ratio (4:2:0 vertical subsampling) */
+#define GE2D_SRC1_Y_YC_RATIO	BIT(10)
+/* GEN_CTRL0: SRC1 separate enable (multi-plane YUV) */
+#define GE2D_SRC1_SEP_EN	BIT(0)
+
+
+/* 10/12-bit deep color format constants (G12A+ only, GEN_CTRL2 bit 2) */
+#define GE2D_COLOR_MAP_10BIT_YUV444	0
+#define GE2D_COLOR_MAP_10BIT_VUY444	5
+#define GE2D_COLOR_MAP_10BIT_YUV422	0
+#define GE2D_COLOR_MAP_10BIT_YVU422	1
+#define GE2D_COLOR_MAP_12BIT_YUV422	8
+#define GE2D_COLOR_MAP_12BIT_YVU422	9
 #endif /* __GE2D_REGS__ */

@@ -18,13 +18,15 @@
 #include "virtio_pci_common.h"
 
 /* virtio config->get_features() implementation */
-static u64 vp_get_features(struct virtio_device *vdev)
+static int vp_get_features(struct virtio_device *vdev, u64 *features)
 {
 	struct virtio_pci_device *vp_dev = to_vp_device(vdev);
 
 	/* When someone needs more than 32 feature bits, we'll need to
 	 * steal a bit to indicate that the rest are somewhere else. */
-	return vp_legacy_get_features(&vp_dev->ldev);
+	*features = vp_legacy_get_features(&vp_dev->ldev);
+
+	return 0;
 }
 
 /* virtio config->finalize_features() implementation */

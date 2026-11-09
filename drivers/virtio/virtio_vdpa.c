@@ -80,7 +80,7 @@ static void virtio_vdpa_set_status(struct virtio_device *vdev, u8 status)
 {
 	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
 
-	return vdpa_set_status(vdpa, status);
+	vdpa_set_status(vdpa, status);
 }
 
 static void virtio_vdpa_reset(struct virtio_device *vdev)
@@ -378,12 +378,14 @@ err_setup_vq:
 	return err;
 }
 
-static u64 virtio_vdpa_get_features(struct virtio_device *vdev)
+static int virtio_vdpa_get_features(struct virtio_device *vdev, u64 *features)
 {
 	struct vdpa_device *vdpa = vd_get_vdpa(vdev);
 	const struct vdpa_config_ops *ops = vdpa->config;
 
-	return ops->get_device_features(vdpa);
+	*features = ops->get_device_features(vdpa);
+
+	return 0;
 }
 
 static int virtio_vdpa_finalize_features(struct virtio_device *vdev)

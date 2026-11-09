@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/cec/mediatek,mt8188-cec.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT8188 HDMI CEC
+
+maintainers:
+  - Yansheng Xue <xia@lessconfused.com>
+
+description:
+  The HDMI CEC controller of the MediaTek MT8188, a device of its own beside
+  the HDMI transmitter. The transmitter reports the sink's physical address
+  through the CEC notifier, found with hdmi-phandle.
+
+allOf:
+  - $ref: cec-common.yaml#
+
+properties:
+  compatible:
+    const: mediatek,mt8188-cec
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: CEC 66 MHz bus clock (HCLK)
+      - description: CEC 66 MHz bus clock (BCLK)
+      - description: HDMI 32 kHz clock
+      - description: HDMI 26 MHz clock
+
+  clock-names:
+    items:
+      - const: cec_66m_h
+      - const: cec_66m_b
+      - const: hdmi_32k
+      - const: hdmi_26m
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - hdmi-phandle
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mediatek,mt8188-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    cec@10014000 {
+        compatible = "mediatek,mt8188-cec";
+        reg = <0x10014000 0x100>;
+        interrupts = <GIC_SPI 680 IRQ_TYPE_LEVEL_HIGH 0>;
+        clocks = <&infracfg_ao CLK_INFRA_AO_CEC_66M_HCLK>,
+                 <&infracfg_ao CLK_INFRA_AO_CEC_66M_BCLK>,
+                 <&infracfg_ao CLK_INFRA_AO_HDMI_32K>,
+                 <&infracfg_ao CLK_INFRA_AO_HDMI_26M>;
+        clock-names = "cec_66m_h", "cec_66m_b", "hdmi_32k", "hdmi_26m";
+        hdmi-phandle = <&hdmi>;
+    };

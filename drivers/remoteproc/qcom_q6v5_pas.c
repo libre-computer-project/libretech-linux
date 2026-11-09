@@ -46,6 +46,7 @@ struct qcom_pas_data {
 	unsigned int minidump_id;
 	bool auto_boot;
 	bool decrypt_shutdown;
+	bool autonomous;
 
 	char **proxy_pd_names;
 
@@ -248,14 +249,13 @@ static int qcom_pas_load(struct rproc *rproc, const struct firmware *fw)
 		ret = qcom_mdt_load_no_init(pas->dev, pas->dtb_firmware, pas->dtb_firmware_name,
 					    pas->dtb_mem_region, pas->dtb_mem_phys,
 					    pas->dtb_mem_size, &pas->dtb_mem_reloc);
-		if (ret)
-			goto release_dtb_metadata;
+		if (ret) {
+			qcom_scm_pas_metadata_release(&pas->dtb_pas_metadata);
+			goto release_dtb_firmware;
+		}
 	}
 
 	return 0;
-
-release_dtb_metadata:
-	qcom_scm_pas_metadata_release(&pas->dtb_pas_metadata);
 
 release_dtb_firmware:
 	release_firmware(pas->dtb_firmware);
@@ -434,10 +434,32 @@ static unsigned long qcom_pas_panic(struct rproc *rproc)
 	return qcom_q6v5_panic(&pas->q6v5);
 }
 
+static int qcom_pas_attach(struct rproc *rproc)
+{
+	struct qcom_pas *pas = rproc->priv;
+	int ret;
+
+	/*
+	 * The coprocessor was already loaded and started by UEFI/ABL before
+	 * Linux booted (e.g. the always-on X1E80100 aDSP), so we neither
+	 * authenticate nor reset it. Arm the q6v5 crash/stop IRQs and vote the
+	 * load_state on, exactly as the start path does, then mark the handover
+	 * as already issued since it happened before we probed.
+	 */
+	ret = qcom_q6v5_prepare(&pas->q6v5);
+	if (ret)
+		return ret;
+
+	pas->q6v5.handover_issued = true;
+
+	return 0;
+}
+
 static const struct rproc_ops qcom_pas_ops = {
 	.unprepare = qcom_pas_unprepare,
 	.start = qcom_pas_start,
 	.stop = qcom_pas_stop,
+	.attach = qcom_pas_attach,
 	.da_to_va = qcom_pas_da_to_va,
 	.parse_fw = qcom_register_dump_segments,
 	.load = qcom_pas_load,
@@ -448,6 +470,7 @@ static const struct rproc_ops qcom_pas_minidump_ops = {
 	.unprepare = qcom_pas_unprepare,
 	.start = qcom_pas_start,
 	.stop = qcom_pas_stop,
+	.attach = qcom_pas_attach,
 	.da_to_va = qcom_pas_da_to_va,
 	.parse_fw = qcom_register_dump_segments,
 	.load = qcom_pas_load,
@@ -717,6 +740,18 @@ static int qcom_pas_probe(struct platform_device *pdev)
 	}
 
 	rproc->auto_boot = desc->auto_boot;
+
+	/*
+	 * Some platforms (e.g. the X1E80100 aDSP on the ASUS Vivobook S15) boot
+	 * the DSP in UEFI/ABL, so it is already resident when Linux probes. PAS
+	 * self-loading a fresh image fails there because TrustZone will not tear
+	 * down the bootloader-owned lite image (qcom_scm_pas_init_image() on the
+	 * dtb_pas_id returns -EINVAL). Start out detached so the remoteproc core
+	 * attaches to the running DSP instead of loading firmware.
+	 */
+	if (desc->autonomous)
+		rproc->state = RPROC_DETACHED;
+
 	rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_NONE);
 
 	pas = rproc->priv;

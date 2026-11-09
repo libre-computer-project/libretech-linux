@@ -25,6 +25,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/export.h>
+#include <linux/media-bus-format.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -614,6 +615,101 @@ static int output_bpc_show(struct seq_file *m, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(output_bpc);
 
+/*
+ * Vendor-agnostic debug/test knob: pin the negotiated OUTPUT BUS FORMAT (the
+ * HDMI/DP wire encoding -- RGB vs YCbCr444/422/420 and bit depth) for this
+ * connector. There is no standard KMS property for this ("max bpc" only caps
+ * depth, "Colorspace"/"Broadcast RGB" do not pick RGB-vs-YCbCr), so this fills
+ * the gap for any bridge-based pipeline via drm_atomic_bridge_chain_select_bus_fmts().
+ *
+ * Example usage:
+ *   echo yuv422-10 > /sys/kernel/debug/dri/0/HDMI-A-1/force_bus_format
+ *   echo auto      > /sys/kernel/debug/dri/0/HDMI-A-1/force_bus_format
+ * A raw hex MEDIA_BUS_FMT value (e.g. 0x201a) is also accepted. A modeset must
+ * be re-triggered for the change to take effect. The forced format must be one
+ * the sink + max-bpc can produce (widen with "edid_override" / "max bpc").
+ */
+static const struct {
+	const char *name;
+	u32 fmt;
+} drm_force_bus_format_tokens[] = {
+	{ "auto",       0 },
+	{ "rgb888",     MEDIA_BUS_FMT_RGB888_1X24 },
+	{ "rgb101010",  MEDIA_BUS_FMT_RGB101010_1X30 },
+	{ "yuv444-8",   MEDIA_BUS_FMT_YUV8_1X24 },
+	{ "yuv444-10",  MEDIA_BUS_FMT_YUV10_1X30 },
+	{ "yuv422-8",   MEDIA_BUS_FMT_UYVY8_1X16 },
+	{ "yuv422-10",  MEDIA_BUS_FMT_UYVY10_1X20 },
+	{ "yuv420-8",   MEDIA_BUS_FMT_UYYVYY8_0_5X24 },
+	{ "yuv420-10",  MEDIA_BUS_FMT_UYYVYY10_0_5X30 },
+};
+
+static int force_bus_format_show(struct seq_file *m, void *data)
+{
+	struct drm_connector *connector = m->private;
+	u32 fmt = connector->force_bus_format;
+	int i;
+
+	if (!fmt) {
+		seq_puts(m, "auto\n");
+		return 0;
+	}
+	for (i = 0; i < ARRAY_SIZE(drm_force_bus_format_tokens); i++) {
+		if (drm_force_bus_format_tokens[i].fmt == fmt) {
+			seq_printf(m, "%s (0x%04x)\n",
+				   drm_force_bus_format_tokens[i].name, fmt);
+			return 0;
+		}
+	}
+	seq_printf(m, "0x%04x\n", fmt);
+	return 0;
+}
+
+static int force_bus_format_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, force_bus_format_show, inode->i_private);
+}
+
+static ssize_t force_bus_format_write(struct file *file, const char __user *ubuf,
+				      size_t len, loff_t *offp)
+{
+	struct seq_file *m = file->private_data;
+	struct drm_connector *connector = m->private;
+	char buf[24];
+	size_t n = len;
+	u32 fmt;
+	int i;
+
+	if (n >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, n))
+		return -EFAULT;
+	buf[n] = '\0';
+	while (n && (buf[n - 1] == '\n' || buf[n - 1] == ' ' || buf[n - 1] == '\t'))
+		buf[--n] = '\0';
+
+	for (i = 0; i < ARRAY_SIZE(drm_force_bus_format_tokens); i++) {
+		if (!strcmp(buf, drm_force_bus_format_tokens[i].name)) {
+			connector->force_bus_format = drm_force_bus_format_tokens[i].fmt;
+			return len;
+		}
+	}
+	if (!kstrtou32(buf, 0, &fmt)) {
+		connector->force_bus_format = fmt;
+		return len;
+	}
+	return -EINVAL;
+}
+
+static const struct file_operations drm_force_bus_format_fops = {
+	.owner = THIS_MODULE,
+	.open = force_bus_format_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+	.write = force_bus_format_write,
+};
+
 static const struct file_operations drm_edid_fops = {
 	.owner = THIS_MODULE,
 	.open = edid_open,
@@ -807,6 +903,10 @@ void drm_debugfs_connector_add(struct drm_connector *connector)
 	/* max bpc */
 	debugfs_create_file("output_bpc", 0444, root, connector,
 			    &output_bpc_fops);
+
+	/* force output bus format (debug/test) */
+	debugfs_create_file("force_bus_format", 0644, root, connector,
+			    &drm_force_bus_format_fops);
 
 	hdmi_debugfs_add(connector);
 

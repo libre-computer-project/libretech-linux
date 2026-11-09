@@ -55,6 +55,20 @@
 		wakeup-delay-ms = <30>;
 	};
 
+	connector {
+		compatible = "hdmi-connector";
+		label = "hdmi";
+		type = "a";
+		ddc-i2c-bus = <&hdmi_ddc>;
+		hdmi-pwr-supply = <&hdmi_phy>;
+
+		port {
+			hdmi_connector_in: endpoint {
+				remote-endpoint = <&hdmi0_out>;
+			};
+		};
+	};
+
 	firmware {
 		optee {
 			compatible = "linaro,optee-tz";
@@ -328,12 +342,73 @@
 	remote-endpoint = <&dsi0_in>;
 };
 
+&dpi1 {
+	status = "okay";
+};
+
+&dpi1_in {
+	remote-endpoint = <&merge5_out>;
+};
+
+&dpi1_out {
+	remote-endpoint = <&hdmi0_in>;
+};
+
 &gamma0_out {
 	remote-endpoint = <&postmask0_in>;
 };
 
 &gpu {
 	mali-supply = <&mt6359_vproc2_buck_reg>;
+	status = "okay";
+};
+
+&ethdr0 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			ethdr0_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&vdosys1_ep_ext>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			ethdr0_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&merge5_in>;
+			};
+		};
+	};
+};
+
+&hdmi {
+	pinctrl-names = "default";
+	pinctrl-0 = <&hdmi_pins>;
+	status = "okay";
+};
+
+&hdmi0_in {
+	remote-endpoint = <&dpi1_out>;
+};
+
+&hdmi0_out {
+	remote-endpoint = <&hdmi_connector_in>;
+};
+
+&hdmi_phy {
+	pinctrl-names = "default";
+	pinctrl-0 = <&hdmi_vreg_pins>;
 	status = "okay";
 };
 
@@ -475,6 +550,35 @@
 	status = "okay";
 };
 
+&merge5 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			merge5_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&ethdr0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			merge5_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&dpi1_in>;
+			};
+		};
+	};
+};
+
 &mfg0 {
 	domain-supply = <&mt6359_vproc2_buck_reg>;
 };
@@ -513,7 +617,15 @@
 	pinctrl-0 = <&mmc1_default_pins>;
 	pinctrl-1 = <&mmc1_uhs_pins>;
 	bus-width = <4>;
-	max-frequency = <200000000>;
+	/*
+	 * Run SDR104 at the full 208 MHz msdc30_1 source (univpll_d6_d2), up from the
+	 * 192 MHz msdcpll_d2 default. The mtk-sd CRC-storm clock ladder backstops the
+	 * tighter 208 eye: a marginal card falls back 208->192->182->156 instead of
+	 * failing.
+	 */
+	max-frequency = <208000000>;
+	assigned-clocks = <&topckgen CLK_TOP_MSDC30_1>;
+	assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_D6_D2>;
 	cap-sd-highspeed;
 	sd-uhs-sdr50;
 	sd-uhs-sdr104;
@@ -724,6 +836,31 @@
 				 <PINMUX_GPIO132__FUNC_B_GPIO132>,
 				 <PINMUX_GPIO133__FUNC_B_GPIO133>,
 				 <PINMUX_GPIO134__FUNC_B_GPIO134>;
+		};
+	};
+
+	hdmi_vreg_pins: hdmi-vreg-pins {
+		pins-pwr {
+			pinmux = <PINMUX_GPIO50__FUNC_O_HDMITX20_PWR5V>;
+			bias-disable;
+		};
+	};
+
+	hdmi_pins: hdmi-pins {
+		pins-hotplug {
+			pinmux = <PINMUX_GPIO51__FUNC_I0_HDMITX20_HTPLG>;
+			bias-pull-down;
+		};
+
+		pins-cec {
+			pinmux = <PINMUX_GPIO52__FUNC_B1_HDMITX20_CEC>;
+			bias-disable;
+		};
+
+		pins-ddc {
+			pinmux = <PINMUX_GPIO53__FUNC_B1_HDMITX20_SCL>,
+				 <PINMUX_GPIO54__FUNC_B1_HDMITX20_SDA>;
+			drive-strength = <10>;
 		};
 	};
 
@@ -1181,6 +1318,18 @@
 };
 
 &scp_c0 {
+	/*
+	 * The codec SCP firmware (mediatek/mt8188/scp.img) is a single-core RISC-V
+	 * image that uses the whole 1 MB cluster SRAM (its IPI buffer lands at
+	 * offset 0xffb40). Only c0 is enabled here, so give c0 the full SRAM range
+	 * instead of the dual-core split (mt8188.dtsi: c0=0xd0000, c1=0x2f000) --
+	 * otherwise the SCP boot fails -EOVERFLOW ("IPI buffer does not fit in SRAM",
+	 * 0xffb40 > 0xd0000). firmware-name points the remoteproc at the right path
+	 * (the driver default is the bare "scp.img", which request_firmware can't
+	 * find under /lib/firmware). Together these bring up mtk-vcodec on MT8188.
+	 */
+	reg = <0x0 0x100000>;
+	firmware-name = "mediatek/mt8188/scp.img";
 	memory-region = <&scp_mem>;
 	status = "okay";
 };
@@ -1197,6 +1346,7 @@
 		"AP DMIC", "AUDGLB",
 		"AP DMIC", "MIC_BIAS_0",
 		"AP DMIC", "MIC_BIAS_2";
+	mediatek,accdet = <&accdet>;
 	mediatek,adsp = <&adsp>;
 	status = "okay";
 
@@ -1215,6 +1365,15 @@
 			sound-dai = <&dmic_codec>;
 		};
 	};
+
+	dai-link-2 {
+		link-name = "ETDM3_OUT_BE";
+
+		codec {
+			sound-dai = <&hdmi 0>;
+		};
+	};
+
 };
 
 &spi2 {
@@ -1256,6 +1415,141 @@
 	};
 };
 
+/*
+ * DisplayPort output (crtc 1, vdosys1 path). MT8188 has no native HDMI -- the
+ * EVK's display output is DisplayPort (USB-C DP-altmode / DP-to-HDMI), driven
+ * by dp_tx with a dedicated DP_TX_HPD line (GPIO46, &dptx_pins). Graph mirrors
+ * the mt8188-geralt.dtsi reference: vdosys1 -> ethdr0 -> merge5 -> dp_intf1 ->
+ * dp_tx. Without this the dp_intf/dp_tx nodes stay disabled and the kernel logs
+ * "Not creating crtc 1 because component ... is disabled or missing".
+ */
+&vdosys1 {
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		vdosys1_ep_ext: endpoint@1 {
+			reg = <1>;
+			remote-endpoint = <&ethdr0_in>;
+		};
+	};
+};
+
+&ethdr0 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			ethdr0_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&vdosys1_ep_ext>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			ethdr0_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&merge5_in>;
+			};
+		};
+	};
+};
+
+&merge5 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			merge5_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&ethdr0_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			merge5_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&dp_intf1_in>;
+			};
+		};
+	};
+};
+
+&dp_intf1 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+
+			dp_intf1_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&merge5_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+
+			dp_intf1_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&dptx_in>;
+			};
+		};
+	};
+};
+
+&dp_tx {
+	pinctrl-names = "default";
+	pinctrl-0 = <&dptx_pins>;
+	#sound-dai-cells = <0>;
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dptx_in: endpoint {
+				remote-endpoint = <&dp_intf1_out>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dptx_out: endpoint {
+				data-lanes = <0 1 2 3>;
+			};
+		};
+	};
+};
+
 &u3phy0 {
 	status = "okay";
 };
@@ -1283,6 +1577,18 @@
 		type = "micro";
 		id-gpios = <&pio 83 GPIO_ACTIVE_HIGH>;
 		vbus-supply = <&usb_p0_vbus>;
+	};
+};
+
+&vdosys1 {
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		vdosys1_ep_ext: endpoint@1 {
+			reg = <1>;
+			remote-endpoint = <&ethdr0_in>;
+		};
 	};
 };
 

@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2017 T-Chip Intelligent Technology Co., Ltd
+ * Copyright (c) 2026 Libre Computer
+ *
+ * ROC-RK3399-PC revision V1.2A (schematic TF-XD-ROC_3399_PC REV 1.2A,
+ * 2022-11). One product, three revisions: V1.0 -> V1.1-A -> V1.2A. This file
+ * carries ONLY what V1.2A changes relative to rk3399-roc-pc.dtsi; everything
+ * else is the shared board.
+ *
+ * U-Boot identifies the revision at runtime from the LPDDR4 rank count TPL
+ * publishes in PMUGRF_OS_REG2 (V1.2A: two 200-ball packages, one rank per
+ * channel; V1.0/V1.1-A: one 366-pin package, two ranks) and, when it boots a
+ * plain rk3399-roc-pc DTB on a V1.2A, applies exactly the changes below as an
+ * ft_board_setup() fixup. A V1.2A therefore sees the same tree whether it is
+ * handed this DTS or the fixed-up base one; the fixup is a no-op on this DTS.
+ *
+ * NOT expressed here, deliberately:
+ *   - The LPDDR4 package change itself. It is the discriminator, not a
+ *     device: the memory node is filled in by firmware either way.
+ *   - The 40-pin eDP panel + touch controller. No panel is described on any
+ *     revision yet; only the pins V1.2A takes back from the header are named.
+ *   - The second SPI-NOR footprint behind the SW2 selector. One flash answers
+ *     on spi1 cs0 at a time and is identified by JEDEC id, so flash@0 stands.
+ */
+
+/dts-v1/;
+#include "rk3399-roc-pc.dtsi"
+
+/*
+ * V1.2A has no MP8859. Its Type-C0 -> 12 V converter is an SC8903 (schematic
+ * V1.2A p15 POWER_IN, U9) with NO i2c pins, no SoC-driven enable (/CE is an
+ * on-sheet Q5/Q1 network), and its output set by the FB divider R218 124K /
+ * R219 13.7K at 1.2 V, i.e. a fixed 12 V from VBUS_TYPEC0 through L7. Measured
+ * on a V1.2A: i2c7 answers only 0x22 (fusb0); 0x66 is -EREMOTEIO.
+ */
+/delete-node/ &mp8859;
+
+/ {
+	model = "Libre Computer ROC-RK3399-PC (V1.2A)";
+	compatible = "libre-computer,roc-rk3399-pc-v1.2",
+		     "libre-computer,roc-rk3399-pc",
+		     "firefly,roc-rk3399-pc", "rockchip,rk3399";
+
+	/*
+	 * Same shape as the U-Boot fixup emits (/regulator-dc-12v,
+	 * regulator-fixed, no enable), so sys_12v keeps its supply chain:
+	 * vcc_vbus_typec0 -> dc_12v -> sys_12v.
+	 */
+	dc_12v: regulator-dc-12v {
+		compatible = "regulator-fixed";
+		regulator-name = "dc_12v";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+		vin-supply = <&vcc_vbus_typec0>;
+	};
+};
+
+/*
+ * V1.2A moves GPIO0_A1 and GPIO0_B4 off the expansion header (J20 pins 25/26
+ * are unconnected on this revision) to the eDP touch-panel level shifters:
+ * GPIO0_A1 -> TP_EN_EDP (Q6), GPIO0_B4 -> TP_INT_EDP (Q2), schematic V1.2A
+ * p28. Driving them from the header is not a no-op on this revision.
+ */
+&gpio0 {
+	gpio-line-names =
+		/* GPIO0_A0..A7 */
+		"RTC_CLKO_SOC", "TP_EN_EDP", "YELLOW_LED", "WIFI_HOST_WAKE_L",
+		"BT_HOST_WAKE_L", "PWR_KEY_L", "IR_INT", "SDMMC0_DET_L",
+		/* GPIO0_B0..B5 */
+		"MIPI_RST", "BT_REG_ON_H", "WIFI_REG_ON_H", "EFUSE_VQPS_EN_H",
+		"TP_INT_EDP", "DIY_LED";
+};

@@ -13,6 +13,14 @@
 int mmc_register_host_class(void);
 void mmc_unregister_host_class(void);
 
+#ifdef CONFIG_DEBUG_FS
+/* Platform-agnostic eye-scan facility (drivers/mmc/core/eye.c) */
+void mmc_add_eye_debugfs(struct mmc_host *host, struct dentry *root);
+#else
+static inline void mmc_add_eye_debugfs(struct mmc_host *host,
+				       struct dentry *root) { }
+#endif
+
 void mmc_retune_enable(struct mmc_host *host);
 void mmc_retune_disable(struct mmc_host *host);
 void mmc_retune_hold(struct mmc_host *host);
@@ -56,7 +64,8 @@ static inline int mmc_host_can_access_boot(struct mmc_host *host)
 
 static inline int mmc_host_can_uhs(struct mmc_host *host)
 {
-	return host->caps &
+	return !host->sd_uhs_disabled &&
+	       host->caps &
 		(MMC_CAP_UHS_SDR12 | MMC_CAP_UHS_SDR25 |
 		 MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR104 |
 		 MMC_CAP_UHS_DDR50) &&

@@ -18,6 +18,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -43,8 +44,24 @@
 		 TSENSOR_CFG_REG1_VBG_EN |	\
 		 TSENSOR_CFG_REG1_DEM_EN |	\
 		 TSENSOR_CFG_REG1_CH_SEL)
+	#define TSENSOR_CFG_REG1_IRQ_RISE0_EN	BIT(24)
+	#define TSENSOR_CFG_REG1_IRQ_FALL0_EN	BIT(28)
+	#define TSENSOR_CFG_REG1_IRQ_EN_MASK	GENMASK(31, 24)
+	#define TSENSOR_CFG_REG1_IRQ_CLR_MASK	GENMASK(23, 16)
+
+#define TSENSOR_CFG_REG2			0x8
+	#define TSENSOR_CFG_REG2_REBOOT_CODE	GENMASK(15, 4)
+	#define TSENSOR_CFG_REG2_REBOOT_TIME	GENMASK(23, 16)
+	#define TSENSOR_CFG_REG2_REBOOT_ALL_EN	BIT(30)
+	#define TSENSOR_CFG_REG2_HITEMP_EN	BIT(31)
+
+#define TSENSOR_CFG_REG4			0x10
+#define TSENSOR_CFG_REG5			0x14
+#define TSENSOR_CFG_REG6			0x18
+#define TSENSOR_CFG_REG7			0x1c
 
 #define TSENSOR_STAT0			0x40
+#define TSENSOR_STAT1			0x44
 
 #define TSENSOR_STAT9			0x64
 
@@ -62,6 +79,8 @@
 
 #define TSENSOR_CALIB_OFFSET	1
 #define TSENSOR_CALIB_SHIFT	4
+
+#define TSENSOR_REBOOT_TEMP		115000	/* millicelsius */
 
 /**
  * struct amlogic_thermal_soc_calib_data
@@ -100,6 +119,7 @@ struct amlogic_thermal {
 	struct clk *clk;
 	struct thermal_zone_device *tzd;
 	u32 trim_info;
+	int irq;
 };
 
 /*
@@ -133,6 +153,104 @@ static int amlogic_thermal_code_to_millicelsius(struct amlogic_thermal *pdata,
 	return temp;
 }
 
+/*
+ * Inverse of code_to_millicelsius: convert millicelsius to sensor code.
+ *
+ * From the forward formula:
+ *   U = code / 2^16
+ *   uptat = (m * U) / (1 + n * U)   (with m,n scaled by /100)
+ *   T = A * (uptat + uefuse/2^16) - B   (result in centi-celsius, *100)
+ *
+ * Inverting:
+ *   uptat = (T/100 + B) * 2^16 / A - uefuse
+ *   U = uptat / (m - n * uptat)  (scaled)
+ *   code = U (the 16-bit sensor reading)
+ *
+ * We return a 12-bit code (>> 4) suitable for threshold registers.
+ */
+static int amlogic_thermal_millicelsius_to_code(struct amlogic_thermal *pdata,
+						int temp_mc)
+{
+	const struct amlogic_thermal_soc_calib_data *param =
+					pdata->data->calibration_parameters;
+	s64 uefuse, uptat, code;
+
+	uefuse = pdata->trim_info & TSENSOR_TRIM_SIGN_MASK ?
+			     ~(pdata->trim_info & TSENSOR_TRIM_TEMP_MASK) + 1 :
+			     (pdata->trim_info & TSENSOR_TRIM_TEMP_MASK);
+
+	/* T (millicelsius) = (A * (uptat + uefuse) / 2^16 - B) * 100 */
+	/* So: uptat = ((T/100 + B) * 2^16 / A) - uefuse */
+	uptat = (s64)(temp_mc / 100 + param->B) * BIT(16);
+	uptat = div_s64(uptat, param->A);
+	uptat = uptat - uefuse;
+
+	/* Forward: uptat = m*code*2^16 / (100*2^16 + n*code) */
+	/* Inverse: code = uptat * 100 * 2^16 / (m * 2^16 - n * uptat) */
+	code = uptat * 100 * BIT(16);
+	code = div_s64(code, (s64)param->m * BIT(16) - (s64)param->n * uptat);
+
+	/* Return 12-bit threshold code */
+	return clamp_val((int)(code >> 4) & TSENSOR_TEMP_MASK, 0,
+			 TSENSOR_TEMP_MASK);
+}
+
+static irqreturn_t amlogic_thermal_irq(int irq, void *data)
+{
+	struct amlogic_thermal *pdata = data;
+	unsigned int stat, reg1;
+
+	regmap_read(pdata->regmap, TSENSOR_STAT1, &stat);
+	if (!(stat & 0xff))
+		return IRQ_NONE;
+
+	/* Clear pending IRQs: write-1-to-clear in CFG_REG1[23:16] */
+	regmap_read(pdata->regmap, TSENSOR_CFG_REG1, &reg1);
+	reg1 |= (stat & 0xff) << 16;
+	regmap_write(pdata->regmap, TSENSOR_CFG_REG1, reg1);
+	reg1 &= ~TSENSOR_CFG_REG1_IRQ_CLR_MASK;
+	regmap_write(pdata->regmap, TSENSOR_CFG_REG1, reg1);
+
+	thermal_zone_device_update(pdata->tzd, THERMAL_TRIP_VIOLATED);
+
+	return IRQ_HANDLED;
+}
+
+static int amlogic_thermal_set_trips(struct thermal_zone_device *tz,
+				     int low, int high)
+{
+	struct amlogic_thermal *pdata = thermal_zone_device_priv(tz);
+	unsigned int reg1;
+	u32 irq_en = 0;
+	int high_code, low_code;
+
+	/* Threshold 0 is in bits [23:12] of CFG_REG4/CFG_REG6 */
+
+	/* Program rising threshold 0 (high) into CFG_REG4[23:12] */
+	if (high != INT_MAX) {
+		high_code = amlogic_thermal_millicelsius_to_code(pdata, high);
+		regmap_update_bits(pdata->regmap, TSENSOR_CFG_REG4,
+				   TSENSOR_TEMP_MASK << 12, high_code << 12);
+		irq_en |= TSENSOR_CFG_REG1_IRQ_RISE0_EN;
+	}
+
+	/* Program falling threshold 0 (low) into CFG_REG6[23:12] */
+	if (low != -INT_MAX) {
+		low_code = amlogic_thermal_millicelsius_to_code(pdata, low);
+		regmap_update_bits(pdata->regmap, TSENSOR_CFG_REG6,
+				   TSENSOR_TEMP_MASK << 12, low_code << 12);
+		irq_en |= TSENSOR_CFG_REG1_IRQ_FALL0_EN;
+	}
+
+	/* Enable only the relevant IRQs, clear any pending */
+	regmap_read(pdata->regmap, TSENSOR_CFG_REG1, &reg1);
+	reg1 &= ~(TSENSOR_CFG_REG1_IRQ_EN_MASK | TSENSOR_CFG_REG1_IRQ_CLR_MASK);
+	reg1 |= irq_en;
+	regmap_write(pdata->regmap, TSENSOR_CFG_REG1, reg1);
+
+	return 0;
+}
+
 static int amlogic_thermal_initialize(struct amlogic_thermal *pdata)
 {
 	int ret = 0;
@@ -153,6 +271,24 @@ static int amlogic_thermal_initialize(struct amlogic_thermal *pdata)
 	return ret;
 }
 
+static void amlogic_thermal_enable_reboot(struct amlogic_thermal *data)
+{
+	int code;
+	u32 val;
+
+	code = amlogic_thermal_millicelsius_to_code(data, TSENSOR_REBOOT_TEMP);
+	val = FIELD_PREP(TSENSOR_CFG_REG2_REBOOT_CODE, code) |
+	      FIELD_PREP(TSENSOR_CFG_REG2_REBOOT_TIME, 0xff) |
+	      TSENSOR_CFG_REG2_HITEMP_EN |
+	      TSENSOR_CFG_REG2_REBOOT_ALL_EN;
+
+	regmap_write(data->regmap, TSENSOR_CFG_REG2, val);
+
+	dev_info(&data->pdev->dev,
+		 "hardware reboot enabled at %d mC (code %d)\n",
+		 TSENSOR_REBOOT_TEMP, code);
+}
+
 static int amlogic_thermal_enable(struct amlogic_thermal *data)
 {
 	int ret;
@@ -164,13 +300,19 @@ static int amlogic_thermal_enable(struct amlogic_thermal *data)
 	regmap_update_bits(data->regmap, TSENSOR_CFG_REG1,
 			   TSENSOR_CFG_REG1_ENABLE, TSENSOR_CFG_REG1_ENABLE);
 
+	amlogic_thermal_enable_reboot(data);
+
 	return 0;
 }
 
 static void amlogic_thermal_disable(struct amlogic_thermal *data)
 {
+	/* Disable IRQs and sensor */
 	regmap_update_bits(data->regmap, TSENSOR_CFG_REG1,
+			   TSENSOR_CFG_REG1_IRQ_EN_MASK |
 			   TSENSOR_CFG_REG1_ENABLE, 0);
+	/* Disable hardware reboot */
+	regmap_write(data->regmap, TSENSOR_CFG_REG2, 0);
 	clk_disable_unprepare(data->clk);
 }
 
@@ -192,6 +334,7 @@ static int amlogic_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
 
 static const struct thermal_zone_device_ops amlogic_thermal_ops = {
 	.get_temp	= amlogic_thermal_get_temp,
+	.set_trips	= amlogic_thermal_set_trips,
 };
 
 static const struct regmap_config amlogic_thermal_regmap_config_g12a = {
@@ -295,8 +438,23 @@ static int amlogic_thermal_probe(struct platform_device *pdev)
 		return ret;
 
 	ret = amlogic_thermal_enable(pdata);
+	if (ret)
+		return ret;
 
-	return ret;
+	pdata->irq = platform_get_irq_optional(pdev, 0);
+	if (pdata->irq > 0) {
+		ret = devm_request_threaded_irq(dev, pdata->irq, NULL,
+						amlogic_thermal_irq,
+						IRQF_ONESHOT,
+						dev_name(dev), pdata);
+		if (ret) {
+			dev_warn(dev, "failed to request IRQ %d, using polling\n",
+				 pdata->irq);
+			pdata->irq = 0;
+		}
+	}
+
+	return 0;
 }
 
 static void amlogic_thermal_remove(struct platform_device *pdev)

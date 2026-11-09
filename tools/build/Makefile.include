@@ -12,7 +12,10 @@ else
 endif
 
 fixdep:
-	$(SILENT_MAKE) -C $(srctree)/tools/build CFLAGS= LDFLAGS= $(OUTPUT)fixdep
+	$(SILENT_MAKE) -C $(srctree)/tools/build \
+		$(if $(REALHOSTCC),HOSTCC=$(REALHOSTCC) KBUILD_HOSTCFLAGS=) \
+		$(if $(REALHOSTLD),HOSTLD=$(REALHOSTLD) KBUILD_HOSTLDFLAGS=) \
+		$(OUTPUT)fixdep
 
 fixdep-clean:
 	$(Q)$(MAKE) -C $(srctree)/tools/build clean

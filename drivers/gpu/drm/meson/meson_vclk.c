@@ -6,6 +6,7 @@
  */
 
 #include <linux/export.h>
+#include <linux/math64.h>
 
 #include <drm/drm_print.h>
 
@@ -109,6 +110,21 @@
 #define HDMI_PLL_RESET_G12A	BIT(29)
 #define HDMI_PLL_LOCK		BIT(31)
 #define HDMI_PLL_LOCK_G12A	(3 << 30)
+
+/*
+ * Bound the HDMI PLL lock poll. The lock bit normally asserts within a few
+ * microseconds, so the poll exits immediately on a healthy lock; the timeout
+ * only matters when the PLL cannot lock (an HDMI sink flapping HPD mid-modeset,
+ * or a mode near the SoC PLL ceiling -- e.g. the documented S805X > 1.65 GHz
+ * limit). Upstream passes timeout_us=0 here, which is an INFINITE poll: a PLL
+ * that never locks then wedges the atomic-modeset thread forever. Bound it and
+ * warn instead, so a bad sink cannot hang the modeset -- the next modeset
+ * re-attempts. 10 ms is >100x the microsecond-scale lock time. The G12A path
+ * resets+repolls in a loop, so it is bounded by a retry cap of equivalent
+ * total duration (100 tries x 100 us poll).
+ */
+#define HDMI_PLL_LOCK_TIMEOUT_US	10000
+#define HDMI_PLL_LOCK_G12A_MAX_TRIES	100
 
 #define FREQ_1000_1001(_freq)	DIV_ROUND_CLOSEST_ULL((_freq) * 1000ULL, 1001ULL)
 
@@ -251,9 +267,12 @@ static void meson_venci_cvbs_clock_config(struct meson_drm *priv)
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL6, 0x00000e55);
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x4800023d);
 
-		/* Poll for lock bit */
-		regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
-					 (val & HDMI_PLL_LOCK), 10, 0);
+		/* Poll for lock bit (bounded -- never hang on a PLL that
+		 * cannot lock; see HDMI_PLL_LOCK_TIMEOUT_US above) */
+		if (regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
+					     (val & HDMI_PLL_LOCK), 10,
+					     HDMI_PLL_LOCK_TIMEOUT_US))
+			pr_warn("meson-vclk: CVBS PLL (GXBB) failed to lock\n");
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXM) ||
 		   meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXL)) {
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x4000027b);
@@ -269,9 +288,12 @@ static void meson_venci_cvbs_clock_config(struct meson_drm *priv)
 		regmap_update_bits(priv->hhi, HHI_HDMI_PLL_CNTL,
 					HDMI_PLL_RESET, 0);
 
-		/* Poll for lock bit */
-		regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
-					 (val & HDMI_PLL_LOCK), 10, 0);
+		/* Poll for lock bit (bounded -- never hang on a PLL that
+		 * cannot lock; see HDMI_PLL_LOCK_TIMEOUT_US above) */
+		if (regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
+					     (val & HDMI_PLL_LOCK), 10,
+					     HDMI_PLL_LOCK_TIMEOUT_US))
+			pr_warn("meson-vclk: CVBS PLL (GXL/GXM) failed to lock\n");
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x1a0504f7);
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL2, 0x00010000);
@@ -283,10 +305,12 @@ static void meson_venci_cvbs_clock_config(struct meson_drm *priv)
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x3a0504f7);
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x1a0504f7);
 
-		/* Poll for lock bit */
-		regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
+		/* Poll for lock bit (bounded -- never hang on a PLL that
+		 * cannot lock; see HDMI_PLL_LOCK_TIMEOUT_US above) */
+		if (regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
 			((val & HDMI_PLL_LOCK_G12A) == HDMI_PLL_LOCK_G12A),
-			10, 0);
+			10, HDMI_PLL_LOCK_TIMEOUT_US))
+			pr_warn("meson-vclk: CVBS PLL (G12A) failed to lock\n");
 	}
 
 	/* Disable VCLK2 */
@@ -357,6 +381,10 @@ enum {
 	MESON_VCLK_HDMI_594000,
 /* 2970 /1 /1 /1 /5 /1  => /1 /2 */
 	MESON_VCLK_HDMI_594000_YUV420,
+/* 4830 /2 /1 /2 /5 /1  => /1 /1 */
+	MESON_VCLK_HDMI_241500,
+/* 5940 /2 /2 /1 /5 /1 -- 4K30 YUV420: phy 1485 (TMDS halved), vclk 297 */
+	MESON_VCLK_HDMI_297000_YUV420,
 };
 
 struct meson_vclk_params {
@@ -467,6 +495,36 @@ struct meson_vclk_params {
 		.vid_pll_div = VID_PLL_DIV_5,
 		.vclk_div = 1,
 	},
+	/* E12(a): every field here was 1000x too small (uniform missing-000
+	 * typo) -- this table entry could never match any real PLL/PHY/VENC
+	 * frequency, so it was fully dead. Verified self-consistent against
+	 * every sibling entry's derivation (phy_freq = pll_freq/(od1*od2);
+	 * venc_freq = pll_freq/(od1*od2*od3*vid_pll_div); vclk_freq =
+	 * pixel_freq = venc_freq for this od/div combo). */
+	[MESON_VCLK_HDMI_241500] = {
+		.pll_freq = 4830000000,
+		.phy_freq = 2415000000,
+		.venc_freq = 241500000,
+		.vclk_freq = 241500000,
+		.pixel_freq = 241500000,
+		.pll_od1 = 2,
+		.pll_od2 = 1,
+		.pll_od3 = 2,
+		.vid_pll_div = VID_PLL_DIV_5,
+		.vclk_div = 1,
+	},
+	[MESON_VCLK_HDMI_297000_YUV420] = {
+		.pll_freq = 5940000000,
+		.phy_freq = 1485000000,
+		.venc_freq = 297000000,
+		.vclk_freq = 297000000,
+		.pixel_freq = 148500000,
+		.pll_od1 = 2,
+		.pll_od2 = 2,
+		.pll_od3 = 1,
+		.vid_pll_div = VID_PLL_DIV_5,
+		.vclk_div = 1,
+	},
 	{ /* sentinel */ },
 };
 
@@ -487,11 +545,16 @@ static inline unsigned int pll_od_to_reg(unsigned int od)
 	return 0;
 }
 
-static void meson_hdmi_pll_set_params(struct meson_drm *priv, unsigned int m,
+/* E9: returns false if the PLL never locked, so the caller can abort the
+ * clock-tree programming instead of writing the OD dividers (and every
+ * downstream vid_pll/vclk/hdmi_tx/venc divider) off a PLL that isn't
+ * actually running at the requested frequency. */
+static bool meson_hdmi_pll_set_params(struct meson_drm *priv, unsigned int m,
 				      unsigned int frac, unsigned int od1,
 				      unsigned int od2, unsigned int od3)
 {
 	unsigned int val;
+	bool locked = true;
 
 	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXBB)) {
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x58000200 | m);
@@ -510,9 +573,14 @@ static void meson_hdmi_pll_set_params(struct meson_drm *priv, unsigned int m,
 		regmap_update_bits(priv->hhi, HHI_HDMI_PLL_CNTL,
 				   0x7 << 28, HHI_HDMI_PLL_CNTL_EN);
 
-		/* Poll for lock bit */
-		regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL,
-					 val, (val & HDMI_PLL_LOCK), 10, 0);
+		/* Poll for lock bit (bounded -- never hang on a PLL that
+		 * cannot lock; see HDMI_PLL_LOCK_TIMEOUT_US above) */
+		if (regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL,
+					     val, (val & HDMI_PLL_LOCK), 10,
+					     HDMI_PLL_LOCK_TIMEOUT_US)) {
+			pr_warn("meson-vclk: HDMI PLL (GXBB) failed to lock\n");
+			locked = false;
+		}
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXM) ||
 		   meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXL)) {
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x40000200 | m);
@@ -528,10 +596,17 @@ static void meson_hdmi_pll_set_params(struct meson_drm *priv, unsigned int m,
 		regmap_update_bits(priv->hhi, HHI_HDMI_PLL_CNTL,
 				HDMI_PLL_RESET, 0);
 
-		/* Poll for lock bit */
-		regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
-				(val & HDMI_PLL_LOCK), 10, 0);
+		/* Poll for lock bit (bounded -- never hang on a PLL that
+		 * cannot lock; see HDMI_PLL_LOCK_TIMEOUT_US above) */
+		if (regmap_read_poll_timeout(priv->hhi, HHI_HDMI_PLL_CNTL, val,
+				(val & HDMI_PLL_LOCK), 10,
+				HDMI_PLL_LOCK_TIMEOUT_US)) {
+			pr_warn("meson-vclk: HDMI PLL (GXL/GXM) failed to lock\n");
+			locked = false;
+		}
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
+		unsigned int tries = 0;
+
 		regmap_write(priv->hhi, HHI_HDMI_PLL_CNTL, 0x0b3a0400 | m);
 
 		/* Enable and reset */
@@ -580,8 +655,21 @@ static void meson_hdmi_pll_set_params(struct meson_drm *priv, unsigned int m,
 						        == HDMI_PLL_LOCK_G12A),
 						      10, 100))
 				break;
-		} while(1);
+		} while (++tries < HDMI_PLL_LOCK_G12A_MAX_TRIES);
+		/* Bounded -- never hang on a PLL that cannot lock */
+		if (tries >= HDMI_PLL_LOCK_G12A_MAX_TRIES) {
+			pr_warn("meson-vclk: HDMI PLL (G12A) failed to lock\n");
+			locked = false;
+		}
 	}
+
+	/*
+	 * E9: don't program the OD dividers below off a PLL that never
+	 * locked -- leaves the clock tree half-programmed instead of
+	 * failing visibly.
+	 */
+	if (!locked)
+		return false;
 
 	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXBB))
 		regmap_update_bits(priv->hhi, HHI_HDMI_PLL_CNTL2,
@@ -615,6 +703,8 @@ static void meson_hdmi_pll_set_params(struct meson_drm *priv, unsigned int m,
 	else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
 		regmap_update_bits(priv->hhi, HHI_HDMI_PLL_CNTL,
 				3 << 20, pll_od_to_reg(od3) << 20);
+
+	return true;
 }
 
 #define XTAL_FREQ (24 * 1000 * 1000)
@@ -700,8 +790,19 @@ static bool meson_hdmi_pll_find_params(struct meson_drm *priv,
 				       unsigned int *frac,
 				       unsigned int *od)
 {
-	/* Cycle from /16 to /2 */
-	for (*od = 16 ; *od > 1 ; *od >>= 1) {
+	/* Cycle from /16 to /1. od=1 (VCO fed straight to the PHY) is only ever
+	 * selected for phy in (2976, 5952] MHz -- where od=2 would need a VCO above
+	 * the m-range max -- i.e. char rates ~298..595 MHz. Every existing mode
+	 * (phy <= 2976) still resolves to od >= 2, unchanged. This is what lets the
+	 * PLL synthesize the 3197.5 MHz that 3440x1440@60 needs.
+	 *
+	 * NB the ceiling is 5951.977 MHz, not 247*24 = 5928: m is only the INTEGER
+	 * term, and get_frac() adds up to 1023/1024 of a step on GXL, so the real
+	 * max VCO is 24MHz * (247 + 1023/1024). An earlier version of this comment
+	 * used the integer-only 5928 figure, which made 5940 MHz (4K60 4:4:4) look
+	 * like a 0.2% overshoot when it is in fact synthesizable -- m=247, frac=512,
+	 * od=1, the same pair meson_vclk_set() hard-codes for case 5940000000. */
+	for (*od = 16 ; *od >= 1 ; *od >>= 1) {
 		*m = meson_hdmi_pll_get_m(priv, freq * *od);
 		if (!*m)
 			continue;
@@ -741,7 +842,7 @@ meson_vclk_dmt_supported_freq(struct meson_drm *priv, unsigned long long freq)
 EXPORT_SYMBOL_GPL(meson_vclk_dmt_supported_freq);
 
 /* pll_freq is the frequency after the OD dividers */
-static void meson_hdmi_pll_generic_set(struct meson_drm *priv,
+static bool meson_hdmi_pll_generic_set(struct meson_drm *priv,
 				       unsigned long long pll_freq)
 {
 	unsigned int od, m, frac, od1, od2, od3;
@@ -749,7 +850,11 @@ static void meson_hdmi_pll_generic_set(struct meson_drm *priv,
 	if (meson_hdmi_pll_find_params(priv, pll_freq, &m, &frac, &od)) {
 		/* OD2 goes to the PHY, and needs to be *10, so keep OD3=1 */
 		od3 = 1;
-		if (od < 4) {
+		if (od < 2) {
+			/* od=1: VCO fed straight through (no post-divider). */
+			od1 = 1;
+			od2 = 1;
+		} else if (od < 4) {
 			od1 = 2;
 			od2 = 1;
 		} else {
@@ -760,13 +865,12 @@ static void meson_hdmi_pll_generic_set(struct meson_drm *priv,
 		DRM_DEBUG_DRIVER("PLL params for %lluHz: m=%x frac=%x od=%d/%d/%d\n",
 				 pll_freq, m, frac, od1, od2, od3);
 
-		meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3);
-
-		return;
+		return meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3);
 	}
 
 	DRM_ERROR("Fatal, unable to find parameters for PLL freq %lluHz\n",
 		  pll_freq);
+	return false;
 }
 
 static bool meson_vclk_freqs_are_matching_param(unsigned int idx,
@@ -799,6 +903,31 @@ static bool meson_vclk_freqs_are_matching_param(unsigned int idx,
 	return false;
 }
 
+/*
+ * E6: is phy_freq (the HDMI-TX PHY serial bit rate, Hz) actually
+ * synthesizable by the HDMI PLL's generic computed-PLL path (the od/m/frac
+ * search in meson_hdmi_pll_find_params())? This is the SAME search
+ * meson_hdmi_pll_generic_set() runs when atomic_enable() programs the clock
+ * tree -- exposing it as its own entry point lets a caller validate a
+ * deep-color (10-bit) phy_freq at CHECK time, before any hardware is
+ * touched, instead of discovering a PLL-lock failure deep inside
+ * atomic_enable() (a void function, called only after VENC and the HDMI-TX
+ * sys clock bits are already programmed -- see meson_encoder_hdmi.c).
+ *
+ * Deliberately does NOT check priv->limits->max_hdmi_phy_freq (the SoC
+ * package limit) -- that is a separate, already-covered gate (this function
+ * only answers "can the PLL lock to this frequency", not "is this frequency
+ * allowed on this SoC").
+ */
+bool meson_vclk_pll_freq_synthesizable(struct meson_drm *priv,
+				       unsigned long long phy_freq)
+{
+	unsigned int od, m, frac;
+
+	return meson_hdmi_pll_find_params(priv, phy_freq, &m, &frac, &od);
+}
+EXPORT_SYMBOL_GPL(meson_vclk_pll_freq_synthesizable);
+
 enum drm_mode_status
 meson_vclk_vic_supported_freq(struct meson_drm *priv,
 			      unsigned long long phy_freq,
@@ -818,6 +947,19 @@ meson_vclk_vic_supported_freq(struct meson_drm *priv,
 
 	for (i = 0 ; params[i].pixel_freq ; ++i) {
 		if (meson_vclk_freqs_are_matching_param(i, phy_freq, vclk_freq))
+			return MODE_OK;
+	}
+
+	/*
+	 * DC-001 (deep color): a 10-bit (DC_30bit) request runs the PHY at
+	 * pixel_clock * 12.5 (phy_freq == vclk_freq * 25 / 2), which is not in
+	 * params[] (all 8-bit). meson_vclk_setup synthesizes it via the generic
+	 * computed-PLL path, so accept it here as long as the PLL can lock to it
+	 * (and it is under the SoC phy limit, already checked above). 8-bit
+	 * requests keep phy_freq == vclk_freq * 10 and never match this.
+	 */
+	if (phy_freq == DIV_ROUND_DOWN_ULL(vclk_freq * 25ULL, 2ULL)) {
+		if (meson_vclk_pll_freq_synthesizable(priv, phy_freq))
 			return MODE_OK;
 	}
 
@@ -844,7 +986,11 @@ static void meson_vclk_set(struct meson_drm *priv,
 
 	/* Set HDMI PLL rate */
 	if (!od1 && !od2 && !od3) {
-		meson_hdmi_pll_generic_set(priv, pll_base_freq);
+		if (!meson_hdmi_pll_generic_set(priv, pll_base_freq)) {
+			DRM_ERROR("meson-vclk: aborting clock-tree programming: PLL setup failed for %lluHz\n",
+				  pll_base_freq);
+			return;
+		}
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXBB)) {
 		switch (pll_base_freq) {
 		case 2970000000:
@@ -859,9 +1005,16 @@ static void meson_vclk_set(struct meson_drm *priv,
 			m = 0x7b;
 			frac = vic_alternate_clock ? 0xa05 : 0xc00;
 			break;
+		default:
+			DRM_ERROR("meson-vclk: no PLL params for GXBB pll_base_freq %lluHz -- aborting clock-tree programming\n",
+				  pll_base_freq);
+			return;
 		}
 
-		meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3);
+		if (!meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3)) {
+			DRM_ERROR("meson-vclk: aborting clock-tree programming: HDMI PLL (GXBB) failed to lock\n");
+			return;
+		}
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXM) ||
 		   meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXL)) {
 		switch (pll_base_freq) {
@@ -877,9 +1030,16 @@ static void meson_vclk_set(struct meson_drm *priv,
 			m = 0xf7;
 			frac = vic_alternate_clock ? 0x102 : 0x200;
 			break;
+		default:
+			DRM_ERROR("meson-vclk: no PLL params for GXM/GXL pll_base_freq %lluHz -- aborting clock-tree programming\n",
+				  pll_base_freq);
+			return;
 		}
 
-		meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3);
+		if (!meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3)) {
+			DRM_ERROR("meson-vclk: aborting clock-tree programming: HDMI PLL (GXM/GXL) failed to lock\n");
+			return;
+		}
 	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
 		switch (pll_base_freq) {
 		case 2970000000:
@@ -894,9 +1054,20 @@ static void meson_vclk_set(struct meson_drm *priv,
 			m = 0xf7;
 			frac = vic_alternate_clock ? 0x8148 : 0x10000;
 			break;
+		case 4830000000:		/* E12: was 4830000 (1000x too small) */
+			m = 0xc9;
+			frac = 0xd560;
+			break;
+		default:
+			DRM_ERROR("meson-vclk: no PLL params for G12A pll_base_freq %lluHz -- aborting clock-tree programming\n",
+				  pll_base_freq);
+			return;
 		}
 
-		meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3);
+		if (!meson_hdmi_pll_set_params(priv, m, frac, od1, od2, od3)) {
+			DRM_ERROR("meson-vclk: aborting clock-tree programming: HDMI PLL (G12A) failed to lock\n");
+			return;
+		}
 	}
 
 	/* Setup vid_pll divider */
@@ -905,6 +1076,12 @@ static void meson_vclk_set(struct meson_drm *priv,
 	/* Set VCLK div */
 	regmap_update_bits(priv->hhi, HHI_VID_CLK_CNTL,
 			   VCLK_SEL_MASK, 0);
+	/* DC-4K30-XD diag: see meson_vclk_setup(); reports the divisor actually
+	 * written, so a wrong XD can be tied to the caller above. */
+	dev_info(priv->dev,
+		 "vclk_set: pll=%lluHz vid_pll_div=%u vclk_div=%u (XD=%u) hdmi_tx_div=%u venc_div=%u\n",
+		 pll_base_freq, vid_pll_div, vclk_div, vclk_div - 1,
+		 hdmi_tx_div, venc_div);
 	regmap_update_bits(priv->hhi, HHI_VID_CLK_DIV,
 			   VCLK_DIV_MASK, vclk_div - 1);
 
@@ -1055,6 +1232,17 @@ void meson_vclk_setup(struct meson_drm *priv, unsigned int target,
 	unsigned long long hdmi_tx_div;
 	unsigned long long venc_div;
 
+	/*
+	 * DC-4K30-XD diag: 4K30 444-10 was measured programming the XD divider
+	 * to /5 (cts_encp 118.8MHz instead of 297MHz), while every code path
+	 * that can reach that PLL state computes /2. Name the caller and its
+	 * arguments so the /5 can be attributed in one boot.
+	 */
+	dev_info(priv->dev,
+		 "vclk_setup: target=%u phy=%lluHz vclk=%lluHz venc=%lluHz dac=%lluHz enci=%d\n",
+		 target, phy_freq, vclk_freq, venc_freq, dac_freq,
+		 hdmi_use_enci);
+
 	if (target == MESON_VCLK_TARGET_CVBS) {
 		meson_venci_cvbs_clock_config(priv);
 		return;
@@ -1062,14 +1250,33 @@ void meson_vclk_setup(struct meson_drm *priv, unsigned int target,
 		/*
 		 * The DMT clock path is fixed after the PLL:
 		 * - automatic PLL freq + OD management
-		 * - vid_pll_div = VID_PLL_DIV_5
+		 * - vid_pll_div = VID_PLL_DIV_5 (8-bit) / VID_PLL_DIV_6p25 (10-bit)
 		 * - vclk_div = 2
 		 * - hdmi_tx_div = 1
 		 * - venc_div = 1
 		 * - encp encoder
+		 *
+		 * DC-001 (deep color): a 10-bit (DC_30bit) request runs the PHY at
+		 * pixel_clock * 12.5 (phy_freq == vclk_freq * 25 / 2) instead of the
+		 * 8-bit * 10. The encoder/vclk must stay at the pixel rate, so the
+		 * post-PLL chain has to divide phy_freq by 12.5 (vid_pll_div 6.25 *
+		 * vclk_div 2), not 10. The HDMI target's DC-001 branch below does the
+		 * same; a CEA mode reaches deep color through that path, but a non-CEA
+		 * mode (drm_match_cea_mode() == 0, e.g. a 1080p/4K EDID detailed
+		 * timing) reaches it through here. Without the 6.25 divider the encoder
+		 * is clocked 1.25x too fast (185.25 instead of 148.5 MHz for 1080p),
+		 * so every 10-bit pixel word is emitted at the wrong phase relative to
+		 * the TMDS character clock -- the output scrambles (green-dominant).
+		 * Confirmed on demo-aml-s905d3-cc-alpha: cts_encp read 185.25 MHz at
+		 * 10-bit, 148.2 MHz at 8-bit, via /sys/kernel/debug/clk/clk_summary.
 		 */
+		unsigned int dmt_vid_pll_div = VID_PLL_DIV_5;
+
+		if (phy_freq == DIV_ROUND_DOWN_ULL(vclk_freq * 25ULL, 2ULL))
+			dmt_vid_pll_div = VID_PLL_DIV_6p25;
+
 		meson_vclk_set(priv, phy_freq, 0, 0, 0,
-			       VID_PLL_DIV_5, 2, 1, 1, false, false);
+			       dmt_vid_pll_div, 2, 1, 1, false, false);
 		return;
 	}
 
@@ -1086,6 +1293,79 @@ void meson_vclk_setup(struct meson_drm *priv, unsigned int target,
 	if (venc_div == 0) {
 		pr_err("Fatal Error, invalid HDMI venc freq %lluHz\n",
 		       venc_freq);
+		return;
+	}
+
+	/*
+	 * DC-001 (deep color): 10-bit (DC_30bit) output runs the PHY at
+	 * pixel_clock * 12.5 (== vclk_freq * 25 / 2) instead of the 8-bit * 10.
+	 * That phy_freq is not in params[] (the table is all 8-bit), so route it
+	 * through the generic computed-PLL path, exactly as the DMT target does.
+	 * Dividers (verified against the vendor BSP hdmitx20 hw_clk.c colordepth
+	 * 30B table, e.g. 1080p60 10-bit row "3712500,1,2,2,VID_PLL_DIV_6p25,1,
+	 * 1,1"): the HPLL is computed by meson_hdmi_pll_generic_set so its output
+	 * after the OD chain == phy_freq; then vid_pll_div = 6.25 and vclk_div
+	 * divide phy_freq back down to vclk_freq (1856.25 MHz / 6.25 / 2 =
+	 * 148.5 MHz for 1080p). hdmi_tx_div / venc_div stay at the values derived
+	 * from the caller's vclk/dac/venc. 8-bit output never reaches this branch,
+	 * so the existing table path is byte-for-byte unchanged.
+	 */
+	/*
+	 * DC-001-REPEAT: test against dac_freq (the HDMI-TX / pixel rate), NOT
+	 * vclk_freq. For a venc-repeat mode (480p/576p/720p/1080i, see
+	 * meson_venc_hdmi_venc_repeat) the caller doubles vclk_freq to clock the
+	 * VENC, while phy_freq stays derived from the PIXEL rate -- so
+	 * "phy == vclk * 12.5" can never hold and 10-bit silently fell through to
+	 * the 8-bit params[] table. dw-hdmi had already been told to emit 10-bit,
+	 * so the link ran an 8-bit clock into a 10-bit packetizer and never locked
+	 * (measured on GXL 720p60: phy programmed 1485MHz = the doubled venc rate
+	 * x10, instead of 74.25MHz x12.5 = 928.125MHz; capture black at 3.3dB).
+	 * dac_freq stays at the pixel rate in both cases, and equals vclk_freq for
+	 * every non-repeat mode, so this is a no-op there.
+	 */
+	if (phy_freq == DIV_ROUND_DOWN_ULL(dac_freq * 25ULL, 2ULL)) {
+		/*
+		 * The post-PLL chain must divide phy_freq down to vclk_freq, and
+		 * vclk_freq is the VENC rate -- doubled on a repeat mode. With
+		 * vid_pll_div fixed at 6.25 that makes vclk_div = phy/(6.25*vclk):
+		 * 2 for a non-repeat mode (phy = pixel*12.5, vclk = pixel) and 1 for
+		 * a repeat mode (phy = pixel*12.5, vclk = pixel*2). Hardcoding 2
+		 * clocked the VENC at half rate on repeat modes.
+		 */
+		/*
+		 * DC-4K30-XD: do NOT use DIV_ROUND_CLOSEST_ULL() here. It is
+		 * built on do_div(), whose divisor is u32, so a 64-bit divisor
+		 * is silently TRUNCATED to its low 32 bits. vclk_freq * 25
+		 * exceeds 2^32 for any pixel rate above ~171.8 MHz, so every
+		 * deep-color mode at 4K-class rates computed a wildly wrong
+		 * divider while 1080p-class rates (148.5 MHz -> 3.7125e9, still
+		 * under 2^32) happened to be correct -- which is exactly why
+		 * 1080p60 444-10 worked and 4K30 444-10 did not.
+		 *
+		 * Measured on GXL S905X before this fix: 4K30 444-10 wanted
+		 * vclk_div 2 but programmed 5 (divisor 7.425e9 wrapped to
+		 * 3.130e9), so cts_encp ran at 118.8 MHz instead of 297 MHz and
+		 * the link never locked. 4K60 420-10 wanted 1 and got 11
+		 * (divisor 14.85e9 wrapped to 1.965e9).
+		 *
+		 * div64_u64() takes a full 64-bit divisor; round-to-nearest is
+		 * open-coded since there is no _ULL round-closest variant that
+		 * is 64-bit-divisor safe.
+		 */
+		unsigned long long vclk_num = phy_freq * 4ULL;
+		unsigned long long vclk_den = vclk_freq * 25ULL;
+		unsigned long long vclk_div =
+			div64_u64(vclk_num + vclk_den / 2, vclk_den);
+
+		if (!vclk_div)
+			vclk_div = 1;
+
+		DRM_DEBUG_DRIVER("deep-color 10bit: phy=%lluHz vclk=%lluHz dac=%lluHz vclk_div=%llu hdmi_tx_div=%llu venc_div=%llu\n",
+				 phy_freq, vclk_freq, dac_freq, vclk_div,
+				 hdmi_tx_div, venc_div);
+		meson_vclk_set(priv, phy_freq, 0, 0, 0,
+			       VID_PLL_DIV_6p25, vclk_div, hdmi_tx_div, venc_div,
+			       hdmi_use_enci, false);
 		return;
 	}
 

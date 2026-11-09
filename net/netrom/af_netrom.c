@@ -561,7 +561,7 @@ static int nr_release(struct socket *sock)
 	return 0;
 }
 
-static int nr_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+static int nr_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	struct sock *sk = sock->sk;
 	struct nr_sock *nr = nr_sk(sk);
@@ -1498,7 +1498,7 @@ MODULE_PARM_DESC(nr_ndevs, "number of NET/ROM devices");
 MODULE_AUTHOR("Jonathan Naylor G4KLX <g4klx@g4klx.demon.co.uk>");
 MODULE_DESCRIPTION("The amateur radio NET/ROM network and transport layer protocol");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_NETPROTO(PF_NETROM);
+/* MODULE_ALIAS_NETPROTO(PF_NETROM); */
 
 static void __exit nr_exit(void)
 {

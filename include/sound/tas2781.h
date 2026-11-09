@@ -59,9 +59,9 @@
 #define TASDEVICE_CHECKSUM_REG		TASDEVICE_REG(0x0, 0x0, 0x7e)
 
 /* XM_340 */
-#define	TASDEVICE_XM_A1_REG	TASDEVICE_REG(0x64, 0x63, 0x3c)
+#define	TASDEVICE_XM_A1_REG	TASDEVICE_REG(0x64, 0x02, 0x4c)
 /* XM_341 */
-#define	TASDEVICE_XM_A2_REG	TASDEVICE_REG(0x64, 0x63, 0x38)
+#define	TASDEVICE_XM_A2_REG	TASDEVICE_REG(0x64, 0x02, 0x64)
 
 /* Volume control */
 #define TAS2563_DVC_LVL			TASDEVICE_REG(0x00, 0x02, 0x0c)
@@ -197,7 +197,6 @@ struct tasdevice_priv {
 	struct acoustic_data acou_data;
 #endif
 	struct tasdevice_fw *fmw;
-	struct gpio_desc *speaker_id;
 	struct gpio_desc *reset;
 	struct mutex codec_lock;
 	struct regmap *regmap;
@@ -215,6 +214,7 @@ struct tasdevice_priv {
 	unsigned int magic_num;
 	unsigned int chip_id;
 	unsigned int sysclk;
+	int speaker_id;
 
 	int irq;
 	int cur_prog;

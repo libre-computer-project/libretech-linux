@@ -71,8 +71,24 @@ static irqreturn_t mtk_vdec_hw_irq_handler(int irq, void *priv)
 					VDEC_IRQ_CFG_REG;
 
 	ctx = mtk_vcodec_get_curr_ctx(dev->main_dev, dev->hw_idx);
+	if (!ctx) {
+		/*
+		 * No decode owns this interrupt -- see the same test in
+		 * mtk_vcodec_dec_irq_handler(). Every ctx use below (the error
+		 * print, wake_up_dec_ctx(), ctx->id) would dereference NULL in
+		 * interrupt context. Acknowledge and drop it.
+		 */
+		dec_done_status = readl(vdec_misc_addr);
+		writel(dec_done_status | VDEC_IRQ_CFG, vdec_misc_addr);
+		writel(dec_done_status & ~VDEC_IRQ_CLR, vdec_misc_addr);
+		return IRQ_HANDLED;
+	}
 
-	/* check if HW active or not */
+	/*
+	 * check if HW active or not -- and do NOT acknowledge when it is not:
+	 * the acknowledge is a read-modify-write of a clock-gated block. This
+	 * is the one early return here that is not a missing acknowledge.
+	 */
 	cg_status = readl(dev->reg_base[VDEC_HW_SYS] + VDEC_HW_ACTIVE_ADDR);
 	if (cg_status & VDEC_HW_ACTIVE_MASK) {
 		mtk_v4l2_vdec_err(ctx, "vdec active is not 0x0 (0x%08x)", cg_status);
@@ -81,8 +97,17 @@ static irqreturn_t mtk_vdec_hw_irq_handler(int irq, void *priv)
 
 	dec_done_status = readl(vdec_misc_addr);
 	if ((dec_done_status & MTK_VDEC_IRQ_STATUS_DEC_SUCCESS) !=
-	    MTK_VDEC_IRQ_STATUS_DEC_SUCCESS)
+	    MTK_VDEC_IRQ_STATUS_DEC_SUCCESS) {
+		/*
+		 * Ours (the line is not IRQF_SHARED) and the block is active,
+		 * so clear it rather than leaving the level line asserted --
+		 * see mtk_vcodec_dec_irq_handler() for the full reasoning.
+		 * Compile-verified only: this subdev does not exist on MT8365.
+		 */
+		writel(dec_done_status | VDEC_IRQ_CFG, vdec_misc_addr);
+		writel(dec_done_status & ~VDEC_IRQ_CLR, vdec_misc_addr);
 		return IRQ_HANDLED;
+	}
 
 	/* clear interrupt */
 	writel(dec_done_status | VDEC_IRQ_CFG, vdec_misc_addr);

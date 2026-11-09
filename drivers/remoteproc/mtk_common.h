@@ -115,6 +115,21 @@ struct mtk_scp_of_data {
 
 	size_t ipi_buf_offset;
 	const struct mtk_scp_sizes_data *scp_sizes;
+
+	/*
+	 * ELF e_machine for the coredump this core's firmware should be
+	 * labelled with. It is NOT uniform across the SoCs this driver
+	 * supports: the MT8183/MT8186 SCP is an ARM Cortex-M, while the
+	 * MT8192-class core is RV32. Read off the shipped blobs --
+	 *   linux-firmware mediatek/mt8183/scp.img  -> "ARM, EABI5"
+	 *   linux-firmware mediatek/mt8186/scp.img  -> "ARM, EABI5"
+	 *   linux-firmware mediatek/mt8188/scp_c0.img -> "UCB RISC-V, RVC"
+	 *   linux-firmware mediatek/mt8192/scp.img  -> "UCB RISC-V, RVC"
+	 *   linux-firmware mediatek/mt8195/scp.img  -> "UCB RISC-V, RVC"
+	 * -- so it belongs in the per-SoC data, not at the scp_coredump() call
+	 * site.
+	 */
+	u16 elf_machine;
 };
 
 struct mtk_scp_of_cluster {

@@ -435,12 +435,18 @@ static int rk_cipher_tfm_init(struct crypto_skcipher *tfm)
 {
 	struct rk_cipher_ctx *ctx = crypto_skcipher_ctx(tfm);
 	const char *name = crypto_tfm_alg_name(&tfm->base);
-	struct skcipher_alg *alg = crypto_skcipher_alg(tfm);
-	struct rk_crypto_tmp *algt = container_of(alg, struct rk_crypto_tmp, alg.skcipher.base);
 
 	ctx->fallback_tfm = crypto_alloc_skcipher(name, 0, CRYPTO_ALG_NEED_FALLBACK);
 	if (IS_ERR(ctx->fallback_tfm)) {
-		dev_err(algt->dev->dev, "ERROR: Cannot allocate fallback for %s %ld\n",
+		/*
+		 * rk_crypto_diag_dev(), not a device cached in the alg: the
+		 * algs are registered once for all instances of the IP and
+		 * outlive any one of them, so a cached pointer dangles as soon
+		 * as the instance that registered it is removed while another
+		 * is still up (RK3399 has two crypto nodes).
+		 */
+		dev_err(rk_crypto_diag_dev(),
+			"ERROR: Cannot allocate fallback for %s %ld\n",
 			name, PTR_ERR(ctx->fallback_tfm));
 		return PTR_ERR(ctx->fallback_tfm);
 	}

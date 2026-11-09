@@ -1,0 +1,1118 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2021-2022 BayLibre, SAS.
+ * Authors:
+ * Fabien Parent <fparent@baylibre.com>
+ * Bernhard Rosenkränzer <bero@baylibre.com>
+ * Alexandre Mergnat <amergnat@baylibre.com>
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pinctrl/mt8365-pinfunc.h>
+#include "mt8365.dtsi"
+#include "mt6357.dtsi"
+
+/ {
+	model = "Pumpkin i350 (MT8365)";
+	compatible = "mediatek,mt8365-pumpkin", "mediatek,mt8365-evk", "mediatek,mt8365";
+
+	aliases {
+		ethernet = &ethernet;
+		mmc0 = &mmc0;
+		mmc1 = &mmc1;
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	connector {
+		compatible = "hdmi-connector";
+		label = "hdmi";
+		type = "d";
+
+		port {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			hdmi_connector_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&hdmi_connector_out>;
+			};
+		};
+	};
+
+	firmware {
+		optee {
+			compatible = "linaro,optee-tz";
+			method = "smc";
+		};
+
+		/*
+		 * EL3 SCMI agent (BASE transport only). This node is enabled in
+		 * source and carries its shmem so that the plain built
+		 * mt8365-pumpkin.dtb -- the DTB the deb-efi-dtb eMMC boot actually
+		 * loads -- is node-bearing: 038bd12c5bc4a fixed only the FID cell and
+		 * explicitly left "this node must also reach the deployed DTB" open,
+		 * and a treatment BL31 armed over UART-DL hands off to this eMMC
+		 * kernel, not to the FIT. The SMT page is reserved as scmi_shmem below
+		 * (arm,scmi.yaml requires shmem on arm,scmi-smc; with it present the
+		 * node is binding-complete so dtbs_check passes). The FIT overlay
+		 * mt8365-pumpkin-scmi.dtso (genio-mkfit.sh, GENIO350_SCMI=1) is
+		 * unchanged: its same-path scmi_shmem node and shmem/status assignment
+		 * merge onto this one, so the DRAM-boot tier still gates on a gate-on
+		 * FIP while the eMMC tier is self-contained. On production firmware
+		 * (no MTK_SCMI server) the enabled client's BASE probe SMC simply
+		 * returns unsupported and no scmi devices register -- harmless.
+		 */
+		scmi: scmi {
+			compatible = "arm,scmi-smc";
+			/*
+			 * The EL3 doorbell function ID, in the AArch64 calling
+			 * convention. The firmware's SiP dispatcher keeps the
+			 * 32-bit and 64-bit forms of every FID apart and matches
+			 * the one against the caller's own execution state, so an
+			 * AArch64 kernel calling the 32-bit form is refused rather
+			 * than served.
+			 */
+			arm,smc-id = <0xc2000310>;
+			shmem = <&scmi_shmem>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+		};
+	};
+
+	/* Pumpkin i350 has 2 GiB LPDDR4X (the EVK has 3 GiB). A too-large /memory makes
+	 * the kernel allocate early page tables in the phantom top 1 GiB of non-existent
+	 * RAM -> lost writes -> BUG_ON pud-conflict in paging_init. */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	usb_otg_vbus: regulator-0 {
+		compatible = "regulator-fixed";
+		regulator-name = "otg_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		/* Pumpkin: VBUS-drive is GPIO25 (USB_DRV), not the EVK's GPIO16 (PWM_A) */
+		gpio = <&pio 25 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
+	 * 5VUSB_ENABLE -- board 5V rail that powers the Microchip LAN9512 hub and
+	 * the two downstream USB-A ports. GPIO137 = 5VUSB_ENABLE per the OLogic
+	 * Pumpkin GPIO workbook (i350_MT8365_GPIO_LIST). The vendor BSP DTS leaves
+	 * it to the preloader/pull, but per the board GPIO map it is the hub's 5V
+	 * enable, so assert it here (always-on) for the RJ45/USB-A to power up.
+	 */
+	reg_5v_usb: regulator-5v-usb {
+		compatible = "regulator-fixed";
+		regulator-name = "5vusb_enable";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&pio 137 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reg_vsys: regulator-vsys {
+		compatible = "regulator-fixed";
+		regulator-name = "vsys";
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	touch0_fixed_3v3: regulator-vio33tp {
+		compatible = "regulator-fixed";
+		regulator-name = "vio33_tp";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&reg_vsys>;
+	};
+
+	/*
+	 * MT7663S SDIO Wi-Fi 3V3 enable = WIFI_PWR_ENABLE = GPIO141 (per the
+	 * OLogic GPIO workbook), used as mmc2 vmmc. MUST stay mmc-gated -- do NOT
+	 * add regulator-always-on: the MT7663 needs AVDD33 to drop between boots
+	 * to cold-reset, so a continuously-powered rail wedges it. Measured on the
+	 * board (2026-06-21, EEPROM-baked Image, mt8365-wifi-stability.sh): GPIO141
+	 * mmc-gated = 4/4 cold-boot enumerations (+ wlan0); GPIO141 + always-on =
+	 * 0/6.
+	 */
+	wifi_3v3: regulator-wifi-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi_pwr_en";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&pio 141 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/* MT7663S reset: MT7663_SYSRSTB = GPIO126 (active-low), released 100 ms
+	 * after vmmc (WIFI_PWR_ENABLE) is up, before SDIO cmd5. */
+	wifi_pwrseq: mmc2-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&pio 126 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <100>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* 192 KiB reserved for ARM Trusted Firmware (BL31) */
+		bl31_secmon_reserved: secmon@43000000 {
+			no-map;
+			reg = <0 0x43000000 0 0x30000>;
+		};
+
+		/* SCMI SMT mailbox page (0x43030000), the doorbell the arm,scmi-smc
+		 * client rings; sits in the gap after BL31's secmon carveout (ends
+		 * 0x43030000) and before OP-TEE (0x43200000). Reserved no-map here so
+		 * the eMMC-booted kernel is node-bearing; the FIT overlay carries the
+		 * same-path node so fdtoverlay merges them without conflict. */
+		scmi_shmem: shmem@43030000 {
+			compatible = "arm,scmi-shmem";
+			reg = <0 0x43030000 0 0x1000>;
+			no-map;
+		};
+
+		/* 12 MiB reserved for OP-TEE (BL32)
+		 * +-----------------------+ 0x43e0_0000
+		 * |      SHMEM 2MiB       |
+		 * +-----------------------+ 0x43c0_0000
+		 * |        | TA_RAM  8MiB |
+		 * + TZDRAM +--------------+ 0x4340_0000
+		 * |        | TEE_RAM 2MiB |
+		 * +-----------------------+ 0x4320_0000
+		 */
+		optee_reserved: optee@43200000 {
+			no-map;
+			reg = <0 0x43200000 0 0x00c00000>;
+		};
+
+		/*
+		 * HiFi 4 audio DSP (SOF) carveout. adsp_mem is the 16 MiB
+		 * firmware region at DRAM_BASE 0x60000000 (identity-mapped to
+		 * the DSP view; DRAM_SIZE 0x1000000, host-shared window at
+		 * SRAM1_BASE 0x60800000), transcribed from the open SOF mt8365
+		 * platform memory map (sof/src/platform/mt8365/.../memory.h).
+		 * adsp_dma_mem is the host<->DSP DMA pool immediately above it.
+		 */
+		adsp_dma_mem: memory@61000000 {
+			compatible = "shared-dma-pool";
+			no-map;
+			reg = <0 0x61000000 0 0x100000>;
+		};
+
+		adsp_mem: memory@60000000 {
+			compatible = "shared-dma-pool";
+			no-map;
+			reg = <0 0x60000000 0 0x1000000>;
+		};
+	};
+
+	sound: sound {
+		compatible = "mediatek,mt8365-mt6357";
+		/*
+		 * No DMIC: GPIO117/118/119 are CAM2_RST/CAM0_RST/CAM1_RST on the
+		 * Pumpkin (per the OLogic GPIO workbook), not a digital mic. The
+		 * EVK-clone aud_dmic_pins/dmic-mode have been dropped; analog audio
+		 * runs through the MT6357 codec (AUD MOSI/MISO).
+		 */
+		pinctrl-names = "default",
+				"miso_off",
+				"miso_on",
+				"mosi_off",
+				"mosi_on";
+		pinctrl-0 = <&aud_default_pins>;
+		pinctrl-1 = <&aud_miso_off_pins>;
+		pinctrl-2 = <&aud_miso_on_pins>;
+		pinctrl-3 = <&aud_mosi_off_pins>;
+		pinctrl-4 = <&aud_mosi_on_pins>;
+		mediatek,platform = <&afe>;
+	};
+
+};
+
+&afe {
+	status = "okay";
+};
+
+&adsp {
+	memory-region = <&adsp_dma_mem>, <&adsp_mem>;
+	status = "okay";
+};
+
+&cpu0 {
+	proc-supply = <&mt6357_vproc_reg>;
+	sram-supply = <&mt6357_vsram_proc_reg>;
+};
+
+&cpu1 {
+	proc-supply = <&mt6357_vproc_reg>;
+	sram-supply = <&mt6357_vsram_proc_reg>;
+};
+
+&cpu2 {
+	proc-supply = <&mt6357_vproc_reg>;
+	sram-supply = <&mt6357_vsram_proc_reg>;
+};
+
+&cpu3 {
+	proc-supply = <&mt6357_vproc_reg>;
+	sram-supply = <&mt6357_vsram_proc_reg>;
+};
+
+&dpi0 {
+	pinctrl-0 = <&dpi_default_pins>;
+	pinctrl-1 = <&dpi_idle_pins>;
+	pinctrl-names = "default", "sleep";
+	/*
+	 * Ethernet and HDMI (DPI0) share GPIO0-15 -- only one can be enabled at a
+	 * time, and the physical switch SW2101 must be set to the HDMI position.
+	 * HDMI is the Pumpkin's only display output (no LCM); &ethernet below is
+	 * disabled to free these pins. The SoC RMII MAC is unused anyway (the live
+	 * network path is a USB ethernet dongle).
+	 */
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0>;
+			dpi0_in: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&rdma1_out>;
+			};
+		};
+
+		port@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+			dpi0_out: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&it66121_in>;
+			};
+		};
+	};
+};
+
+&ethernet {
+	pinctrl-0 = <&ethernet_pins>;
+	pinctrl-names = "default";
+	phy-handle = <&eth_phy>;
+	phy-mode = "rmii";
+	/*
+	 * SoC RMII MAC -- UNWIRED on the Pumpkin and left disabled. The RJ45 on
+	 * this board is a Microchip LAN9512 USB hub+Ethernet (smsc95xx), reached
+	 * via the TUSB322I/role-switch USB path, NOT this MAC: no PHY answers on
+	 * its MDIO (verified, all 32 addresses) and GPIO0-15 here are hard-wired
+	 * to HDMI. Kept only to document the dead RMII pinmux; do not enable.
+	 * (There is no SW2101 mux switch on the Pumpkin -- that is an EVK part.)
+	 */
+	status = "disabled";
+
+	mdio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		eth_phy: ethernet-phy@0 {
+			reg = <0>;
+		};
+	};
+};
+
+/*
+ * MT7663S Wi-Fi PMIC companion 3V3 rail -- kept always-on so the SDIO card
+ * responds (the GPIO141-gated wifi_3v3 is mmc2 vmmc; without this LDO on the
+ * card never answers cmd5/cmd1). The EVK's vibr/vsim2 "RMII PHY" always-on
+ * rails were dropped -- the Pumpkin has no RMII PHY (RJ45 = LAN9512 USB), no
+ * vibrator, and no SIM.
+ */
+&mt6357_vcn33_wifi_reg {
+	regulator-always-on;
+};
+
+&i2c0 {
+	clock-frequency = <100000>;
+	pinctrl-0 = <&i2c0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	/*
+	 * The board's TI TUSB322I Type-C port controller at 0x47 (IRQ GPIO71 =
+	 * USB_INT) does CC/role detection in hardware. Bound with the
+	 * register-compatible ti,hd3ss3220 driver (proven on the i500's identical
+	 * i2c0@0x47 TUSB322I, canonical 03c5a1e) as the usb-role-switch source --
+	 * polled (no interrupt declared, so a userspace role override survives).
+	 * Replaces the earlier GPIO39-IDDIG usb-conn-gpio path.
+	 */
+	typec@47 {
+		compatible = "ti,hd3ss3220";
+		reg = <0x47>;
+		connector {
+			compatible = "usb-c-connector";
+			label = "usb-c";
+			data-role = "dual";
+			power-role = "dual";
+			port {
+				hd3ss3220_ep: endpoint {
+					remote-endpoint = <&ssusb_role_ep>;
+				};
+			};
+		};
+	};
+};
+
+&i2c2 {
+	clock-frequency = <100000>;
+	pinctrl-0 = <&i2c2_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&i2c3 {
+	clock-frequency = <100000>;
+	pinctrl-0 = <&i2c3_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-div = <2>;
+	clock-frequency = <100000>;
+	pinctrl-0 = <&i2c1_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	/*
+	 * TI TCA6416 I2C GPIO expander. On the Pumpkin this drives camera
+	 * standby (cam_stdby), NOT the USB hub (the hub comes up via the
+	 * gpio-usb-b-connector role switch on &ssusb + the 5VUSB_ENABLE rail).
+	 * Reset is SoC GPIO78; interrupt is SoC GPIO79. From the vendor BSP DTS.
+	 */
+	tca6416: gpio@20 {
+		compatible = "ti,tca6416";
+		reg = <0x20>;
+		reset-gpios = <&pio 78 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&tca6416_pins>;
+		pinctrl-names = "default";
+		gpio-controller;
+		#gpio-cells = <2>;
+		/*
+		 * Vendor BSP hogs expander lines 12+2 low for camera standby
+		 * (cam_stdby); omitted here as the Pumpkin DTS has no camera node.
+		 */
+	};
+
+	it66121_hdmi: hdmi@4c {
+		compatible = "ite,it66121";
+		reg = <0x4c>;
+		#sound-dai-cells = <0>;
+		interrupt-parent = <&pio>;
+		interrupts = <68 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-0 = <&ite_pins>;
+		pinctrl-names = "default";
+		/* No reset-gpios: GPIO69 is the EVK-clone reset, not a usable
+		 * it66121 reset on the Pumpkin i350 -- pulsing it (the driver's
+		 * it66121_hw_reset) leaves the chip unresponsive on i2c, so the
+		 * ID read fails and probe returns -ENODEV silently (dpi then
+		 * "Failed to get bridge"). The chip self-inits from power-on;
+		 * the driver makes reset-gpios optional. Same fix as the i500
+		 * (mt8183-pumpkin.dts). */
+		/* Pumpkin it66121 power rails per the vendor BSP DTS (mtk-v5.10) --
+		 * vcn33_bt + vcn18, NOT the EVK's vibr/vsim2 (which left the chip
+		 * mis-powered -> no i2c response). See the vendor-DTS audit section. */
+		vcn18-supply = <&mt6357_vcn18_reg>;
+		vcn33-supply = <&mt6357_vcn33_bt_reg>;
+		vrf12-supply = <&mt6357_vrf12_reg>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				reg = <0>;
+				it66121_in: endpoint@0 {
+					reg = <0>;
+					bus-width = <12>;
+					remote-endpoint = <&dpi0_out>;
+				};
+			};
+
+			port@1 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				reg = <1>;
+				hdmi_connector_out: endpoint@0 {
+					reg = <0>;
+					remote-endpoint = <&hdmi_connector_in>;
+				};
+			};
+		};
+	};
+};
+
+&gpu {
+	mali-supply = <&mt6357_vcore_reg>;
+	status = "okay";
+};
+
+&mfg {
+	domain-supply = <&mt6357_vsram_others_reg>;
+};
+
+&mmc0 {
+	assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL>;
+	assigned-clocks = <&topckgen CLK_TOP_MSDC50_0_SEL>;
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	cap-mmc-hw-reset;
+	hs400-ds-delay = <0x12012>;
+	max-frequency = <200000000>;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	no-sd;
+	no-sdio;
+	non-removable;
+	pinctrl-0 = <&mmc0_default_pins>;
+	pinctrl-1 = <&mmc0_uhs_pins>;
+	pinctrl-names = "default", "state_uhs";
+	vmmc-supply = <&mt6357_vemc_reg>;
+	vqmmc-supply = <&mt6357_vio18_reg>;
+	status = "okay";
+};
+
+&mmc1 {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	cd-gpios = <&pio 76 GPIO_ACTIVE_LOW>;
+	/*
+	 * The msdc1 SD source clock is 208 MHz (univpll2_d2), and SDR104's spec
+	 * maximum is 208 MHz. A max-frequency of 200 MHz made the core request
+	 * 200 MHz, which msdc_set_mclk rounds DOWN to a source/2 divider =
+	 * 104 MHz (mode 0x0) -- half the achievable rate (~45 MB/s). Setting it
+	 * to the full 208 MHz source lets SDR104 run at source/1 (mode 0x1, no
+	 * divisor) = 208 MHz: ~2x the bus clock, strobe-free, standard SD
+	 * signalling. HW-validated on the SanDisk SR128 (Genio 350 Pumpkin):
+	 * 69 MB/s sustained read / 68.6 MB/s write, md5-correct, 0 CRC errors.
+	 * (SD DDR200 does not help on this SoC: its mode-0x2 clock is mux-walled
+	 * at 52 MHz DDR and its mode-0x3 104 MHz DDR gives an all-zero RX eye.)
+	 */
+	max-frequency = <208000000>;
+	pinctrl-0 = <&mmc1_default_pins>;
+	pinctrl-1 = <&mmc1_uhs_pins>;
+	pinctrl-names = "default", "state_uhs";
+	sd-uhs-sdr104;
+	sd-uhs-sdr50;
+	vmmc-supply = <&mt6357_vmch_reg>;
+	vqmmc-supply = <&mt6357_vmc_reg>;
+	status = "okay";
+};
+
+/* MT7663S SDIO Wi-Fi -- auto-probes on the SDIO bus; calibration comes from the
+ * EEPROM_MT7663.bin firmware fallback in the mt76 driver, not a DT node. */
+&mmc2 {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	max-frequency = <200000000>;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	enable-sdio-wakeup;
+	mediatek,disable-single-burst;
+	non-removable;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	pinctrl-0 = <&mmc2_default_pins>;
+	pinctrl-1 = <&mmc2_uhs_pins>;
+	pinctrl-names = "default", "state_uhs";
+	vmmc-supply = <&wifi_3v3>;
+	vqmmc-supply = <&mt6357_vcn18_reg>;
+	status = "okay";
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* MT7663 Wi-Fi (SDIO function 1): vendor RF calibration + MAC from the
+	 * AIoT-BSP EEPROM_MT7663.bin. mt76 reads mediatek,eeprom-data from this
+	 * function node when the on-die efuse is blank, giving the real MAC
+	 * (00:0c:43:26:60:00) + per-channel TX-power cal instead of mt76's
+	 * random MAC + default cal. */
+	wifi@1 {
+		reg = <1>;
+		mediatek,eeprom-data = [
+			63 76 02 03 00 0c 43 26 60 00 63 76 c3 14 00 80
+			02 00 63 76 c3 14 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 e7 00
+			00 00 80 00 00 00 08 00 01 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 9c 00 00 00 03 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			c6 c6 c4 c4 c2 c1 00 c2 00 c2 c1 00 00 81 84 85
+			c2 c2 c1 81 81 82 85 86 00 c5 c5 c2 c2 00 c3 00
+			c3 c1 00 00 82 84 84 c3 c3 c1 00 00 82 84 84 00
+			c3 c3 c1 00 00 82 84 84 00 00 00 00 00 00 00 00
+			cb dc 1f 17 17 17 11 09 09 09 40 40 40 40 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 3c
+			10 c3 c6 25 00 00 00 00 00 00 00 00 00 00 00 00
+			10 43 c6 25 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			03 00 00 00 00 00 00 77 07 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 08 00 e0 01 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 10 10 28 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			12 12 02 00 00 00 00 05 00 00 00 00 86 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			cc d8 cc d8 cc d8 cc d8 cc d8 cc d8 cc d8 cc d8
+			1f 12 12 12 13 06 06 06 40 40 40 40 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 3a 00 00 00 00
+			40 40 40 41 cb 22 41 cb 22 41 cb 22 41 cb 22 41
+			cb 22 41 cb 22 41 cb 22 41 cb 22 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			40 40 40 41 cb 22 41 cb 22 41 cb 22 41 cb 22 41
+			cb 22 41 cb 22 41 cb 22 41 cb 22 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+		];
+	};
+};
+
+&mt6357_pmic {
+	interrupts-extended = <&pio 145 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-controller;
+	#interrupt-cells = <2>;
+	mediatek,micbias0-microvolt = <1900000>;
+	mediatek,micbias1-microvolt = <1700000>;
+};
+
+&mt6357_vsim1_reg {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+};
+
+&pio {
+	aud_default_pins: audiodefault-pins {
+		clk-dat-pins {
+			pinmux = <MT8365_PIN_72_CMDAT4__FUNC_I2S3_BCK>,
+				 <MT8365_PIN_73_CMDAT5__FUNC_I2S3_LRCK>,
+				 <MT8365_PIN_74_CMDAT6__FUNC_I2S3_MCK>,
+				 <MT8365_PIN_75_CMDAT7__FUNC_I2S3_DO>;
+		};
+	};
+
+	aud_miso_off_pins: misooff-pins {
+		clk-dat-pins {
+			pinmux = <MT8365_PIN_53_AUD_CLK_MISO__FUNC_GPIO53>,
+				 <MT8365_PIN_54_AUD_SYNC_MISO__FUNC_GPIO54>,
+				 <MT8365_PIN_55_AUD_DAT_MISO0__FUNC_GPIO55>,
+				 <MT8365_PIN_56_AUD_DAT_MISO1__FUNC_GPIO56>;
+			input-enable;
+			bias-pull-down;
+			drive-strength = <2>;
+		};
+	};
+
+	aud_miso_on_pins: misoon-pins {
+		clk-dat-pins {
+			pinmux = <MT8365_PIN_53_AUD_CLK_MISO__FUNC_AUD_CLK_MISO>,
+				 <MT8365_PIN_54_AUD_SYNC_MISO__FUNC_AUD_SYNC_MISO>,
+				 <MT8365_PIN_55_AUD_DAT_MISO0__FUNC_AUD_DAT_MISO0>,
+				 <MT8365_PIN_56_AUD_DAT_MISO1__FUNC_AUD_DAT_MISO1>;
+			drive-strength = <6>;
+		};
+	};
+
+	aud_mosi_off_pins: mosioff-pins {
+		clk-dat-pins {
+			pinmux = <MT8365_PIN_49_AUD_CLK_MOSI__FUNC_GPIO49>,
+				 <MT8365_PIN_50_AUD_SYNC_MOSI__FUNC_GPIO50>,
+				 <MT8365_PIN_51_AUD_DAT_MOSI0__FUNC_GPIO51>,
+				 <MT8365_PIN_52_AUD_DAT_MOSI1__FUNC_GPIO52>;
+			input-enable;
+			bias-pull-down;
+			drive-strength = <2>;
+		};
+	};
+
+	aud_mosi_on_pins: mosion-pins {
+		clk-dat-pins {
+			pinmux = <MT8365_PIN_49_AUD_CLK_MOSI__FUNC_AUD_CLK_MOSI>,
+				 <MT8365_PIN_50_AUD_SYNC_MOSI__FUNC_AUD_SYNC_MOSI>,
+				 <MT8365_PIN_51_AUD_DAT_MOSI0__FUNC_AUD_DAT_MOSI0>,
+				 <MT8365_PIN_52_AUD_DAT_MOSI1__FUNC_AUD_DAT_MOSI1>;
+			drive-strength = <6>;
+		};
+	};
+
+	dpi_default_pins: dpi-default-pins {
+		pins {
+			pinmux = <MT8365_PIN_0_GPIO0__FUNC_DPI_D0>,
+				 <MT8365_PIN_1_GPIO1__FUNC_DPI_D1>,
+				 <MT8365_PIN_2_GPIO2__FUNC_DPI_D2>,
+				 <MT8365_PIN_3_GPIO3__FUNC_DPI_D3>,
+				 <MT8365_PIN_4_GPIO4__FUNC_DPI_D4>,
+				 <MT8365_PIN_5_GPIO5__FUNC_DPI_D5>,
+				 <MT8365_PIN_6_GPIO6__FUNC_DPI_D6>,
+				 <MT8365_PIN_7_GPIO7__FUNC_DPI_D7>,
+				 <MT8365_PIN_8_GPIO8__FUNC_DPI_D8>,
+				 <MT8365_PIN_9_GPIO9__FUNC_DPI_D9>,
+				 <MT8365_PIN_10_GPIO10__FUNC_DPI_D10>,
+				 <MT8365_PIN_11_GPIO11__FUNC_DPI_D11>,
+				 <MT8365_PIN_12_GPIO12__FUNC_DPI_DE>,
+				 <MT8365_PIN_13_GPIO13__FUNC_DPI_VSYNC>,
+				 <MT8365_PIN_14_GPIO14__FUNC_DPI_CK>,
+				 <MT8365_PIN_15_GPIO15__FUNC_DPI_HSYNC>;
+			drive-strength = <4>;
+		};
+	};
+
+	dpi_idle_pins: dpi-idle-pins {
+		pins {
+			pinmux = <MT8365_PIN_0_GPIO0__FUNC_GPIO0>,
+				 <MT8365_PIN_1_GPIO1__FUNC_GPIO1>,
+				 <MT8365_PIN_2_GPIO2__FUNC_GPIO2>,
+				 <MT8365_PIN_3_GPIO3__FUNC_GPIO3>,
+				 <MT8365_PIN_4_GPIO4__FUNC_GPIO4>,
+				 <MT8365_PIN_5_GPIO5__FUNC_GPIO5>,
+				 <MT8365_PIN_6_GPIO6__FUNC_GPIO6>,
+				 <MT8365_PIN_7_GPIO7__FUNC_GPIO7>,
+				 <MT8365_PIN_8_GPIO8__FUNC_GPIO8>,
+				 <MT8365_PIN_9_GPIO9__FUNC_GPIO9>,
+				 <MT8365_PIN_10_GPIO10__FUNC_GPIO10>,
+				 <MT8365_PIN_11_GPIO11__FUNC_GPIO11>,
+				 <MT8365_PIN_12_GPIO12__FUNC_GPIO12>,
+				 <MT8365_PIN_13_GPIO13__FUNC_GPIO13>,
+				 <MT8365_PIN_14_GPIO14__FUNC_GPIO14>,
+				 <MT8365_PIN_15_GPIO15__FUNC_GPIO15>;
+		};
+	};
+
+	ethernet_pins: ethernet-pins {
+		rmii_pins {
+			pinmux = <MT8365_PIN_0_GPIO0__FUNC_EXT_TXD0>,
+				 <MT8365_PIN_1_GPIO1__FUNC_EXT_TXD1>,
+				 <MT8365_PIN_2_GPIO2__FUNC_EXT_TXD2>,
+				 <MT8365_PIN_3_GPIO3__FUNC_EXT_TXD3>,
+				 <MT8365_PIN_4_GPIO4__FUNC_EXT_TXC>,
+				 <MT8365_PIN_5_GPIO5__FUNC_EXT_RXER>,
+				 <MT8365_PIN_6_GPIO6__FUNC_EXT_RXC>,
+				 <MT8365_PIN_7_GPIO7__FUNC_EXT_RXDV>,
+				 <MT8365_PIN_8_GPIO8__FUNC_EXT_RXD0>,
+				 <MT8365_PIN_9_GPIO9__FUNC_EXT_RXD1>,
+				 <MT8365_PIN_10_GPIO10__FUNC_EXT_RXD2>,
+				 <MT8365_PIN_11_GPIO11__FUNC_EXT_RXD3>,
+				 <MT8365_PIN_12_GPIO12__FUNC_EXT_TXEN>,
+				 <MT8365_PIN_13_GPIO13__FUNC_EXT_COL>,
+				 <MT8365_PIN_14_GPIO14__FUNC_EXT_MDIO>,
+				 <MT8365_PIN_15_GPIO15__FUNC_EXT_MDC>;
+		};
+	};
+
+	i2c0_pins: i2c0-pins {
+		pins {
+			pinmux = <MT8365_PIN_57_SDA0__FUNC_SDA0_0>,
+				 <MT8365_PIN_58_SCL0__FUNC_SCL0_0>;
+			bias-pull-up;
+		};
+	};
+
+	i2c1_pins: i2c1-pins {
+		pins {
+			pinmux = <MT8365_PIN_59_SDA1__FUNC_SDA1_0>,
+				 <MT8365_PIN_60_SCL1__FUNC_SCL1_0>;
+			bias-pull-up;
+		};
+	};
+
+	i2c2_pins: i2c2-pins {
+		pins {
+			pinmux = <MT8365_PIN_61_SDA2__FUNC_SDA2_0>,
+				 <MT8365_PIN_62_SCL2__FUNC_SCL2_0>;
+			bias-pull-up;
+		};
+	};
+
+	i2c3_pins: i2c3-pins {
+		pins {
+			pinmux = <MT8365_PIN_63_SDA3__FUNC_SDA3_0>,
+				 <MT8365_PIN_64_SCL3__FUNC_SCL3_0>;
+			bias-pull-up;
+		};
+	};
+
+	ite_pins: ite-pins {
+		irq_ite_pins {
+			pinmux = <MT8365_PIN_68_CMDAT0__FUNC_GPIO68>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		rst_ite_pins {
+			pinmux = <MT8365_PIN_69_CMDAT1__FUNC_GPIO69>;
+			output-high;
+		};
+	};
+
+	mmc0_default_pins: mmc0-default-pins {
+		clk-pins {
+			pinmux = <MT8365_PIN_99_MSDC0_CLK__FUNC_MSDC0_CLK>;
+			bias-pull-down;
+		};
+
+		cmd-dat-pins {
+			pinmux = <MT8365_PIN_103_MSDC0_DAT0__FUNC_MSDC0_DAT0>,
+				 <MT8365_PIN_102_MSDC0_DAT1__FUNC_MSDC0_DAT1>,
+				 <MT8365_PIN_101_MSDC0_DAT2__FUNC_MSDC0_DAT2>,
+				 <MT8365_PIN_100_MSDC0_DAT3__FUNC_MSDC0_DAT3>,
+				 <MT8365_PIN_96_MSDC0_DAT4__FUNC_MSDC0_DAT4>,
+				 <MT8365_PIN_95_MSDC0_DAT5__FUNC_MSDC0_DAT5>,
+				 <MT8365_PIN_94_MSDC0_DAT6__FUNC_MSDC0_DAT6>,
+				 <MT8365_PIN_93_MSDC0_DAT7__FUNC_MSDC0_DAT7>,
+				 <MT8365_PIN_98_MSDC0_CMD__FUNC_MSDC0_CMD>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		rst-pins {
+			pinmux = <MT8365_PIN_97_MSDC0_RSTB__FUNC_MSDC0_RSTB>;
+			bias-pull-up;
+		};
+	};
+
+	mmc0_uhs_pins: mmc0-uhs-pins {
+		clk-pins {
+			pinmux = <MT8365_PIN_99_MSDC0_CLK__FUNC_MSDC0_CLK>;
+			drive-strength = <MTK_DRIVE_10mA>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		cmd-dat-pins {
+			pinmux = <MT8365_PIN_103_MSDC0_DAT0__FUNC_MSDC0_DAT0>,
+				 <MT8365_PIN_102_MSDC0_DAT1__FUNC_MSDC0_DAT1>,
+				 <MT8365_PIN_101_MSDC0_DAT2__FUNC_MSDC0_DAT2>,
+				 <MT8365_PIN_100_MSDC0_DAT3__FUNC_MSDC0_DAT3>,
+				 <MT8365_PIN_96_MSDC0_DAT4__FUNC_MSDC0_DAT4>,
+				 <MT8365_PIN_95_MSDC0_DAT5__FUNC_MSDC0_DAT5>,
+				 <MT8365_PIN_94_MSDC0_DAT6__FUNC_MSDC0_DAT6>,
+				 <MT8365_PIN_93_MSDC0_DAT7__FUNC_MSDC0_DAT7>,
+				 <MT8365_PIN_98_MSDC0_CMD__FUNC_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <MTK_DRIVE_10mA>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+
+		ds-pins {
+			pinmux = <MT8365_PIN_104_MSDC0_DSL__FUNC_MSDC0_DSL>;
+			drive-strength = <MTK_DRIVE_10mA>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		rst-pins {
+			pinmux = <MT8365_PIN_97_MSDC0_RSTB__FUNC_MSDC0_RSTB>;
+			drive-strength = <MTK_DRIVE_10mA>;
+			bias-pull-up;
+		};
+	};
+
+	mmc1_default_pins: mmc1-default-pins {
+		cd-pins {
+			pinmux = <MT8365_PIN_76_CMDAT8__FUNC_GPIO76>;
+			bias-pull-up;
+		};
+
+		clk-pins {
+			pinmux = <MT8365_PIN_88_MSDC1_CLK__FUNC_MSDC1_CLK>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		cmd-dat-pins {
+			pinmux = <MT8365_PIN_89_MSDC1_DAT0__FUNC_MSDC1_DAT0>,
+				 <MT8365_PIN_90_MSDC1_DAT1__FUNC_MSDC1_DAT1>,
+				 <MT8365_PIN_91_MSDC1_DAT2__FUNC_MSDC1_DAT2>,
+				 <MT8365_PIN_92_MSDC1_DAT3__FUNC_MSDC1_DAT3>,
+				 <MT8365_PIN_87_MSDC1_CMD__FUNC_MSDC1_CMD>;
+			input-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+	};
+
+	mmc1_uhs_pins: mmc1-uhs-pins {
+		clk-pins {
+			pinmux = <MT8365_PIN_88_MSDC1_CLK__FUNC_MSDC1_CLK>;
+			drive-strength = <8>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+
+		cmd-dat-pins {
+			pinmux = <MT8365_PIN_89_MSDC1_DAT0__FUNC_MSDC1_DAT0>,
+				 <MT8365_PIN_90_MSDC1_DAT1__FUNC_MSDC1_DAT1>,
+				 <MT8365_PIN_91_MSDC1_DAT2__FUNC_MSDC1_DAT2>,
+				 <MT8365_PIN_92_MSDC1_DAT3__FUNC_MSDC1_DAT3>,
+				 <MT8365_PIN_87_MSDC1_CMD__FUNC_MSDC1_CMD>;
+			input-enable;
+			drive-strength = <6>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+	};
+
+	mmc2_default_pins: mmc2-default-pins {
+		cmd-dat-pins {
+			pinmux = <0x5201>, <0x5301>, <0x5401>, <0x5501>, <0x5001>;
+			input-enable;
+			drive-strength = <4>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+		clk-pins {
+			pinmux = <0x5101>;
+			drive-strength = <4>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+		/* MT7663S WIFI_PWR_ENABLE (GPIO141) + MT7663_SYSRSTB (GPIO126). */
+		wifi-en-pins {
+			pinmux = <MT8365_PIN_141_CONN_BT_DATA__FUNC_GPIO141>,
+				 <MT8365_PIN_126_DMIC3_CLK__FUNC_GPIO126>;
+		};
+	};
+
+	mmc2_uhs_pins: mmc2-uhs-pins {
+		cmd-dat-pins {
+			pinmux = <0x5201>, <0x5301>, <0x5401>, <0x5501>, <0x5001>;
+			input-enable;
+			drive-strength = <8>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+		clk-pins {
+			pinmux = <0x5101>;
+			drive-strength = <8>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+		ds-pins {
+			pinmux = <0x5601>;
+			drive-strength = <8>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+		};
+		wifi-en-pins {
+			pinmux = <MT8365_PIN_141_CONN_BT_DATA__FUNC_GPIO141>,
+				 <MT8365_PIN_126_DMIC3_CLK__FUNC_GPIO126>;
+		};
+	};
+
+	uart0_pins: uart0-pins {
+		pins {
+			pinmux = <MT8365_PIN_35_URXD0__FUNC_URXD0>,
+				 <MT8365_PIN_36_UTXD0__FUNC_UTXD0>;
+		};
+	};
+
+	uart1_pins: uart1-pins {
+		pins {
+			pinmux = <MT8365_PIN_37_URXD1__FUNC_URXD1>,
+				 <MT8365_PIN_38_UTXD1__FUNC_UTXD1>;
+		};
+	};
+
+	uart2_pins: uart2-pins {
+		pins {
+			pinmux = <MT8365_PIN_39_URXD2__FUNC_URXD2>,
+				 <MT8365_PIN_40_UTXD2__FUNC_UTXD2>;
+		};
+	};
+
+	usb_pins: usb-pins {
+		/*
+		 * LAN9512 hub reset (HUB_RST), released (driven low) so the hub
+		 * comes out of reset once the role switch goes to host. Vendor
+		 * BSP drives GPIO70 output-low.
+		 */
+		pin_hub_rst {
+			pinmux = <MT8365_PIN_70_CMDAT2__FUNC_GPIO70>;
+			output-low;
+		};
+
+		pin_id {
+			pinmux = <MT8365_PIN_39_URXD2__FUNC_GPIO39>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		pins_vbus {
+			pinmux = <MT8365_PIN_25_KPCOL1__FUNC_USB_DRVVBUS>;
+		};
+	};
+
+	tca6416_pins: tca6416-pins {
+		gpio_mux_rst_n_pin {
+			pinmux = <MT8365_PIN_78_CMHSYNC__FUNC_GPIO78>;
+			output-high;
+		};
+
+		gpio_mux_int_n_pin {
+			pinmux = <MT8365_PIN_79_CMVSYNC__FUNC_GPIO79>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+};
+
+&rdma1_out {
+	remote-endpoint = <&dpi0_in>;
+};
+
+/*
+ * No LCM/DSI panel on the Pumpkin -- HDMI (rdma1 -> dpi0 -> it66121) is the
+ * only display output. The mt8365 mmsys routing table has no DITHER0->DPI0
+ * route, so the main CRTC path's last component (dither0) must still resolve
+ * to dsi0. Keep dsi0 present but DISABLED with its dither0->dsi0 link intact:
+ * mtk_drm_of_ddp_path_build_one() then finds dsi0 unavailable and returns
+ * -ENODEV, so the main path is skipped while the ext path (rdma1->dpi0,
+ * enabled above) builds the HDMI CRTC + connector. Removing dsi0 entirely
+ * instead leaves dither0 dangling -> -EINVAL "Invalid display hw pipeline";
+ * disabling dsi0 *without* enabling dpi0 leaves zero valid paths -> a NULL
+ * component match -> mtk_drm_probe() NULL-deref + boot loop.
+ */
+&dither0_out {
+	remote-endpoint = <&dsi0_in>;
+};
+
+&dsi0 {
+	status = "disabled";
+
+	ports {
+		port {
+			dsi0_in: endpoint {
+				remote-endpoint = <&dither0_out>;
+			};
+		};
+	};
+};
+
+&ssusb {
+	dr_mode = "otg";
+	maximum-speed = "high-speed";
+	pinctrl-0 = <&usb_pins>;
+	pinctrl-names = "default";
+	usb-role-switch;
+	role-switch-default-mode = "host";
+	vusb33-supply = <&mt6357_vusb33_reg>;
+	status = "okay";
+
+	/*
+	 * CC-driven USB role: the TUSB322I at i2c0@0x47 (ti,hd3ss3220 node above)
+	 * is the usb-role-switch source. Default = host so the always-on LAN9512
+	 * hub enumerates on cable-out; USB-C data attach -> device (fastboot).
+	 * VBUS in host mode is the SoC USB_DRVVBUS (GPIO25, in usb_pins); the
+	 * 5VUSB_ENABLE hub rail (reg_5v_usb GPIO137) is always-on.
+	 */
+	port {
+		ssusb_role_ep: endpoint {
+			remote-endpoint = <&hd3ss3220_ep>;
+		};
+	};
+};
+
+&usb_host {
+	vusb33-supply = <&mt6357_vusb33_reg>;
+	status = "okay";
+};
+
+&uart0 {
+	pinctrl-0 = <&uart0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&uart1 {
+	pinctrl-0 = <&uart1_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&uart2 {
+	/* Pumpkin: pins 39/40 = IDDIG / BGF_INT_B (not URXD2/UTXD2) -> uart2 unusable */
+	status = "disabled";
+};

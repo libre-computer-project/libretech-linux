@@ -20,6 +20,8 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
+#include <linux/usb.h>
+#include <linux/workqueue.h>
 
 #include "xhci.h"
 #include "xhci-mtk.h"
@@ -496,12 +498,137 @@ static int xhci_mtk_setup(struct usb_hcd *hcd)
 	return ret;
 }
 
+/*
+ * mediatek,usb3-power-after-usb2
+ *
+ * Some USB3 hubs wired to an MTK root port (the Genesys GL3523 behind the
+ * Type-A port of the mt8195 Cherry/Tomato Chromebooks) only keep a working
+ * SuperSpeed link if they have been attached and addressed over USB2 before
+ * USB3 link training starts. If both root ports are powered together, the
+ * USB3 link trains first, drops to SS.Inactive ~30 ms later and takes the
+ * hub's USB2 side down with it until the hub is reset again.
+ *
+ * With the property set, a SetPortFeature(PORT_POWER) on a USB3 root port is
+ * recorded but not applied until a device has been added on this controller's
+ * USB2 root hub; then the held ports are powered. If no USB2 device shows up
+ * within U3_POWER_FALLBACK_MS, the ports are powered anyway so USB3-only use
+ * of the port keeps working.
+ */
+#define U3_POWER_FALLBACK_MS	10000
+
+static void xhci_mtk_u3_power_release(struct xhci_hcd_mtk *mtk, const char *why)
+{
+	struct xhci_hcd *xhci = hcd_to_xhci(mtk->hcd);
+	struct usb_hcd *usb3_hcd = xhci_get_usb3_hcd(xhci);
+	unsigned long ports, flags;
+	int bit;
+
+	spin_lock_irqsave(&mtk->u3_power_lock, flags);
+	if (mtk->u3_power_released) {
+		spin_unlock_irqrestore(&mtk->u3_power_lock, flags);
+		return;
+	}
+	mtk->u3_power_released = true;
+	ports = mtk->u3_power_deferred;
+	mtk->u3_power_deferred = 0;
+	spin_unlock_irqrestore(&mtk->u3_power_lock, flags);
+
+	if (!usb3_hcd || !usb3_hcd->self.root_hub || !ports)
+		return;
+
+	/* the usb3 root hub may have autosuspended while its ports were held off */
+	pm_runtime_get_sync(&usb3_hcd->self.root_hub->dev);
+	for_each_set_bit(bit, &ports, BITS_PER_LONG) {
+		dev_info(mtk->dev, "powering usb3 root port %d (%s)\n", bit + 1, why);
+		xhci_hub_control(usb3_hcd, SetPortFeature, USB_PORT_FEAT_POWER,
+				 bit + 1, NULL, 0);
+	}
+	pm_runtime_put(&usb3_hcd->self.root_hub->dev);
+}
+
+static void xhci_mtk_u3_power_work(struct work_struct *work)
+{
+	struct xhci_hcd_mtk *mtk = container_of(to_delayed_work(work),
+						struct xhci_hcd_mtk, u3_power_work);
+	bool u2_seen;
+	unsigned long flags;
+
+	spin_lock_irqsave(&mtk->u3_power_lock, flags);
+	u2_seen = mtk->u3_power_released;
+	spin_unlock_irqrestore(&mtk->u3_power_lock, flags);
+	if (!u2_seen)
+		xhci_mtk_u3_power_release(mtk, "fallback timeout");
+}
+
+static int xhci_mtk_u3_power_notify(struct notifier_block *nb,
+				    unsigned long action, void *data)
+{
+	struct xhci_hcd_mtk *mtk = container_of(nb, struct xhci_hcd_mtk,
+						u3_power_nb);
+	struct usb_device *udev = data;
+
+	if (action != USB_DEVICE_ADD || !udev->parent ||
+	    udev->parent != mtk->hcd->self.root_hub)
+		return NOTIFY_DONE;
+
+	xhci_mtk_u3_power_release(mtk, "usb2 device added");
+	return NOTIFY_OK;
+}
+
+/* stop holding usb3 port power: no new deferrals, no pending release work */
+static void xhci_mtk_u3_power_stop(struct xhci_hcd_mtk *mtk)
+{
+	unsigned long flags;
+
+	if (!mtk->u3_power_after_u2)
+		return;
+
+	usb_unregister_notify(&mtk->u3_power_nb);
+	spin_lock_irqsave(&mtk->u3_power_lock, flags);
+	mtk->u3_power_after_u2 = 0;
+	mtk->u3_power_deferred = 0;
+	spin_unlock_irqrestore(&mtk->u3_power_lock, flags);
+	cancel_delayed_work_sync(&mtk->u3_power_work);
+}
+
+static int xhci_mtk_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
+				u16 wIndex, char *buf, u16 wLength)
+{
+	struct xhci_hcd_mtk *mtk = hcd_to_mtk(hcd);
+	unsigned int port = wIndex & 0xff;
+	unsigned long flags;
+
+	if (mtk->u3_power_after_u2 && hcd->speed >= HCD_USB3 &&
+	    wValue == USB_PORT_FEAT_POWER && port >= 1 && port <= BITS_PER_LONG &&
+	    (typeReq == SetPortFeature || typeReq == ClearPortFeature)) {
+		spin_lock_irqsave(&mtk->u3_power_lock, flags);
+		if (!mtk->u3_power_released) {
+			if (typeReq == SetPortFeature)
+				__set_bit(port - 1, &mtk->u3_power_deferred);
+			else
+				__clear_bit(port - 1, &mtk->u3_power_deferred);
+			spin_unlock_irqrestore(&mtk->u3_power_lock, flags);
+			if (typeReq == SetPortFeature) {
+				dev_dbg(mtk->dev, "holding usb3 root port %u power until a usb2 device is added\n",
+					port);
+				queue_delayed_work(system_wq, &mtk->u3_power_work,
+						   msecs_to_jiffies(U3_POWER_FALLBACK_MS));
+			}
+			return 0;
+		}
+		spin_unlock_irqrestore(&mtk->u3_power_lock, flags);
+	}
+
+	return xhci_hub_control(hcd, typeReq, wValue, wIndex, buf, wLength);
+}
+
 static const struct xhci_driver_overrides xhci_mtk_overrides __initconst = {
 	.reset = xhci_mtk_setup,
 	.add_endpoint = xhci_mtk_add_ep,
 	.drop_endpoint = xhci_mtk_drop_ep,
 	.check_bandwidth = xhci_mtk_check_bandwidth,
 	.reset_bandwidth = xhci_mtk_reset_bandwidth,
+	.hub_control = xhci_mtk_hub_control,
 };
 
 static struct hc_driver __read_mostly xhci_mtk_hc_driver;
@@ -562,6 +689,11 @@ static int xhci_mtk_probe(struct platform_device *pdev)
 			     &mtk->u2p_dis_msk);
 
 	of_property_read_u32(node, "rx-fifo-depth", &mtk->rxfifo_depth);
+
+	mtk->u3_power_after_u2 = of_property_read_bool(node,
+					"mediatek,usb3-power-after-usb2");
+	spin_lock_init(&mtk->u3_power_lock);
+	INIT_DELAYED_WORK(&mtk->u3_power_work, xhci_mtk_u3_power_work);
 
 	ret = usb_wakeup_of_property_parse(mtk, node);
 	if (ret) {
@@ -636,6 +768,11 @@ static int xhci_mtk_probe(struct platform_device *pdev)
 	xhci->imod_interval = 5000;
 	device_property_read_u32(dev, "imod-interval-ns", &xhci->imod_interval);
 
+	if (mtk->u3_power_after_u2) {
+		mtk->u3_power_nb.notifier_call = xhci_mtk_u3_power_notify;
+		usb_register_notify(&mtk->u3_power_nb);
+	}
+
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret)
 		goto disable_device_wakeup;
@@ -687,6 +824,7 @@ dealloc_usb2_hcd:
 	usb_remove_hcd(hcd);
 
 disable_device_wakeup:
+	xhci_mtk_u3_power_stop(mtk);
 	device_init_wakeup(dev, false);
 
 put_usb2_hcd:
@@ -716,6 +854,7 @@ static void xhci_mtk_remove(struct platform_device *pdev)
 	xhci->xhc_state |= XHCI_STATE_REMOVING;
 	dev_pm_clear_wake_irq(dev);
 	device_init_wakeup(dev, false);
+	xhci_mtk_u3_power_stop(mtk);
 
 	if (shared_hcd) {
 		usb_remove_hcd(shared_hcd);

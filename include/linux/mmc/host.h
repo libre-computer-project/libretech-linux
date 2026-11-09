@@ -19,6 +19,8 @@
 #include <linux/blk-crypto-profile.h>
 #include <linux/mmc/sd_uhs2.h>
 
+struct seq_file;
+
 struct mmc_ios {
 	unsigned int	clock;			/* clock rate */
 	unsigned short	vdd;
@@ -69,6 +71,7 @@ struct mmc_ios {
 #define MMC_TIMING_UHS2_SPEED_A_HD 14
 #define MMC_TIMING_UHS2_SPEED_B    15
 #define MMC_TIMING_UHS2_SPEED_B_HD 16
+#define MMC_TIMING_SD_DDR200	17	/* SD UHS DDR200 / DDR208 */
 
 	unsigned char	signal_voltage;		/* signalling voltage (1.8V or 3.3V) */
 
@@ -224,6 +227,14 @@ struct mmc_host_ops {
 	/* The tuning command opcode value is different for SD and eMMC cards */
 	int	(*execute_tuning)(struct mmc_host *host, u32 opcode);
 
+	/*
+	 * Optional: reduce the host clock within the current bus mode (e.g. a
+	 * strobe-less SD DDR200 card that CRC-storms at the full rate but runs
+	 * clean slower). Return 0 if the clock was lowered, <0 if it cannot be
+	 * (wrong mode / already at the floor) so the core drops the bus grade.
+	 */
+	int	(*lower_bus_clock)(struct mmc_host *host);
+
 	/* Prepare HS400 target operating frequency depending host driver */
 	int	(*prepare_hs400_tuning)(struct mmc_host *host, struct mmc_ios *ios);
 
@@ -272,6 +283,18 @@ struct mmc_host_ops {
 	 * negative errno in case of a failure or zero for success.
 	 */
 	int	(*uhs2_control)(struct mmc_host *host, enum sd_uhs2_operation op);
+
+	/*
+	 * Optional: emit an on-demand signal-integrity "eye" diagnostic to a
+	 * seq_file, exposed as the per-host debugfs "eye_scan". The core calls
+	 * this with the host already claimed and re-tuning held (both are
+	 * core-private, which is why this facility lives in the core and calls
+	 * back here rather than the host driver owning the debugfs file), so
+	 * live I/O is quiesced. The callback must NOT claim the host or hold
+	 * re-tune again. Purely diagnostic: it must save/restore any register
+	 * it touches and leave the tuning state unchanged. NULL = no feature.
+	 */
+	void	(*eye_scan)(struct mmc_host *host, struct seq_file *s);
 };
 
 struct mmc_cqe_ops {
@@ -350,6 +373,38 @@ struct mmc_supply {
 
 struct mmc_ctx {
 	struct task_struct *task;
+};
+
+/*
+ * Platform-agnostic MMC eye-scan (signal-integrity) facility. A host that can
+ * sweep its RX (sampling) and/or TX (drive) timing supplies these primitives;
+ * the core owns the sweep loop and the pass/fail oracle (read: CMD19 tuning;
+ * write: write-a-block/read-it-back), so read AND write eyes are measurable on
+ * any such controller for SD/SDIO/eMMC. See software/mmc-eye-scan.md and
+ * drivers/mmc/core/eye.c.
+ *
+ * The timing space is flattened to a 1-D point index per mode (a controller
+ * with a phase x delay grid picks its dominant axis at the best phase). All
+ * callbacks run with the host claimed and re-tuning held by the core.
+ */
+enum mmc_eye_mode {
+	MMC_EYE_READ,	/* RX / sampling eye  -- host samples card-driven data */
+	MMC_EYE_WRITE,	/* TX / drive eye     -- card samples host-driven data */
+};
+
+struct mmc_eye_ops {
+	/* number of sweep points for @mode, or 0 if @mode is unsupported */
+	int	(*num_points)(struct mmc_host *host, enum mmc_eye_mode mode);
+	/* snapshot the live timing for @mode and prepare to sweep it */
+	void	(*begin)(struct mmc_host *host, enum mmc_eye_mode mode);
+	/* apply sweep point @n (0..num_points-1) for @mode */
+	void	(*set_point)(struct mmc_host *host, enum mmc_eye_mode mode,
+			     int n);
+	/* restore the timing snapshotted by ->begin (undo the sweep) */
+	void	(*restore)(struct mmc_host *host, enum mmc_eye_mode mode);
+	/* short human label for point @n of @mode into @buf */
+	void	(*describe)(struct mmc_host *host, enum mmc_eye_mode mode,
+			    int n, char *buf, size_t len);
 };
 
 struct mmc_host {
@@ -463,6 +518,7 @@ struct mmc_host {
 #define MMC_CAP2_CRYPTO		0
 #endif
 #define MMC_CAP2_ALT_GPT_TEGRA	(1 << 28)	/* Host with eMMC that has GPT entry at a non-standard location */
+#define MMC_CAP2_SD_DDR200	(1 << 29)	/* Host supports SD UHS DDR200 / DDR208 */
 
 	bool			uhs2_sd_tran;	/* UHS-II flag for SD_TRAN state */
 	bool			uhs2_app_cmd;	/* UHS-II flag for APP command */
@@ -486,17 +542,33 @@ struct mmc_host {
 
 	struct mmc_ios		ios;		/* current io bus settings */
 
+	bool			claimed;	/* host exclusively claimed */
+
 	/* group bitfields together to minimize padding */
 	unsigned int		use_spi_crc:1;
-	unsigned int		claimed:1;	/* host exclusively claimed */
 	unsigned int		doing_init_tune:1; /* initial tuning in progress */
-	unsigned int		can_retune:1;	/* re-tuning can be used */
 	unsigned int		doing_retune:1;	/* re-tuning in progress */
-	unsigned int		retune_now:1;	/* do re-tuning at next req */
-	unsigned int		retune_paused:1; /* re-tuning is temporarily disabled */
 	unsigned int		retune_crc_disable:1; /* don't trigger retune upon crc */
 	unsigned int		can_dma_map_merge:1; /* merging can be used */
 	unsigned int		vqmmc_enabled:1; /* vqmmc regulator is enabled */
+	unsigned int		sd_ddr200_disabled:1; /* SD DDR200 cap cleared for
+						       * the current card after its
+						       * DDR200 tuning failed;
+						       * re-armed on card removal */
+	unsigned int		sd_uhs_disabled:1; /* UHS-I init (voltage switch,
+						    * CMD6 grade, tuning at every
+						    * clock rung) failed for the
+						    * current card: it is brought
+						    * up at 3.3 V High Speed
+						    * instead; re-armed on removal */
+
+	unsigned int		crc_storm_cnt;	/* data-CRC errors in the current
+						 * speed interval; a burst drives
+						 * the SD speed-downgrade ladder */
+	unsigned int		sd_speed_downgrade; /* SD protocol-grade rungs
+						     * dropped for the current card
+						     * due to a persistent CRC
+						     * storm; re-armed on removal */
 
 	/*
 	 * Indicates if an undervoltage event has already been handled.
@@ -508,6 +580,9 @@ struct mmc_host {
 	int			rescan_disable;	/* disable card detection */
 	int			rescan_entered;	/* used with nonremovable devices */
 
+	bool			can_retune;	/* re-tuning can be used */
+	bool			retune_now;	/* do re-tuning at next req */
+	bool			retune_paused;	/* re-tuning is temporarily disabled */
 	int			need_retune;	/* re-tuning is needed */
 	int			hold_retune;	/* hold off re-tuning */
 	unsigned int		retune_period;	/* re-tuning period in secs */
@@ -577,6 +652,14 @@ struct mmc_host {
 
 	u32			err_stats[MMC_ERR_MAX];
 	u32			max_sd_hs_hz;
+
+	/* Platform-agnostic eye-scan facility (drivers/mmc/core/eye.c) */
+	const struct mmc_eye_ops *eye_ops;	/* NULL = no eye facility */
+	u64			eye_scratch_lba;	/* write-eye scratch block */
+	bool			eye_scratch_valid;	/* scratch_lba set by user */
+	bool			eye_write_armed;	/* one-shot destructive gate */
+	unsigned int		eye_write_blocks;	/* write-eye burst size (blocks); 0 = default multi-block */
+
 	unsigned long		private[] ____cacheline_aligned;
 };
 
@@ -697,8 +780,9 @@ static inline int mmc_card_hs(struct mmc_card *card)
 /* TODO: Move to private header */
 static inline int mmc_card_uhs(struct mmc_card *card)
 {
-	return card->host->ios.timing >= MMC_TIMING_UHS_SDR12 &&
-		card->host->ios.timing <= MMC_TIMING_UHS_DDR50;
+	return (card->host->ios.timing >= MMC_TIMING_UHS_SDR12 &&
+		card->host->ios.timing <= MMC_TIMING_UHS_DDR50) ||
+		card->host->ios.timing == MMC_TIMING_SD_DDR200;
 }
 
 static inline bool mmc_card_uhs2(struct mmc_host *host)

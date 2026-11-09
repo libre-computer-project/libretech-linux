@@ -12,7 +12,11 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 
+#include <linux/media-bus-format.h>
+
 #include <drm/bridge/dw_hdmi.h>
+#include <drm/drm_atomic.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
@@ -259,6 +263,53 @@ dw_hdmi_rockchip_mode_valid(struct dw_hdmi *dw_hdmi, void *data,
 	return MODE_OK;
 }
 
+static enum drm_mode_status
+dw_hdmi_rk3328_mode_valid(struct dw_hdmi *dw_hdmi, void *data,
+			    const struct drm_display_info *info,
+			    const struct drm_display_mode *mode)
+{
+	struct rockchip_hdmi *hdmi = data;
+	const struct dw_hdmi_mpll_config *mpll_cfg = rockchip_mpll_cfg;
+	int pclk = mode->clock * 1000;
+	bool exact_match = hdmi->plat_data->phy_force_vendor;
+	int i;
+
+	if (hdmi->chip_data->max_tmds_clock &&
+	    mode->clock > hdmi->chip_data->max_tmds_clock)
+		return MODE_CLOCK_HIGH;
+
+	if (hdmi->ref_clk) {
+		int rpclk = clk_round_rate(hdmi->ref_clk, pclk);
+
+		if (abs(rpclk - pclk) > pclk / 1000)
+			return MODE_NOCLOCK;
+	}
+
+	for (i = 0; mpll_cfg[i].mpixelclock != (~0UL); i++) {
+		/*
+		 * For vendor specific phys force an exact match of the pixelclock
+		 * to preserve the original behaviour of the driver.
+		 */
+		if (exact_match && pclk == mpll_cfg[i].mpixelclock)
+			return MODE_OK;
+		/*
+		 * The Synopsys phy can work with pixelclocks up to the value given
+		 * in the corresponding mpll_cfg entry.
+		 */
+		if (!exact_match && pclk <= mpll_cfg[i].mpixelclock)
+			return MODE_OK;
+	}
+
+	/* reject resolution higher than 1920 */
+	if (mode->hdisplay < 320 || mode->hdisplay > 1920)
+		return MODE_BAD_HVALUE;
+
+	if (mode->vdisplay < 320 || mode->vdisplay > 1920)
+		return MODE_BAD_VVALUE;
+
+	return MODE_BAD;
+}
+
 static void dw_hdmi_rockchip_encoder_disable(struct drm_encoder *encoder)
 {
 }
@@ -314,10 +365,51 @@ dw_hdmi_rockchip_encoder_atomic_check(struct drm_encoder *encoder,
 				      struct drm_crtc_state *crtc_state,
 				      struct drm_connector_state *conn_state)
 {
+	struct rockchip_hdmi *hdmi = to_rockchip_hdmi(encoder);
 	struct rockchip_crtc_state *s = to_rockchip_crtc_state(crtc_state);
+	struct drm_bridge *bridge = drm_bridge_chain_get_first_bridge(encoder);
+	struct drm_bridge_state *bridge_state = NULL;
+	u32 bus_format = MEDIA_BUS_FMT_FIXED;
 
-	s->output_mode = ROCKCHIP_OUT_MODE_AAAA;
+	if (bridge)
+		bridge_state = drm_atomic_get_new_bridge_state(conn_state->state,
+							       bridge);
+	if (bridge_state)
+		bus_format = bridge_state->input_bus_cfg.format;
+
+	/*
+	 * Same mapping as dw_dp-rockchip.c: VOP1 programs DSP_CTRL0[3:0]
+	 * from output_mode. UYYVYY → YUV420 (14). UYVY → S888_DUMMY (12),
+	 * the 4:2:2 packing. RGB / YUV444 stay AAAA (RGB10); dw-hdmi CSC
+	 * turns VOP RGB into YUV444 on the wire when the output bus is YUV8.
+	 */
+	switch (bus_format) {
+	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
+	case MEDIA_BUS_FMT_UYYVYY8_0_5X24:
+	case MEDIA_BUS_FMT_UYYVYY12_0_5X36:
+	case MEDIA_BUS_FMT_UYYVYY16_0_5X48:
+		s->output_mode = ROCKCHIP_OUT_MODE_YUV420;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY10_1X20:
+	case MEDIA_BUS_FMT_UYVY12_1X24:
+		s->output_mode = ROCKCHIP_OUT_MODE_S888_DUMMY;
+		break;
+	default:
+		s->output_mode = ROCKCHIP_OUT_MODE_AAAA;
+		break;
+	}
+
 	s->output_type = DRM_MODE_CONNECTOR_HDMIA;
+	s->bus_format = bus_format;
+
+	if (s->output_mode == ROCKCHIP_OUT_MODE_YUV420)
+		dev_info(hdmi->dev, "hdmi 420: out_mode=%d bus_fmt=%#x\n",
+			 s->output_mode, bus_format);
+	else if (bus_format && bus_format != MEDIA_BUS_FMT_FIXED &&
+		 bus_format != MEDIA_BUS_FMT_RGB888_1X24)
+		dev_info(hdmi->dev, "hdmi fmt: out_mode=%d bus_fmt=%#x\n",
+			 s->output_mode, bus_format);
 
 	return 0;
 }
@@ -459,7 +551,7 @@ static struct rockchip_hdmi_chip_data rk3328_chip_data = {
 };
 
 static const struct dw_hdmi_plat_data rk3328_hdmi_drv_data = {
-	.mode_valid = dw_hdmi_rockchip_mode_valid,
+	.mode_valid = dw_hdmi_rk3328_mode_valid,
 	.phy_data = &rk3328_chip_data,
 	.phy_ops = &rk3328_hdmi_phy_ops,
 	.phy_name = "inno_dw_hdmi_phy2",
@@ -481,6 +573,8 @@ static const struct dw_hdmi_plat_data rk3399_hdmi_drv_data = {
 	.phy_config = rockchip_phy_config,
 	.phy_data = &rk3399_chip_data,
 	.use_drm_infoframe = true,
+	/* HDMI 2.0: 4K@60 YCbCr 4:2:0 halves TMDS vs 4:4:4. */
+	.ycbcr_420_allowed = true,
 };
 
 static struct rockchip_hdmi_chip_data rk3568_chip_data = {
@@ -603,9 +697,13 @@ static int dw_hdmi_rockchip_bind(struct device *dev, struct device *master,
 		goto err_bind;
 	}
 
+	dev_info(hdmi->dev, "ycbcr_420_allowed=%d max_tmds=%d kHz\n",
+		 plat_data->ycbcr_420_allowed, hdmi->chip_data->max_tmds_clock);
+
 	return 0;
 
 err_bind:
+	platform_set_drvdata(pdev, NULL);
 	drm_encoder_cleanup(encoder);
 
 	return ret;
@@ -618,6 +716,8 @@ static void dw_hdmi_rockchip_unbind(struct device *dev, struct device *master,
 
 	dw_hdmi_unbind(hdmi->hdmi);
 	drm_encoder_cleanup(&hdmi->encoder.encoder);
+	/* hdmi is devm memory of the bind; it is freed after this returns */
+	dev_set_drvdata(dev, NULL);
 }
 
 static const struct component_ops dw_hdmi_rockchip_ops = {
@@ -638,6 +738,14 @@ static void dw_hdmi_rockchip_remove(struct platform_device *pdev)
 static int __maybe_unused dw_hdmi_rockchip_resume(struct device *dev)
 {
 	struct rockchip_hdmi *hdmi = dev_get_drvdata(dev);
+
+	/*
+	 * The PM ops belong to the platform device, which probes (component_add)
+	 * long before the display subsystem binds it -- and never binds it at all
+	 * when another component is still deferred. Nothing to resume then.
+	 */
+	if (!hdmi)
+		return 0;
 
 	dw_hdmi_resume(hdmi->hdmi);
 

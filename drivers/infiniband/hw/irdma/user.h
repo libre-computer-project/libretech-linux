@@ -456,7 +456,6 @@ struct irdma_srq_uk {
 	struct irdma_uk_attrs *uk_attrs;
 	__le64 *shadow_area;
 	struct irdma_ring srq_ring;
-	struct irdma_ring initial_ring;
 	u32 srq_id;
 	u32 srq_size;
 	u32 max_srq_frag_cnt;
@@ -561,7 +560,6 @@ struct irdma_qp_uk_init_info {
 	u8 sq_shift;
 	u8 rq_shift;
 	int abi_ver;
-	bool legacy_mode;
 	struct irdma_srq_uk *srq_uk;
 };
 

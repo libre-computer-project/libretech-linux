@@ -69,6 +69,7 @@
 #include <linux/virtio_config.h>
 #include <uapi/linux/virtio_mmio.h>
 #include <linux/virtio_ring.h>
+#include <linux/delay.h>
 
 
 
@@ -87,28 +88,61 @@ struct virtio_mmio_device {
 
 	void __iomem *base;
 	unsigned long version;
+	unsigned long sw_impl;
+
+	/* True if enable_irq_wake() succeeded for the shared IRQ. */
+	bool wake_irq_enabled;
 };
 
 /* Configuration interface */
 
-static u64 vm_get_features(struct virtio_device *vdev)
+static int wait_sel_generation_update(struct virtio_device *vdev, u32 prev_sel_generation){
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	unsigned long timeout = jiffies + msecs_to_jiffies(1000); // 1 second timeout
+	writel(prev_sel_generation + 1, vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+
+	while (readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION) == prev_sel_generation + 1) {
+	    if (time_after(jiffies, timeout)) {
+	        dev_err(&vdev->dev, "Timeout waiting for sel_generation value to update\n");
+	        return -ETIMEDOUT;
+	    }
+	    cpu_relax(); // or udelay(1), or cond_resched() if appropriate
+	}
+	return 0;
+}
+
+static int vm_get_features(struct virtio_device *vdev, u64 *features_out)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
-	u64 features;
+	u32 sel_generation;
 
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	writel(1, vm_dev->base + VIRTIO_MMIO_DEVICE_FEATURES_SEL);
-	features = readl(vm_dev->base + VIRTIO_MMIO_DEVICE_FEATURES);
-	features <<= 32;
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		return -ETIMEDOUT;
+	}
+	*features_out = readl(vm_dev->base + VIRTIO_MMIO_DEVICE_FEATURES);
+	*features_out <<= 32;
 
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	writel(0, vm_dev->base + VIRTIO_MMIO_DEVICE_FEATURES_SEL);
-	features |= readl(vm_dev->base + VIRTIO_MMIO_DEVICE_FEATURES);
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		return -ETIMEDOUT;
+	}
+	*features_out |= readl(vm_dev->base + VIRTIO_MMIO_DEVICE_FEATURES);
+	pr_err("Device Features %llx", *features_out);
 
-	return features;
+	return 0;
 }
 
 static int vm_finalize_features(struct virtio_device *vdev)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	u32 sel_generation;
 
 	/* Give virtio_ring a chance to accept features. */
 	vring_transport_features(vdev);
@@ -120,13 +154,38 @@ static int vm_finalize_features(struct virtio_device *vdev)
 		return -EINVAL;
 	}
 
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	writel(1, vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES_SEL);
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		return -ETIMEDOUT;
+	}
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	writel((u32)(vdev->features >> 32),
 			vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES);
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		return -ETIMEDOUT;
+	}
 
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	writel(0, vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES_SEL);
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		return -ETIMEDOUT;
+	}
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	writel((u32)vdev->features,
 			vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES);
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		return -ETIMEDOUT;
+	}
+	pr_err("Driver Features %llx", vdev->features);
 
 	return 0;
 }
@@ -329,11 +388,17 @@ static void vm_del_vqs(struct virtio_device *vdev)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	struct virtqueue *vq, *n;
+	int irq = platform_get_irq(vm_dev->pdev, 0);
 
 	list_for_each_entry_safe(vq, n, &vdev->vqs, list)
 		vm_del_vq(vq);
 
-	free_irq(platform_get_irq(vm_dev->pdev, 0), vm_dev);
+	if (vm_dev->wake_irq_enabled) {
+		disable_irq_wake(irq);
+		vm_dev->wake_irq_enabled = false;
+	}
+
+	free_irq(irq, vm_dev);
 }
 
 static void vm_synchronize_cbs(struct virtio_device *vdev)
@@ -352,6 +417,7 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 	struct virtqueue *vq;
 	unsigned int num;
 	int err;
+	u32 sel_generation;
 
 	if (__virtio_test_bit(vdev, VIRTIO_F_NOTIFICATION_DATA))
 		notify = vm_notify_with_data;
@@ -387,6 +453,9 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 
 	vq->num_max = num;
 
+	if (vm_dev->sw_impl) {
+		sel_generation = readl(vm_dev->base + VIRTIO_MMIO_SEL_GENERATION);
+	}
 	/* Activate the queue */
 	writel(virtqueue_get_vring_size(vq), vm_dev->base + VIRTIO_MMIO_QUEUE_NUM);
 	if (vm_dev->version == 1) {
@@ -427,6 +496,10 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 
 		writel(1, vm_dev->base + VIRTIO_MMIO_QUEUE_READY);
 	}
+	if (vm_dev->sw_impl && wait_sel_generation_update(vdev, sel_generation)) {
+		err = -ETIMEDOUT;
+		goto error_new_virtqueue;
+	}
 
 	return vq;
 
@@ -460,8 +533,9 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 	if (err)
 		return err;
 
-	if (of_property_read_bool(vm_dev->pdev->dev.of_node, "wakeup-source"))
-		enable_irq_wake(irq);
+	if (of_property_read_bool(vm_dev->pdev->dev.of_node, "wakeup-source") &&
+	    !enable_irq_wake(irq))
+		vm_dev->wake_irq_enabled = true;
 
 	for (i = 0; i < nvqs; ++i) {
 		struct virtqueue_info *vqi = &vqs_info[i];
@@ -607,6 +681,14 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 		goto free_vm_dev;
 	}
 
+	vm_dev->sw_impl = readl(vm_dev->base + VIRTIO_MMIO_SW_IMPL);
+	if (vm_dev->sw_impl !=0 && vm_dev->sw_impl !=1) {
+		dev_err(&pdev->dev, "SW_IMPL value must be 0 or 1, not %ld\n",
+				vm_dev->sw_impl);
+		rc = -ENODEV;
+		goto free_vm_dev;
+	}
+
 	vm_dev->vdev.id.device = readl(vm_dev->base + VIRTIO_MMIO_DEVICE_ID);
 	if (vm_dev->vdev.id.device == 0) {
 		/*
@@ -662,9 +744,7 @@ static void virtio_mmio_remove(struct platform_device *pdev)
 
 #if defined(CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES)
 
-static struct device vm_cmdline_parent = {
-	.init_name = "virtio-mmio-cmdline",
-};
+static struct device *vm_cmdline_parent;
 
 static int vm_cmdline_parent_registered;
 static int vm_cmdline_id;
@@ -672,7 +752,6 @@ static int vm_cmdline_id;
 static int vm_cmdline_set(const char *device,
 		const struct kernel_param *kp)
 {
-	int err;
 	struct resource resources[2] = {};
 	char *str;
 	long long base, size;
@@ -704,11 +783,10 @@ static int vm_cmdline_set(const char *device,
 	resources[1].start = resources[1].end = irq;
 
 	if (!vm_cmdline_parent_registered) {
-		err = device_register(&vm_cmdline_parent);
-		if (err) {
-			put_device(&vm_cmdline_parent);
+		vm_cmdline_parent = __root_device_register("virtio-mmio-cmdline", NULL);
+		if (IS_ERR(vm_cmdline_parent)) {
 			pr_err("Failed to register parent device!\n");
-			return err;
+			return PTR_ERR(vm_cmdline_parent);
 		}
 		vm_cmdline_parent_registered = 1;
 	}
@@ -719,7 +797,7 @@ static int vm_cmdline_set(const char *device,
 		       (unsigned long long)resources[0].end,
 		       (int)resources[1].start);
 
-	pdev = platform_device_register_resndata(&vm_cmdline_parent,
+	pdev = platform_device_register_resndata(vm_cmdline_parent,
 			"virtio-mmio", vm_cmdline_id++,
 			resources, ARRAY_SIZE(resources), NULL, 0);
 
@@ -743,8 +821,12 @@ static int vm_cmdline_get_device(struct device *dev, void *data)
 static int vm_cmdline_get(char *buffer, const struct kernel_param *kp)
 {
 	buffer[0] = '\0';
-	device_for_each_child(&vm_cmdline_parent, buffer,
-			vm_cmdline_get_device);
+
+	if (vm_cmdline_parent_registered) {
+		device_for_each_child(vm_cmdline_parent, buffer,
+				vm_cmdline_get_device);
+	}
+
 	return strlen(buffer) + 1;
 }
 
@@ -766,9 +848,9 @@ static int vm_unregister_cmdline_device(struct device *dev,
 static void vm_unregister_cmdline_devices(void)
 {
 	if (vm_cmdline_parent_registered) {
-		device_for_each_child(&vm_cmdline_parent, NULL,
+		device_for_each_child(vm_cmdline_parent, NULL,
 				vm_unregister_cmdline_device);
-		device_unregister(&vm_cmdline_parent);
+		root_device_unregister(vm_cmdline_parent);
 		vm_cmdline_parent_registered = 0;
 	}
 }

@@ -140,6 +140,8 @@ static struct portmaster {
 } ports[MAX_U_SERIAL_PORTS];
 
 #define GS_CLOSE_TIMEOUT		15		/* seconds */
+/* gserial_free_port(): how long an open line may delay its unbind */
+#define GS_FREE_TIMEOUT			2		/* seconds */
 
 
 
@@ -1255,8 +1257,25 @@ static int gs_closed(struct gs_port *port)
 static void gserial_free_port(struct gs_port *port)
 {
 	cancel_delayed_work_sync(&port->push);
-	/* wait for old opens to finish */
-	wait_event(port->close_wait, gs_closed(port));
+	/*
+	 * The line is going away. Hang up whoever still has it open: the
+	 * session gets SIGHUP, so a getty or shell exits and closes it.
+	 */
+	tty_port_tty_vhangup(&port->port);
+	/*
+	 * Wait for old opens to finish, but not forever. A holder that cannot
+	 * close -- the task that is itself rebooting from a shell on this line,
+	 * while device_shutdown() tears the UDC down -- would hold this wait,
+	 * and the reboot, forever. Past the timeout leave the port to that
+	 * holder's last close (gs_close() handles a port with no gadget) and
+	 * do not free it: a small leak instead of a use-after-free.
+	 */
+	if (!wait_event_timeout(port->close_wait, gs_closed(port),
+				GS_FREE_TIMEOUT * HZ)) {
+		pr_warn("ttyGS%d: still open %ds after unbind; left to its last close\n",
+			port->port_num, GS_FREE_TIMEOUT);
+		return;
+	}
 	WARN_ON(port->port_usb != NULL);
 	tty_port_destroy(&port->port);
 	kfree(port);

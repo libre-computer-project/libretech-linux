@@ -308,6 +308,17 @@ struct mtk_thermal_bank {
 	int id;
 };
 
+/*
+ * Per-thermal-zone private data. id 0 is the controlling zone (the max of all
+ * the controller's sensors, used for CPU throttling); id > 0 reports that one
+ * sensor individually so the DT's per-sensor zones (e.g. gpu-thermal for the
+ * SVS GPU bank) can register.
+ */
+struct mtk_thermal_zone {
+	struct mtk_thermal *mt;
+	int id;
+};
+
 struct mtk_thermal_data {
 	s32 num_banks;
 	s32 num_sensors;
@@ -325,6 +336,9 @@ struct mtk_thermal_data {
 	u32 apmixed_buffer_ctl_reg;
 	u32 apmixed_buffer_ctl_mask;
 	u32 apmixed_buffer_ctl_set;
+	/* also register each sensor as its own zone (DT declares per-sensor
+	 * zones the SVS needs, e.g. gpu-thermal); id 0 stays the max */
+	bool per_sensor_zones;
 };
 
 struct mtk_thermal {
@@ -650,6 +664,7 @@ static const struct mtk_thermal_data mt8183_thermal_data = {
 	.auxadc_channel = MT8183_TEMP_AUXADC_CHANNEL,
 	.num_banks = MT8183_NUM_ZONES,
 	.num_sensors = MT8183_NUM_SENSORS,
+	.per_sensor_zones = true,
 	.vts_index = mt8183_vts_index,
 	.cali_val = MT8183_CALIBRATION,
 	.num_controller = MT8183_NUM_CONTROLLER,
@@ -845,12 +860,51 @@ static int mtk_thermal_bank_temperature(struct mtk_thermal_bank *bank)
 	return max;
 }
 
+/*
+ * mtk_thermal_sensor_temperature - read one sensor (for per-sensor zones).
+ * The global sensor id is mapped sequentially across the controller's banks.
+ */
+static int mtk_thermal_sensor_temperature(struct mtk_thermal *mt, int sensor_id)
+{
+	const struct mtk_thermal_data *conf = mt->conf;
+	struct mtk_thermal_bank *bank;
+	int b, local = sensor_id, temp;
+	u32 raw;
+
+	for (b = 0; b < conf->num_banks; b++) {
+		if (local < conf->bank_data[b].num_sensors)
+			break;
+		local -= conf->bank_data[b].num_sensors;
+	}
+	if (b >= conf->num_banks)
+		return THERMAL_TEMP_INVALID;
+
+	bank = &mt->banks[b];
+	mtk_thermal_get_bank(bank);
+	raw = readl(mt->thermal_base + conf->msr[local]);
+	temp = mt->raw_to_mcelsius(mt, conf->bank_data[b].sensors[local], raw);
+	mtk_thermal_put_bank(bank);
+
+	if (!mtk_thermal_temp_is_valid(temp))
+		temp = THERMAL_TEMP_INVALID;
+
+	return temp;
+}
+
 static int mtk_read_temp(struct thermal_zone_device *tz, int *temperature)
 {
-	struct mtk_thermal *mt = thermal_zone_device_priv(tz);
+	struct mtk_thermal_zone *tz_priv = thermal_zone_device_priv(tz);
+	struct mtk_thermal *mt = tz_priv->mt;
 	int i;
 	int tempmax = INT_MIN;
 
+	/* per-sensor zone (id > 0): report just that sensor */
+	if (tz_priv->id > 0) {
+		*temperature = mtk_thermal_sensor_temperature(mt, tz_priv->id);
+		return 0;
+	}
+
+	/* controlling zone (id 0): the max across all sensors (for throttling) */
 	for (i = 0; i < mt->conf->num_banks; i++) {
 		struct mtk_thermal_bank *bank = &mt->banks[i];
 
@@ -1285,14 +1339,51 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 			mtk_thermal_init_bank(mt, i, apmixed_phys_base,
 					      auxadc_phys_base, ctrl_id);
 
-	tzdev = devm_thermal_of_zone_register(&pdev->dev, 0, mt,
-					      &mtk_thermal_ops);
-	if (IS_ERR(tzdev))
-		return PTR_ERR(tzdev);
+	{
+		struct mtk_thermal_zone *tz_priv;
 
-	ret = devm_thermal_add_hwmon_sysfs(&pdev->dev, tzdev);
-	if (ret)
-		dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
+		tz_priv = devm_kzalloc(&pdev->dev, sizeof(*tz_priv), GFP_KERNEL);
+		if (!tz_priv)
+			return -ENOMEM;
+		tz_priv->mt = mt;
+		tz_priv->id = 0;
+
+		tzdev = devm_thermal_of_zone_register(&pdev->dev, 0, tz_priv,
+						      &mtk_thermal_ops);
+		if (IS_ERR(tzdev))
+			return PTR_ERR(tzdev);
+
+		ret = devm_thermal_add_hwmon_sysfs(&pdev->dev, tzdev);
+		if (ret)
+			dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
+	}
+
+	/*
+	 * Optionally expose each remaining sensor as its own zone. The DT may
+	 * declare per-sensor zones (e.g. gpu-thermal) that the SVS needs;
+	 * -ENODEV simply means the DT did not declare that sensor -- skip it.
+	 */
+	if (mt->conf->per_sensor_zones) {
+		for (i = 1; i < mt->conf->num_sensors; i++) {
+			struct mtk_thermal_zone *stz;
+
+			stz = devm_kzalloc(&pdev->dev, sizeof(*stz), GFP_KERNEL);
+			if (!stz)
+				return -ENOMEM;
+			stz->mt = mt;
+			stz->id = i;
+
+			tzdev = devm_thermal_of_zone_register(&pdev->dev, i, stz,
+							      &mtk_thermal_ops);
+			if (IS_ERR(tzdev))
+				continue;
+
+			ret = devm_thermal_add_hwmon_sysfs(&pdev->dev, tzdev);
+			if (ret)
+				dev_warn(&pdev->dev,
+					 "error in thermal_add_hwmon_sysfs");
+		}
+	}
 
 	return 0;
 }

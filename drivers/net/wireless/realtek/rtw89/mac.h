@@ -574,8 +574,6 @@ enum rtw89_mac_bf_rrsc_rate {
 	RTW89_MAC_BF_RRSC_MAX = 32
 };
 
-#define RTW89_R32_EA		0xEAEAEAEA
-#define RTW89_R32_DEAD		0xDEADBEEF
 #define MAC_REG_POOL_COUNT	10
 #define ACCESS_CMAC(_addr) \
 	({typeof(_addr) __addr = (_addr); \
@@ -999,6 +997,7 @@ struct rtw89_mac_gen_def {
 			    enum rtw89_mac_hwmod_sel sel);
 	int (*sys_init)(struct rtw89_dev *rtwdev);
 	int (*trx_init)(struct rtw89_dev *rtwdev);
+	void (*err_imr_ctrl)(struct rtw89_dev *rtwdev, bool en);
 	void (*hci_func_en)(struct rtw89_dev *rtwdev);
 	void (*dmac_func_pre_en)(struct rtw89_dev *rtwdev);
 	void (*dle_func_en)(struct rtw89_dev *rtwdev, bool enable);

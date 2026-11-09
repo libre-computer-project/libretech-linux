@@ -173,6 +173,17 @@ struct xhci_hcd_mtk {
 	u32 uwk_vers;
 	/* quirk */
 	u32 rxfifo_depth;
+	/*
+	 * mediatek,usb3-power-after-usb2: hold USB3 root port power back until
+	 * a device has been added on this controller's USB2 root hub (or the
+	 * fallback timeout expires).
+	 */
+	unsigned int u3_power_after_u2:1;
+	spinlock_t u3_power_lock;
+	bool u3_power_released;
+	unsigned long u3_power_deferred;	/* bit (port - 1) */
+	struct delayed_work u3_power_work;
+	struct notifier_block u3_power_nb;
 };
 
 static inline struct xhci_hcd_mtk *hcd_to_mtk(struct usb_hcd *hcd)

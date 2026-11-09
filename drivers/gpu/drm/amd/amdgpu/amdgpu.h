@@ -274,6 +274,8 @@ extern int amdgpu_rebar;
 extern int amdgpu_wbrf;
 extern int amdgpu_user_queue;
 
+extern uint amdgpu_hdmi_hpd_debounce_delay_ms;
+
 #define AMDGPU_VM_MAX_NUM_CTX			4096
 #define AMDGPU_SG_THRESHOLD			(256*1024*1024)
 #define AMDGPU_WAIT_IDLE_TIMEOUT_IN_MS	        3000
@@ -1174,6 +1176,12 @@ struct amdgpu_device {
 	 * queue fence.
 	 */
 	struct xarray			userq_xa;
+	/**
+	 * @userq_doorbell_xa: Global user queue map (doorbell_index → queue)
+	 * for IRQ-safe lookup (priv-fault / illegal-inst → hang_detect).
+	 * Coexists with per-mgr idr + userq_mgr_list on 6.18.y-lc.
+	 */
+	struct xarray			userq_doorbell_xa;
 
 	/* df */
 	struct amdgpu_df                df;

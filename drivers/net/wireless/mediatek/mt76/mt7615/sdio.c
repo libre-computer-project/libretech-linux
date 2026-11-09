@@ -9,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/delay.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/sdio_ids.h>
@@ -24,6 +25,33 @@ static const struct sdio_device_id mt7663s_table[] = {
 	{ }	/* Terminating entry */
 };
 
+/* MT7663 (mt7615 / CONNAC1) lacks the bus_hung recovery mt7921 has. When the
+ * SDIO CMD53 command engine stalls under sustained writes, the generic TX path
+ * (__mt76s_xmit_queue) sets dev->bus_hung but nothing in mt7615 acts on it, so
+ * the driver spins in a -110 storm forever. Port mt7921s_card_reset(): re-probe
+ * the SDIO function (mmc_remove_host/mmc_add_host), which re-runs mt7663s init
+ * on a fresh mt76_dev (bus_hung clears) and recovers the link. Pure MMC -- the
+ * WHCR WF-path reset mt7921 also uses is CONNAC2-only and unneeded here.
+ */
+static struct mt76_sdio *mt7663s_msdio;
+static void mt7663s_card_reset(struct work_struct *work)
+{
+	struct mmc_host *sdio_host;
+
+	if (!mt7663s_msdio)
+		return;
+	sdio_host = mt7663s_msdio->func->card->host;
+
+	sdio_claim_host(mt7663s_msdio->func);
+	sdio_release_irq(mt7663s_msdio->func);
+	sdio_release_host(mt7663s_msdio->func);
+
+	mmc_remove_host(sdio_host);
+	msleep(50);
+	mmc_add_host(sdio_host);
+}
+static DECLARE_WORK(mt7663s_reset_work, mt7663s_card_reset);
+
 static void mt7663s_txrx_worker(struct mt76_worker *w)
 {
 	struct mt76_sdio *sdio = container_of(w, struct mt76_sdio,
@@ -37,6 +65,18 @@ static void mt7663s_txrx_worker(struct mt76_worker *w)
 	}
 	mt76s_txrx_worker(sdio);
 	mt76_connac_pm_unref(&dev->mphy, &dev->pm);
+
+	/* Recover from an SDIO command-engine stall (-110 storm). The generic TX
+	 * path sets bus_hung on CMD53 timeout; mt7615 otherwise has no handler and
+	 * spins here forever. schedule_work() dedups while pending and the re-probe
+	 * disables this worker, so the reset fires effectively once.
+	 */
+	if (atomic_read(&mdev->bus_hung)) {
+		mt7663s_msdio = sdio;
+		dev_err_ratelimited(mdev->dev,
+				    "SDIO bus hung (-110 storm), resetting card\n");
+		schedule_work(&mt7663s_reset_work);
+	}
 }
 
 static void mt7663s_init_work(struct work_struct *work)

@@ -981,8 +981,9 @@
 	gmac2io: ethernet@ff540000 {
 		compatible = "rockchip,rk3328-gmac";
 		reg = <0x0 0xff540000 0x0 0x10000>;
-		interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "macirq";
+		interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 25 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "macirq", "eth_wake_irq";
 		clocks = <&cru SCLK_MAC2IO>, <&cru SCLK_MAC2IO_RX>,
 			 <&cru SCLK_MAC2IO_TX>, <&cru SCLK_MAC2IO_REF>,
 			 <&cru SCLK_MAC2IO_REFOUT>, <&cru ACLK_MAC2IO>,

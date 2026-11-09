@@ -538,6 +538,22 @@ config NTSYNC
 
 	  If unsure, say N.
 
+config UID_SYS_STATS
+	bool "Per-UID CPU time and I/O statistics for Android"
+	depends on PROC_FS && TASK_XACCT && TASK_IO_ACCOUNTING
+	select TRACEPOINTS
+	help
+	  Per-UID CPU time and I/O accounting, ported from the Android
+	  common kernel: /proc/uid_cputime/{show_uid_stat,remove_uid_range},
+	  /proc/uid_io/stats and /proc/uid_procstat/set. Android's
+	  carwatchdog (iowatchdogd), storaged and batterystats read these;
+	  without them iowatchdogd exits at boot and init respawns it.
+	  Exited tasks are folded in from the sched_process_exit
+	  tracepoint, so this cannot be a module. The fsync columns of
+	  /proc/uid_io/stats read 0 (mainline has no per-task fsync count).
+
+	  If unsure, say N.
+
 config VCPU_STALL_DETECTOR
 	tristate "Guest vCPU stall detector"
 	depends on OF && HAS_IOMEM
@@ -661,4 +677,5 @@ source "drivers/misc/mchp_pci1xxxx/Kconfig"
 source "drivers/misc/keba/Kconfig"
 source "drivers/misc/amd-sbi/Kconfig"
 source "drivers/misc/rp1/Kconfig"
+source "drivers/misc/tenstorrent/Kconfig"
 endmenu

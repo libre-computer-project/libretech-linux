@@ -171,9 +171,27 @@ struct hantro_hevc_dec_hw_ctx {
  * struct hantro_mpeg2_dec_hw_ctx
  *
  * @qtable:		Quantization table
+ * @first_field:	Picture structure (V4L2_MPEG2_PIC_TOP_FIELD or
+ *			V4L2_MPEG2_PIC_BOTTOM_FIELD) of a decoded first field
+ *			whose second field has not been decoded yet, 0 if none.
+ * @first_field_buf:	Index of the CAPTURE buffer that first field went into.
  */
 struct hantro_mpeg2_dec_hw_ctx {
 	struct hantro_aux_buf qtable;
+	u32 first_field;
+	u32 first_field_buf;
+};
+
+/**
+ * struct hantro_mpeg2_field_order - decode-order field information
+ *
+ * @second_field:	This field picture is the second field of its frame.
+ * @top_field_first:	The first field of the frame is (was) the top field.
+ *			For a frame picture this is the bitstream flag.
+ */
+struct hantro_mpeg2_field_order {
+	bool second_field;
+	bool top_field_first;
 };
 
 /**
@@ -378,6 +396,13 @@ struct hantro_postproc_ops {
  *		negative value in error cases.
  * @done:	Read back processing results and additional data from hardware.
  * @reset:	Reset the hardware in case of a timeout.
+ * @reset_state: Return the codec's per-SESSION sequencing state to its
+ *		start-of-stream values without touching anything .init
+ *		allocated. Called when the queue that is NOT the coded one
+ *		starts streaming, which for an encoder is the OUTPUT queue --
+ *		the one .init and .exit never see, because
+ *		hantro_vq_is_coded() is true only for the bitstream side.
+ *		Optional and called from process context.
  */
 struct hantro_codec_ops {
 	int (*init)(struct hantro_ctx *ctx);
@@ -385,6 +410,7 @@ struct hantro_codec_ops {
 	int (*run)(struct hantro_ctx *ctx);
 	void (*done)(struct hantro_ctx *ctx);
 	void (*reset)(struct hantro_ctx *ctx);
+	void (*reset_state)(struct hantro_ctx *ctx);
 };
 
 /**
@@ -432,6 +458,7 @@ void hantro_irq_done(struct hantro_dev *vpu,
 		     enum vb2_buffer_state result);
 void hantro_start_prepare_run(struct hantro_ctx *ctx);
 void hantro_end_prepare_run(struct hantro_ctx *ctx);
+void hantro_abort_prepare_run(struct hantro_ctx *ctx);
 
 irqreturn_t hantro_g1_irq(int irq, void *dev_id);
 void hantro_g1_reset(struct hantro_ctx *ctx);
@@ -440,6 +467,12 @@ int hantro_h1_jpeg_enc_run(struct hantro_ctx *ctx);
 int rockchip_vpu2_jpeg_enc_run(struct hantro_ctx *ctx);
 void hantro_h1_jpeg_enc_done(struct hantro_ctx *ctx);
 void rockchip_vpu2_jpeg_enc_done(struct hantro_ctx *ctx);
+
+int rockchip_vpu2_h264_enc_run(struct hantro_ctx *ctx);
+void rockchip_vpu2_h264_enc_done(struct hantro_ctx *ctx);
+int rockchip_vpu2_h264_enc_init(struct hantro_ctx *ctx);
+void rockchip_vpu2_h264_enc_exit(struct hantro_ctx *ctx);
+void rockchip_vpu2_h264_enc_reset_state(struct hantro_ctx *ctx);
 
 dma_addr_t hantro_h264_get_ref_buf(struct hantro_ctx *ctx,
 				   unsigned int dpb_idx);
@@ -568,6 +601,10 @@ int hantro_g1_mpeg2_dec_run(struct hantro_ctx *ctx);
 int rockchip_vpu2_mpeg2_dec_run(struct hantro_ctx *ctx);
 void hantro_mpeg2_dec_copy_qtable(u8 *qtable,
 				  const struct v4l2_ctrl_mpeg2_quantisation *ctrl);
+void hantro_mpeg2_dec_field_order(struct hantro_ctx *ctx,
+				  const struct v4l2_ctrl_mpeg2_picture *pic,
+				  const struct vb2_buffer *dst_buf,
+				  struct hantro_mpeg2_field_order *order);
 int hantro_mpeg2_dec_init(struct hantro_ctx *ctx);
 void hantro_mpeg2_dec_exit(struct hantro_ctx *ctx);
 
@@ -583,6 +620,7 @@ void hantro_g2_vp9_dec_done(struct hantro_ctx *ctx);
 int hantro_vp9_dec_init(struct hantro_ctx *ctx);
 void hantro_vp9_dec_exit(struct hantro_ctx *ctx);
 void hantro_g2_check_idle(struct hantro_dev *vpu);
+void hantro_g2_reset(struct hantro_ctx *ctx);
 irqreturn_t hantro_g2_irq(int irq, void *dev_id);
 
 #endif /* HANTRO_HW_H_ */

@@ -130,6 +130,13 @@ enum tcpm_transmit_type {
  *		swap following Discover Identity on SOP' occurs.
  *		Return true when the TCPM is allowed to request a Vconn swap
  *		after Discovery Identity on SOP.
+ * @get_prior_roles:
+ *		Optional; the power and data roles a previous session (a
+ *		bootloader, or this kernel before a reboot) left in the TCPC,
+ *		read before @init reset it. A PD contract and a data role swap
+ *		survive a reboot of the SoC, and a partner answers a message
+ *		carrying the wrong data role with error recovery, which removes
+ *		VBUS. Return -ENOENT when the TCPC held no PD session.
  */
 struct tcpc_dev {
 	struct fwnode_handle *fwnode;
@@ -170,6 +177,8 @@ struct tcpc_dev {
 	void (*check_contaminant)(struct tcpc_dev *dev);
 	bool (*cable_comm_capable)(struct tcpc_dev *dev);
 	bool (*attempt_vconn_swap_discovery)(struct tcpc_dev *dev);
+	int (*get_prior_roles)(struct tcpc_dev *dev, enum typec_role *role,
+			       enum typec_data_role *data);
 };
 
 struct tcpm_port;

@@ -98,6 +98,8 @@ struct dwc2_hsotg_req;
  * @desc_count: Count of entries within the DMA descriptor chain of EP.
  * @next_desc: index of next free descriptor in the ISOC chain under SW control.
  * @compl_desc: index of next descriptor to be completed by xFerComplete
+ * @isoc_waiting: oldest queued ISOC request that did not fit the descriptor
+ *                chain, NULL when all of them are in it.
  * @total_data: The total number of data bytes done.
  * @fifo_size: The size of the FIFO (for periodic IN endpoints)
  * @fifo_index: For Dedicated FIFO operation, only FIFO0 can be used for EP0.
@@ -154,6 +156,7 @@ struct dwc2_hsotg_ep {
 
 	unsigned int		next_desc;
 	unsigned int		compl_desc;
+	struct dwc2_hsotg_req	*isoc_waiting;
 
 	char                    name[10];
 };
@@ -163,11 +166,14 @@ struct dwc2_hsotg_ep {
  * @req: The USB gadget request
  * @queue: The list of requests for the endpoint this is queued for.
  * @saved_req_buf: variable to save req.buf when bounce buffers are used.
+ * @saved_num_sgs: req.num_sgs of an isochronous request copied to one buffer,
+ *                 0 when it was not.
  */
 struct dwc2_hsotg_req {
 	struct usb_request      req;
 	struct list_head        queue;
 	void *saved_req_buf;
+	unsigned int saved_num_sgs;
 };
 
 #if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || \
@@ -428,6 +434,10 @@ enum dwc2_ep0_state {
  *                      0 - No
  *                      1 - Yes
  *
+ * @hcd_skip_phy_initialization: Shadow value of HCD skip_phy_initialization
+ *				 flag.
+ *				 See include/linux/usb/hcd.h for documentation.
+ *
  * The following parameters may be specified when starting the module. These
  * parameters define how the DWC_otg controller should be configured. A
  * value of -1 (or any other out of range value) for any parameter means
@@ -505,6 +515,8 @@ struct dwc2_core_params {
 	u32 g_tx_fifo_size[MAX_EPS_CHANNELS];
 
 	bool change_speed_quirk;
+
+	unsigned hcd_skip_phy_initialization:1;
 };
 
 /**

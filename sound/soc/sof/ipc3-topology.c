@@ -1621,8 +1621,17 @@ static int sof_ipc3_widget_setup_comp_dai(struct snd_sof_widget *swidget)
 		if (strcmp(slink->link->name, dai->name))
 			continue;
 
-		/* Reserve memory for all hw configs, eventually freed by widget */
-		config = kcalloc(slink->num_hw_configs, sizeof(*config), GFP_KERNEL);
+		/*
+		 * Reserve memory for all hw configs, eventually freed by widget.
+		 * Allocate at least one entry: some DAI types (e.g. MediaTek AFE)
+		 * derive their single config from tuples and carry no hw_config
+		 * entries, and kcalloc(0, ...) returns ZERO_SIZE_PTR (0x10) which
+		 * passes the !config check below and is then dereferenced by the
+		 * DAI-specific load callback (e.g. sof_link_afe_load() writing
+		 * config->hdr.size) -> NULL-class deref at vaddr 0x10.
+		 */
+		config = kcalloc(slink->num_hw_configs ? slink->num_hw_configs : 1,
+				 sizeof(*config), GFP_KERNEL);
 		if (!config) {
 			ret = -ENOMEM;
 			goto free_comp;
@@ -1640,6 +1649,16 @@ static int sof_ipc3_widget_setup_comp_dai(struct snd_sof_widget *swidget)
 			config[i].format = le32_to_cpu(slink->hw_configs[i].fmt);
 			config[i].type = common_config.type;
 			config[i].dai_index = comp_dai->dai_index;
+		}
+
+		/*
+		 * A DAI link with no hw_configs (e.g. AFE) still needs the common
+		 * fields initialised on its single, zero-initialised config entry.
+		 */
+		if (!slink->num_hw_configs) {
+			config->hdr.cmd = SOF_IPC_GLB_DAI_MSG | SOF_IPC_DAI_CONFIG;
+			config->type = common_config.type;
+			config->dai_index = comp_dai->dai_index;
 		}
 
 		switch (common_config.type) {

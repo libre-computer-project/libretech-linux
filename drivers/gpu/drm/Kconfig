@@ -210,7 +210,7 @@ config DRM_GPUVM
 
 config DRM_GPUSVM
 	tristate
-	depends on DRM && DEVICE_PRIVATE
+	depends on DRM
 	select HMM_MIRROR
 	select MMU_NOTIFIER
 	help
@@ -220,6 +220,7 @@ config DRM_GPUSVM
 config DRM_BUDDY
 	tristate
 	depends on DRM
+	select GPU_BUDDY
 	help
 	  A page based buddy allocator
 
@@ -398,6 +399,8 @@ source "drivers/gpu/drm/imagination/Kconfig"
 
 source "drivers/gpu/drm/tyr/Kconfig"
 
+source "drivers/gpu/drm/gna/Kconfig"
+
 config DRM_HYPERV
 	tristate "DRM Support for Hyper-V synthetic video device"
 	depends on DRM && PCI && HYPERV_VMBUS
@@ -415,10 +418,6 @@ config DRM_HYPERV
 # Separate option as not all DRM drivers use it
 config DRM_PANEL_BACKLIGHT_QUIRKS
 	tristate
-
-config DRM_LIB_RANDOM
-	bool
-	default n
 
 config DRM_PRIVACY_SCREEN
 	bool

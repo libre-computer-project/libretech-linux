@@ -162,6 +162,15 @@ struct ovpn_socket *ovpn_socket_new(struct socket *sock, struct ovpn_peer *peer)
 		rcu_read_lock();
 		ovpn_sock = rcu_dereference_sk_user_data(sk);
 		if (ovpn_sock) {
+			/* something else filled the sk_user_data without
+			 * setting the encap_type. Reject the socket.
+			 */
+			if (!type) {
+				ovpn_sock = ERR_PTR(-EBUSY);
+				rcu_read_unlock();
+				goto sock_release;
+			}
+
 			/* socket owned by another ovpn instance, we can't use it */
 			if (ovpn_sock->ovpn != peer->ovpn) {
 				ovpn_sock = ERR_PTR(-EBUSY);
@@ -200,24 +209,6 @@ struct ovpn_socket *ovpn_socket_new(struct socket *sock, struct ovpn_peer *peer)
 	ovpn_sock->sk = sk;
 	kref_init(&ovpn_sock->refcount);
 
-	/* the newly created ovpn_socket is holding reference to sk,
-	 * therefore we increase its refcounter.
-	 *
-	 * This ovpn_socket instance is referenced by all peers
-	 * using the same socket.
-	 *
-	 * ovpn_socket_release() will take care of dropping the reference.
-	 */
-	sock_hold(sk);
-
-	ret = ovpn_socket_attach(ovpn_sock, sock, peer);
-	if (ret < 0) {
-		sock_put(sk);
-		kfree(ovpn_sock);
-		ovpn_sock = ERR_PTR(ret);
-		goto sock_release;
-	}
-
 	/* TCP sockets are per-peer, therefore they are linked to their unique
 	 * peer
 	 */
@@ -234,7 +225,28 @@ struct ovpn_socket *ovpn_socket_new(struct socket *sock, struct ovpn_peer *peer)
 			    GFP_KERNEL);
 	}
 
-	rcu_assign_sk_user_data(sk, ovpn_sock);
+	/* the newly created ovpn_socket is holding reference to sk,
+	 * therefore we increase its refcounter.
+	 *
+	 * This ovpn_socket instance is referenced by all peers
+	 * using the same socket.
+	 *
+	 * ovpn_socket_release() will take care of dropping the reference.
+	 */
+	sock_hold(sk);
+
+	ret = ovpn_socket_attach(ovpn_sock, sock, peer);
+	if (ret < 0) {
+		if (sk->sk_protocol == IPPROTO_TCP)
+			ovpn_peer_put(peer);
+		else if (sk->sk_protocol == IPPROTO_UDP)
+			netdev_put(peer->ovpn->dev, &ovpn_sock->dev_tracker);
+
+		sock_put(sk);
+		kfree(ovpn_sock);
+		ovpn_sock = ERR_PTR(ret);
+	}
+
 sock_release:
 	release_sock(sk);
 	return ovpn_sock;

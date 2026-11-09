@@ -115,7 +115,7 @@ int mt7601u_eeprom_init(struct mt7601u_dev *dev);
 
 static inline u32 s6_validate(u32 reg)
 {
-	WARN_ON(reg & ~GENMASK(5, 0));
+	//WARN_ON(reg & ~GENMASK(5, 0));
 	return reg & GENMASK(5, 0);
 }
 

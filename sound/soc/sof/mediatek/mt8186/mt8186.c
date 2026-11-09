@@ -544,6 +544,13 @@ static const struct sof_dev_desc sof_of_mt8188_desc = {
 	.ops_init = sof_mt8188_ops_init,
 };
 
+/*
+ * mt8365 (Genio 350) is a Cadence Tensilica HiFi 4 -- the mt8195 generation,
+ * NOT mt8186/mt8188 (HiFi 5). Its SOF support lives in a dedicated driver
+ * (sound/soc/sof/mediatek/mt8365/) because it needs a cfg+sram-only resource
+ * parse and the in-DSPCFG SW-interrupt IPC, neither of which this HiFi-5
+ * driver provides.
+ */
 static const struct of_device_id sof_of_mt8186_ids[] = {
 	{ .compatible = "mediatek,mt8186-dsp", .data = &sof_of_mt8186_desc},
 	{ .compatible = "mediatek,mt8188-dsp", .data = &sof_of_mt8188_desc},

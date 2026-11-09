@@ -8,6 +8,7 @@
 #include "meson-gxl-s905d.dtsi"
 #include "meson-gx-p23x-q20x.dtsi"
 #include <dt-bindings/leds/common.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "smartlabs,sml5442tw", "amlogic,s905d", "amlogic,meson-gxl";

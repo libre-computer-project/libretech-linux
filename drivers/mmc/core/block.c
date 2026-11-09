@@ -209,6 +209,58 @@ static inline int mmc_get_devidx(struct gendisk *disk)
 	return devidx;
 }
 
+/*
+ * mmc_blk_card_in_use - is the card's user-area block device (or any of its
+ * partitions) currently open?  Used by the DESTRUCTIVE write eye
+ * (drivers/mmc/core/eye.c) to refuse to clobber a live device.
+ *
+ * A mount holds the (partition) block device open, as does any raw opener (dd,
+ * fsck, blkid, a udev probe). We snapshot bd_openers (atomic) across the
+ * whole-disk device and every partition, so any of those shows up as busy.
+ * Best-effort: it cannot see an opener that races in AFTER the check -- but the
+ * write eye runs with the host claimed, so no NEW block I/O can start meanwhile.
+ * Returns false for a card with no user-area gendisk (e.g. SDIO): nothing to
+ * protect.
+ */
+bool mmc_blk_card_in_use(struct mmc_card *card)
+{
+	struct mmc_blk_data *md = dev_get_drvdata(&card->dev);
+	struct block_device *part;
+	unsigned long idx;
+	bool in_use = false;
+
+	if (!md || !md->disk)
+		return false;
+
+	rcu_read_lock();
+	xa_for_each(&md->disk->part_tbl, idx, part) {
+		if (atomic_read(&part->bd_openers)) {
+			in_use = true;
+			break;
+		}
+	}
+	rcu_read_unlock();
+
+	return in_use;
+}
+EXPORT_SYMBOL_GPL(mmc_blk_card_in_use);
+
+/*
+ * mmc_blk_card_user_sectors - capacity of the card's user-area block device in
+ * 512-byte sectors, or 0 if it has no user-area gendisk. Used by the write eye
+ * to bounds-check its scratch region against the real device size.
+ */
+sector_t mmc_blk_card_user_sectors(struct mmc_card *card)
+{
+	struct mmc_blk_data *md = dev_get_drvdata(&card->dev);
+
+	if (!md || !md->disk)
+		return 0;
+
+	return get_capacity(md->disk);
+}
+EXPORT_SYMBOL_GPL(mmc_blk_card_user_sectors);
+
 static void mmc_blk_kref_release(struct kref *ref)
 {
 	struct mmc_blk_data *md = container_of(ref, struct mmc_blk_data, kref);
@@ -1404,6 +1456,9 @@ static void mmc_blk_data_prep(struct mmc_queue *mq, struct mmc_queue_req *mqrq,
 		    rq_data_dir(req) == WRITE &&
 		    (md->flags & MMC_BLK_REL_WR);
 
+	if (mqrq->flags & MQRQ_XFER_SINGLE_BLOCK)
+		recovery_mode = 1;
+
 	memset(brq, 0, sizeof(struct mmc_blk_request));
 
 	mmc_crypto_prepare_req(mqrq);
@@ -1543,10 +1598,13 @@ static void mmc_blk_cqe_complete_rq(struct mmc_queue *mq, struct request *req)
 		err = 0;
 
 	if (err) {
-		if (mqrq->retries++ < MMC_CQE_RETRIES)
+		if (mqrq->retries++ < MMC_CQE_RETRIES) {
+			if (rq_data_dir(req) == WRITE)
+				mqrq->flags |= MQRQ_XFER_SINGLE_BLOCK;
 			blk_mq_requeue_request(req, true);
-		else
+		} else {
 			blk_mq_end_request(req, BLK_STS_IOERR);
+		}
 	} else if (mrq->data) {
 		if (blk_update_request(req, BLK_STS_OK, mrq->data->bytes_xfered))
 			blk_mq_requeue_request(req, true);
@@ -2088,6 +2146,8 @@ static void mmc_blk_mq_complete_rq(struct mmc_queue *mq, struct request *req)
 	} else if (!blk_rq_bytes(req)) {
 		__blk_mq_end_request(req, BLK_STS_IOERR);
 	} else if (mqrq->retries++ < MMC_MAX_RETRIES) {
+		if (rq_data_dir(req) == WRITE)
+			mqrq->flags |= MQRQ_XFER_SINGLE_BLOCK;
 		blk_mq_requeue_request(req, true);
 	} else {
 		if (mmc_card_removed(mq->card))
@@ -2776,7 +2836,6 @@ static void mmc_blk_rpmb_device_release(struct device *dev)
 {
 	struct mmc_rpmb_data *rpmb = dev_get_drvdata(dev);
 
-	rpmb_dev_unregister(rpmb->rdev);
 	mmc_blk_put(rpmb->md);
 	ida_free(&mmc_rpmb_ida, rpmb->id);
 	kfree(rpmb);
@@ -2991,8 +3050,8 @@ out_put_device:
 }
 
 static void mmc_blk_remove_rpmb_part(struct mmc_rpmb_data *rpmb)
-
 {
+	rpmb_dev_unregister(rpmb->rdev);
 	cdev_device_del(&rpmb->chrdev, &rpmb->dev);
 	put_device(&rpmb->dev);
 }

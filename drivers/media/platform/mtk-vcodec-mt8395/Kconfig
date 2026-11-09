@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MEDIATEK_VCODEC_MT8395
+	tristate "Mediatek Video Codec driver for MT8188/MT8370/MT8195 SoC (vendor, mt8395 / Genio 510)"
+	depends on MTK_IOMMU || COMPILE_TEST
+	depends on VIDEO_DEV
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on VIDEO_MEDIATEK_VCU_MT8395
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	default n
+	help
+	    Vendor MT8188/MT8370/MT8195 (mt8395 generation, Genio 510) video
+	    codec driver imported from the mtk-v6.6-mt8395 BSP. Provides HW
+	    encode/decode of a range of video formats via the proprietary
+	    userspace (vpud) path; relies on the VCU
+	    (CONFIG_VIDEO_MEDIATEK_VCU_MT8395) to talk to the codec engine.
+
+	    This depends on the vendor VCU rather than mainline's
+	    CONFIG_VIDEO_MEDIATEK_VPU. It coexists with mainline's mtk-vcodec
+	    (which serves the MediaTek Chromebooks): the colliding vendor
+	    globals are prefixed via a force-included mtk_vcodec_rename.h and
+	    the module names (mtk-vcodec-mt8395-dec/enc/common) are distinct,
+	    so the two stacks build =y together with 0 symbol collisions.
+
+	    Only the VCU codec transport is built; the Tinysys VCP transport
+	    (CONFIG_MTK_TINYSYS_VCP_SUPPORT) is intentionally left unset.
+
+	    To compile this driver as modules, choose M here: the modules will
+	    be called mtk-vcodec-mt8395-dec, mtk-vcodec-mt8395-enc and
+	    mtk-vcodec-mt8395-common.

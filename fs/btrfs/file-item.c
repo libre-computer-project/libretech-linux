@@ -18,6 +18,7 @@
 #include "fs.h"
 #include "accessors.h"
 #include "file-item.h"
+#include "volumes.h"
 
 #define __MAX_CSUM_ITEMS(r, size) ((unsigned long)(((BTRFS_LEAF_DATA_SIZE(r) - \
 				   sizeof(struct btrfs_item) * 2) / \
@@ -349,6 +350,7 @@ int btrfs_lookup_bio_sums(struct btrfs_bio *bbio)
 	const unsigned int nblocks = orig_len >> fs_info->sectorsize_bits;
 	int ret = 0;
 	u32 bio_offset = 0;
+	bool using_commit_root = false;
 
 	if ((inode->flags & BTRFS_INODE_NODATASUM) ||
 	    test_bit(BTRFS_FS_STATE_NO_DATA_CSUMS, &fs_info->fs_state))
@@ -393,8 +395,8 @@ int btrfs_lookup_bio_sums(struct btrfs_bio *bbio)
 	 * between reading the free space cache and updating the csum tree.
 	 */
 	if (btrfs_is_free_space_inode(inode)) {
-		path->search_commit_root = 1;
-		path->skip_locking = 1;
+		path->search_commit_root = true;
+		path->skip_locking = true;
 	}
 
 	/*
@@ -422,8 +424,9 @@ int btrfs_lookup_bio_sums(struct btrfs_bio *bbio)
 	 * from across transactions.
 	 */
 	if (bbio->csum_search_commit_root) {
-		path->search_commit_root = 1;
-		path->skip_locking = 1;
+		using_commit_root = true;
+		path->search_commit_root = true;
+		path->skip_locking = true;
 		down_read(&fs_info->commit_root_sem);
 	}
 
@@ -454,6 +457,28 @@ int btrfs_lookup_bio_sums(struct btrfs_bio *bbio)
 		 * assume this is the case.
 		 */
 		if (count == 0) {
+			/*
+			 * If an extent is relocated in the current transaction
+			 * then relocation writes a new csum without updating
+			 * the extent map generation. Until the next commit, we
+			 * will see a hole in that case, so we need to fallback
+			 * to searching the transaction csum root.
+			 *
+			 * Note that a commit root lookup of a referenced extent can
+			 * only miss, not return a stale csum. A freed extent's csum
+			 * is deleted in the same transaction and its bytenr is not
+			 * reusable until that transaction has committed and the
+			 * extent is unpinned.
+			 */
+			if (using_commit_root) {
+				up_read(&fs_info->commit_root_sem);
+				using_commit_root = false;
+				path->search_commit_root = false;
+				path->skip_locking = false;
+				btrfs_release_path(path);
+				continue;
+			}
+
 			memset(csum_dst, 0, csum_size);
 			count = 1;
 
@@ -472,7 +497,7 @@ int btrfs_lookup_bio_sums(struct btrfs_bio *bbio)
 		bio_offset += count * sectorsize;
 	}
 
-	if (bbio->csum_search_commit_root)
+	if (using_commit_root)
 		up_read(&fs_info->commit_root_sem);
 	return ret;
 }
@@ -764,21 +789,46 @@ fail:
 	return ret;
 }
 
-/*
- * Calculate checksums of the data contained inside a bio.
- */
-int btrfs_csum_one_bio(struct btrfs_bio *bbio)
+static void csum_one_bio(struct btrfs_bio *bbio, struct bvec_iter *src)
 {
-	struct btrfs_ordered_extent *ordered = bbio->ordered;
 	struct btrfs_inode *inode = bbio->inode;
 	struct btrfs_fs_info *fs_info = inode->root->fs_info;
 	SHASH_DESC_ON_STACK(shash, fs_info->csum_shash);
 	struct bio *bio = &bbio->bio;
-	struct btrfs_ordered_sum *sums;
-	struct bvec_iter iter = bio->bi_iter;
+	struct btrfs_ordered_sum *sums = bbio->sums;
+	struct bvec_iter iter = *src;
 	phys_addr_t paddr;
 	const u32 blocksize = fs_info->sectorsize;
-	int index;
+	int index = 0;
+
+	shash->tfm = fs_info->csum_shash;
+
+	btrfs_bio_for_each_block(paddr, bio, &iter, blocksize) {
+		btrfs_calculate_block_csum(fs_info, paddr, sums->sums + index);
+		index += fs_info->csum_size;
+	}
+}
+
+static void csum_one_bio_work(struct work_struct *work)
+{
+	struct btrfs_bio *bbio = container_of(work, struct btrfs_bio, csum_work);
+
+	ASSERT(btrfs_op(&bbio->bio) == BTRFS_MAP_WRITE);
+	ASSERT(bbio->async_csum == true);
+	csum_one_bio(bbio, &bbio->csum_saved_iter);
+	complete(&bbio->csum_done);
+}
+
+/*
+ * Calculate checksums of the data contained inside a bio.
+ */
+int btrfs_csum_one_bio(struct btrfs_bio *bbio, bool async)
+{
+	struct btrfs_ordered_extent *ordered = bbio->ordered;
+	struct btrfs_inode *inode = bbio->inode;
+	struct btrfs_fs_info *fs_info = inode->root->fs_info;
+	struct bio *bio = &bbio->bio;
+	struct btrfs_ordered_sum *sums;
 	unsigned nofs_flag;
 
 	nofs_flag = memalloc_nofs_save();
@@ -789,21 +839,21 @@ int btrfs_csum_one_bio(struct btrfs_bio *bbio)
 	if (!sums)
 		return -ENOMEM;
 
+	sums->logical = bio->bi_iter.bi_sector << SECTOR_SHIFT;
 	sums->len = bio->bi_iter.bi_size;
 	INIT_LIST_HEAD(&sums->list);
-
-	sums->logical = bio->bi_iter.bi_sector << SECTOR_SHIFT;
-	index = 0;
-
-	shash->tfm = fs_info->csum_shash;
-
-	btrfs_bio_for_each_block(paddr, bio, &iter, blocksize) {
-		btrfs_calculate_block_csum(fs_info, paddr, sums->sums + index);
-		index += fs_info->csum_size;
-	}
-
 	bbio->sums = sums;
 	btrfs_add_ordered_sum(ordered, sums);
+
+	if (!async) {
+		csum_one_bio(bbio, &bbio->bio.bi_iter);
+		return 0;
+	}
+	init_completion(&bbio->csum_done);
+	bbio->async_csum = true;
+	bbio->csum_saved_iter = bbio->bio.bi_iter;
+	INIT_WORK(&bbio->csum_work, csum_one_bio_work);
+	schedule_work(&bbio->csum_work);
 	return 0;
 }
 
@@ -1142,10 +1192,10 @@ again:
 	}
 
 	btrfs_release_path(path);
-	path->search_for_extension = 1;
+	path->search_for_extension = true;
 	ret = btrfs_search_slot(trans, root, &file_key, path,
 				csum_size, 1);
-	path->search_for_extension = 0;
+	path->search_for_extension = false;
 	if (ret < 0)
 		goto out;
 

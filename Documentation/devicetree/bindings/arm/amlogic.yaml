@@ -98,6 +98,7 @@ properties:
               - khadas,vim
               - libretech,aml-s905x-cc
               - libretech,aml-s905x-cc-v2
+              - libretech,aml-s905x-cc-v3
               - nexbox,a95x
               - osmc,vero4k
           - const: amlogic,s905x

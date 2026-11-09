@@ -282,6 +282,7 @@ config AD7298
 config AD7380
 	tristate "Analog Devices AD7380 ADC driver"
 	depends on SPI_MASTER
+	select REGMAP
 	select SPI_OFFLOAD
 	select IIO_BUFFER
 	select IIO_BUFFER_DMAENGINE
@@ -385,6 +386,7 @@ config AD7766
 config AD7768_1
 	tristate "Analog Devices AD7768-1 ADC driver"
 	depends on SPI
+	select GPIOLIB
 	select REGULATOR
 	select REGMAP_SPI
 	select IIO_BUFFER
@@ -402,6 +404,7 @@ config AD7779
 	depends on SPI
 	select CRC8
 	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
 	select IIO_BACKEND
 	help
 	  Say yes here to build support for Analog Devices AD777X family
@@ -1023,6 +1026,7 @@ config MAX1363
 config MAX34408
 	tristate "Maxim max34408/max344089 ADC driver"
 	depends on I2C
+	select REGMAP_I2C
 	help
 	  Say yes here to build support for Maxim max34408/max34409 current sense
 	  monitor with 8-bits ADC interface with overcurrent delay/threshold and
@@ -1874,5 +1878,69 @@ config XILINX_AMS
 
 	  The driver can also be built as a module. If so, the module will be called
 	  xilinx-ams.
+
+config AD9361
+	tristate "Analog Devices AD9361, AD9364 RF Agile Transceiver driver"
+	depends on SPI
+	depends on COMMON_CLK
+	help
+	  Say yes here to build support for Analog Devices:
+	  AD9361, AD9364 RF Agile Transceivers. Provides direct access
+	  via sysfs.
+
+config AD9361_EXT_BAND_CONTROL
+	bool "Support for controlling RX/TX band selection by the driver"
+	depends on AD9361
+	help
+	  Say yes here if you want to enable support in the AD9361 driver
+	  for controlling GPIOs and chip settings to select different bands
+	  based on the RX/TX LO frequency.
+	  The GPIOs would usually control external filter banks (high & low
+	  pass filters for RX filters, and low pass for TX filters).
+
+config ADRV9009
+	tristate "Analog Devices ADRV9009/ADRV9008 RF Transceiver driver"
+	depends on SPI
+	depends on COMMON_CLK
+	select JESD204
+	select CF_AXI_ADC
+	help
+	  Say yes here to build support for Analog Devices:
+	  ADRV9009/ADRV9008 RF Transceivers. Provides direct access
+	  via sysfs.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called adrv9009_drv.
+
+config AD_ADC
+	tristate "Analog Devices generic AXI ADC (JESD204 observation receivers)"
+	select IIO_BUFFER
+	select IIO_BUFFER_HW_CONSUMER
+	select IIO_BUFFER_DMAENGINE
+	help
+	  Say yes here to build support for the Analog Devices generic AXI ADC
+	  core. On the ADRV9009 it drives the observation receiver
+	  ("adi,axi-adrv9009-obs-1.0"); the main RX/TX cores are handled by
+	  CF_AXI_ADC / CF_AXI_DDS instead.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called ad_adc.
+
+config CF_AXI_ADC
+	tristate "Analog Devices High-Speed AXI ADC driver core"
+	select IIO_BUFFER
+	select IIO_BUFFER_HW_CONSUMER
+	select IIO_BUFFER_DMAENGINE
+	help
+	  Say yes here to build support for Analog Devices AD9467 and AD9643,
+	  High-Speed LVDS analog to digital converters (ADC).
+	  FPGA interface HDL is available here:
+	  http://wiki.analog.com/resources/fpga/xilinx/fmc/ad9467
+	  If unsure, say N (but it's safe to say "Y").
+
+config CF_AXI_TDD
+	tristate "Analog Devices TDD HDL CORE driver"
+	help
+	  Say yes here to build support for Analog Devices TDD HDL CORE driver.
 
 endmenu

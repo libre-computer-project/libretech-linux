@@ -79,6 +79,14 @@ properties:
   power-domains:
     maxItems: 1
 
+  rockchip,dmc-devfreq:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      The memory controller whose devfreq sets the DRAM clock this VOP
+      scans out from. While the VOP's CRTC is on, the driver requests a
+      minimum DRAM rate from it, so the first frames after a mode set or a
+      resume do not run at a rate the devfreq governor has not yet raised.
+
 required:
   - compatible
   - reg

@@ -15,10 +15,16 @@ description: |
   transmitter, fully compliant with HDMI 1.3a, HDCP 1.2 and backward compatible
   to DVI 1.0 specifications.
 
+  The IT66122 is its pin-compatible successor. It is a distinct compatible
+  rather than a fallback because it reports a different device ID and needs a
+  different PLL/AFE initialisation; the IT66121 programming does not correctly
+  initialise it.
+
 properties:
   compatible:
     enum:
       - ite,it66121
+      - ite,it66122
       - ite,it6610
 
   reg:

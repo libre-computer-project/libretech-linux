@@ -289,18 +289,19 @@ int autopoll_all_devices(struct gpib_board *board)
 	dev_dbg(board->gpib_dev, "autopoll has board lock\n");
 
 	retval = serial_poll_all(board, serial_timeout);
-	if (retval < 0)	{
-		mutex_unlock(&board->big_gpib_mutex);
-		mutex_unlock(&board->user_mutex);
-		return retval;
+	if (retval >= 0) {
+		dev_dbg(board->gpib_dev, "complete\n");
+		/*
+		 * need to wake wait queue in case someone is
+		 * waiting on RQS
+		 */
+		wake_up_interruptible(&board->wait);
 	}
 
-	dev_dbg(board->gpib_dev, "complete\n");
-	/*
-	 * need to wake wait queue in case someone is
-	 * waiting on RQS
-	 */
-	wake_up_interruptible(&board->wait);
+	if (retval <= 0) {
+		atomic_set(&board->stuck_srq, 1);
+		set_bit(SRQI_NUM, &board->status);
+	}
 	mutex_unlock(&board->big_gpib_mutex);
 	mutex_unlock(&board->user_mutex);
 
@@ -613,7 +614,7 @@ long ibioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 	unsigned int minor = iminor(file_inode(filep));
 	struct gpib_board *board;
 	struct gpib_file_private *file_priv = filep->private_data;
-	long retval = -ENOTTY;
+	long retval = -EBADRQC;
 
 	if (minor >= GPIB_MAX_NUM_BOARDS) {
 		pr_err("gpib: invalid minor number of device file\n");
@@ -806,7 +807,6 @@ long ibioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		mutex_unlock(&board->big_gpib_mutex);
 		return write_ioctl(file_priv, board, arg);
 	default:
-		retval = -ENOTTY;
 		goto done;
 	}
 
@@ -888,10 +888,6 @@ static int read_ioctl(struct gpib_file_private *file_priv, struct gpib_board *bo
 	if (read_cmd.completed_transfer_count > read_cmd.requested_transfer_count)
 		return -EINVAL;
 
-	desc = handle_to_descriptor(file_priv, read_cmd.handle);
-	if (!desc)
-		return -EINVAL;
-
 	if (WARN_ON_ONCE(sizeof(userbuf) > sizeof(read_cmd.buffer_ptr)))
 		return -EFAULT;
 
@@ -903,6 +899,17 @@ static int read_ioctl(struct gpib_file_private *file_priv, struct gpib_board *bo
 	/* Check write access to buffer */
 	if (!access_ok(userbuf, remain))
 		return -EFAULT;
+
+	/* Lock descriptors to prevent concurrent close from freeing descriptor */
+	if (mutex_lock_interruptible(&file_priv->descriptors_mutex))
+		return -ERESTARTSYS;
+	desc = handle_to_descriptor(file_priv, read_cmd.handle);
+	if (!desc) {
+		mutex_unlock(&file_priv->descriptors_mutex);
+		return -EINVAL;
+	}
+	atomic_inc(&desc->descriptor_busy);
+	mutex_unlock(&file_priv->descriptors_mutex);
 
 	atomic_set(&desc->io_in_progress, 1);
 
@@ -937,6 +944,7 @@ static int read_ioctl(struct gpib_file_private *file_priv, struct gpib_board *bo
 		retval = copy_to_user((void __user *)arg, &read_cmd, sizeof(read_cmd));
 
 	atomic_set(&desc->io_in_progress, 0);
+	atomic_dec(&desc->descriptor_busy);
 
 	wake_up_interruptible(&board->wait);
 	if (retval)
@@ -964,10 +972,6 @@ static int command_ioctl(struct gpib_file_private *file_priv,
 	if (cmd.completed_transfer_count > cmd.requested_transfer_count)
 		return -EINVAL;
 
-	desc = handle_to_descriptor(file_priv, cmd.handle);
-	if (!desc)
-		return -EINVAL;
-
 	userbuf = (u8 __user *)(unsigned long)cmd.buffer_ptr;
 	userbuf += cmd.completed_transfer_count;
 
@@ -979,6 +983,17 @@ static int command_ioctl(struct gpib_file_private *file_priv,
 	/* Check read access to buffer */
 	if (!access_ok(userbuf, remain))
 		return -EFAULT;
+
+	/* Lock descriptors to prevent concurrent close from freeing descriptor */
+	if (mutex_lock_interruptible(&file_priv->descriptors_mutex))
+		return -ERESTARTSYS;
+	desc = handle_to_descriptor(file_priv, cmd.handle);
+	if (!desc) {
+		mutex_unlock(&file_priv->descriptors_mutex);
+		return -EINVAL;
+	}
+	atomic_inc(&desc->descriptor_busy);
+	mutex_unlock(&file_priv->descriptors_mutex);
 
 	/*
 	 * Write buffer loads till we empty the user supplied buffer.
@@ -1022,6 +1037,7 @@ static int command_ioctl(struct gpib_file_private *file_priv,
 	 */
 	if (!no_clear_io_in_prog || fault)
 		atomic_set(&desc->io_in_progress, 0);
+	atomic_dec(&desc->descriptor_busy);
 
 	wake_up_interruptible(&board->wait);
 	if (fault)
@@ -1047,10 +1063,6 @@ static int write_ioctl(struct gpib_file_private *file_priv, struct gpib_board *b
 	if (write_cmd.completed_transfer_count > write_cmd.requested_transfer_count)
 		return -EINVAL;
 
-	desc = handle_to_descriptor(file_priv, write_cmd.handle);
-	if (!desc)
-		return -EINVAL;
-
 	userbuf = (u8 __user *)(unsigned long)write_cmd.buffer_ptr;
 	userbuf += write_cmd.completed_transfer_count;
 
@@ -1059,6 +1071,17 @@ static int write_ioctl(struct gpib_file_private *file_priv, struct gpib_board *b
 	/* Check read access to buffer */
 	if (!access_ok(userbuf, remain))
 		return -EFAULT;
+
+	/* Lock descriptors to prevent concurrent close from freeing descriptor */
+	if (mutex_lock_interruptible(&file_priv->descriptors_mutex))
+		return -ERESTARTSYS;
+	desc = handle_to_descriptor(file_priv, write_cmd.handle);
+	if (!desc) {
+		mutex_unlock(&file_priv->descriptors_mutex);
+		return -EINVAL;
+	}
+	atomic_inc(&desc->descriptor_busy);
+	mutex_unlock(&file_priv->descriptors_mutex);
 
 	atomic_set(&desc->io_in_progress, 1);
 
@@ -1094,6 +1117,7 @@ static int write_ioctl(struct gpib_file_private *file_priv, struct gpib_board *b
 		fault = copy_to_user((void __user *)arg, &write_cmd, sizeof(write_cmd));
 
 	atomic_set(&desc->io_in_progress, 0);
+	atomic_dec(&desc->descriptor_busy);
 
 	wake_up_interruptible(&board->wait);
 	if (fault)
@@ -1276,6 +1300,9 @@ static int close_dev_ioctl(struct file *filep, struct gpib_board *board, unsigne
 {
 	struct gpib_close_dev_ioctl cmd;
 	struct gpib_file_private *file_priv = filep->private_data;
+	struct gpib_descriptor *desc;
+	unsigned int pad;
+	int sad;
 	int retval;
 
 	retval = copy_from_user(&cmd, (void __user *)arg, sizeof(cmd));
@@ -1284,19 +1311,27 @@ static int close_dev_ioctl(struct file *filep, struct gpib_board *board, unsigne
 
 	if (cmd.handle >= GPIB_MAX_NUM_DESCRIPTORS)
 		return -EINVAL;
-	if (!file_priv->descriptors[cmd.handle])
+
+	mutex_lock(&file_priv->descriptors_mutex);
+	desc = file_priv->descriptors[cmd.handle];
+	if (!desc) {
+		mutex_unlock(&file_priv->descriptors_mutex);
 		return -EINVAL;
-
-	retval = decrement_open_device_count(board, &board->device_list,
-					     file_priv->descriptors[cmd.handle]->pad,
-					     file_priv->descriptors[cmd.handle]->sad);
-	if (retval < 0)
-		return retval;
-
-	kfree(file_priv->descriptors[cmd.handle]);
+	}
+	if (atomic_read(&desc->descriptor_busy)) {
+		mutex_unlock(&file_priv->descriptors_mutex);
+		return -EBUSY;
+	}
+	/* Remove from table while holding lock to prevent new IO from starting */
 	file_priv->descriptors[cmd.handle] = NULL;
+	pad = desc->pad;
+	sad = desc->sad;
+	mutex_unlock(&file_priv->descriptors_mutex);
 
-	return 0;
+	retval = decrement_open_device_count(board, &board->device_list, pad, sad);
+
+	kfree(desc);
+	return retval;
 }
 
 static int serial_poll_ioctl(struct gpib_board *board, unsigned long arg)
@@ -1331,12 +1366,25 @@ static int wait_ioctl(struct gpib_file_private *file_priv, struct gpib_board *bo
 	if (retval)
 		return -EFAULT;
 
+	/*
+	 * Lock descriptors to prevent concurrent close from freeing
+	 * descriptor.  ibwait() releases big_gpib_mutex when wait_mask
+	 * is non-zero, so desc must be pinned with descriptor_busy.
+	 */
+	mutex_lock(&file_priv->descriptors_mutex);
 	desc = handle_to_descriptor(file_priv, wait_cmd.handle);
-	if (!desc)
+	if (!desc) {
+		mutex_unlock(&file_priv->descriptors_mutex);
 		return -EINVAL;
+	}
+	atomic_inc(&desc->descriptor_busy);
+	mutex_unlock(&file_priv->descriptors_mutex);
 
 	retval = ibwait(board, wait_cmd.wait_mask, wait_cmd.clear_mask,
 			wait_cmd.set_mask, &wait_cmd.ibsta, wait_cmd.usec_timeout, desc);
+
+	atomic_dec(&desc->descriptor_busy);
+
 	if (retval < 0)
 		return retval;
 
@@ -2035,6 +2083,7 @@ void init_gpib_descriptor(struct gpib_descriptor *desc)
 	desc->is_board = 0;
 	desc->autopoll_enabled = 0;
 	atomic_set(&desc->io_in_progress, 0);
+	atomic_set(&desc->descriptor_busy, 0);
 }
 
 int gpib_register_driver(struct gpib_interface *interface, struct module *provider_module)

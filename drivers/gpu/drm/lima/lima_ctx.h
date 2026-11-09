@@ -24,7 +24,8 @@ struct lima_ctx_mgr {
 	struct xarray handles;
 };
 
-int lima_ctx_create(struct lima_device *dev, struct lima_ctx_mgr *mgr, u32 *id);
+int lima_ctx_create(struct lima_device *dev, struct lima_ctx_mgr *mgr, u32 *id,
+		    u32 priority);
 int lima_ctx_free(struct lima_ctx_mgr *mgr, u32 id);
 struct lima_ctx *lima_ctx_get(struct lima_ctx_mgr *mgr, u32 id);
 void lima_ctx_put(struct lima_ctx *ctx);

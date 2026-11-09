@@ -5,6 +5,33 @@
 
 obj-$(CONFIG_IIO_ADC_HELPER) += industrialio-adc.o
 
+# Analog Devices AD9361 RF transceiver + AXI ADC/TDD cores (ported from adi-6.12.0)
+ad9361_drv-y := ad9361.o ad9361_conv.o
+ad9361_drv-$(CONFIG_AD9361_EXT_BAND_CONTROL) += ad9361_ext_band_ctrl.o
+obj-$(CONFIG_AD9361) += ad9361_drv.o
+# Analog Devices ADRV9009/ADRV9008 RF transceiver + Talise HAL (ported from adi-6.12.0)
+adrv9009_drv-y := adrv9009.o adrv9009_conv.o \
+	talise/talise_agc.o \
+	talise/talise_arm.o \
+	talise/talise.o \
+	talise/talise_cals.o \
+	talise/talise_error.o \
+	talise/talise_gpio.o \
+	talise/talise_hal.o \
+	talise/talise_jesd204.o \
+	talise/talise_radioctrl.o \
+	talise/talise_rx.o \
+	talise/talise_tx.o \
+	talise/talise_user.o \
+	talise/linux_hal.o
+obj-$(CONFIG_ADRV9009) += adrv9009_drv.o
+# Generic AXI ADC -- the ADRV9009 observation receiver (adi,axi-adrv9009-obs-1.0)
+obj-$(CONFIG_AD_ADC) += ad_adc.o
+
+cf_axi_adc-y := cf_axi_adc_core.o
+obj-$(CONFIG_CF_AXI_ADC) += cf_axi_adc.o
+obj-$(CONFIG_CF_AXI_TDD) += cf_axi_tdd.o
+
 # When adding new entries keep the list in alphabetical order
 obj-$(CONFIG_88PM886_GPADC) += 88pm886-gpadc.o
 obj-$(CONFIG_AB8500_GPADC) += ab8500-gpadc.o

@@ -10,3 +10,8 @@
 / {
 	compatible = "amlogic,s905d", "amlogic,meson-gxl";
 };
+
+/* GXL DDR bandwidth monitor; disabled in meson-gxl.dtsi because GXM shares it. */
+&ddr_pmu {
+	status = "okay";
+};

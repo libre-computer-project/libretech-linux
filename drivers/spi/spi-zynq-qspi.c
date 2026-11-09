@@ -6,6 +6,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -92,6 +93,14 @@
 #define ZYNQ_QSPI_ENABLE_ENABLE_MASK	BIT(0) /* QSPI Enable Bit Mask */
 
 /*
+ * Bounded spin, in the IRQ handler, waiting for the shifter to land the next
+ * RX FIFO entry before it is drained.  Deliberately short: this is a latency
+ * hedge against a drain that runs ahead of the shifter, NOT a correctness
+ * gate -- the read after it is unconditional (see zynq_qspi_read_op()).
+ */
+#define ZYNQ_QSPI_RX_WAIT_SPINS		1000
+
+/*
  * QSPI Linear Configuration Register
  *
  * It is named Linear Configuration but it controls other modes when not in
@@ -105,8 +114,34 @@
 
 #define ZYNQ_QSPI_FAST_READ_QOUT_CODE	0x6B /* read instruction code */
 #define ZYNQ_QSPI_FIFO_DEPTH		63 /* FIFO depth in words */
-#define ZYNQ_QSPI_RX_THRESHOLD		32 /* Rx FIFO threshold level */
+#define ZYNQ_QSPI_RX_THRESHOLD		32 /* Words drained/filled per IRQ */
 #define ZYNQ_QSPI_TX_THRESHOLD		1 /* Tx FIFO threshold level */
+
+/*
+ * RX FIFO watermark programmed into RX_THRESH.
+ *
+ * STATUS.RXNEMTY (BIT(4)) is not a literal "FIFO non-empty" flag: the
+ * controller asserts it only once the RX FIFO holds at least RX_THRESH
+ * entries.  The driver's only FIFO-occupancy gate -- the bounded spin in
+ * zynq_qspi_read_op() -- polls exactly that bit, so with RX_THRESH left at
+ * the reset/batch value of 32 the gate can never cover the last entries of a
+ * transfer, nor any transfer shorter than 32 words.  Every spi-nor control op
+ * (RDID, RDSR, RDSFDP, the 4-byte address prologue) is shorter than that, so
+ * for those ops the spin always ran to its 1000-iteration bound and returned
+ * without the entry ever being confirmed present.
+ *
+ * MEASURED on an ANTSDR E310 (Zynq-7020 + W25Q256), 2026-07-28, with
+ * RX_THRESH = 32: a 32 MiB `dd if=/dev/mtd0` incremented rx_starved by
+ * exactly 1024 -- one per 32 KiB spi_mem_op, i.e. the tail word of every op
+ * -- and a 4 KiB write incremented it by 513.  With RX_THRESH = 1 both
+ * deltas are 0.
+ *
+ * Kept distinct from ZYNQ_QSPI_RX_THRESHOLD above, which is a software batch
+ * size (words moved per interrupt) and must stay large for throughput; the
+ * two were conflated only because 32 happened to be the reset value of the
+ * register.
+ */
+#define ZYNQ_QSPI_RX_WATERMARK		1
 
 /*
  * The modebits configurable by the driver to make the SPI support different
@@ -129,18 +164,32 @@
  * @tx_bytes:		Number of bytes left to transfer
  * @rx_bytes:		Number of bytes left to receive
  * @data_completion:	completion structure
+ * @rx_starved:		Count of drains aborted because the RX FIFO ran dry
+ * @rx_underflow:	Count of RX byte-accounting underflows (framing desync)
  */
+/* Max data bytes a single debugfs raw op may read */
+#define ZYNQ_QSPI_RAWOP_MAX	256
+
 struct zynq_qspi {
 	struct device *dev;
 	void __iomem *regs;
 	struct clk *refclk;
 	struct clk *pclk;
 	int irq;
+	u32 rx_starved;
+	u32 rx_underflow;
+	struct dentry *dbgdir;
 	u8 *txbuf;
 	u8 *rxbuf;
 	int tx_bytes;
 	int rx_bytes;
 	struct completion data_completion;
+	struct spi_controller *ctlr;
+	/* debugfs raw spi_mem_op probe -- see zynq_qspi_rawop_write() */
+	struct mutex rawop_lock;
+	int rawop_ret;
+	unsigned int rawop_len;
+	u8 rawop_buf[ZYNQ_QSPI_RAWOP_MAX];
 };
 
 /*
@@ -193,6 +242,15 @@ static void zynq_qspi_init_hw(struct zynq_qspi *xqspi, unsigned int num_cs)
 
 	zynq_qspi_write(xqspi, ZYNQ_QSPI_LINEAR_CFG_OFFSET, config_reg);
 
+	/*
+	 * Program the RX watermark BEFORE the flush below: STATUS.RXNEMTY is
+	 * gated on RX_THRESH, so at the register's reset value of 32 the flush
+	 * loop cannot see -- and therefore cannot drain -- a residue of fewer
+	 * than 32 entries left by the boot loader's linear-mode reads.
+	 */
+	zynq_qspi_write(xqspi, ZYNQ_QSPI_RX_THRESH_OFFSET,
+			ZYNQ_QSPI_RX_WATERMARK);
+
 	/* Clear the RX FIFO */
 	while (zynq_qspi_read(xqspi, ZYNQ_QSPI_STATUS_OFFSET) &
 			      ZYNQ_QSPI_IXR_RXNEMTY_MASK)
@@ -213,8 +271,6 @@ static void zynq_qspi_init_hw(struct zynq_qspi *xqspi, unsigned int num_cs)
 		       ZYNQ_QSPI_CONFIG_IFMODE_MASK);
 	zynq_qspi_write(xqspi, ZYNQ_QSPI_CONFIG_OFFSET, config_reg);
 
-	zynq_qspi_write(xqspi, ZYNQ_QSPI_RX_THRESH_OFFSET,
-			ZYNQ_QSPI_RX_THRESHOLD);
 	zynq_qspi_write(xqspi, ZYNQ_QSPI_TX_THRESH_OFFSET,
 			ZYNQ_QSPI_TX_THRESHOLD);
 
@@ -228,14 +284,193 @@ static bool zynq_qspi_supports_op(struct spi_mem *mem,
 	if (!spi_mem_default_supports_op(mem, op))
 		return false;
 
+	/* zynq_qspi_exec_mem_op() stages the address in a u8[8]. */
+	if (op->addr.nbytes > 4)
+		return false;
+
 	/*
-	 * The number of address bytes should be equal to or less than 3 bytes.
+	 * A 4-byte address is fine on its own -- exec_mem_op() is the generic
+	 * I/O-mode path and shifts out exactly the bytes it is given -- but ONLY
+	 * while every phase stays single-lane.
+	 *
+	 * The controller runs with CONFIG.IFMODE (flash memory interface mode)
+	 * set, in which it decodes the opcode itself to know when to turn the
+	 * data lanes around for a multi-I/O read.  That decoder assumes the
+	 * 3-byte-address form of those opcodes.  Hand it a 4-byte address and it
+	 * turns the bus around one prologue byte early, so the captured stream
+	 * begins with three lane-fill bytes (0x88) and every real byte lands
+	 * three positions late.
+	 *
+	 * MEASURED on an ANTSDR E310 (Zynq-7020 + W25Q256), 2026-07-28, with the
+	 * address staging already fixed:
+	 *
+	 *   0x0C 4-byte addr, 1 dummy, all 1S  @0x0000000  fe ff ff ea fe ...
+	 *   0x13 4-byte addr, no dummy, all 1S @0x1400000  f9 ef f5 6b 57 ...
+	 *      -- byte-identical to each other and to the 3-byte 0x03 read of
+	 *         the same offsets; the 0x1400010 read is the 0x1400000 read
+	 *         shifted by exactly 16 bytes, so >16 MiB addressing tracks.
+	 *
+	 *   0x6B 4-byte addr, 1 dummy, data 4S (what spi-nor picks when the DT
+	 *   says spi-rx-bus-width = <4>), read back through /dev/mtd0:
+	 *      88 88 88 fe ff ff ea fe ...   <- the same content, 3 bytes late
+	 *
+	 * This is the residual that survived BOTH earlier attempts at >16 MiB
+	 * support (e728d7f9b3a34, reverted by 1c1b349fa1d8a; and the deleted
+	 * lc618-e310-qspi ba32d8ac9bb43): each fixed a real bug elsewhere and
+	 * each left spi-rx-bus-width = <4> in place, so each kept selecting
+	 * 0x6B and kept seeing the identical three-byte displacement.
+	 *
+	 * Refusing the combination makes spi_nor_spimem_adjust_hwcaps() drop the
+	 * multi-I/O read candidates for a >16 MiB part and keep the 1S-1S-1S
+	 * ones, i.e. FAST_READ_4B (0x0C).  Parts at or below 16 MiB use a 3-byte
+	 * address and are completely unaffected, so every other board using this
+	 * controller keeps its quad reads.
 	 */
-	if (op->addr.nbytes > 3)
+	if (op->addr.nbytes > 3 &&
+	    (op->cmd.buswidth > 1 || op->addr.buswidth > 1 ||
+	     op->dummy.buswidth > 1 || op->data.buswidth > 1))
 		return false;
 
 	return true;
 }
+
+/*
+ * Raw spi_mem_op probe (debugfs).
+ *
+ * The flash's spi_device is created from DT and survives a spi-nor bind
+ * failure, so a spi_mem can be built around it here to issue identification
+ * opcodes (JEDEC ID, SFDP, unique ID, status registers) that no other path on
+ * this board can reach: U-Boot has no `sspi` command and Linux has no /dev/mtd.
+ *
+ * Write:  "<op> <addr_nbytes> <addr> <dummy_nbytes> <data_nbytes>"  (all hex,
+ *         addr/dummy/data may be omitted and default to 0)
+ * Read:   "ret=<n> len=<n> <hex bytes>"
+ *
+ * READ-ONLY BY CONSTRUCTION: data is always SPI_MEM_DATA_IN, and the opcode
+ * must be in the allowlist below.  This is the board's boot flash -- a stray
+ * erase or program bricks the SPL.
+ */
+static const u8 zynq_qspi_rawop_allowed[] = {
+	0x9f,		/* RDID -- JEDEC ID */
+	0x5a,		/* RDSFDP */
+	0x4b,		/* Read Unique ID */
+	0x90, 0x92, 0x94,	/* Read Manufacturer/Device ID (+dual/quad) */
+	0xab,		/* Release Power-Down / Device ID */
+	0x05, 0x35, 0x15,	/* RDSR1 / RDSR2 / RDSR3 */
+	0x03, 0x0b,	/* READ / FAST_READ (3-byte address) */
+	0x13, 0x0c,	/* READ4B / FAST_READ4B */
+	0x16,		/* RDEAR/RDBR (extended address register, some parts) */
+	0xc8,		/* Read Extended Address Register (Winbond) */
+};
+
+static int zynq_qspi_rawop_match_child(struct device *dev, const void *data)
+{
+	return 1;
+}
+
+static ssize_t zynq_qspi_rawop_write(struct file *file,
+				     const char __user *ubuf,
+				     size_t count, loff_t *ppos)
+{
+	struct zynq_qspi *xqspi = file->private_data;
+	unsigned int opcode, addr_nbytes = 0, dummy_nbytes = 0, data_nbytes = 0;
+	unsigned long long addr = 0;
+	struct spi_device *spi;
+	struct spi_mem mem = { };
+	struct spi_mem_op op;
+	struct device *child;
+	char buf[128];
+	bool allowed = false;
+	int i, ret;
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+	buf[count] = '\0';
+
+	if (sscanf(buf, "%x %x %llx %x %x", &opcode, &addr_nbytes, &addr,
+		   &dummy_nbytes, &data_nbytes) < 1)
+		return -EINVAL;
+
+	if (opcode > 0xff || addr_nbytes > 4 || dummy_nbytes > 16 ||
+	    data_nbytes > ZYNQ_QSPI_RAWOP_MAX)
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(zynq_qspi_rawop_allowed); i++)
+		if (zynq_qspi_rawop_allowed[i] == opcode)
+			allowed = true;
+	if (!allowed)
+		return -EPERM;
+
+	child = device_find_child(&xqspi->ctlr->dev, NULL,
+				  zynq_qspi_rawop_match_child);
+	if (!child)
+		return -ENODEV;
+	spi = to_spi_device(child);
+
+	mutex_lock(&xqspi->rawop_lock);
+
+	memset(xqspi->rawop_buf, 0, sizeof(xqspi->rawop_buf));
+	mem.spi = spi;
+	op = (struct spi_mem_op)
+		SPI_MEM_OP(SPI_MEM_OP_CMD(opcode, 1),
+			   SPI_MEM_OP_ADDR(addr_nbytes, addr, 1),
+			   SPI_MEM_OP_DUMMY(dummy_nbytes, 1),
+			   SPI_MEM_OP_DATA_IN(data_nbytes, xqspi->rawop_buf, 1));
+	if (!addr_nbytes)
+		op.addr.buswidth = 0;
+	if (!dummy_nbytes)
+		op.dummy.buswidth = 0;
+	if (!data_nbytes)
+		op.data.buswidth = 0;
+
+	ret = spi_mem_exec_op(&mem, &op);
+
+	xqspi->rawop_ret = ret;
+	xqspi->rawop_len = ret ? 0 : data_nbytes;
+
+	mutex_unlock(&xqspi->rawop_lock);
+	put_device(child);
+
+	*ppos += count;
+	return count;
+}
+
+static ssize_t zynq_qspi_rawop_read(struct file *file, char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	struct zynq_qspi *xqspi = file->private_data;
+	char *out;
+	int len = 0, i;
+	ssize_t ret;
+
+	out = kmalloc(ZYNQ_QSPI_RAWOP_MAX * 3 + 64, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+
+	mutex_lock(&xqspi->rawop_lock);
+	len += scnprintf(out + len, 64, "ret=%d len=%u",
+			 xqspi->rawop_ret, xqspi->rawop_len);
+	for (i = 0; i < xqspi->rawop_len; i++)
+		len += scnprintf(out + len, 4, " %02x", xqspi->rawop_buf[i]);
+	mutex_unlock(&xqspi->rawop_lock);
+
+	len += scnprintf(out + len, 2, "\n");
+
+	ret = simple_read_from_buffer(ubuf, count, ppos, out, len);
+	kfree(out);
+
+	return ret;
+}
+
+static const struct file_operations zynq_qspi_rawop_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.read	= zynq_qspi_rawop_read,
+	.write	= zynq_qspi_rawop_write,
+	.llseek	= default_llseek,
+};
 
 /**
  * zynq_qspi_rxfifo_op - Read 1..4 bytes from RxFIFO to RX buffer
@@ -249,13 +484,58 @@ static void zynq_qspi_rxfifo_op(struct zynq_qspi *xqspi, unsigned int size)
 	data = zynq_qspi_read(xqspi, ZYNQ_QSPI_RXD_OFFSET);
 
 	if (xqspi->rxbuf) {
+		/*
+		 * A partial RX FIFO entry is TOP-aligned: the controller
+		 * right-justifies the entry into the MSB end of the word, so
+		 * the valid bytes are the HIGH `size` bytes and the low bytes
+		 * are pad.  A full 4-byte entry has no pad and is copied
+		 * verbatim by the bulk path, which is why only the tail of a
+		 * non-multiple-of-4 transfer is affected.
+		 *
+		 * MEASURED on an ANTSDR E310 (Zynq-7020 + W25Q256) 2026-07-28
+		 * via the debugfs rawop probe, reading the same offset at
+		 * several lengths.  Lengths 4 and 8 take no partial path and
+		 * are the ground truth:
+		 *
+		 *   03 3-byte addr @0x000000, 8 bytes: fe ff ff ea fe ff ff ea
+		 *                              7 bytes: fe ff ff ea ea fe ff
+		 *
+		 * The 7-byte read's partial entry held b0..b2 = ea fe ff, i.e.
+		 * the correct tail (fe ff ff) sits at b1..b3.  Bottom-aligned
+		 * extraction returns b0..b2 and is one byte late.
+		 *
+		 * This restores the mainline / Xilinx-vendor behaviour that
+		 * b2cf37f8bbd79 inverted.  That commit justified the inversion
+		 * by citing U-Boot's zynq_qspi_read_data() as bottom-aligned,
+		 * but U-Boot's zynq_qspi_fill_tx_fifo() forces the 4-byte TXD0
+		 * register whenever a read buffer is set, so U-Boot never
+		 * creates a partial RX entry and says nothing about this.
+		 *
+		 * The damage was not limited to a cosmetic ID tail.  RDSR is a
+		 * 1-byte data-in, so spi_nor_wait_till_ready() read the pad
+		 * byte instead of SR1 and saw WIP clear while the chip was
+		 * still programming; spi_nor_write() then issued the next WREN
+		 * and PAGE PROGRAM into a busy chip, which ignored both, and
+		 * every second page of a multi-page write was silently lost.
+		 */
 		memcpy(xqspi->rxbuf, ((u8 *)&data) + 4 - size, size);
 		xqspi->rxbuf += size;
 	}
 
 	xqspi->rx_bytes -= size;
-	if (xqspi->rx_bytes < 0)
+	if (xqspi->rx_bytes < 0) {
+		/*
+		 * Consuming more bytes than were accounted for means the RX
+		 * FIFO framing has desynchronised from our byte counts; the
+		 * leftover entry will corrupt the next phase of the op.  This
+		 * used to be clamped away silently.
+		 */
+		xqspi->rx_underflow++;
+		dev_err_ratelimited(xqspi->dev,
+				    "RX accounting underflow (%d bytes); FIFO framing desynchronised\n",
+				    xqspi->rx_bytes);
 		xqspi->rx_bytes = 0;
+	}
 }
 
 /**
@@ -381,20 +661,9 @@ static int zynq_qspi_setup_op(struct spi_device *spi)
 {
 	struct spi_controller *ctlr = spi->controller;
 	struct zynq_qspi *qspi = spi_controller_get_devdata(ctlr);
-	int ret;
 
 	if (ctlr->busy)
 		return -EBUSY;
-
-	ret = clk_enable(qspi->refclk);
-	if (ret)
-		return ret;
-
-	ret = clk_enable(qspi->pclk);
-	if (ret) {
-		clk_disable(qspi->refclk);
-		return ret;
-	}
 
 	zynq_qspi_write(qspi, ZYNQ_QSPI_ENABLE_OFFSET,
 			ZYNQ_QSPI_ENABLE_ENABLE_MASK);
@@ -455,16 +724,48 @@ static void zynq_qspi_read_op(struct zynq_qspi *xqspi, int rxcount)
 	count = len / 4;
 	if (count > rxcount)
 		count = rxcount;
-	if (xqspi->rxbuf) {
-		ioread32_rep(xqspi->regs + ZYNQ_QSPI_RXD_OFFSET,
-			     xqspi->rxbuf, count);
-		xqspi->rxbuf += count * 4;
-	} else {
-		for (k = 0; k < count; k++)
-			readl_relaxed(xqspi->regs + ZYNQ_QSPI_RXD_OFFSET);
+
+	for (k = 0; k < count; k++) {
+		u32 data;
+		int spins;
+
+		/*
+		 * tx_bytes is decremented when bytes are pushed INTO the TX
+		 * FIFO, not when they are shifted out, so `len` above counts
+		 * the bytes that will EVENTUALLY arrive -- not the bytes
+		 * available right now.  When the drain runs ahead of the
+		 * shifter, RXD returns the controller's pad value and
+		 * displaces every subsequent byte of the transfer.
+		 *
+		 * Give the shifter a bounded window to land the word.  The
+		 * read below is then unconditional: this runs in the IRQ
+		 * handler, and the interrupt is level-triggered on TXNFULL,
+		 * so skipping the read would leave rx_bytes non-zero forever
+		 * -- the completion never fires and the handler re-enters
+		 * without limit.  (Measured on an ANTSDR E310, 2026-07-26: an
+		 * earlier version of this code that skipped the read livelocked
+		 * the board in spi_nor_read_id() with an RCU stall on CPU0 and
+		 * ~3.7M suppressed log callbacks per 5 s.)  rx_starved counts
+		 * the words the wait failed to cover; a non-zero value means
+		 * data returned for that op is suspect.
+		 */
+		for (spins = 0; spins < ZYNQ_QSPI_RX_WAIT_SPINS; spins++) {
+			if (zynq_qspi_read(xqspi, ZYNQ_QSPI_STATUS_OFFSET) &
+			    ZYNQ_QSPI_IXR_RXNEMTY_MASK)
+				break;
+			cpu_relax();
+		}
+		if (spins == ZYNQ_QSPI_RX_WAIT_SPINS)
+			xqspi->rx_starved++;
+
+		data = zynq_qspi_read(xqspi, ZYNQ_QSPI_RXD_OFFSET);
+		if (xqspi->rxbuf) {
+			memcpy(xqspi->rxbuf, &data, 4);
+			xqspi->rxbuf += 4;
+		}
+		xqspi->rx_bytes -= 4;
+		len -= 4;
 	}
-	xqspi->rx_bytes -= count * 4;
-	len -= count * 4;
 
 	if (len && len < 4 && count < rxcount)
 		zynq_qspi_rxfifo_op(xqspi, len);
@@ -538,6 +839,7 @@ static int zynq_qspi_exec_mem_op(struct spi_mem *mem,
 {
 	struct zynq_qspi *xqspi = spi_controller_get_devdata(mem->spi->controller);
 	int err = 0, i;
+	u8 addrbuf[8];
 	u8 *tmpbuf;
 
 	zynq_qspi_chipselect(mem->spi, true);
@@ -558,12 +860,26 @@ static int zynq_qspi_exec_mem_op(struct spi_mem *mem,
 	}
 
 	if (op->addr.nbytes) {
+		/*
+		 * Stage the address in a local buffer.  Historically this loop
+		 * wrote through xqspi->txbuf, which at this point still aims
+		 * into the CONST struct spi_mem_op -- zynq_qspi_txfifo_op()
+		 * left it at &op->cmd.opcode + cmd.nbytes.  With a 3-byte
+		 * address the four bytes that follow are the opcode's high
+		 * half plus padding, so the damage was invisible; with a
+		 * 4-byte address the last store lands exactly on
+		 * op->addr.nbytes (offsetof(struct spi_mem_op, addr) == 8,
+		 * &op->cmd.opcode == 4, cmd.nbytes == 1 => 5,6,7,8) and
+		 * replaces it with the address' low byte, which the two
+		 * assignments below then read back.
+		 */
 		for (i = 0; i < op->addr.nbytes; i++) {
-			xqspi->txbuf[i] = op->addr.val >>
+			addrbuf[i] = op->addr.val >>
 					(8 * (op->addr.nbytes - i - 1));
 		}
 
 		reinit_completion(&xqspi->data_completion);
+		xqspi->txbuf = addrbuf;
 		xqspi->rxbuf = NULL;
 		xqspi->tx_bytes = op->addr.nbytes;
 		xqspi->rx_bytes = op->addr.nbytes;
@@ -654,14 +970,14 @@ static int zynq_qspi_probe(struct platform_device *pdev)
 
 	xqspi = spi_controller_get_devdata(ctlr);
 	xqspi->dev = dev;
-	platform_set_drvdata(pdev, xqspi);
+	platform_set_drvdata(pdev, ctlr);
 	xqspi->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(xqspi->regs)) {
 		ret = PTR_ERR(xqspi->regs);
 		goto remove_ctlr;
 	}
 
-	xqspi->pclk = devm_clk_get(&pdev->dev, "pclk");
+	xqspi->pclk = devm_clk_get_enabled(&pdev->dev, "pclk");
 	if (IS_ERR(xqspi->pclk)) {
 		dev_err(&pdev->dev, "pclk clock not found.\n");
 		ret = PTR_ERR(xqspi->pclk);
@@ -669,37 +985,27 @@ static int zynq_qspi_probe(struct platform_device *pdev)
 	}
 
 	init_completion(&xqspi->data_completion);
+	mutex_init(&xqspi->rawop_lock);
+	xqspi->ctlr = ctlr;
 
-	xqspi->refclk = devm_clk_get(&pdev->dev, "ref_clk");
+	xqspi->refclk = devm_clk_get_enabled(&pdev->dev, "ref_clk");
 	if (IS_ERR(xqspi->refclk)) {
 		dev_err(&pdev->dev, "ref_clk clock not found.\n");
 		ret = PTR_ERR(xqspi->refclk);
 		goto remove_ctlr;
 	}
 
-	ret = clk_prepare_enable(xqspi->pclk);
-	if (ret) {
-		dev_err(&pdev->dev, "Unable to enable APB clock.\n");
-		goto remove_ctlr;
-	}
-
-	ret = clk_prepare_enable(xqspi->refclk);
-	if (ret) {
-		dev_err(&pdev->dev, "Unable to enable device clock.\n");
-		goto clk_dis_pclk;
-	}
-
 	xqspi->irq = platform_get_irq(pdev, 0);
 	if (xqspi->irq < 0) {
 		ret = xqspi->irq;
-		goto clk_dis_all;
+		goto remove_ctlr;
 	}
 	ret = devm_request_irq(&pdev->dev, xqspi->irq, zynq_qspi_irq,
 			       0, pdev->name, xqspi);
 	if (ret != 0) {
 		ret = -ENXIO;
 		dev_err(&pdev->dev, "request_irq failed\n");
-		goto clk_dis_all;
+		goto remove_ctlr;
 	}
 
 	ret = of_property_read_u32(np, "num-cs",
@@ -709,7 +1015,7 @@ static int zynq_qspi_probe(struct platform_device *pdev)
 	} else if (num_cs > ZYNQ_QSPI_MAX_NUM_CS) {
 		ret = -EINVAL;
 		dev_err(&pdev->dev, "only 2 chip selects are available\n");
-		goto clk_dis_all;
+		goto remove_ctlr;
 	} else {
 		ctlr->num_chipselect = num_cs;
 	}
@@ -725,18 +1031,27 @@ static int zynq_qspi_probe(struct platform_device *pdev)
 	/* QSPI controller initializations */
 	zynq_qspi_init_hw(xqspi, ctlr->num_chipselect);
 
-	ret = devm_spi_register_controller(&pdev->dev, ctlr);
+	ret = spi_register_controller(ctlr);
 	if (ret) {
-		dev_err(&pdev->dev, "devm_spi_register_controller failed\n");
-		goto clk_dis_all;
+		dev_err(&pdev->dev, "failed to register controller\n");
+		goto remove_ctlr;
 	}
+
+	/*
+	 * RX framing health counters.  Both should stay at 0; a non-zero
+	 * value means this driver's byte accounting lost sync with the RX
+	 * FIFO and any data it returned for that op is suspect.
+	 */
+	xqspi->dbgdir = debugfs_create_dir(dev_name(&pdev->dev), NULL);
+	debugfs_create_u32("rx_starved", 0444, xqspi->dbgdir,
+			   &xqspi->rx_starved);
+	debugfs_create_u32("rx_underflow", 0444, xqspi->dbgdir,
+			   &xqspi->rx_underflow);
+	debugfs_create_file("rawop", 0600, xqspi->dbgdir, xqspi,
+			    &zynq_qspi_rawop_fops);
 
 	return ret;
 
-clk_dis_all:
-	clk_disable_unprepare(xqspi->refclk);
-clk_dis_pclk:
-	clk_disable_unprepare(xqspi->pclk);
 remove_ctlr:
 	spi_controller_put(ctlr);
 
@@ -755,12 +1070,18 @@ remove_ctlr:
  */
 static void zynq_qspi_remove(struct platform_device *pdev)
 {
-	struct zynq_qspi *xqspi = platform_get_drvdata(pdev);
+	struct spi_controller *ctlr = platform_get_drvdata(pdev);
+	struct zynq_qspi *xqspi = spi_controller_get_devdata(ctlr);
+
+	debugfs_remove_recursive(xqspi->dbgdir);
+
+	spi_controller_get(ctlr);
+
+	spi_unregister_controller(ctlr);
 
 	zynq_qspi_write(xqspi, ZYNQ_QSPI_ENABLE_OFFSET, 0);
 
-	clk_disable_unprepare(xqspi->refclk);
-	clk_disable_unprepare(xqspi->pclk);
+	spi_controller_put(ctlr);
 }
 
 static const struct of_device_id zynq_qspi_of_match[] = {

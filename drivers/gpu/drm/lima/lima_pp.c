@@ -14,9 +14,37 @@
 #include "lima_bcast.h"
 #include "lima_vm.h"
 #include "lima_regs.h"
+#include "lima_perfcnt.h"
 
 #define pp_write(reg, data) writel(data, ip->iomem + reg)
 #define pp_read(reg) readl(ip->iomem + reg)
+
+/*
+ * Decode the PP error IRQ state and STATUS registers into a single
+ * named diagnostic line. Called from the IRQ handler's error branch
+ * and from the timeout error path so that users / triage agents
+ * don't have to look up bit positions in lima_regs.h. Pure logging
+ * helper -- no behavior change.
+ *
+ * Each named token corresponds to one bit in the relevant register;
+ * see drivers/gpu/drm/lima/lima_regs.h for definitions.
+ */
+static void lima_pp_describe_error(struct lima_ip *ip, u32 state, u32 status)
+{
+	struct lima_device *dev = ip->dev;
+
+	dev_err(dev->dev,
+		"%s ERROR int_state=0x%08x status=0x%08x [ int:%s%s%s%s%s%s ] [ status:%s%s ]\n",
+		lima_ip_name(ip), state, status,
+		(state & LIMA_PP_IRQ_FORCE_HANG)            ? " FORCE_HANG"        : "",
+		(state & LIMA_PP_IRQ_BUS_ERROR)             ? " BUS_ERROR"         : "",
+		(state & LIMA_PP_IRQ_WRITE_BOUNDARY_ERROR)  ? " WRITE_BOUND_ERR"   : "",
+		(state & LIMA_PP_IRQ_INVALID_PLIST_COMMAND) ? " INVALID_PLIST_CMD" : "",
+		(state & LIMA_PP_IRQ_CALL_STACK_UNDERFLOW)  ? " STACK_UNDERFLOW"   : "",
+		(state & LIMA_PP_IRQ_CALL_STACK_OVERFLOW)   ? " STACK_OVERFLOW"    : "",
+		(status & LIMA_PP_STATUS_RENDERING_ACTIVE)  ? " RENDERING_ACTIVE"  : "",
+		(status & LIMA_PP_STATUS_BUS_STOPPED)       ? " BUS_STOPPED"       : "");
+}
 
 static void lima_pp_handle_irq(struct lima_ip *ip, u32 state)
 {
@@ -26,8 +54,7 @@ static void lima_pp_handle_irq(struct lima_ip *ip, u32 state)
 	if (state & LIMA_PP_IRQ_MASK_ERROR) {
 		u32 status = pp_read(LIMA_PP_STATUS);
 
-		dev_err(dev->dev, "%s error irq state=%x status=%x\n",
-			lima_ip_name(ip), state, status);
+		lima_pp_describe_error(ip, state, status);
 
 		pipe->error = true;
 
@@ -382,6 +409,7 @@ static void lima_pp_task_run(struct lima_sched_pipe *pipe,
 			pp_write(LIMA_PP_STACK, frame->fragment_stack_address[i]);
 			if (!frame->use_dlbu)
 				pp_write(LIMA_PP_FRAME, frame->plbu_array_address[i]);
+			lima_perfcnt_pp_job_start(ip);
 		}
 
 		pp_write(LIMA_PP_CTRL, LIMA_PP_CTRL_START_RENDERING);
@@ -403,6 +431,7 @@ static void lima_pp_task_run(struct lima_sched_pipe *pipe,
 
 			lima_pp_write_frame(ip, frame->frame, frame->wb);
 
+			lima_perfcnt_pp_job_start(ip);
 			pp_write(LIMA_PP_CTRL, LIMA_PP_CTRL_START_RENDERING);
 		}
 	}
@@ -410,11 +439,15 @@ static void lima_pp_task_run(struct lima_sched_pipe *pipe,
 
 static void lima_pp_task_fini(struct lima_sched_pipe *pipe)
 {
+	int i;
+
+	/* Read perf counters before soft reset clears them */
+	for (i = 0; i < pipe->num_processor; i++)
+		lima_perfcnt_pp_job_done(pipe->processor[i]);
+
 	if (pipe->bcast_processor)
 		lima_pp_soft_reset_async(pipe->bcast_processor);
 	else {
-		int i;
-
 		for (i = 0; i < pipe->num_processor; i++)
 			lima_pp_soft_reset_async(pipe->processor[i]);
 	}
@@ -426,10 +459,12 @@ static void lima_pp_task_error(struct lima_sched_pipe *pipe)
 
 	for (i = 0; i < pipe->num_processor; i++) {
 		struct lima_ip *ip = pipe->processor[i];
+		u32 state  = pp_read(LIMA_PP_INT_STATUS);
+		u32 status = pp_read(LIMA_PP_STATUS);
 
-		dev_err(ip->dev->dev, "%s task error %d int_state=%x status=%x\n",
-			lima_ip_name(ip), i, pp_read(LIMA_PP_INT_STATUS),
-			pp_read(LIMA_PP_STATUS));
+		dev_err(ip->dev->dev, "%s task error pp_index=%d\n",
+			lima_ip_name(ip), i);
+		lima_pp_describe_error(ip, state, status);
 
 		lima_pp_hard_reset(ip);
 	}

@@ -154,7 +154,7 @@ static bool glock_blocked_by_withdraw(struct gfs2_glock *gl)
 {
 	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
 
-	if (!gfs2_withdrawing_or_withdrawn(sdp))
+	if (!gfs2_withdrawn(sdp))
 		return false;
 	if (gl->gl_ops->go_flags & GLOF_NONDISK)
 		return false;
@@ -270,7 +270,7 @@ static void __gfs2_glock_put(struct gfs2_glock *gl)
 	GLOCK_BUG_ON(gl, !list_empty(&gl->gl_holders));
 	if (mapping) {
 		truncate_inode_pages_final(mapping);
-		if (!gfs2_withdrawing_or_withdrawn(sdp))
+		if (!gfs2_withdrawn(sdp))
 			GLOCK_BUG_ON(gl, !mapping_empty(mapping));
 	}
 	trace_gfs2_glock_put(gl);
@@ -755,8 +755,8 @@ skip_inval:
 	 * gfs2_gl_hash_clear calls clear_glock) and recovery is complete
 	 * then it's okay to tell dlm to unlock it.
 	 */
-	if (unlikely(sdp->sd_log_error) && !gfs2_withdrawing_or_withdrawn(sdp))
-		gfs2_withdraw_delayed(sdp);
+	if (unlikely(sdp->sd_log_error) && !gfs2_withdrawn(sdp))
+		gfs2_withdraw(sdp);
 	if (glock_blocked_by_withdraw(gl) &&
 	    (target != LM_ST_UNLOCKED ||
 	     test_bit(SDF_WITHDRAW_RECOVERY, &sdp->sd_flags))) {
@@ -803,7 +803,7 @@ skip_inval:
 			 */
 		} else {
 			fs_err(sdp, "lm_lock ret %d\n", ret);
-			GLOCK_BUG_ON(gl, !gfs2_withdrawing_or_withdrawn(sdp));
+			GLOCK_BUG_ON(gl, !gfs2_withdrawn(sdp));
 			return;
 		}
 	}
@@ -1211,10 +1211,13 @@ int gfs2_glock_get(struct gfs2_sbd *sdp, u64 number,
 
 	mapping = gfs2_glock2aspace(gl);
 	if (mapping) {
+		gfp_t gfp_mask;
+
                 mapping->a_ops = &gfs2_meta_aops;
 		mapping->host = sdp->sd_inode;
 		mapping->flags = 0;
-		mapping_set_gfp_mask(mapping, GFP_NOFS);
+		gfp_mask = mapping_gfp_mask(sdp->sd_inode->i_mapping);
+		mapping_set_gfp_mask(mapping, gfp_mask);
 		mapping->i_private_data = NULL;
 		mapping->writeback_index = 0;
 	}
@@ -1351,31 +1354,45 @@ static int glocks_pending(unsigned int num_gh, struct gfs2_holder *ghs)
  * gfs2_glock_async_wait - wait on multiple asynchronous glock acquisitions
  * @num_gh: the number of holders in the array
  * @ghs: the glock holder array
+ * @retries: number of retries attempted so far
  *
  * Returns: 0 on success, meaning all glocks have been granted and are held.
  *          -ESTALE if the request timed out, meaning all glocks were released,
  *          and the caller should retry the operation.
  */
 
-int gfs2_glock_async_wait(unsigned int num_gh, struct gfs2_holder *ghs)
+int gfs2_glock_async_wait(unsigned int num_gh, struct gfs2_holder *ghs,
+			  unsigned int retries)
 {
 	struct gfs2_sbd *sdp = ghs[0].gh_gl->gl_name.ln_sbd;
-	int i, ret = 0, timeout = 0;
 	unsigned long start_time = jiffies;
+	int i, ret = 0;
+	long timeout;
 
 	might_sleep();
-	/*
-	 * Total up the (minimum hold time * 2) of all glocks and use that to
-	 * determine the max amount of time we should wait.
-	 */
-	for (i = 0; i < num_gh; i++)
-		timeout += ghs[i].gh_gl->gl_hold_time << 1;
 
-	if (!wait_event_timeout(sdp->sd_async_glock_wait,
+	timeout = GL_GLOCK_MIN_HOLD;
+	if (retries) {
+		unsigned int max_shift;
+		long incr;
+
+		/* Add a random delay and increase the timeout exponentially. */
+		max_shift = BITS_PER_LONG - 2 - __fls(GL_GLOCK_HOLD_INCR);
+		incr = min(GL_GLOCK_HOLD_INCR << min(retries - 1, max_shift),
+			   10 * HZ - GL_GLOCK_MIN_HOLD);
+		schedule_timeout_interruptible(get_random_long() % (incr / 3));
+		if (signal_pending(current))
+			goto interrupted;
+		timeout += (incr / 3) + get_random_long() % (incr / 3);
+	}
+
+	if (!wait_event_interruptible_timeout(sdp->sd_async_glock_wait,
 				!glocks_pending(num_gh, ghs), timeout)) {
 		ret = -ESTALE; /* request timed out. */
 		goto out;
 	}
+	if (signal_pending(current))
+		goto interrupted;
 
 	for (i = 0; i < num_gh; i++) {
 		struct gfs2_holder *gh = &ghs[i];
@@ -1399,6 +1416,10 @@ out:
 		}
 	}
 	return ret;
+
+interrupted:
+	ret = -EINTR;
+	goto out;
 }
 
 /**

@@ -8,6 +8,7 @@
 
 #include "meson-gxl-s905x-p212.dtsi"
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "amlogic,p212", "amlogic,s905x", "amlogic,meson-gxl";

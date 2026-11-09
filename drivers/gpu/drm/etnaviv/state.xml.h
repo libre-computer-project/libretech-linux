@@ -263,6 +263,17 @@ DEALINGS IN THE SOFTWARE.
 #define VIVS_GL_EVENT_SOURCE__SHIFT				8
 #define VIVS_GL_EVENT_SOURCE(x)					(((x) << VIVS_GL_EVENT_SOURCE__SHIFT) & VIVS_GL_EVENT_SOURCE__MASK)
 
+/* PS/PA registers used by NN/TP dispatch on Vivante NPU silicon
+ * (Vivante VIPNano-QI / VIPPico v3, etnaviv NPU paths in
+ * etnaviv_buffer.c cmdbuf walker and etnaviv_gpu.c NPU init).
+ * VIVS_GL_API_MODE / _OPENCL are already defined later in this
+ * header at the GL_API_MODE block.
+ */
+#define VIVS_PS_NN_INST_ADDR					0x000010A0
+#define VIVS_PS_UNK10A4						0x000010A4
+#define VIVS_PS_TP_INST_ADDR					0x000010B8
+#define VIVS_PA_SYSTEM_MODE					0x00000A28
+
 #define VIVS_GL_SEMAPHORE_TOKEN					0x00003808
 #define VIVS_GL_SEMAPHORE_TOKEN_FROM__MASK			0x0000001f
 #define VIVS_GL_SEMAPHORE_TOKEN_FROM__SHIFT			0

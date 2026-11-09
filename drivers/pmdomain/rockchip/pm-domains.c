@@ -88,6 +88,7 @@ struct rockchip_pmu_info {
 #define QOS_BANDWIDTH		0x10
 #define QOS_SATURATION		0x14
 #define QOS_EXTCONTROL		0x18
+#define QOS_PRIO_UNSET		U32_MAX
 
 struct rockchip_pm_domain {
 	struct generic_pm_domain genpd;
@@ -96,6 +97,8 @@ struct rockchip_pm_domain {
 	int num_qos;
 	struct regmap **qos_regmap;
 	u32 *qos_save_regs[MAX_QOS_REGS_NUM];
+	/* per QoS port: the DT "priority-init" value, or QOS_PRIO_UNSET */
+	u32 *qos_prio_init;
 	int num_clks;
 	struct clk_bulk_data *clks;
 	struct device_node *node;
@@ -470,6 +473,24 @@ static int rockchip_pmu_restore_qos(struct rockchip_pm_domain *pd)
 	return 0;
 }
 
+/*
+ * Program the QoS priorities a board asks for with "priority-init" on a QoS
+ * node. The registers sit in the domain, so this only runs with the domain
+ * powered and its clocks on; a read or write while it is off hangs the bus.
+ */
+static void rockchip_pmu_init_qos(struct rockchip_pm_domain *pd)
+{
+	int i;
+
+	if (!pd->qos_prio_init)
+		return;
+
+	for (i = 0; i < pd->num_qos; i++)
+		if (pd->qos_prio_init[i] != QOS_PRIO_UNSET)
+			regmap_write(pd->qos_regmap[i], QOS_PRIORITY,
+				     pd->qos_prio_init[i]);
+}
+
 static bool rockchip_pmu_domain_is_on(struct rockchip_pm_domain *pd)
 {
 	struct rockchip_pmu *pmu = pd->pmu;
@@ -650,6 +671,7 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
 			goto out;
 
 		rockchip_pmu_restore_qos(pd);
+		rockchip_pmu_init_qos(pd);
 	}
 
 out:
@@ -728,7 +750,19 @@ static int rockchip_pd_attach_dev(struct generic_pm_domain *genpd,
 	}
 
 	i = 0;
-	while ((clk = of_clk_get(dev->of_node, i++)) && !IS_ERR(clk)) {
+	while (1) {
+		clk = of_clk_get(dev->of_node, i++);
+		if (IS_ERR(clk)) {
+			error = PTR_ERR(clk);
+			if (error == -ENOENT)
+				break;
+
+			dev_err(dev, "failed to get clock %d: %d\n", i - 1,
+				error);
+			pm_clk_destroy(dev);
+			return error;
+		}
+
 		dev_dbg(dev, "adding clock '%pC' to list of PM clocks\n", clk);
 		error = pm_clk_add_clk(dev, clk);
 		if (error) {
@@ -811,7 +845,7 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 			dev_err(pmu->dev,
 				"%pOFn: failed to get clk at index %d: %d\n",
 				node, i, error);
-			return error;
+			goto err_put_clocks;
 		}
 	}
 
@@ -843,10 +877,28 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 		}
 
 		for (j = 0; j < pd->num_qos; j++) {
+			u32 prio;
+
 			qos_node = of_parse_phandle(node, "pm_qos", j);
 			if (!qos_node) {
 				error = -ENODEV;
 				goto err_unprepare_clocks;
+			}
+			if (!of_property_read_u32(qos_node, "priority-init", &prio)) {
+				if (!pd->qos_prio_init) {
+					pd->qos_prio_init = devm_kmalloc_array(pmu->dev,
+									       pd->num_qos,
+									       sizeof(u32),
+									       GFP_KERNEL);
+					if (!pd->qos_prio_init) {
+						of_node_put(qos_node);
+						error = -ENOMEM;
+						goto err_unprepare_clocks;
+					}
+					memset32(pd->qos_prio_init, QOS_PRIO_UNSET,
+						 pd->num_qos);
+				}
+				pd->qos_prio_init[j] = prio;
 			}
 			pd->qos_regmap[j] = syscon_node_to_regmap(qos_node);
 			of_node_put(qos_node);
@@ -861,6 +913,27 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 		pd->genpd.name = pd->info->name;
 	else
 		pd->genpd.name = kbasename(node->full_name);
+
+	/*
+	 * power domain's needing a regulator should default to off, since
+	 * the regulator state is unknown at probe time. Also the regulator
+	 * state cannot be checked, since that usually requires IP needing
+	 * (a different) power domain.
+	 */
+	if (pd->info->need_regulator)
+		rockchip_pd_power(pd, false);
+
+	/* A domain left on by the bootloader never sees a power-on here. */
+	if (pd->qos_prio_init && rockchip_pmu_domain_is_on(pd) &&
+	    !clk_bulk_enable(pd->num_clks, pd->clks)) {
+		mutex_lock(&pmu->mutex);
+		rockchip_pmu_ungate_clk(pd, true);
+		rockchip_pmu_init_qos(pd);
+		rockchip_pmu_ungate_clk(pd, false);
+		mutex_unlock(&pmu->mutex);
+		clk_bulk_disable(pd->num_clks, pd->clks);
+	}
+
 	pd->genpd.power_off = rockchip_pd_power_off;
 	pd->genpd.power_on = rockchip_pd_power_on;
 	pd->genpd.attach_dev = rockchip_pd_attach_dev;
@@ -977,7 +1050,9 @@ static int rockchip_pm_add_subdomain(struct rockchip_pmu *pmu,
 				parent_domain->name, child_domain->name);
 		}
 
-		rockchip_pm_add_subdomain(pmu, np);
+		error = rockchip_pm_add_subdomain(pmu, np);
+		if (error)
+			return error;
 	}
 
 	return 0;
@@ -1276,7 +1351,7 @@ static const struct rockchip_domain_info rk3576_pm_domains[] = {
 static const struct rockchip_domain_info rk3588_pm_domains[] = {
 	[RK3588_PD_GPU]		= DOMAIN_RK3588("gpu",     0x0, BIT(0),  0,       0x0, 0,       BIT(1),  0x0, BIT(0),  BIT(0),  false, true),
 	[RK3588_PD_NPU]		= DOMAIN_RK3588("npu",     0x0, BIT(1),  BIT(1),  0x0, 0,       0,       0x0, 0,       0,       false, true),
-	[RK3588_PD_VCODEC]	= DOMAIN_RK3588("vcodec",  0x0, BIT(2),  BIT(2),  0x0, 0,       0,       0x0, 0,       0,       false, false),
+	[RK3588_PD_VCODEC]	= DOMAIN_RK3588("vcodec",  0x0, BIT(2),  BIT(2),  0x0, 0,       0,       0x0, 0,       0,       false, true),
 	[RK3588_PD_NPUTOP]	= DOMAIN_RK3588("nputop",  0x0, BIT(3),  0,       0x0, BIT(11), BIT(2),  0x0, BIT(1),  BIT(1),  false, false),
 	[RK3588_PD_NPU1]	= DOMAIN_RK3588("npu1",    0x0, BIT(4),  0,       0x0, BIT(12), BIT(3),  0x0, BIT(2),  BIT(2),  false, false),
 	[RK3588_PD_NPU2]	= DOMAIN_RK3588("npu2",    0x0, BIT(5),  0,       0x0, BIT(13), BIT(4),  0x0, BIT(3),  BIT(3),  false, false),

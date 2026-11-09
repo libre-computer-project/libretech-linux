@@ -66,6 +66,7 @@ struct rga_ctx {
 	u32 vflip;
 	u32 rotate;
 	u32 fill_color;
+	u32 alpha;
 };
 
 static inline struct rga_ctx *file_to_rga_ctx(struct file *filp)

@@ -7,6 +7,8 @@
  * Author: Neil Armstrong <narmstrong@baylibre.com>
  */
 #include <linux/kernel.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/mii.h>
 #include <linux/ethtool.h>
@@ -14,7 +16,9 @@
 #include <linux/netdevice.h>
 #include <linux/bitfield.h>
 #include <linux/smscphy.h>
+#include <linux/net/phy/meson-gxl.h>
 
+#define ANEG_ADV	4
 #define TSTCNTL		20
 #define  TSTCNTL_READ		BIT(15)
 #define  TSTCNTL_WRITE		BIT(14)
@@ -24,6 +28,19 @@
 #define  TSTCNTL_WRITE_ADDRESS	GENMASK(4, 0)
 #define TSTREAD1	21
 #define TSTWRITE	23
+
+#define PHY_INT_SRC	29 // 0x1D
+#define PHY_INT_MASK	30 // 0x1E
+#define PHY_INT_WOL			GENMASK(11,9)
+#define PHY_INT_WOL_MP			BIT(11)
+#define PHY_INT_ENERGYON		BIT(7)
+#define PHY_INT_ANEG_COMP		BIT(6)
+#define PHY_INT_REMOTE_FAULT		BIT(5)
+#define PHY_INT_LINK_DOWN		BIT(4)
+#define PHY_INT_ANEG_LP_ACK		BIT(3)
+#define PHY_INT_PARALLEL_DET_FAULT	BIT(2)
+#define PHY_INT_ANEG_PAGE		BIT(1)
+#define PHY_INT_DEFAULT	(PHY_INT_ANEG_COMP | PHY_INT_LINK_DOWN | PHY_INT_ENERGYON)
 
 #define BANK_ANALOG_DSP		0
 #define BANK_WOL		1
@@ -132,6 +149,125 @@ static int meson_gxl_config_init(struct phy_device *phydev)
 	return 0;
 }
 
+static int meson_gxl_wol_status(struct phy_device *phydev){
+	return (phy_read(phydev, PHY_INT_MASK) & PHY_INT_WOL) > 0;
+}
+
+static void meson_gxl_get_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
+{
+	wol->supported = WAKE_MAGIC;
+	wol->wolopts = 0;
+
+	int int_mask = phy_read(phydev, PHY_INT_MASK) & PHY_INT_WOL;
+	if (int_mask < 0) {
+		wol->supported = 0;
+		return;
+	}
+
+	if (int_mask & PHY_INT_WOL)
+		wol->wolopts |= WAKE_MAGIC;
+
+	memset(wol->sopass, 0, sizeof(wol->sopass));
+}
+
+/*
+ * A magic-packet match raises the PHY's own interrupt (GIC SPI 9 on GXL).
+ * The GIC masks every interrupt not marked as a wake source on suspend
+ * (IRQCHIP_MASK_ON_SUSPEND), so mark it while WoL is armed; otherwise the
+ * PHY matches the packet and nothing resumes the SoC. irqd_is_wakeup_set()
+ * keeps enable/disable balanced across repeated ethtool calls.
+ */
+static void meson_gxl_wol_irq_wake(struct phy_device *phydev, bool on)
+{
+	struct irq_data *d;
+
+	if (!phy_interrupt_is_valid(phydev))
+		return;
+
+	d = irq_get_irq_data(phydev->irq);
+	if (!d || irqd_is_wakeup_set(d) == on)
+		return;
+
+	if (on)
+		enable_irq_wake(phydev->irq);
+	else
+		disable_irq_wake(phydev->irq);
+}
+
+static int meson_gxl_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
+{
+	struct net_device *ndev = phydev->attached_dev;
+	const unsigned char *mac_addr;
+
+	if (!ndev) return -ENODEV;
+
+	mac_addr = ndev->dev_addr;
+	pr_debug("meson_gxl_set_wol: mac %pM\n", mac_addr);
+
+	if (wol->wolopts & ~WAKE_MAGIC) return -EOPNOTSUPP;
+
+	if (wol->wolopts & WAKE_MAGIC){
+		/* MAC address */
+		meson_gxl_write_reg(phydev, BANK_WOL, 0, mac_addr[5] | mac_addr[4] << 8);
+		meson_gxl_write_reg(phydev, BANK_WOL, 1, mac_addr[3] | mac_addr[2] << 8);
+		meson_gxl_write_reg(phydev, BANK_WOL, 2, mac_addr[1] | mac_addr[0] << 8);
+		meson_gxl_write_reg(phydev, BANK_WOL, 3, 0x9);
+
+		/* Enable interrupt */
+		phy_write(phydev, PHY_INT_MASK, phy_read(phydev, PHY_INT_MASK) | PHY_INT_WOL);
+		meson_gxl_wol_irq_wake(phydev, true);
+		pr_debug("meson_gxl_set_wol: enabled\n");
+	} else {
+		phy_write(phydev, PHY_INT_MASK, phy_read(phydev, PHY_INT_MASK) & ~PHY_INT_WOL);
+		meson_gxl_wol_irq_wake(phydev, false);
+		pr_debug("meson_gxl_set_wol: disabled\n");
+	}
+
+	return 0;
+}
+
+static int meson_gxl_phy_suspend(struct phy_device *phydev)
+{
+	int wol = meson_gxl_wol_status(phydev);
+	pr_debug("%s: wol %d\n", __func__, wol);
+
+	if (wol){
+		// disable aneg comp and link down interrupts
+		pr_debug("%s: int src %x mask %x\n", __func__, phy_read(phydev, PHY_INT_SRC), phy_read(phydev, PHY_INT_MASK));
+		phy_write(phydev, PHY_INT_MASK, phy_read(phydev, PHY_INT_MASK) & ~PHY_INT_DEFAULT);
+		pr_debug("%s: int src %x mask %x\n", __func__, phy_read(phydev, PHY_INT_SRC), phy_read(phydev, PHY_INT_MASK));
+		//genphy_suspend(phydev);
+	} else {
+		pr_debug("%s: generic\n", __func__);
+		genphy_suspend(phydev);
+	}
+	return 0;
+}
+
+static int meson_gxl_phy_resume(struct phy_device *phydev)
+{
+	int ret;
+	int wol = meson_gxl_wol_status(phydev);
+	pr_debug("%s: wol %d\n", __func__, wol);
+
+	if (wol){
+		// disable aneg comp and link down interrupts
+		pr_debug("%s: int mask %x\n", __func__, phy_read(phydev, PHY_INT_MASK));
+		phy_write(phydev, PHY_INT_MASK, phy_read(phydev, PHY_INT_MASK) | PHY_INT_DEFAULT);
+		pr_debug("%s: int mask %x\n", __func__, phy_read(phydev, PHY_INT_MASK));
+	} else {
+		ret = genphy_resume(phydev); // is this ok for wol case where only the interrupt mask is modified?
+		pr_debug("%s: generic\n", __func__);
+		if (ret)
+			return ret;
+	}
+
+	ret = meson_gxl_config_init(phydev);
+	if (ret) return ret;
+
+	return 0;
+}
+
 /* This function is provided to cope with the possible failures of this phy
  * during aneg process. When aneg fails, the PHY reports that aneg is done
  * but the value found in MII_LPA is wrong:
@@ -177,6 +313,8 @@ static int meson_gxl_read_status(struct phy_device *phydev)
 			/* Looks like aneg failed after all */
 			phydev_dbg(phydev, "LPA corruption - aneg restart\n");
 			return genphy_restart_aneg(phydev);
+		} else {
+			phydev->autoneg_complete = 1;
 		}
 	}
 
@@ -184,21 +322,61 @@ read_status_continue:
 	return genphy_read_status(phydev);
 }
 
+irqreturn_t meson_gxl_phy_handle_interrupt(struct phy_device *phydev)
+{
+	int irq_status;
+
+	irq_status = phy_read(phydev, PHY_INT_SRC);
+	pr_debug("%s: interrupt source %x\n", __func__, irq_status);
+	if (irq_status < 0) {
+		if (irq_status != -ENODEV)
+			phy_error(phydev);
+
+		return IRQ_NONE;
+	}
+
+	if (!(irq_status & PHY_INT_DEFAULT)){
+		pr_debug("%s: ignoring non-default interrupts\n", __func__);
+		return IRQ_NONE;
+	}
+
+	if (phydev->autoneg == AUTONEG_ENABLE){
+		pr_debug("%s: interrupt during aneg\n", __func__);
+		if (irq_status == PHY_INT_LINK_DOWN){
+			pr_debug("%s: ignoring link down interrupt while aneg\n", __func__);
+			return IRQ_HANDLED;
+		}
+	}
+
+	if (irq_status & PHY_INT_WOL){
+		pr_debug("%s: ignoring wol interrupt\n", __func__);
+		return IRQ_HANDLED;
+	}
+
+	phy_trigger_machine(phydev);
+
+	return IRQ_HANDLED;
+}
+
+EXPORT_SYMBOL_GPL(meson_gxl_phy_handle_interrupt);
+
 static struct phy_driver meson_gxl_phy[] = {
 	{
 		PHY_ID_MATCH_EXACT(0x01814400),
 		.name		= "Meson GXL Internal PHY",
 		/* PHY_BASIC_FEATURES */
-		.flags		= PHY_IS_INTERNAL,
-		.soft_reset     = genphy_soft_reset,
+		.flags		= PHY_IS_INTERNAL | PHY_ALWAYS_CALL_SUSPEND,
+		.soft_reset	= genphy_soft_reset,
 		.config_init	= meson_gxl_config_init,
 		.read_status	= meson_gxl_read_status,
 		.config_intr	= smsc_phy_config_intr,
-		.handle_interrupt = smsc_phy_handle_interrupt,
-		.suspend        = genphy_suspend,
-		.resume         = genphy_resume,
+		.handle_interrupt = meson_gxl_phy_handle_interrupt,
+		.suspend	= meson_gxl_phy_suspend,
+		.resume		= meson_gxl_phy_resume,
 		.read_mmd	= genphy_read_mmd_unsupported,
 		.write_mmd	= genphy_write_mmd_unsupported,
+		.get_wol	= meson_gxl_get_wol,
+		.set_wol	= meson_gxl_set_wol,
 	}, {
 		PHY_ID_MATCH_EXACT(0x01803301),
 		.name		= "Meson G12A Internal PHY",
@@ -206,7 +384,7 @@ static struct phy_driver meson_gxl_phy[] = {
 		.flags		= PHY_IS_INTERNAL,
 		.probe		= smsc_phy_probe,
 		.config_init	= smsc_phy_config_init,
-		.soft_reset     = genphy_soft_reset,
+		.soft_reset	= genphy_soft_reset,
 		.read_status	= lan87xx_read_status,
 		.config_intr	= smsc_phy_config_intr,
 		.handle_interrupt = smsc_phy_handle_interrupt,
@@ -214,8 +392,8 @@ static struct phy_driver meson_gxl_phy[] = {
 		.get_tunable	= smsc_phy_get_tunable,
 		.set_tunable	= smsc_phy_set_tunable,
 
-		.suspend        = genphy_suspend,
-		.resume         = genphy_resume,
+		.suspend	= genphy_suspend,
+		.resume		= genphy_resume,
 		.read_mmd	= genphy_read_mmd_unsupported,
 		.write_mmd	= genphy_write_mmd_unsupported,
 	},

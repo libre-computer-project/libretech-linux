@@ -41,7 +41,7 @@
 #define VFF_STOP_CLR_B		0
 #define VFF_EN_CLR_B		0
 #define VFF_INT_EN_CLR_B	0
-#define VFF_4G_SUPPORT_CLR_B	0
+#define VFF_ADDR2_CLR_B		0
 
 /*
  * interrupt trigger level for tx
@@ -72,12 +72,12 @@
 /* TX: the buffer size SW can write. RX: the buffer size HW can write. */
 #define VFF_LEFT_SIZE		0x40
 #define VFF_DEBUG_STATUS	0x50
-#define VFF_4G_SUPPORT		0x54
+#define VFF_ADDR2		0x54
 
 struct mtk_uart_apdmadev {
 	struct dma_device ddev;
 	struct clk *clk;
-	bool support_33bits;
+	bool support_ext_addr;
 	unsigned int dma_requests;
 };
 
@@ -98,6 +98,7 @@ struct mtk_chan {
 	unsigned int irq;
 
 	unsigned int rx_status;
+	dma_addr_t tx_vff_base;	/* bus address VFF_ADDR was programmed with */
 };
 
 static inline struct mtk_uart_apdmadev *
@@ -141,15 +142,47 @@ static void mtk_uart_apdma_start_tx(struct mtk_chan *c)
 	unsigned int wpt, vff_sz;
 
 	vff_sz = c->cfg.dst_port_window_size;
+
+	/*
+	 * The TX virtual FIFO is the client's own ring buffer: dst_addr /
+	 * dst_port_window_size. The engine sends from its write pointer, never
+	 * from the descriptor address, and its read pointer is hardware-owned
+	 * (reset to 0 only). The client issues one TX at a time, so the ring is
+	 * idle here. If the descriptor does not start where the ring stands
+	 * (the client dropped data: 8250 flush_buffer resets its kfifo after
+	 * terminate), reset the channel; the ring then restarts at offset 0,
+	 * which is where a reset kfifo restarts too.
+	 */
+	if (mtk_uart_apdma_read(c, VFF_LEN) &&
+	    d->addr != c->tx_vff_base +
+		       (mtk_uart_apdma_read(c, VFF_WPT) & VFF_RING_SIZE)) {
+		unsigned int status;
+
+		mtk_uart_apdma_write(c, VFF_EN, VFF_EN_CLR_B);
+		mtk_uart_apdma_write(c, VFF_ADDR, 0);
+		mtk_uart_apdma_write(c, VFF_THRE, 0);
+		mtk_uart_apdma_write(c, VFF_LEN, 0);
+		mtk_uart_apdma_write(c, VFF_RST, VFF_WARM_RST_B);
+		if (readx_poll_timeout_atomic(readl, c->base + VFF_EN,
+					      status, !status, 10, 100))
+			dev_err(c->vc.chan.device->dev, "TX ring reset fail\n");
+	}
+
 	if (!mtk_uart_apdma_read(c, VFF_LEN)) {
-		mtk_uart_apdma_write(c, VFF_ADDR, d->addr);
+		c->tx_vff_base = c->cfg.dst_addr;
+		if (d->addr != c->tx_vff_base)
+			dev_warn(c->vc.chan.device->dev,
+				 "TX starts at ring offset %#llx, not 0\n",
+				 (u64)(d->addr - c->tx_vff_base));
+		mtk_uart_apdma_write(c, VFF_ADDR, c->tx_vff_base);
 		mtk_uart_apdma_write(c, VFF_LEN, vff_sz);
 		mtk_uart_apdma_write(c, VFF_THRE, VFF_TX_THRE(vff_sz));
 		mtk_uart_apdma_write(c, VFF_WPT, 0);
 		mtk_uart_apdma_write(c, VFF_INT_FLAG, VFF_TX_INT_CLR_B);
 
-		if (mtkd->support_33bits)
-			mtk_uart_apdma_write(c, VFF_4G_SUPPORT, VFF_4G_EN_B);
+		if (mtkd->support_ext_addr)
+			mtk_uart_apdma_write(c, VFF_ADDR2,
+					     upper_32_bits(c->tx_vff_base));
 	}
 
 	mtk_uart_apdma_write(c, VFF_EN, VFF_EN_B);
@@ -161,11 +194,19 @@ static void mtk_uart_apdma_start_tx(struct mtk_chan *c)
 		return;
 	}
 
+	/* Advance the write pointer; a descriptor may run past the ring end
+	 * (a wrapped two-entry TX), so wrap the offset and flip the wrap bit. */
 	wpt = mtk_uart_apdma_read(c, VFF_WPT);
+	{
+		unsigned int off = (wpt & VFF_RING_SIZE) + c->desc->avail_len;
+		unsigned int wrap = wpt & VFF_RING_WRAP;
 
-	wpt += c->desc->avail_len;
-	if ((wpt & VFF_RING_SIZE) == vff_sz)
-		wpt = (wpt & VFF_RING_WRAP) ^ VFF_RING_WRAP;
+		if (off >= vff_sz) {
+			off -= vff_sz;
+			wrap ^= VFF_RING_WRAP;
+		}
+		wpt = wrap | off;
+	}
 
 	/* Let DMA start moving data */
 	mtk_uart_apdma_write(c, VFF_WPT, wpt);
@@ -191,8 +232,8 @@ static void mtk_uart_apdma_start_rx(struct mtk_chan *c)
 		mtk_uart_apdma_write(c, VFF_RPT, 0);
 		mtk_uart_apdma_write(c, VFF_INT_FLAG, VFF_RX_INT_CLR_B);
 
-		if (mtkd->support_33bits)
-			mtk_uart_apdma_write(c, VFF_4G_SUPPORT, VFF_4G_EN_B);
+		if (mtkd->support_ext_addr)
+			mtk_uart_apdma_write(c, VFF_ADDR2, upper_32_bits(d->addr));
 	}
 
 	mtk_uart_apdma_write(c, VFF_INT_EN, VFF_RX_INT_EN_B);
@@ -219,7 +260,13 @@ static void mtk_uart_apdma_rx_handler(struct mtk_chan *c)
 	if (!mtk_uart_apdma_read(c, VFF_VALID_SIZE))
 		return;
 
-	mtk_uart_apdma_write(c, VFF_EN, VFF_EN_CLR_B);
+	/*
+	 * Leave the channel running: the client re-arms only from its
+	 * completion callback, and a UART at 3 Mbit/s overruns its 32-byte
+	 * FIFO in about 100 us. Bytes that arrive after WPT is read below stay
+	 * in the ring and are counted by the next completion, from the RPT
+	 * written here.
+	 */
 	mtk_uart_apdma_write(c, VFF_INT_EN, VFF_INT_EN_CLR_B);
 
 	len = c->cfg.src_port_window_size;
@@ -273,11 +320,10 @@ static int mtk_uart_apdma_alloc_chan_resources(struct dma_chan *chan)
 	unsigned int status;
 	int ret;
 
+	/* resume_and_get() drops its own reference when it fails */
 	ret = pm_runtime_resume_and_get(mtkd->ddev.dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(chan->device->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	mtk_uart_apdma_write(c, VFF_ADDR, 0);
 	mtk_uart_apdma_write(c, VFF_THRE, 0);
@@ -297,8 +343,12 @@ static int mtk_uart_apdma_alloc_chan_resources(struct dma_chan *chan)
 		goto err_pm;
 	}
 
-	if (mtkd->support_33bits)
-		mtk_uart_apdma_write(c, VFF_4G_SUPPORT, VFF_4G_SUPPORT_CLR_B);
+	if (mtkd->support_ext_addr)
+		mtk_uart_apdma_write(c, VFF_ADDR2, VFF_ADDR2_CLR_B);
+
+	/* Keep the runtime-PM reference while the channel is allocated;
+	 * mtk_uart_apdma_free_chan_resources() drops it. */
+	return 0;
 
 err_pm:
 	pm_runtime_put_noidle(mtkd->ddev.dev);
@@ -347,8 +397,24 @@ static struct dma_async_tx_descriptor *mtk_uart_apdma_prep_slave_sg
 	struct mtk_chan *c = to_mtk_uart_apdma_chan(chan);
 	struct mtk_uart_apdma_desc *d;
 
-	if (!is_slave_direction(dir) || sglen != 1)
+	if (!is_slave_direction(dir) || !sglen || sglen > 2)
 		return NULL;
+
+	/*
+	 * Two entries only as one TX that wraps the virtual FIFO: the first
+	 * ends at the ring end, the second starts at the ring base. 8250's
+	 * kfifo hands its wrapped data over exactly so; refusing it sends the
+	 * client to PIO on the same buffer, behind the engine's back.
+	 */
+	if (sglen == 2) {
+		struct scatterlist *sg2 = sg_next(sgl);
+
+		if (dir != DMA_MEM_TO_DEV ||
+		    sg_dma_address(sg2) != c->cfg.dst_addr ||
+		    sg_dma_address(sgl) + sg_dma_len(sgl) !=
+		    c->cfg.dst_addr + c->cfg.dst_port_window_size)
+			return NULL;
+	}
 
 	/* Now allocate and setup the descriptor */
 	d = kzalloc(sizeof(*d), GFP_NOWAIT);
@@ -356,6 +422,8 @@ static struct dma_async_tx_descriptor *mtk_uart_apdma_prep_slave_sg
 		return NULL;
 
 	d->avail_len = sg_dma_len(sgl);
+	if (sglen == 2)
+		d->avail_len += sg_dma_len(sg_next(sgl));
 	d->addr = sg_dma_address(sgl);
 	c->dir = dir;
 
@@ -432,6 +500,12 @@ static int mtk_uart_apdma_terminate_all(struct dma_chan *chan)
 	synchronize_irq(c->irq);
 
 	spin_lock_irqsave(&c->vc.lock, flags);
+	/*
+	 * The in-flight descriptor is still on the issued list, so it is freed
+	 * below: drop the pointer to it, or issue_pending() never starts this
+	 * channel again (and would later complete freed memory).
+	 */
+	c->desc = NULL;
 	vchan_get_all_descriptors(&c->vc, &head);
 	spin_unlock_irqrestore(&c->vc.lock, flags);
 
@@ -468,7 +542,9 @@ static void mtk_uart_apdma_free(struct mtk_uart_apdmadev *mtkd)
 }
 
 static const struct of_device_id mtk_uart_apdma_match[] = {
-	{ .compatible = "mediatek,mt6577-uart-dma", },
+	{ .compatible = "mediatek,mt6577-uart-dma", .data = (void *)32 },
+	{ .compatible = "mediatek,mt6795-uart-dma", .data = (void *)33 },
+	{ .compatible = "mediatek,mt6835-uart-dma", .data = (void *)34 },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, mtk_uart_apdma_match);
@@ -477,9 +553,9 @@ static int mtk_uart_apdma_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct mtk_uart_apdmadev *mtkd;
-	int bit_mask = 32, rc;
 	struct mtk_chan *c;
-	unsigned int i;
+	unsigned int bit_mask, i;
+	int rc;
 
 	mtkd = devm_kzalloc(&pdev->dev, sizeof(*mtkd), GFP_KERNEL);
 	if (!mtkd)
@@ -492,11 +568,9 @@ static int mtk_uart_apdma_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-	if (of_property_read_bool(np, "mediatek,dma-33bits"))
-		mtkd->support_33bits = true;
-
-	if (mtkd->support_33bits)
-		bit_mask = 33;
+	bit_mask = (unsigned int)(uintptr_t)of_device_get_match_data(&pdev->dev);
+	if (bit_mask > 32)
+		mtkd->support_ext_addr = true;
 
 	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(bit_mask));
 	if (rc)
@@ -530,7 +604,7 @@ static int mtk_uart_apdma_probe(struct platform_device *pdev)
 	for (i = 0; i < mtkd->dma_requests; i++) {
 		c = devm_kzalloc(mtkd->ddev.dev, sizeof(*c), GFP_KERNEL);
 		if (!c) {
-			rc = -ENODEV;
+			rc = -ENOMEM;
 			goto err_no_dma;
 		}
 

@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/amlogic/amlogic,sm1-sc-heartbeat.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Amlogic SM1 kernel heartbeat word for the open System Controller
+
+maintainers:
+  - Da Xue <da@libre.computer>
+
+description: |
+  One 32-bit word in the AP-to-SC half of the System Controller's shared
+  SRAM (non-secure address 0xfffe7200) that the kernel advances every second.
+  The open System Controller watches it: once it has seen the word change,
+  a kernel that stops advancing it for the controller's grace period is
+  reset through the AO watchdog.  The controller publishes its own view of
+  the heartbeat in the 16 bytes that follow (0xfffe7210), so the region is
+  0x20 bytes.  The word lies inside the window an mmio-sram node already
+  claims, so the region is mapped without being requested.
+
+properties:
+  compatible:
+    const: amlogic,sm1-sc-heartbeat
+
+  reg:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        sc-heartbeat@fffe7200 {
+            compatible = "amlogic,sm1-sc-heartbeat";
+            reg = <0x0 0xfffe7200 0x0 0x20>;
+        };
+    };

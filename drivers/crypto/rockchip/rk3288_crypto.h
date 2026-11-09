@@ -11,10 +11,14 @@
 #include <crypto/sha1.h>
 #include <crypto/sha2.h>
 #include <linux/dma-mapping.h>
+#include <linux/hw_random.h>
 #include <linux/interrupt.h>
 #include <linux/pm_runtime.h>
 #include <linux/scatterlist.h>
+#include <linux/string.h>
 #include <linux/types.h>
+
+#include "rk3288_crypto_trng_health.h"
 
 #define _SBF(v, f)			((v) << (f))
 
@@ -36,7 +40,18 @@
 #define RK_CRYPTO_BCDMA_DONE_ENA	BIT(0)
 
 #define RK_CRYPTO_CTRL			0x0008
-#define RK_CRYPTO_WRITE_MASK		_SBF(0xFFFF, 16)
+/*
+ * 0xFFFF is a plain int, so _SBF()'s `(v) << (f)` shifts a set bit into the
+ * sign position -- undefined behaviour, and in practice an int whose value is
+ * negative.  That stays invisible while the macro has no users, which is again
+ * the case here, but OR it with a BIT() (unsigned long) and the negative int is
+ * sign-extended to 0xFFFF_FFFF_FFFF_0000 before CRYPTO_WRITE() truncates it
+ * back to the intended 32-bit word -- the register is written CORRECTLY and the
+ * only symptom is a -Woverflow diagnostic.  Keep the literal unsigned: same
+ * 0xFFFF0000 bit pattern, no UB, no sign extension, no warning, and the next
+ * user of the macro does not have to rediscover this.
+ */
+#define RK_CRYPTO_WRITE_MASK		_SBF(0xFFFFU, 16)
 #define RK_CRYPTO_TRNG_FLUSH		BIT(9)
 #define RK_CRYPTO_TRNG_START		BIT(8)
 #define RK_CRYPTO_PKA_FLUSH		BIT(7)
@@ -180,6 +195,36 @@
 #define RK_CRYPTO_HASH_DOUT_6		0x01a4
 #define RK_CRYPTO_HASH_DOUT_7		0x01a8
 
+/*
+ * TRNG registers.
+ *
+ * These are NOT the 0x01b0..0x01cc block that e1dc9f0687ec0 ("crypto:
+ * rockchip: add TRNG hardware random number generator", reverted in
+ * a566a21d81827) inferred by adjacency to RK_CRYPTO_HASH_DOUT_7 and that
+ * measured 32 zero bytes on every trigger on a ROC-RK3399-PC.  0x01b0 is
+ * simply not the TRNG.
+ *
+ * The real map comes from Rockchip's own U-Boot driver drivers/rng/
+ * rockchip_rng.c (Copyright (c) 2020 Fuzhou Rockchip Electronics), whose
+ * of_match_table binds "rockchip,rk3399-crypto" -- the exact compatible of
+ * crypto0/crypto1 in rk3399-base.dtsi -- to rk_cryptov1_soc_data:
+ *
+ *	#define CRYPTO_V1_TRNG_CTRL		0x0200
+ *	#define CRYPTO_V1_OSC_ENABLE		BIT(16)
+ *	#define CRYPTO_V1_TRNG_SAMPLE_PERIOD(x)	(x)
+ *	#define CRYPTO_V1_TRNG_DOUT_0		0x0204
+ *
+ * Two independent defects therefore each explain the all-zero reads: the
+ * output window was 0x54 bytes low, and the ring oscillator was never
+ * enabled.  Both are fixed together because either alone still yields zeros.
+ * The DT reg window is 0x4000, so 0x0200..0x0220 is inside the ioremap.
+ */
+#define RK_CRYPTO_TRNG_CTRL		0x0200
+#define RK_CRYPTO_TRNG_OSC_ENABLE	BIT(16)
+#define RK_CRYPTO_TRNG_SAMPLE_PERIOD(x)	(x)
+
+#define RK_CRYPTO_TRNG_DOUT_0		0x0204
+
 #define CRYPTO_READ(dev, offset)		  \
 		readl_relaxed(((dev)->reg + (offset)))
 #define CRYPTO_WRITE(dev, offset, val)	  \
@@ -224,6 +269,17 @@ struct rk_crypto_info {
 	struct crypto_engine *engine;
 	struct completion complete;
 	int status;
+	struct hwrng hwrng;
+	struct rk_crypto_trng_health trng_health;
+	/*
+	 * Consecutive failed reads, the latch they set, and the time (jiffies)
+	 * at which a latched source is next given one real read to prove
+	 * itself with.  All three are touched only from rk_crypto_trng_read(),
+	 * which the hwrng core serialises with reading_mutex.
+	 */
+	unsigned int trng_fails;
+	bool trng_dead;
+	unsigned long trng_retry_at;
 };
 
 /* the private variable of hash */
@@ -257,7 +313,21 @@ struct rk_cipher_rctx {
 
 struct rk_crypto_tmp {
 	u32 type;
-	struct rk_crypto_info           *dev;
+	/*
+	 * Whether this alg is currently registered with the crypto framework.
+	 * A plain bool, NOT a pointer to the rk_crypto_info that registered it:
+	 * rk_cipher_algs[] is a single static array shared by every instance of
+	 * the IP (RK3399 has two, crypto@ff8b0000 and crypto@ff8b8000), the
+	 * algs are registered once by whichever instance probes first, and they
+	 * stay registered until the LAST instance is removed. A pointer stored
+	 * here therefore outlives the instance it names on the ordinary
+	 * teardown path -- remove crypto0 while crypto1 is still up and every
+	 * registered alg holds a pointer to crypto0's devm_kzalloc()'d
+	 * rk_crypto_info, which is freed the moment crypto0's remove() returns.
+	 * Per-request device selection already goes through get_rk_crypto(),
+	 * which reads the live rocklist, so nothing needs the pointer.
+	 */
+	bool registered;
 	union {
 		struct skcipher_engine_alg skcipher;
 		struct ahash_engine_alg hash;
@@ -282,4 +352,5 @@ extern struct rk_crypto_tmp rk_ahash_sha256;
 extern struct rk_crypto_tmp rk_ahash_md5;
 
 struct rk_crypto_info *get_rk_crypto(void);
+struct device *rk_crypto_diag_dev(void);
 #endif

@@ -32,22 +32,39 @@ static irqreturn_t lima_mmu_irq_handler(int irq, void *data)
 	struct lima_ip *ip = data;
 	struct lima_device *dev = ip->dev;
 	u32 status = mmu_read(LIMA_MMU_INT_STATUS);
+	u32 mmu_status;
 	struct lima_sched_pipe *pipe;
 
 	/* for shared irq case */
 	if (!status)
 		return IRQ_NONE;
 
+	/*
+	 * The bus-id, write-direction and paging-state bits live in
+	 * LIMA_MMU_STATUS (offset 0x4), not LIMA_MMU_INT_STATUS (0x20).
+	 * Read MMU_STATUS so the diagnostic line is meaningful.
+	 */
+	mmu_status = mmu_read(LIMA_MMU_STATUS);
+
 	if (status & LIMA_MMU_INT_PAGE_FAULT) {
 		u32 fault = mmu_read(LIMA_MMU_PAGE_FAULT_ADDR);
 
-		dev_err(dev->dev, "%s page fault at 0x%x from bus id %d of type %s\n",
-			lima_ip_name(ip), fault, LIMA_MMU_STATUS_BUS_ID(status),
-			status & LIMA_MMU_STATUS_PAGE_FAULT_IS_WRITE ? "write" : "read");
+		dev_err(dev->dev,
+			"%s page fault at 0x%08x from bus id %d type=%s mmu_status=0x%08x [%s%s%s%s%s ]\n",
+			lima_ip_name(ip), fault,
+			LIMA_MMU_STATUS_BUS_ID(mmu_status),
+			(mmu_status & LIMA_MMU_STATUS_PAGE_FAULT_IS_WRITE) ? "write" : "read",
+			mmu_status,
+			(mmu_status & LIMA_MMU_STATUS_PAGING_ENABLED)       ? " PAGING_ENABLED"      : "",
+			(mmu_status & LIMA_MMU_STATUS_PAGE_FAULT_ACTIVE)    ? " PAGE_FAULT_ACTIVE"   : "",
+			(mmu_status & LIMA_MMU_STATUS_STALL_ACTIVE)         ? " STALL_ACTIVE"        : "",
+			(mmu_status & LIMA_MMU_STATUS_IDLE)                 ? " IDLE"                : "",
+			(mmu_status & LIMA_MMU_STATUS_REPLAY_BUFFER_EMPTY)  ? " REPLAY_BUF_EMPTY"    : "");
 	}
 
 	if (status & LIMA_MMU_INT_READ_BUS_ERROR)
-		dev_err(dev->dev, "%s irq bus error\n", lima_ip_name(ip));
+		dev_err(dev->dev, "%s irq bus error mmu_status=0x%08x\n",
+			lima_ip_name(ip), mmu_status);
 
 	/* mask all interrupts before resume */
 	mmu_write(LIMA_MMU_INT_MASK, 0);

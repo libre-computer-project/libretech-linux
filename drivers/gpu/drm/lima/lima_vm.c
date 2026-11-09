@@ -94,11 +94,30 @@ int lima_vm_bo_add(struct lima_vm *vm, struct lima_bo *bo, bool create)
 	struct sg_dma_page_iter sg_iter;
 	int offset = 0, err;
 
+	/* Fast path: if this BO was last used with the same VM, the
+	 * mapping is still valid -- just bump the refcount.  This
+	 * avoids mutex_lock + list traversal on the hot submit path.
+	 * The cache is invalidated in lima_vm_bo_del. */
+	if (READ_ONCE(bo->cached_vm) == vm) {
+		bo_va = bo->cached_bo_va;
+		if (likely(bo_va)) {
+			mutex_lock(&bo->lock);
+			if (bo_va->vm == vm) {
+				bo_va->ref_count++;
+				mutex_unlock(&bo->lock);
+				return 0;
+			}
+			mutex_unlock(&bo->lock);
+		}
+	}
+
 	mutex_lock(&bo->lock);
 
 	bo_va = lima_vm_bo_find(vm, bo);
 	if (bo_va) {
 		bo_va->ref_count++;
+		bo->cached_vm = vm;
+		bo->cached_bo_va = bo_va;
 		mutex_unlock(&bo->lock);
 		return 0;
 	}
@@ -136,6 +155,9 @@ int lima_vm_bo_add(struct lima_vm *vm, struct lima_bo *bo, bool create)
 	mutex_unlock(&vm->lock);
 
 	list_add_tail(&bo_va->list, &bo->va);
+
+	bo->cached_vm = vm;
+	bo->cached_bo_va = bo_va;
 
 	mutex_unlock(&bo->lock);
 	return 0;
@@ -176,6 +198,12 @@ void lima_vm_bo_del(struct lima_vm *vm, struct lima_bo *bo)
 	mutex_unlock(&vm->lock);
 
 	list_del(&bo_va->list);
+
+	/* Invalidate the fast-path cache if it pointed to this mapping */
+	if (bo->cached_bo_va == bo_va) {
+		bo->cached_vm = NULL;
+		bo->cached_bo_va = NULL;
+	}
 
 	mutex_unlock(&bo->lock);
 

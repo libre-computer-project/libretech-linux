@@ -14,6 +14,9 @@
 
 #define LEAVE_LPS_TRY_CNT	5
 #define LEAVE_LPS_TIMEOUT	msecs_to_jiffies(100)
+#define LEAVE_LPS_TRY_CNT_USB	10
+#define LEAVE_LPS_TIMEOUT_USB	msecs_to_jiffies(300)
+#define LEAVE_LPS_USB_INITIAL_DELAY	50
 
 int rtw_enter_ips(struct rtw_dev *rtwdev);
 int rtw_leave_ips(struct rtw_dev *rtwdev);

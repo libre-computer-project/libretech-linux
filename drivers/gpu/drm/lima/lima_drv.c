@@ -16,6 +16,7 @@
 #include "lima_drv.h"
 #include "lima_gem.h"
 #include "lima_vm.h"
+#include "lima_perfcnt.h"
 
 int lima_sched_timeout_ms;
 uint lima_heap_init_nr_pages = 8;
@@ -192,10 +193,10 @@ static int lima_ioctl_ctx_create(struct drm_device *dev, void *data, struct drm_
 	struct lima_drm_priv *priv = file->driver_priv;
 	struct lima_device *ldev = to_lima_dev(dev);
 
-	if (args->_pad)
+	if (args->priority > LIMA_CTX_PRIORITY_HIGH)
 		return -EINVAL;
 
-	return lima_ctx_create(ldev, &priv->ctx_mgr, &args->id);
+	return lima_ctx_create(ldev, &priv->ctx_mgr, &args->id, args->priority);
 }
 
 static int lima_ioctl_ctx_free(struct drm_device *dev, void *data, struct drm_file *file)
@@ -203,7 +204,7 @@ static int lima_ioctl_ctx_free(struct drm_device *dev, void *data, struct drm_fi
 	struct drm_lima_ctx_create *args = data;
 	struct lima_drm_priv *priv = file->driver_priv;
 
-	if (args->_pad)
+	if (args->priority)
 		return -EINVAL;
 
 	return lima_ctx_free(&priv->ctx_mgr, args->id);
@@ -371,6 +372,7 @@ static int lima_pdev_probe(struct platform_device *pdev)
 	struct lima_device *ldev;
 	struct drm_device *ddev;
 	const struct lima_compatible *comp;
+	bool gxl_pin_held = false;
 	int err;
 
 	err = lima_sched_slab_init();
@@ -404,6 +406,26 @@ static int lima_pdev_probe(struct platform_device *pdev)
 	ddev->dev_private = ldev;
 	ldev->ddev = ddev;
 
+	/*
+	 * Amlogic GXL quirk: mali is in the VPU power domain (shared with
+	 * the display controller). vpu's runtime-PM autosuspend can drop
+	 * the domain shortly after the display has settled, taking the GPU
+	 * APB bus with it. If lima_device_init's MMIO runs after that, the
+	 * first access traps (0x96000210). Mark lima active + hold a
+	 * usage_count reference BEFORE the first MMIO so the genpd
+	 * framework keeps the VPU domain on through probe; release the
+	 * reference at the end of probe so autosuspend can manage the
+	 * domain normally afterwards.
+	 *
+	 * The kernel-side companion to the `power-domains = <&pwrc
+	 * PWRC_GXBB_VPU_ID>` binding on the mali DT node.
+	 */
+	if (of_machine_is_compatible("amlogic,meson-gxl")) {
+		pm_runtime_set_active(ldev->dev);
+		pm_runtime_get_noresume(ldev->dev);
+		gxl_pin_held = true;
+	}
+
 	err = lima_device_init(ldev);
 	if (err)
 		goto err_out1;
@@ -414,11 +436,26 @@ static int lima_pdev_probe(struct platform_device *pdev)
 		goto err_out2;
 	}
 
-	pm_runtime_set_active(ldev->dev);
+	if (!gxl_pin_held)
+		pm_runtime_set_active(ldev->dev);
 	pm_runtime_mark_last_busy(ldev->dev);
 	pm_runtime_set_autosuspend_delay(ldev->dev, 200);
 	pm_runtime_use_autosuspend(ldev->dev);
 	pm_runtime_enable(ldev->dev);
+
+	/*
+	 * On Amlogic GXL we DO NOT release the probe-time pin here.
+	 * usage_count stays > 0 for the lifetime of the device, so
+	 * runtime-PM autosuspend never fires lima_device_suspend ->
+	 * lima_pmu_suspend's PMU readback (which SEAs on this hardware,
+	 * even with the VPU power-domain binding in place). gxl_pin_held
+	 * remains true; the matching put_noidle runs in lima_pdev_remove.
+	 *
+	 * devfreq clock scaling still works (it does not require
+	 * runtime-PM cycles). vpu's autosuspend still runs normally;
+	 * lima's pinned-active state holds the VPU power domain refcount
+	 * above zero so vpu's suspend doesn't drop the GPU MMIO.
+	 */
 
 	/*
 	 * Register the DRM device with the core and the connectors with
@@ -431,14 +468,29 @@ static int lima_pdev_probe(struct platform_device *pdev)
 	if (sysfs_create_bin_file(&ldev->dev->kobj, &lima_error_state_attr))
 		dev_warn(ldev->dev, "fail to create error state sysfs\n");
 
+	lima_perfcnt_debugfs_init(ldev);
+
 	return 0;
 
 err_out3:
+	/*
+	 * pm_runtime is enabled at this point; if the gxl pin is still
+	 * held, release it before disabling runtime PM so the framework
+	 * shuts down with usage_count == 0.
+	 */
+	if (gxl_pin_held) {
+		pm_runtime_put_noidle(ldev->dev);
+		gxl_pin_held = false;
+	}
 	pm_runtime_disable(ldev->dev);
 	lima_devfreq_fini(ldev);
 err_out2:
 	lima_device_fini(ldev);
 err_out1:
+	if (gxl_pin_held) {
+		pm_runtime_put_noidle(ldev->dev);
+		pm_runtime_set_suspended(ldev->dev);
+	}
 	drm_dev_put(ddev);
 err_out0:
 	lima_sched_slab_fini();
@@ -450,12 +502,18 @@ static void lima_pdev_remove(struct platform_device *pdev)
 	struct lima_device *ldev = platform_get_drvdata(pdev);
 	struct drm_device *ddev = ldev->ddev;
 
+	lima_perfcnt_debugfs_fini(ldev);
 	sysfs_remove_bin_file(&ldev->dev->kobj, &lima_error_state_attr);
 
 	drm_dev_unregister(ddev);
 
 	/* stop autosuspend to make sure device is in active state */
 	pm_runtime_set_autosuspend_delay(ldev->dev, -1);
+
+	/* Release the permanent pin held since probe on Amlogic GXL. */
+	if (of_machine_is_compatible("amlogic,meson-gxl"))
+		pm_runtime_put_noidle(ldev->dev);
+
 	pm_runtime_disable(ldev->dev);
 
 	lima_devfreq_fini(ldev);

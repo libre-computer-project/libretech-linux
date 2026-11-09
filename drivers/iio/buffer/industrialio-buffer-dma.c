@@ -378,6 +378,18 @@ int iio_dma_buffer_request_update(struct iio_buffer *buffer)
 			if (block->state == IIO_BLOCK_STATE_DEAD) {
 				/* Could not reuse it */
 				iio_buffer_block_put(block);
+				/*
+				 * Drop the slot's reference to the freed block
+				 * immediately. Otherwise, if the reallocation
+				 * below fails and we bail out via out_unlock,
+				 * queue->fileio.blocks[i] would be left pointing
+				 * at freed memory. The next request_update() (or
+				 * fileio_free()) would then dereference and
+				 * iio_buffer_block_put() that dangling pointer,
+				 * underflowing the refcount and triggering a
+				 * use-after-free.
+				 */
+				queue->fileio.blocks[i] = NULL;
 				block = NULL;
 			} else {
 				block->size = size;

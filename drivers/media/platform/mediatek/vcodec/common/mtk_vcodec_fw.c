@@ -28,6 +28,10 @@ EXPORT_SYMBOL_GPL(mtk_vcodec_fw_select);
 
 void mtk_vcodec_fw_release(struct mtk_vcodec_fw *fw)
 {
+	/* no_firmware backends (e.g. MT8365 direct-register) never allocate a
+	 * fw handler, so the probe error/cleanup path may pass NULL here. */
+	if (!fw)
+		return;
 	fw->ops->release(fw);
 }
 EXPORT_SYMBOL_GPL(mtk_vcodec_fw_release);

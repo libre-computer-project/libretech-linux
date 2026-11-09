@@ -179,15 +179,30 @@ void mtk_ethdr_layer_config(struct device *dev, unsigned int idx,
 		return;
 	}
 
-	if (state->base.fb) {
+	/*
+	 * Only treat the layer as alpha-blended when its framebuffer actually
+	 * carries a per-pixel alpha channel and pixel blending is requested. For
+	 * an opaque (no-alpha, e.g. XRGB) layer -- the common case, incl. the CRTC
+	 * primary -- both MIXER_ALPHA_AEN and PREMULTI_SOURCE must stay off.
+	 * PREMULTI_SOURCE (the [13:12] field = 3) makes the mt8188 vdosys1 mixer
+	 * treat the opaque source as premultiplied, and the bottom layer then
+	 * flickers heavily and won't hold a static frame; the working BSP programs
+	 * NON_PREMULTI_SOURCE (field = 2) for this layer. (On mt8195 the no-alpha
+	 * case is masked by mtk_mmsys_mixer_in_config()'s replace_src_a, which is
+	 * ineffective on mt8188.) Forcing NON_PREMULTI_SOURCE + no AEN reproduces
+	 * the BSP's proven-stable MIX_L_SRC_CON = 0x2000 for opaque layers.
+	 */
+	if (state->base.fb && state->base.fb->format->has_alpha &&
+	    state->base.pixel_blend_mode != DRM_MODE_BLEND_PIXEL_NONE) {
 		alpha_con |= MIXER_ALPHA_AEN;
 		alpha_con |= state->base.alpha & MIXER_ALPHA;
-	}
-
-	if (state->base.pixel_blend_mode == DRM_MODE_BLEND_PREMULTI)
-		alpha_con |= PREMULTI_SOURCE;
-	else
+		if (state->base.pixel_blend_mode == DRM_MODE_BLEND_PREMULTI)
+			alpha_con |= PREMULTI_SOURCE;
+		else
+			alpha_con |= NON_PREMULTI_SOURCE;
+	} else {
 		alpha_con |= NON_PREMULTI_SOURCE;
+	}
 
 	if ((state->base.fb && !state->base.fb->format->has_alpha) ||
 	    state->base.pixel_blend_mode == DRM_MODE_BLEND_PIXEL_NONE) {

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Libre Computer MED-MT88-MX-G5 (MT8370 / Genio 510 SOM).
+ *
+ * The board is mt8188-med-mt88-mx.dtsi; this file is the SoC (MT8370: six
+ * cores and one GPU core fused off, mt8370.dtsi) plus the SKU identity.
+ * MED-MT88-MX-G7 is the same PCB on the full MT8390 die
+ * (mt8390-med-mt88-mx-g7.dts).
+ */
+/dts-v1/;
+
+#include "mt8370.dtsi"
+#include "mt8188-med-mt88-mx.dtsi"
+
+/ {
+	model = "Libre Computer MED-MT88-MX-G5";
+	compatible = "mediatek,med-mt88-mx-g5", "mediatek,mt8370",
+		     "mediatek,mt8188";
+};
+
+&sound {
+	model = "med-mt88-mx-g5";
+};

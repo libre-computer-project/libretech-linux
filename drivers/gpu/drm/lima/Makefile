@@ -16,6 +16,7 @@ lima-y := \
 	lima_dlbu.o \
 	lima_bcast.o \
 	lima_trace.o \
-	lima_devfreq.o
+	lima_devfreq.o \
+	lima_perfcnt.o
 
 obj-$(CONFIG_DRM_LIMA) += lima.o

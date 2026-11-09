@@ -21,6 +21,9 @@
 
 static const u64 modifiers[] = {
 	DRM_FORMAT_MOD_LINEAR,
+	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_32x8 |
+				AFBC_FORMAT_MOD_SPLIT |
+				AFBC_FORMAT_MOD_SPARSE),
 	DRM_FORMAT_MOD_INVALID,
 };
 
@@ -68,7 +71,26 @@ static bool mtk_plane_format_mod_supported(struct drm_plane *plane,
 					   uint32_t format,
 					   uint64_t modifier)
 {
-	return modifier == DRM_FORMAT_MOD_LINEAR;
+	if (modifier == DRM_FORMAT_MOD_LINEAR)
+		return true;
+
+	if (modifier != DRM_FORMAT_MOD_ARM_AFBC(
+				AFBC_FORMAT_MOD_BLOCK_SIZE_32x8 |
+				AFBC_FORMAT_MOD_SPLIT |
+				AFBC_FORMAT_MOD_SPARSE))
+		return false;
+
+	if (format != DRM_FORMAT_XRGB8888 &&
+	    format != DRM_FORMAT_ARGB8888 &&
+	    format != DRM_FORMAT_BGRX8888 &&
+	    format != DRM_FORMAT_BGRA8888 &&
+	    format != DRM_FORMAT_ABGR8888 &&
+	    format != DRM_FORMAT_XBGR8888 &&
+	    format != DRM_FORMAT_RGB888 &&
+	    format != DRM_FORMAT_BGR888)
+		return false;
+
+	return true;
 }
 
 static void mtk_plane_destroy_state(struct drm_plane *plane,
@@ -245,6 +267,29 @@ static int mtk_plane_atomic_check(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
+	/*
+	 * An AFBC primary completes frames on its own (kmscube). The same
+	 * primary with any other plane enabled on this CRTC does not: the OVL
+	 * stops delivering vblanks and the RDMA faults. Refuse the modifier
+	 * so the client retries that plane as linear.
+	 */
+	if (fb->modifier != DRM_FORMAT_MOD_LINEAR) {
+		struct drm_plane *other;
+
+		drm_for_each_plane(other, plane->dev) {
+			struct drm_plane_state *other_state;
+
+			if (other == plane)
+				continue;
+			other_state = drm_atomic_get_plane_state(state, other);
+			if (IS_ERR(other_state))
+				return PTR_ERR(other_state);
+			if (other_state->crtc == new_plane_state->crtc &&
+			    other_state->fb)
+				return -EINVAL;
+		}
+	}
+
 	crtc_state = drm_atomic_get_crtc_state(state,
 					       new_plane_state->crtc);
 	if (IS_ERR(crtc_state))
@@ -318,7 +363,7 @@ int mtk_plane_init(struct drm_device *dev, struct drm_plane *plane,
 	err = drm_universal_plane_init(dev, plane, possible_crtcs,
 				       &mtk_plane_funcs, formats,
 				       num_formats,
-				       supports_afbc ? modifiers : NULL,
+				       supports_afbc && type == DRM_PLANE_TYPE_PRIMARY ? modifiers : NULL,
 				       type, NULL);
 	if (err) {
 		DRM_ERROR("failed to initialize plane\n");

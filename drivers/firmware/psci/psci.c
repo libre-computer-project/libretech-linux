@@ -18,6 +18,7 @@
 #include <linux/psci.h>
 #include <linux/reboot.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/suspend.h>
 
 #include <uapi/linux/psci.h>
@@ -306,9 +307,93 @@ static int get_set_conduit_method(const struct device_node *np)
 	return 0;
 }
 
+/*
+ * Vendor-specific SYSTEM_RESET2 reset types for named reboots (`reboot <mode>`,
+ * i.e. kernel_restart(cmd)), the Arm PSCI 1.1 way for an OS to ask firmware
+ * for a reset into a vendor mode. The psci node's `reset-types` child lists
+ * them, in the shape proposed for upstream:
+ *
+ *	psci {
+ *		compatible = "arm,psci-1.0";
+ *		method = "smc";
+ *		reset-types {
+ *			mode-maskrom = <0x80000001 0>;
+ *		};
+ *	};
+ *
+ * `mode-<name> = <reset_type cookie>`: reset_type must have bit 31 set (a
+ * vendor type); the firmware defines what each one does. Only when the
+ * firmware reports SYSTEM_RESET2. A named reboot with no entry, or a
+ * SYSTEM_RESET2 that returns, falls through to the plain reset below.
+ */
+/*
+ * The reset-types node, held while it has at least one usable entry. Probe
+ * runs from setup_arch(), before the slab allocator, so nothing is copied:
+ * the entries are read from the unflattened tree again at reboot.
+ */
+static struct device_node *psci_reset_types_np;
+
+/* `mode-<name>` = <reset_type cookie> with a vendor reset_type: 0, else -EINVAL */
+static int psci_reset_type_read(struct device_node *np, const char *prop,
+				u32 v[2])
+{
+	if (of_property_read_u32_array(np, prop, v, 2))
+		return -EINVAL;
+	if (!(v[0] & PSCI_1_1_RESET_TYPE_VENDOR_START))
+		return -EINVAL;
+	return 0;
+}
+
+static void __init psci_init_reset_types(void)
+{
+	struct device_node *np;
+	struct property *prop;
+	int n = 0;
+
+	if (!psci_system_reset2_supported)
+		return;
+	np = of_find_node_by_path("/psci/reset-types");
+	if (!np)
+		return;
+	for_each_property_of_node(np, prop) {
+		u32 v[2];
+
+		if (!strstarts(prop->name, "mode-"))
+			continue;
+		if (psci_reset_type_read(np, prop->name, v)) {
+			pr_warn("%pOF: %s: want <vendor reset_type cookie>\n",
+				np, prop->name);
+			continue;
+		}
+		n++;
+		pr_info("reboot %s: SYSTEM_RESET2 type %#x cookie %#x\n",
+			prop->name + strlen("mode-"), v[0], v[1]);
+	}
+	if (n)
+		psci_reset_types_np = np;
+	else
+		of_node_put(np);
+}
+
 static int psci_sys_reset(struct notifier_block *nb, unsigned long action,
 			  void *data)
 {
+	const char *cmd = data;
+
+	if (cmd && psci_reset_types_np) {
+		char prop[64];
+		u32 v[2];
+
+		if (snprintf(prop, sizeof(prop), "mode-%s", cmd) < sizeof(prop) &&
+		    !psci_reset_type_read(psci_reset_types_np, prop, v)) {
+			invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2),
+				       v[0], v[1], 0);
+			/* it returned: the firmware refused the type, reset plainly */
+			pr_warn("reboot %s: SYSTEM_RESET2 type %#x returned\n",
+				cmd, v[0]);
+		}
+	}
+
 	if ((reboot_mode == REBOOT_WARM || reboot_mode == REBOOT_SOFT) &&
 	    psci_system_reset2_supported) {
 		/*
@@ -699,6 +784,7 @@ static int __init psci_probe(void)
 		psci_init_cpu_suspend();
 		psci_init_system_suspend();
 		psci_init_system_reset2();
+		psci_init_reset_types();
 		psci_init_system_off2();
 		kvm_init_hyp_services();
 	}

@@ -1,0 +1,104 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * MediaTek MT8188 HDMI CEC controller registers.
+ *
+ * Register map from the MediaTek Genio BSP kernel (mtk-v6.6)
+ * drivers/gpu/drm/mediatek/mtk_cec_v2.h.
+ *
+ * Copyright (c) 2019 MediaTek Inc.
+ */
+
+#ifndef _MTK_CEC_H
+#define _MTK_CEC_H
+
+#include <linux/bits.h>
+
+#define CEC2_TR_CONFIG			0x00
+#define CEC2_RX_CHK_DST			BIT(29)
+#define CEC2_BYPASS			BIT(28)
+#define CEC2_DEVICE_ADDR1		GENMASK(27, 24)
+#define CEC2_LA1_SHIFT			24
+#define CEC2_RX_ACK_ERROR_BYPASS	BIT(13)
+#define CEC2_TX_RESET_WRITE		BIT(1)
+#define CEC2_RX_RESET_WRITE		BIT(0)
+
+#define CEC2_CKGEN			0x04
+#define CEC2_CLK_TX_EN			BIT(20)
+#define CEC2_CLK_32K_EN			BIT(19)
+#define CEC2_CLK_27M_EN			BIT(18)
+#define CEC2_CLK_SEL_DIV		BIT(17)
+#define CEC2_CLK_PDN			BIT(16)
+#define CEC2_CLK_DIV			GENMASK(15, 0)
+#define CEC2_DIV_SEL_100K		0x82
+
+#define CEC2_RX_TIMER_START_R		0x08
+#define CEC2_RX_TIMER_START_F		0x0c
+#define CEC2_RX_TIMER_DATA		0x10
+#define CEC2_RX_TIMER_ACK		0x14
+#define CEC2_RX_TIMER_ERROR		0x18
+#define CEC2_TX_TIMER_START		0x1c
+#define CEC2_TX_TIMER_DATA_R		0x20
+#define CEC2_TX_T_DATA_F		0x24
+#define CEC2_TX_TIMER_DATA_S		0x28
+
+#define CEC2_TX_ARB			0x2c
+#define CEC2_TX_MAX_RETRANSMIT_NUM_ARB	GENMASK(29, 24)
+#define CEC2_TX_MAX_RETRANSMIT_NUM_COL	GENMASK(23, 20)
+#define CEC2_TX_MAX_RETRANSMIT_NUM_NAK	GENMASK(19, 16)
+#define CEC2_TX_BCNT_RETRANSMIT		GENMASK(11, 8)
+#define CEC2_TX_BCNT_NEW_MSG		GENMASK(7, 4)
+#define CEC2_TX_BCNT_NEW_INIT		GENMASK(3, 0)
+
+#define CEC2_TX_HEADER			0x30
+#define CEC2_TX_READY			BIT(16)
+#define CEC2_TX_SEND_CNT		GENMASK(15, 12)
+#define CEC2_TX_HEADER_EOM		BIT(8)
+#define CEC2_TX_HEADER_SRC		GENMASK(7, 4)
+#define CEC2_TX_HEADER_DST		GENMASK(3, 0)
+
+#define CEC2_TX_DATA0			0x34
+
+#define CEC2_TX_TIMER_ACK		0x44
+#define CEC2_TX_TIMER_ACK_MAX		GENMASK(26, 16)
+#define CEC2_TX_TIMER_ACK_MIN		GENMASK(15, 0)
+
+#define CEC2_LINE_DET			0x48
+
+#define CEC2_RX_BUF_HEADER		0x4c
+#define CEC2_RX_BUF_RISC_ACK		BIT(16)
+#define CEC2_RX_BUF_CNT			GENMASK(15, 12)
+#define CEC2_RX_HEADER_EOM		BIT(8)
+#define CEC2_RX_HEADER_SRC		GENMASK(7, 4)
+#define CEC2_RX_HEADER_DST		GENMASK(3, 0)
+
+#define CEC2_RX_DATA0			0x50
+
+#define CEC2_RX_STATUS			0x60
+#define CEC2_CEC_INPUT			BIT(31)
+
+#define CEC2_TX_STATUS			0x64
+#define CEC2_TX_FSM			GENMASK(24, 16)
+#define CEC2_TX_FSM_IDLE		0x01
+#define CEC2_TX_FSM_FAIL		0x10
+
+#define CEC2_INT_CLR			0x74
+#define CEC2_INT_EN			0x78
+#define CEC2_INT_STA			0x7c
+/* the same bit positions in INT_CLR, INT_EN and INT_STA */
+#define CEC2_RX_FSM_CHG_INT		BIT(23)
+#define CEC2_RX_BUF_FULL_INT		BIT(20)
+#define CEC2_RX_DATA_RCVD_INT		BIT(18)
+#define CEC2_RX_BUF_READY_INT		BIT(16)
+#define CEC2_TX_FAIL_DATA_ACK_INT	BIT(14)
+#define CEC2_TX_FAIL_HEADER_ACK_INT	BIT(13)
+#define CEC2_TX_FAIL_RETRANSMIT_INT	BIT(12)
+#define CEC2_TX_FAIL_DATA_INT		BIT(11)
+#define CEC2_TX_FAIL_HEADER_INT		BIT(10)
+#define CEC2_TX_FAIL_SRC_INT		BIT(9)
+#define CEC2_TX_DATA_FINISH_INT		BIT(8)
+#define CEC2_LINE_LOW_LONG_INT		BIT(7)
+#define CEC2_RX_INT_ALL			GENMASK(23, 16)
+#define CEC2_TX_INT_FAIL		(GENMASK(14, 9) | BIT(7))
+#define CEC2_TX_INT_ALL			(CEC2_TX_INT_FAIL | BIT(15) | BIT(8))
+
+#endif /* _MTK_CEC_H */

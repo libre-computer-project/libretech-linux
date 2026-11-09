@@ -970,6 +970,35 @@ static int dwc2_gadget_fill_isoc_desc(struct dwc2_hsotg_ep *hs_ep,
 	return 0;
 }
 
+static int dwc2_gadget_fill_isoc_req(struct dwc2_hsotg_ep *hs_ep,
+				     struct dwc2_hsotg_req *hs_req)
+{
+	dma_addr_t dma_addr = hs_req->req.dma;
+
+	if (hs_req->req.num_sgs) {
+		WARN_ON(hs_req->req.num_sgs > 1);
+		dma_addr = sg_dma_address(hs_req->req.sg);
+	}
+	return dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr, hs_req->req.length);
+}
+
+/* The request after this one is the next to wait, or none is. */
+static void dwc2_gadget_isoc_waiting_next(struct dwc2_hsotg_ep *hs_ep)
+{
+	struct dwc2_hsotg_req *hs_req = hs_ep->isoc_waiting;
+
+	hs_ep->isoc_waiting = list_is_last(&hs_req->queue, &hs_ep->queue) ?
+			      NULL : list_next_entry(hs_req, queue);
+}
+
+/* Requests that found the chain full go in, oldest first, as it empties. */
+static void dwc2_gadget_fill_isoc_waiting(struct dwc2_hsotg_ep *hs_ep)
+{
+	while (hs_ep->isoc_waiting &&
+	       !dwc2_gadget_fill_isoc_req(hs_ep, hs_ep->isoc_waiting))
+		dwc2_gadget_isoc_waiting_next(hs_ep);
+}
+
 /*
  * dwc2_gadget_start_isoc_ddma - start isochronous transfer in DDMA
  * @hs_ep: The isochronous endpoint.
@@ -1004,17 +1033,13 @@ static void dwc2_gadget_start_isoc_ddma(struct dwc2_hsotg_ep *hs_ep)
 	}
 
 	hs_ep->next_desc = 0;
+	hs_ep->isoc_waiting = NULL;
 	list_for_each_entry_safe(hs_req, treq, &hs_ep->queue, queue) {
-		dma_addr_t dma_addr = hs_req->req.dma;
-
-		if (hs_req->req.num_sgs) {
-			WARN_ON(hs_req->req.num_sgs > 1);
-			dma_addr = sg_dma_address(hs_req->req.sg);
-		}
-		ret = dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
-						 hs_req->req.length);
-		if (ret)
+		ret = dwc2_gadget_fill_isoc_req(hs_ep, hs_req);
+		if (ret) {
+			hs_ep->isoc_waiting = hs_req;
 			break;
+		}
 	}
 
 	hs_ep->compl_desc = 0;
@@ -1337,6 +1362,50 @@ dwc2_hsotg_handle_unaligned_buf_complete(struct dwc2_hsotg *hsotg,
 }
 
 /**
+ * dwc2_gadget_flatten_isoc_sg - copy a scattered isochronous IN request to one
+ * buffer
+ * @hs_ep: The endpoint the request is for.
+ * @hs_req: The request.
+ *
+ * In descriptor DMA an isochronous descriptor is one service interval's
+ * transfer from one address, so a request of several scatter entries cannot
+ * be split across descriptors. Without this the first entry's address goes out
+ * with the whole request's length, sending whatever memory follows it. The UVC
+ * function sends its header and payload that way.
+ */
+static int dwc2_gadget_flatten_isoc_sg(struct dwc2_hsotg_ep *hs_ep,
+				       struct dwc2_hsotg_req *hs_req)
+{
+	struct usb_request *req = &hs_req->req;
+	void *flat;
+
+	if (!using_desc_dma(hs_ep->parent) || !hs_ep->isochronous ||
+	    !hs_ep->dir_in || req->num_sgs < 2)
+		return 0;
+
+	flat = kmalloc(req->length, GFP_ATOMIC);
+	if (!flat)
+		return -ENOMEM;
+
+	sg_copy_to_buffer(req->sg, req->num_sgs, flat, req->length);
+	hs_req->saved_num_sgs = req->num_sgs;
+	req->num_sgs = 0;
+	req->buf = flat;
+	return 0;
+}
+
+static void dwc2_gadget_flatten_isoc_sg_complete(struct dwc2_hsotg_req *hs_req)
+{
+	if (!hs_req->saved_num_sgs)
+		return;
+
+	kfree(hs_req->req.buf);
+	hs_req->req.buf = NULL;
+	hs_req->req.num_sgs = hs_req->saved_num_sgs;
+	hs_req->saved_num_sgs = 0;
+}
+
+/**
  * dwc2_gadget_target_frame_elapsed - Checks target frame
  * @hs_ep: The driver endpoint to check
  *
@@ -1456,15 +1525,23 @@ static int dwc2_hsotg_ep_queue(struct usb_ep *ep, struct usb_request *req,
 		}
 	}
 
-	ret = dwc2_hsotg_handle_unaligned_buf_start(hs, hs_ep, hs_req);
+	ret = dwc2_gadget_flatten_isoc_sg(hs_ep, hs_req);
 	if (ret)
 		return ret;
+
+	ret = dwc2_hsotg_handle_unaligned_buf_start(hs, hs_ep, hs_req);
+	if (ret) {
+		dwc2_gadget_flatten_isoc_sg_complete(hs_req);
+		return ret;
+	}
 
 	/* if we're using DMA, sync the buffers as necessary */
 	if (using_dma(hs)) {
 		ret = dwc2_hsotg_map_dma(hs, hs_ep, req);
-		if (ret)
+		if (ret) {
+			dwc2_gadget_flatten_isoc_sg_complete(hs_req);
 			return ret;
+		}
 	}
 	/* If using descriptor DMA configure EP0 descriptor chain pointers */
 	if (using_desc_dma(hs) && !hs_ep->index) {
@@ -1483,16 +1560,10 @@ static int dwc2_hsotg_ep_queue(struct usb_ep *ep, struct usb_request *req,
 	 * OutTknEpDis interrupts.
 	 */
 	if (using_desc_dma(hs) && hs_ep->isochronous) {
-		if (hs_ep->target_frame != TARGET_FRAME_INITIAL) {
-			dma_addr_t dma_addr = hs_req->req.dma;
-
-			if (hs_req->req.num_sgs) {
-				WARN_ON(hs_req->req.num_sgs > 1);
-				dma_addr = sg_dma_address(hs_req->req.sg);
-			}
-			dwc2_gadget_fill_isoc_desc(hs_ep, dma_addr,
-						   hs_req->req.length);
-		}
+		if (hs_ep->target_frame != TARGET_FRAME_INITIAL &&
+		    !hs_ep->isoc_waiting &&
+		    dwc2_gadget_fill_isoc_req(hs_ep, hs_req))
+			hs_ep->isoc_waiting = hs_req;
 		return 0;
 	}
 
@@ -2140,8 +2211,11 @@ static void dwc2_hsotg_complete_request(struct dwc2_hsotg *hsotg,
 		dwc2_hsotg_unmap_dma(hsotg, hs_ep, hs_req);
 
 	dwc2_hsotg_handle_unaligned_buf_complete(hsotg, hs_ep, hs_req);
+	dwc2_gadget_flatten_isoc_sg_complete(hs_req);
 
 	hs_ep->req = NULL;
+	if (hs_ep->isoc_waiting == hs_req)
+		dwc2_gadget_isoc_waiting_next(hs_ep);
 	list_del_init(&hs_req->queue);
 
 	/*
@@ -2226,6 +2300,7 @@ static void dwc2_gadget_complete_isoc_request_ddma(struct dwc2_hsotg_ep *hs_ep)
 			hs_ep->compl_desc = 0;
 		desc_sts = hs_ep->desc_list[hs_ep->compl_desc].status;
 	}
+	dwc2_gadget_fill_isoc_waiting(hs_ep);
 }
 
 /*
@@ -4607,7 +4682,9 @@ static int dwc2_hsotg_udc_stop(struct usb_gadget *gadget)
 	/* Exit clock gating when driver is stopped. */
 	if (hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
 	    hsotg->bus_suspended && !hsotg->params.no_clock_gating) {
+		spin_lock_irqsave(&hsotg->lock, flags);
 		dwc2_gadget_exit_clock_gating(hsotg, 0);
+		spin_unlock_irqrestore(&hsotg->lock, flags);
 	}
 
 	/* all endpoints should be shutdown */
@@ -4678,6 +4755,7 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
 {
 	struct dwc2_hsotg *hsotg = to_hsotg(gadget);
 	unsigned long flags;
+	int ret = 0;
 
 	dev_dbg(hsotg->dev, "%s: is_on: %d op_state: %d\n", __func__, is_on,
 		hsotg->op_state);
@@ -4689,6 +4767,13 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
 	}
 
 	spin_lock_irqsave(&hsotg->lock, flags);
+	if (hsotg->in_ppd) {
+		ret = dwc2_exit_partial_power_down(hsotg, 0, true);
+		if (ret) {
+			dev_err(hsotg->dev, "exit partial_power_down failed\n");
+			goto exit;
+		}
+	}
 	if (is_on) {
 		hsotg->enabled = 1;
 		dwc2_hsotg_core_init_disconnected(hsotg, false);
@@ -4702,9 +4787,10 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
 	}
 
 	hsotg->gadget.speed = USB_SPEED_UNKNOWN;
+exit:
 	spin_unlock_irqrestore(&hsotg->lock, flags);
 
-	return 0;
+	return ret;
 }
 
 static int dwc2_hsotg_vbus_session(struct usb_gadget *gadget, int is_active)

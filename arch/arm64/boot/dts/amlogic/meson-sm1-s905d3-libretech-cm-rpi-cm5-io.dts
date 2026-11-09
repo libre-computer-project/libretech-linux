@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Libre Computer AML-S905D3-CM on RPi CM5IO carrier board
+ *
+ * CM5IO differences from CM4IO:
+ * - No CVBS (pin 111 repurposed for VBUS_EN)
+ * - M.2 M-key PCIe slot (vs full-size on CM4IO)
+ * - USB 3.0 ports available (but AML combo PHY shared with PCIe)
+ */
+
+/dts-v1/;
+
+#include "meson-sm1.dtsi"
+#include "meson-libretech-cottonwood-cm.dtsi"
+#include "meson-sm1-libretech-cottonwood-cm.dtsi"
+#include "meson-libretech-cottonwood-cm-rpi-cm-io.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
+#include "meson-libretech-ramoops.dtsi"
+
+/ {
+	compatible = "libretech,aml-s905d3-cm", "amlogic,sm1";
+	model = "Libre Computer AML-S905D3-CM on RPi CM5-IO";
+};
+
+/ {
+	reserved-memory {
+		linux,cma {
+			/*
+			 * AML-S905D3-CM comes in up to 4 GiB RAM variants.
+			 * U-Boot's meson_fixup_cma_size() writes min(this
+			 * value, 7/32 of detected RAM) here and forces
+			 * alloc-ranges to the first 1 GiB, so this value is the
+			 * binding clamp whenever it is the smaller term.
+			 *
+			 * 768 MiB, not the 896 MiB the 7/32 formula yields at
+			 * 4 GiB: the sub-1 GiB window is not 1 GiB wide.
+			 * secmon, ramoops and the kernel image leave ~820 MiB
+			 * of largest free run below 0x40000000, and 896 MiB was
+			 * measured failing on both A311D and S905D3. A failed
+			 * reservation costs the whole pool -- one pr_err, then
+			 * CONFIG_CMA_SIZE_MBYTES=128 -- so over-asking loses
+			 * 640 MiB rather than gaining 128.
+			 */
+			size = <0x0 0x30000000>;
+		};
+	};
+};

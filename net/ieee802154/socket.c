@@ -96,13 +96,13 @@ static int ieee802154_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 	return sk->sk_prot->sendmsg(sk, msg, len);
 }
 
-static int ieee802154_sock_bind(struct socket *sock, struct sockaddr *uaddr,
+static int ieee802154_sock_bind(struct socket *sock, struct sockaddr_unsized *uaddr,
 				int addr_len)
 {
 	struct sock *sk = sock->sk;
 
 	if (sk->sk_prot->bind)
-		return sk->sk_prot->bind(sk, uaddr, addr_len);
+		return sk->sk_prot->bind(sk, (struct sockaddr *)uaddr, addr_len);
 
 	return sock_no_bind(sock, uaddr, addr_len);
 }
@@ -313,7 +313,7 @@ out:
 }
 
 static int raw_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-		       int flags, int *addr_len)
+		       int flags)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
@@ -703,7 +703,7 @@ out:
 }
 
 static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-			 int flags, int *addr_len)
+			 int flags)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
@@ -737,7 +737,7 @@ static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 
 		saddr->family = AF_IEEE802154;
 		ieee802154_addr_to_sa(&saddr->addr, &mac_cb(skb)->source);
-		*addr_len = sizeof(*saddr);
+		msg->msg_namelen = sizeof(*saddr);
 	}
 
 	if (ro->want_lqi) {
@@ -1140,4 +1140,4 @@ module_exit(af_ieee802154_remove);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("IEEE 802.15.4 socket interface");
-MODULE_ALIAS_NETPROTO(PF_IEEE802154);
+/* MODULE_ALIAS_NETPROTO(PF_IEEE802154); */

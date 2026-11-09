@@ -212,6 +212,18 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	}
 	pfdevfreq->devfreq = devfreq;
 
+	/*
+	 * Follow OPP enable/disable/adjust-voltage events. The MediaTek SVS
+	 * driver pins the GPU to its vboot OPP by disabling every other OPP and
+	 * then reads the buck back; without this notifier devfreq keeps running
+	 * the OPP it picked at probe and SVS fails with -EPERM whenever that OPP
+	 * is not the vboot one. It also makes SVS's per-OPP voltage updates take
+	 * effect without waiting for the next frequency change.
+	 */
+	ret = devm_devfreq_register_opp_notifier(dev, devfreq);
+	if (ret)
+		DRM_DEV_INFO(dev, "Couldn't register OPP notifier: %d\n", ret);
+
 	cooling = devfreq_cooling_em_register(devfreq, NULL);
 	if (IS_ERR(cooling))
 		DRM_DEV_INFO(dev, "Failed to register cooling device\n");

@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2026 Libre Computer
+ *
+ * GXL / GXM firmware reservations for the LIBRE boot chain (our TF-A, the
+ * low-16 MiB block). A board .dts includes exactly one of this file or
+ * meson-gx-vendor-firmware.dtsi, after its SoC .dtsi.
+ *
+ * The block, from DRAM base 0. These are the nodes U-Boot's
+ * meson_add_libre_secure_reservation() (arch/arm/mach-meson/board-gx.c)
+ * writes under CONFIG_MESON_GX_LIBRE_SECURE_LAYOUT, with the GX_LIBRE_*
+ * constants of arch/arm/include/asm/arch-meson/gx.h in the u-boot tree:
+ *
+ *   hwrom@0                       the ROM mirror; the SoC .dtsi's own node
+ *
+ *   secure-firmware@100000        base GX_LIBRE_BL31_BASE     0x00100000
+ *                                 size GX_LIBRE_BL31_SIZE     0x00100000
+ *                                 no-map. BL31 and its SCP staging tail.
+ *
+ *   secure-monitor-shmem@200000   base GX_LIBRE_SHARED_BASE   0x00200000
+ *                                 size GX_LIBRE_SHARED_SIZE   0x00100000
+ *                                 no-map. The SMC mailboxes are NON-secure,
+ *                                 but meson_sm_map_shmem() maps them with
+ *                                 ioremap_cache(), which arm64 refuses on a
+ *                                 page in the linear map.
+ *
+ *   ramoops@300000                base GX_LIBRE_RAMOOPS_BASE  0x00300000
+ *                                 size GX_LIBRE_RAMOOPS_SIZE  0x00100000
+ *                                 MAPPED. Zone sizes GX_LIBRE_RAMOOPS_{CONSOLE,
+ *                                 RECORD,PMSG,ECC}_SIZE = 0x80000 / 0x20000 /
+ *                                 0x1000 / 16.
+ *
+ * 0x00400000 + 12 MiB is the OPTIONAL OP-TEE band. It is not described here:
+ * it is ordinary memory unless OP-TEE runs, and U-Boot adds
+ * reserved-memory/optee-core@400000 and firmware/optee at boot when it does
+ * (amlogic/software/boot/design/libre-secure-block-and-optee.md).
+ *
+ * This file replaces meson-libretech-ramoops.dtsi (ramoops@7400000) on a
+ * libre board: that address is derived from the vendor layout.
+ */
+
+/*
+ * The open SC's report map: one KiB of the AHB share SRAM at 0xe000, written
+ * by the SC and BL31 and opened to non-secure reads by the SC (scp-firmware
+ * gxl_report_map.h). A reserved partition, so the sram pool never hands it out;
+ * cpu_scp_lpri stays the SCMI rx shared memory and nothing else. The vendor
+ * BL30 knows nothing of it, so only the libre chain names it.
+ */
+&sram {
+	sc_report: scp-sram@e000 {
+		reg = <0xe000 0x400>;
+	};
+};
+
+/*
+ * Kept time for the vRTC (rtc-meson-vrtc "amlogic,keep-sram"): four words at
+ * offset 0xd0 of the report map (scp-firmware gxl_report_map.h
+ * GXL_RPT_OFF_TIMEKEEP), kept across a warm reset.
+ */
+&vrtc {
+	amlogic,keep-sram = <&sc_report 0xd0>;
+};
+
+/ {
+	reserved-memory {
+		secure-firmware@100000 {
+			reg = <0x0 0x00100000 0x0 0x00100000>;	/* 1 MiB */
+			no-map;
+		};
+
+		secure-monitor-shmem@200000 {
+			reg = <0x0 0x00200000 0x0 0x00100000>;	/* 1 MiB */
+			no-map;
+		};
+
+		ramoops@300000 {
+			compatible = "ramoops";
+			reg = <0x0 0x00300000 0x0 0x00100000>;	/* 1 MiB */
+			console-size = <0x80000>;
+			record-size = <0x20000>;
+			pmsg-size = <0x1000>;
+			ecc-size = <16>;
+		};
+	};
+};

@@ -14,4 +14,11 @@ int mtk_vcodec_init_dec_clk(struct platform_device *pdev, struct mtk_vcodec_pm *
 void mtk_vcodec_dec_enable_hardware(struct mtk_vcodec_dec_ctx *ctx, int hw_idx);
 void mtk_vcodec_dec_disable_hardware(struct mtk_vcodec_dec_ctx *ctx, int hw_idx);
 
+/*
+ * Hand the backend decode()'s return to the masked-completion probe, so the
+ * delayed post-mask read of VDEC_MISC+0xa4 is taken only on a decode that
+ * failed (it sleeps). See the probe comment in mtk_vcodec_dec_pm.c.
+ */
+void mtk_vcodec_dec_probe_note_ret(int ret);
+
 #endif /* _MTK_VCODEC_DEC_PM_H_ */

@@ -61,6 +61,15 @@ static int scmi_imx_lmm_probe(struct scmi_device *sdev)
 	if (!handle)
 		return -ENODEV;
 
+	/*
+	 * 0x80 is the first vendor protocol id, so other vendors' firmware
+	 * lists it too (Libre Computer's lc-typec on RK3399). The core binds
+	 * by id alone and resolves the protocol against the firmware's vendor,
+	 * so without this check the driver takes another vendor's ops.
+	 */
+	if (strcmp(handle->version->vendor_id, SCMI_IMX_VENDOR))
+		return -ENODEV;
+
 	if (imx_lmm_ops) {
 		dev_err(&sdev->dev, "lmm already initialized\n");
 		return -EEXIST;

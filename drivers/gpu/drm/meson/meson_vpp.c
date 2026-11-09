@@ -88,6 +88,26 @@ static void meson_vpp_write_vd_scaling_filter_coefs(struct meson_drm *priv,
 				priv->io_base + _REG(VPP_SCALE_COEF));
 }
 
+/*
+ * The OSD2 plane has its own dedicated polyphase scaler on G12A+
+ * (register block at 0x3d00, see meson_plane2.c), distinct from the
+ * OSD1 scaler above. Its coefficient RAM is a separate table that
+ * must be loaded the same way, or the OSD2 scaler runs with whatever
+ * garbage is left in the coefficient RAM at reset.
+ */
+static void meson_vpp_write_osd2_scaling_filter_coefs(struct meson_drm *priv,
+						      const unsigned int *coefs,
+						      bool is_horizontal)
+{
+	int i;
+
+	writel_relaxed(is_horizontal ? VPP_SCALE_HORIZONTAL_COEF : 0,
+			priv->io_base + _REG(OSD2_SCALE_COEF_IDX));
+	for (i = 0; i < 33; i++)
+		writel_relaxed(coefs[i],
+				priv->io_base + _REG(OSD2_SCALE_COEF));
+}
+
 void meson_vpp_init(struct meson_drm *priv)
 {
 	/* set dummy data default YUV black */
@@ -110,8 +130,8 @@ void meson_vpp_init(struct meson_drm *priv)
 		writel_relaxed(VPP_OFIFO_SIZE_DEFAULT,
 			       priv->io_base + _REG(VPP_OFIFO_SIZE));
 	else
-		writel_bits_relaxed(VPP_OFIFO_SIZE_MASK, 0x77f,
-				    priv->io_base + _REG(VPP_OFIFO_SIZE));
+		writel_relaxed(VPP_OFIFO_SIZE_DEFAULT,
+			       priv->io_base + _REG(VPP_OFIFO_SIZE));
 	writel_relaxed(VPP_POSTBLEND_HOLD_LINES(4) | VPP_PREBLEND_HOLD_LINES(4),
 		       priv->io_base + _REG(VPP_HOLD_LINES));
 
@@ -162,4 +182,16 @@ void meson_vpp_init(struct meson_drm *priv)
 						false);
 	meson_vpp_write_vd_scaling_filter_coefs(priv, vpp_filter_coefs_bicubic,
 						true);
+
+	/*
+	 * G12A+ has a dedicated OSD2 scaler (see meson_plane2.c); load its
+	 * coefficient RAM with the same filter used for the OSD1 scaler.
+	 * Older SoCs have no OSD2 scaler hardware, so skip this.
+	 */
+	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
+		meson_vpp_write_osd2_scaling_filter_coefs(priv,
+					vpp_filter_coefs_4point_bspline, false);
+		meson_vpp_write_osd2_scaling_filter_coefs(priv,
+					vpp_filter_coefs_4point_bspline, true);
+	}
 }

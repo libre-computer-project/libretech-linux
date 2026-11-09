@@ -38,6 +38,7 @@
 #include "xe_memirq.h"
 #include "xe_mmio.h"
 #include "xe_platform_types.h"
+#include "xe_sleep.h"
 #include "xe_sriov.h"
 #include "xe_uc.h"
 #include "xe_uc_fw.h"
@@ -882,6 +883,41 @@ int xe_guc_post_load_init(struct xe_guc *guc)
 	return xe_guc_submit_enable(guc);
 }
 
+/*
+ * Wa_14025883347: Prevent GuC firmware DMA failures during GuC-only reset by ensuring
+ * SRAM save/restore operations are complete before reset.
+ */
+static void guc_prevent_fw_dma_failure_on_reset(struct xe_guc *guc)
+{
+	struct xe_gt *gt = guc_to_gt(guc);
+	u32 boot_hash_chk, guc_status, sram_status;
+	int ret;
+
+	guc_status = xe_mmio_read32(&gt->mmio, GUC_STATUS);
+	if (guc_status & GS_MIA_IN_RESET)
+		return;
+
+	boot_hash_chk = xe_mmio_read32(&gt->mmio, BOOT_HASH_CHK);
+	if (!(boot_hash_chk & GUC_BOOT_UKERNEL_VALID))
+		return;
+
+	/* Disable idle flow during reset (GuC reset re-enables it automatically) */
+	xe_mmio_rmw32(&gt->mmio, GUC_MAX_IDLE_COUNT, 0, GUC_IDLE_FLOW_DISABLE);
+
+	ret = xe_mmio_wait32(&gt->mmio, GUC_STATUS, GS_UKERNEL_MASK,
+			     FIELD_PREP(GS_UKERNEL_MASK, XE_GUC_LOAD_STATUS_READY),
+			     100000, &guc_status, false);
+	if (ret)
+		xe_gt_warn(gt, "GuC not ready after disabling idle flow (GUC_STATUS: 0x%x)\n",
+			   guc_status);
+
+	ret = xe_mmio_wait32(&gt->mmio, GUC_SRAM_STATUS, GUC_SRAM_HANDLING_MASK,
+			     0, 5000, &sram_status, false);
+	if (ret)
+		xe_gt_warn(gt, "SRAM handling not complete (GUC_SRAM_STATUS: 0x%x)\n",
+			   sram_status);
+}
+
 int xe_guc_reset(struct xe_guc *guc)
 {
 	struct xe_gt *gt = guc_to_gt(guc);
@@ -893,6 +929,9 @@ int xe_guc_reset(struct xe_guc *guc)
 
 	if (IS_SRIOV_VF(gt_to_xe(gt)))
 		return xe_gt_sriov_vf_bootstrap(gt);
+
+	if (XE_GT_WA(gt, 14025883347))
+		guc_prevent_fw_dma_failure_on_reset(guc);
 
 	xe_mmio_write32(mmio, GDRST, GRDOM_GUC);
 
@@ -915,6 +954,34 @@ int xe_guc_reset(struct xe_guc *guc)
 err_out:
 
 	return ret;
+}
+
+/**
+ * xe_guc_softreset() - Issue a GuC client soft reset
+ * @guc: the GuC object
+ *
+ * Ask a running GuC to soft-reset its submission state via the
+ * CLIENT_SOFT_RESET H2G action. Used on the non-mode-2 wedge cleanup path so
+ * the GuC drops stale per-context state before queues are force-killed.
+ * No-op (returns 0) when the GuC firmware is not running.
+ *
+ * Return: 0 on success, negative error code on failure.
+ */
+int xe_guc_softreset(struct xe_guc *guc)
+{
+	u32 action[] = {
+		XE_GUC_ACTION_CLIENT_SOFT_RESET,
+	};
+	int ret;
+
+	if (!xe_uc_fw_is_running(&guc->fw))
+		return 0;
+
+	ret = xe_guc_mmio_send(guc, action, ARRAY_SIZE(action));
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 static void guc_prepare_xfer(struct xe_guc *guc)
@@ -1409,6 +1476,7 @@ int xe_guc_mmio_send_recv(struct xe_guc *guc, const u32 *request,
 	struct xe_reg reply_reg = xe_gt_is_media_type(gt) ?
 		MED_VF_SW_FLAG(0) : VF_SW_FLAG(0);
 	const u32 LAST_INDEX = VF_SW_FLAG_COUNT - 1;
+	unsigned int sleep_period_ms = 1;
 	bool lost = false;
 	int ret;
 	int i;
@@ -1491,6 +1559,8 @@ timeout:
 
 		xe_gt_dbg(gt, "GuC mmio request %#x: retrying, reason %#x\n",
 			  request[0], reason);
+
+		xe_sleep_exponential_ms(&sleep_period_ms, 256);
 		goto retry;
 	}
 
@@ -1632,7 +1702,7 @@ int xe_guc_start(struct xe_guc *guc)
 	return xe_guc_submit_start(guc);
 }
 
-void xe_guc_print_info(struct xe_guc *guc, struct drm_printer *p)
+int xe_guc_print_info(struct xe_guc *guc, struct drm_printer *p)
 {
 	struct xe_gt *gt = guc_to_gt(guc);
 	unsigned int fw_ref;
@@ -1644,7 +1714,7 @@ void xe_guc_print_info(struct xe_guc *guc, struct drm_printer *p)
 	if (!IS_SRIOV_VF(gt_to_xe(gt))) {
 		fw_ref = xe_force_wake_get(gt_to_fw(gt), XE_FW_GT);
 		if (!fw_ref)
-			return;
+			return -EIO;
 
 		status = xe_mmio_read32(&gt->mmio, GUC_STATUS);
 
@@ -1672,6 +1742,8 @@ void xe_guc_print_info(struct xe_guc *guc, struct drm_printer *p)
 
 	drm_puts(p, "\n");
 	xe_guc_submit_print(guc, p);
+
+	return 0;
 }
 
 /**

@@ -164,6 +164,7 @@ extern void __of_sysfs_remove_bin_file(struct device_node *np,
 
 extern int of_bus_n_addr_cells(struct device_node *np);
 extern int of_bus_n_size_cells(struct device_node *np);
+extern bool of_default_cells_excluded(void);
 
 const __be32 *of_irq_parse_imap_parent(const __be32 *imap, int len,
 				       struct of_phandle_args *out_irq);
@@ -217,6 +218,15 @@ static inline bool is_pseudo_property(const char *prop_name)
 
 #if IS_ENABLED(CONFIG_KUNIT)
 int __of_address_resource_bounds(struct resource *r, u64 start, u64 size);
+#endif
+
+#if defined(CONFIG_OF_OVERLAY)
+extern int of_overlay_init(void);
+#else
+static inline int of_overlay_init(void)
+{
+	return 0;
+}
 #endif
 
 #endif /* _LINUX_OF_PRIVATE_H */

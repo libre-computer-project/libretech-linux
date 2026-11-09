@@ -20,6 +20,8 @@
 #  define __NR_bpf 6319
 # elif defined(__mips__) && defined(_ABI64)
 #  define __NR_bpf 5315
+# elif defined(__loongarch__)
+#  define __NR_bpf 280
 # else
 #  error __NR_bpf not defined. libbpf does not support your arch.
 # endif
@@ -41,8 +43,10 @@ int main(void)
 	attr.prog_flags = 0;
 
 	/*
-	 * Test existence of __NR_bpf and BPF_PROG_LOAD.
-	 * This call should fail if we run the testcase.
+	 * bwh: Don't use the bpf() syscall as we might be building on a
+	 * much older kernel.  Do "use" the attr structure here to avoid
+	 * a "set but not used" warning.
 	 */
-	return syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr)) == 0;
+	(void)&attr;
+	return 0;
 }

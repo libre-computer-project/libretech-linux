@@ -139,10 +139,16 @@ struct drm_lima_gem_wait {
 
 /**
  * create a context
+ *
+ * @priority: scheduling priority. 0=NORMAL (default), 1=HIGH.
+ *            Backward compatible: existing callers pass 0.
  */
+#define LIMA_CTX_PRIORITY_NORMAL  0
+#define LIMA_CTX_PRIORITY_HIGH    1
+
 struct drm_lima_ctx_create {
 	__u32 id;          /* out, context handle */
-	__u32 _pad;        /* pad, must be zero */
+	__u32 priority;    /* in, LIMA_CTX_PRIORITY_* (0=NORMAL for compat) */
 };
 
 /**

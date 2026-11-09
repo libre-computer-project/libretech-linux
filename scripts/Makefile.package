@@ -62,8 +62,13 @@ rpm-sources: linux.tar.gz
 
 PHONY += rpm-pkg srcrpm-pkg binrpm-pkg
 
+# A cross build has no -devel unless KRPM_CROSS_DEVEL=1: install-extmod-build
+# rebuilds the host programs with ${CC} when it differs from ${HOSTCC} (as the
+# deb headers package does), so the package carries target binaries.
 ifneq ($(CC),$(HOSTCC))
+ifneq ($(KRPM_CROSS_DEVEL),1)
 rpm-no-devel = --without=devel
+endif
 endif
 
 rpm-pkg:    private build-type := a
@@ -148,14 +153,18 @@ snap-pkg:
 
 # pacman-pkg
 # ---------------------------------------------------------------------------
+# KPACMAN_CARCH: the distribution's name for the architecture when it is not the
+# kernel's -- Arch Linux ARM calls 32-bit ARM "armv7h", where UTS_MACHINE is "arm".
 
 PHONY += pacman-pkg
 pacman-pkg:
-	@ln -srf $(srctree)/scripts/package/PKGBUILD $(objtree)/PKGBUILD
-	+BUILDDIR="$(realpath $(objtree))/pacman" \
-		CARCH="$(UTS_MACHINE)" \
+	@ln -srf $(srctree)/scripts/package/PKGBUILD $(or $(PACMAN_STARTDIR),$(objtree))/PKGBUILD
+	+cd $(or $(PACMAN_STARTDIR),$(objtree)) && \
+		BUILDDIR="$(or $(PACMAN_BUILDDIR),$(realpath $(objtree))/pacman)" \
+		CARCH="$(or $(KPACMAN_CARCH),$(UTS_MACHINE))" \
+		KBUILD_OBJTREE="$(realpath $(objtree))" \
 		KBUILD_MAKEFLAGS="$(MAKEFLAGS)" \
-		KBUILD_REVISION="$(shell $(srctree)/scripts/build-version)" \
+		KBUILD_REVISION="$(or $(KPACMAN_PKGREL),$(shell $(srctree)/scripts/build-version))" \
 		makepkg $(MAKEPKGOPTS)
 
 # dir-pkg tar*-pkg - tarball targets

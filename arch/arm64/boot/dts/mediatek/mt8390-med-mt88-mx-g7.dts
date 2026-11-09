@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Libre Computer MED-MT88-MX-G7 (MT8390 / Genio 700 SOM).
+ *
+ * The board is mt8188-med-mt88-mx.dtsi; this file is the SoC plus the SKU
+ * identity. MT8390 is the full MT8188 die (eight cores, both GPU cores), so
+ * like mt8390-genio-700-evk.dts it includes mt8188.dtsi directly -- there is
+ * no mt8390.dtsi. The G7 is the same PCB as MED-MT88-MX-G5 (MT8370,
+ * mt8370-med-mt88-mx-g5.dts) with a different eFuse; DRAM size is detected
+ * at runtime for both.
+ *
+ * Compatible follows mt8390-genio-700-evk.dts: board, "mediatek,mt8390",
+ * "mediatek,mt8188".
+ */
+/dts-v1/;
+
+#include "mt8188.dtsi"
+#include "mt8188-med-mt88-mx.dtsi"
+
+/ {
+	model = "Libre Computer MED-MT88-MX-G7";
+	compatible = "mediatek,med-mt88-mx-g7", "mediatek,mt8390",
+		     "mediatek,mt8188";
+};
+
+&sound {
+	model = "med-mt88-mx-g7";
+};

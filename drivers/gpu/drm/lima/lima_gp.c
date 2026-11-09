@@ -13,9 +13,46 @@
 #include "lima_regs.h"
 #include "lima_gem.h"
 #include "lima_vm.h"
+#include "lima_perfcnt.h"
 
 #define gp_write(reg, data) writel(data, ip->iomem + reg)
 #define gp_read(reg) readl(ip->iomem + reg)
+
+/*
+ * Decode the GP error IRQ state and STATUS registers into a single
+ * named diagnostic line. Called from the IRQ handler's error branch
+ * and from the timeout error path so that users / triage agents
+ * don't have to look up bit positions in lima_regs.h. Pure logging
+ * helper -- no behavior change.
+ *
+ * Each named token corresponds to one bit in the relevant register;
+ * see drivers/gpu/drm/lima/lima_regs.h for definitions.
+ */
+static void lima_gp_describe_error(struct lima_ip *ip, u32 state, u32 status)
+{
+	struct lima_device *dev = ip->dev;
+
+	dev_err(dev->dev,
+		"%s ERROR int_state=0x%08x status=0x%08x [ int:%s%s%s%s%s%s%s%s%s%s ] [ status:%s%s%s%s%s ]\n",
+		lima_ip_name(ip), state, status,
+		(state & LIMA_GP_IRQ_PLBU_OUT_OF_MEM)        ? " PLBU_OUT_OF_MEM"  : "",
+		(state & LIMA_GP_IRQ_HANG)                   ? " HANG"             : "",
+		(state & LIMA_GP_IRQ_FORCE_HANG)             ? " FORCE_HANG"       : "",
+		(state & LIMA_GP_IRQ_WRITE_BOUND_ERR)        ? " WRITE_BOUND_ERR"  : "",
+		(state & LIMA_GP_IRQ_SYNC_ERROR)             ? " SYNC_ERROR"       : "",
+		(state & LIMA_GP_IRQ_AXI_BUS_ERROR)          ? " AXI_BUS_ERROR"    : "",
+		(state & LIMA_GP_IRQ_AXI_BUS_STOPPED)        ? " AXI_BUS_STOPPED"  : "",
+		(state & LIMA_GP_IRQ_VS_INVALID_CMD)         ? " VS_INVALID_CMD"   : "",
+		(state & LIMA_GP_IRQ_PLB_INVALID_CMD)        ? " PLB_INVALID_CMD"  : "",
+		(state & (LIMA_GP_IRQ_SEMAPHORE_UNDERFLOW |
+			  LIMA_GP_IRQ_SEMAPHORE_OVERFLOW |
+			  LIMA_GP_IRQ_PTR_ARRAY_OUT_OF_BOUNDS)) ? " SEM_OR_PTR_ERR" : "",
+		(status & LIMA_GP_STATUS_VS_ACTIVE)          ? " VS_ACTIVE"        : "",
+		(status & LIMA_GP_STATUS_PLBU_ACTIVE)        ? " PLBU_ACTIVE"      : "",
+		(status & LIMA_GP_STATUS_BUS_STOPPED)        ? " BUS_STOPPED"      : "",
+		(status & LIMA_GP_STATUS_BUS_ERROR)          ? " BUS_ERROR"        : "",
+		(status & LIMA_GP_STATUS_WRITE_BOUND_ERR)    ? " WRITE_BOUND_ERR"  : "");
+}
 
 static irqreturn_t lima_gp_irq_handler(int irq, void *data)
 {
@@ -37,8 +74,7 @@ static irqreturn_t lima_gp_irq_handler(int irq, void *data)
 			dev_dbg(dev->dev, "%s out of heap irq status=%x\n",
 				lima_ip_name(ip), status);
 		} else {
-			dev_err(dev->dev, "%s error irq state=%x status=%x\n",
-				lima_ip_name(ip), state, status);
+			lima_gp_describe_error(ip, state, status);
 			if (task)
 				task->recoverable = false;
 		}
@@ -163,6 +199,8 @@ static void lima_gp_task_run(struct lima_sched_pipe *pipe,
 	for (i = 0; i < LIMA_GP_FRAME_REG_NUM; i++)
 		writel(f[i], ip->iomem + LIMA_GP_VSCL_START_ADDR + i * 4);
 
+	lima_perfcnt_gp_job_start(ip);
+
 	gp_write(LIMA_GP_CMD, LIMA_GP_CMD_UPDATE_PLBU_ALLOC);
 	gp_write(LIMA_GP_CMD, cmd);
 }
@@ -214,16 +252,18 @@ static int lima_gp_hard_reset(struct lima_ip *ip)
 
 static void lima_gp_task_fini(struct lima_sched_pipe *pipe)
 {
+	lima_perfcnt_gp_job_done(pipe->processor[0]);
 	lima_gp_soft_reset_async(pipe->processor[0]);
 }
 
 static void lima_gp_task_error(struct lima_sched_pipe *pipe)
 {
 	struct lima_ip *ip = pipe->processor[0];
+	u32 state  = gp_read(LIMA_GP_INT_STAT);
+	u32 status = gp_read(LIMA_GP_STATUS);
 
-	dev_err(ip->dev->dev, "%s task error int_state=%x status=%x\n",
-		lima_ip_name(ip), gp_read(LIMA_GP_INT_STAT),
-		gp_read(LIMA_GP_STATUS));
+	dev_err(ip->dev->dev, "%s task error\n", lima_ip_name(ip));
+	lima_gp_describe_error(ip, state, status);
 
 	lima_gp_hard_reset(ip);
 }

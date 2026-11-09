@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -41,6 +42,13 @@
 
 /* register fields */
 #define CMD_USER		BIT(18)
+/*
+ * The data stage of a read takes two lines (D and Q). Named FAST_READ_DUAL_OUT
+ * in Amlogic's U-Boot (drivers/spi/spifc.c, which sets it for the DIN stage of
+ * a 0x3B read); the datasheets name the register (SPIFC_CONTROL) but not its
+ * bits.
+ */
+#define CTRL_FAST_READ_DUAL_OUT	BIT(14)
 #define CTRL_ENABLE_AHB		BIT(17)
 #define CLOCK_SOURCE		BIT(31)
 #define CLOCK_DIV_SHIFT		12
@@ -71,12 +79,14 @@
  * @regmap:	regmap for device registers
  * @clk:	input clock of the built-in baud rate generator
  * @dev:	the device structure
+ * @base:	the registers, for the two-line read loop
  */
 struct meson_spifc {
 	struct spi_controller *host;
 	struct regmap *regmap;
 	struct clk *clk;
 	struct device *dev;
+	void __iomem *base;
 };
 
 static const struct regmap_config spifc_regmap_config = {
@@ -236,6 +246,72 @@ static int meson_spifc_txrx(struct meson_spifc *spifc,
 }
 
 /**
+ * meson_spifc_rx_dual() - receive a transfer on two lines
+ * @spifc:	the Meson SPI device
+ * @xfer:	the current SPI transfer: receive only, rx_nbits 2
+ * @last_xfer:	whether this is the last transfer of the message
+ * Return:	0 on success, a negative value on error
+ *
+ * The DIN stage drives nothing on the data lines, so the data can arrive on D
+ * and Q (CTRL_FAST_READ_DUAL_OUT); the DOUT stage of meson_spifc_txrx() drives
+ * D while it samples Q, which is one line only. GXL wires NOR_D and NOR_Q only
+ * (no IO2/IO3), so two lines is the most this controller is given.
+ *
+ * The stage is configured once and each 64-byte chunk is only started,
+ * awaited and copied out: per chunk, the regmap read-modify-writes of
+ * meson_spifc_txrx() cost about as much as the chunk itself on two lines.
+ */
+static int meson_spifc_rx_dual(struct meson_spifc *spifc,
+			       struct spi_transfer *xfer, bool last_xfer)
+{
+	void __iomem *base = spifc->base;
+	unsigned int done, n, len = 0, i;
+	u8 *buf = xfer->rx_buf;
+	u32 user4, slave, data;
+	bool keep_cs;
+	int ret = 0;
+
+	keep_cs = last_xfer ? xfer->cs_change : !xfer->cs_change;
+
+	regmap_update_bits(spifc->regmap, REG_CTRL, CTRL_FAST_READ_DUAL_OUT,
+			   CTRL_FAST_READ_DUAL_OUT);
+	regmap_update_bits(spifc->regmap, REG_USER,
+			   USER_UC_MASK | USER_DIN_EN_MS, USER_UC_DIN_SEL);
+	user4 = readl(base + REG_USER4) | USER4_CS_ACT;
+	writel(user4, base + REG_USER4);
+	slave = readl(base + REG_SLAVE) & ~SLAVE_TRST_DONE;
+
+	for (done = 0; done < xfer->len; done += n) {
+		n = min_t(unsigned int, xfer->len - done, SPIFC_BUFFER_SIZE);
+		if (n != len) {
+			writel((8 * n - 1) << USER1_BN_UC_DIN_SHIFT,
+			       base + REG_USER1);
+			len = n;
+		}
+		if (done + n >= xfer->len && !keep_cs)
+			writel(user4 & ~USER4_CS_ACT, base + REG_USER4);
+
+		writel(slave, base + REG_SLAVE);
+		writel(CMD_USER, base + REG_CMD);
+		ret = readl_poll_timeout(base + REG_SLAVE, data,
+					 data & SLAVE_TRST_DONE, 0,
+					 5 * USEC_PER_MSEC);
+		if (ret)
+			break;
+
+		for (i = 0; i < n; i += 4) {
+			data = readl(base + REG_C0 + i);
+			memcpy(buf + done + i, &data,
+			       min_t(unsigned int, 4, n - i));
+		}
+	}
+
+	regmap_update_bits(spifc->regmap, REG_CTRL, CTRL_FAST_READ_DUAL_OUT, 0);
+
+	return ret;
+}
+
+/**
  * meson_spifc_transfer_one() - perform a single transfer
  * @host:	the SPI host
  * @spi:	the SPI device
@@ -252,6 +328,12 @@ static int meson_spifc_transfer_one(struct spi_controller *host,
 	meson_spifc_setup_speed(spifc, xfer->speed_hz);
 
 	regmap_update_bits(spifc->regmap, REG_CTRL, CTRL_ENABLE_AHB, 0);
+
+	if (xfer->rx_nbits == SPI_NBITS_DUAL && xfer->rx_buf && !xfer->tx_buf) {
+		ret = meson_spifc_rx_dual(spifc, xfer,
+					  spi_transfer_is_last(host, xfer));
+		done = xfer->len;
+	}
 
 	while (done < xfer->len && !ret) {
 		len = min_t(int, xfer->len - done, SPIFC_BUFFER_SIZE);
@@ -305,6 +387,7 @@ static int meson_spifc_probe(struct platform_device *pdev)
 		goto out_err;
 	}
 
+	spifc->base = base;
 	spifc->regmap = devm_regmap_init_mmio(spifc->dev, base,
 					      &spifc_regmap_config);
 	if (IS_ERR(spifc->regmap)) {
@@ -324,6 +407,8 @@ static int meson_spifc_probe(struct platform_device *pdev)
 	host->num_chipselect = 1;
 	host->dev.of_node = pdev->dev.of_node;
 	host->bits_per_word_mask = SPI_BPW_MASK(8);
+	/* Receive on two lines: meson_spifc_rx_dual() */
+	host->mode_bits = SPI_RX_DUAL;
 	host->auto_runtime_pm = true;
 	host->transfer_one = meson_spifc_transfer_one;
 	host->min_speed_hz = rate >> 6;
@@ -352,6 +437,7 @@ static void meson_spifc_remove(struct platform_device *pdev)
 {
 	pm_runtime_get_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	pm_runtime_put_noidle(&pdev->dev);
 }
 
 #ifdef CONFIG_PM_SLEEP

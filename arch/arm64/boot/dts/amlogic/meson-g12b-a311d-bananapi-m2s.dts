@@ -7,6 +7,7 @@
 
 #include "meson-g12b-a311d.dtsi"
 #include "meson-g12b-bananapi.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "bananapi,bpi-m2s", "amlogic,a311d", "amlogic,g12b";
@@ -32,6 +33,3 @@
 	pinctrl-names = "default";
 };
 
-&npu {
-	status = "okay";
-};

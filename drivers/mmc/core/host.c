@@ -173,9 +173,17 @@ void mmc_retune_release(struct mmc_host *host)
 }
 EXPORT_SYMBOL(mmc_retune_release);
 
+/*
+ * A re-tune that starts with more than this many data-CRC errors accrued in the
+ * interval since the last re-tune is treated as a persistent CRC storm at the
+ * current bus speed, driving the ->crc_downgrade ladder.
+ */
+#define MMC_CRC_STORM_LIMIT	32
+
 int mmc_retune(struct mmc_host *host)
 {
 	bool return_to_hs400 = false;
+	unsigned int storm;
 	int err;
 
 	if (host->retune_now)
@@ -189,6 +197,27 @@ int mmc_retune(struct mmc_host *host)
 	host->need_retune = 0;
 
 	host->doing_retune = 1;
+
+	/*
+	 * If the card CRC-stormed at the current speed, ask the bus type to slow
+	 * down instead of merely re-tuning at the same (marginal) rate. It either
+	 * reduces the host clock in place (return 0 -> fall through and re-tune at
+	 * the lower rate) or requests a protocol-grade drop (return <0 -> fail the
+	 * re-tune so the block layer hw-resets and re-inits the card slower).
+	 *
+	 * crc_storm_cnt accumulates across re-tunes and is only cleared when we
+	 * actually act on it -- a storm at the current speed re-tunes constantly
+	 * (retune_period is 0, so every re-tune is CRC-triggered), so clearing it
+	 * per re-tune would never let it reach the threshold.
+	 */
+	storm = host->crc_storm_cnt;
+	if (host->bus_ops && host->bus_ops->crc_downgrade &&
+	    storm > MMC_CRC_STORM_LIMIT) {
+		host->crc_storm_cnt = 0;
+		err = host->bus_ops->crc_downgrade(host);
+		if (err)
+			goto out;
+	}
 
 	if (host->ios.timing == MMC_TIMING_MMC_HS400) {
 		err = mmc_hs400_to_hs200(host->card);
@@ -305,6 +334,26 @@ int mmc_of_parse(struct mmc_host *host)
 	device_property_read_u32(dev, "max-sd-hs-hz", &host->max_sd_hs_hz);
 
 	/*
+	 * Downstream-only extension: "max-frequency-tuned" is a higher f_max the
+	 * host's CRC-storm speed-downgrade ladder (mmc_host_ops->lower_bus_clock +
+	 * the SD grade-drop) can safely back off from -- so a good device runs at
+	 * the higher clock while a poorer-signal one is stepped/graded down at
+	 * runtime instead of failing. "max-frequency" stays the upstream-safe
+	 * value: upstream lacks this property and keeps it. Applied unconditionally
+	 * (like "sd-uhs-ddr200"); it must only appear in a DT for a host that has
+	 * the ladder -- the DT is the opt-in. (mmc->ops is not set yet here, so it
+	 * cannot be gated on ->lower_bus_clock at parse time.)
+	 */
+	{
+		u32 f_max_tuned;
+
+		if (!device_property_read_u32(dev, "max-frequency-tuned",
+					      &f_max_tuned) &&
+		    f_max_tuned > host->f_max)
+			host->f_max = f_max_tuned;
+	}
+
+	/*
 	 * Configure CD and WP pins. They are both by default active low to
 	 * match the SDHCI spec. If GPIOs are provided for CD and / or WP, the
 	 * mmc-gpio helpers are used to attach, configure and use them. If
@@ -367,6 +416,8 @@ int mmc_of_parse(struct mmc_host *host)
 		host->caps |= MMC_CAP_UHS_SDR104;
 	if (device_property_read_bool(dev, "sd-uhs-ddr50"))
 		host->caps |= MMC_CAP_UHS_DDR50;
+	if (device_property_read_bool(dev, "sd-uhs-ddr200"))
+		host->caps2 |= MMC_CAP2_SD_DDR200;
 	if (device_property_read_bool(dev, "cap-power-off-card"))
 		host->caps |= MMC_CAP_POWER_OFF_CARD;
 	if (device_property_read_bool(dev, "cap-mmc-hw-reset"))
@@ -693,6 +744,7 @@ EXPORT_SYMBOL(mmc_remove_host);
 void mmc_free_host(struct mmc_host *host)
 {
 	cancel_delayed_work_sync(&host->detect);
+	cancel_work_sync(&host->sdio_irq_work);
 	mmc_pwrseq_free(host);
 	put_device(&host->class_dev);
 }

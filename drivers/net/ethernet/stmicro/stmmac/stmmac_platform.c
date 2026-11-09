@@ -552,12 +552,12 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 				&pdev->dev, plat->unicast_filter_entries);
 		plat->multicast_filter_bins = dwmac1000_validate_mcast_bins(
 				&pdev->dev, plat->multicast_filter_bins);
-		plat->has_gmac = 1;
+		plat->core_type = DWMAC_CORE_GMAC;
 		plat->pmt = 1;
 	}
 
 	if (of_device_is_compatible(np, "snps,dwmac-3.40a")) {
-		plat->has_gmac = 1;
+		plat->core_type = DWMAC_CORE_GMAC;
 		plat->enh_desc = 1;
 		plat->tx_coe = 1;
 		plat->bugged_jumbo = 1;
@@ -565,8 +565,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 	}
 
 	if (of_device_compatible_match(np, stmmac_gmac4_compats)) {
-		plat->has_gmac4 = 1;
-		plat->has_gmac = 0;
+		plat->core_type = DWMAC_CORE_GMAC4;
 		plat->pmt = 1;
 		if (of_property_read_bool(np, "snps,tso"))
 			plat->flags |= STMMAC_FLAG_TSO_EN;
@@ -580,7 +579,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 	}
 
 	if (of_device_is_compatible(np, "snps,dwxgmac")) {
-		plat->has_xgmac = 1;
+		plat->core_type = DWMAC_CORE_XGMAC;
 		plat->pmt = 1;
 		if (of_property_read_bool(np, "snps,tso"))
 			plat->flags |= STMMAC_FLAG_TSO_EN;
@@ -760,14 +759,6 @@ int stmmac_get_platform_resources(struct platform_device *pdev,
 			return -EPROBE_DEFER;
 		dev_info(&pdev->dev, "IRQ eth_wake_irq not found\n");
 		stmmac_res->wol_irq = stmmac_res->irq;
-	}
-
-	stmmac_res->lpi_irq =
-		platform_get_irq_byname_optional(pdev, "eth_lpi");
-	if (stmmac_res->lpi_irq < 0) {
-		if (stmmac_res->lpi_irq == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		dev_info(&pdev->dev, "IRQ eth_lpi not found\n");
 	}
 
 	stmmac_res->sfty_irq =
@@ -967,8 +958,15 @@ static int __maybe_unused stmmac_pltfr_noirq_suspend(struct device *dev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
 
+	/*
+	 * Interface down: the device should already be runtime-suspended, but a
+	 * PHY suspend callback that touches MDIO (e.g. genphy_suspend) resumes
+	 * the MAC through stmmac_mdio_access() during system suspend, after
+	 * runtime PM can put it back. Force it down so its bus clocks (and the
+	 * PLLs behind them) are off for the sleep; a no-op if already suspended.
+	 */
 	if (!netif_running(ndev))
-		return 0;
+		return pm_runtime_force_suspend(dev);
 
 	if (!stmmac_wol_enabled_mac(priv)) {
 		/* Disable clock in case of PWM is off */
@@ -988,8 +986,9 @@ static int __maybe_unused stmmac_pltfr_noirq_resume(struct device *dev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
 
+	/* Balances the interface-down force-suspend in noirq_suspend. */
 	if (!netif_running(ndev))
-		return 0;
+		return pm_runtime_force_resume(dev);
 
 	if (!stmmac_wol_enabled_mac(priv)) {
 		/* enable the clk previously disabled */

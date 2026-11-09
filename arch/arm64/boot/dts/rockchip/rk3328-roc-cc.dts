@@ -9,8 +9,30 @@
 #include "rk3328-roc.dtsi"
 
 / {
-	model = "Firefly ROC-RK3328-CC";
-	compatible = "firefly,roc-rk3328-cc", "rockchip,rk3328";
+	model = "Libre Computer ROC-RK3328-CC";
+	compatible = "libre-computer,roc-rk3328-cc", "firefly,roc-rk3328-cc", "rockchip,rk3328";
+};
+
+/*
+ * The RTL8211E is strapped to MDIO address 1 (PHYAD 001) and also answers at
+ * the broadcast address 0. Without a PHY node the bus scan registers both,
+ * the MAC attaches address 0, and on suspend address 1 (attached to nothing)
+ * is powered down -- the one PHY with it, so the link drops and Wake-on-LAN
+ * never sees its packet. Name the PHY so only it is registered.
+ */
+&gmac2io {
+	phy-handle = <&rtl8211e>;
+
+	mdio {
+		compatible = "snps,dwmac-mdio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		rtl8211e: ethernet-phy@1 {
+			compatible = "ethernet-phy-ieee802.3-c22";
+			reg = <1>;
+		};
+	};
 };
 
 &rk805 {

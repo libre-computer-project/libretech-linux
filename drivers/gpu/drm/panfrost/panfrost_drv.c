@@ -346,6 +346,215 @@ out_put_syncout:
 }
 
 static int
+panfrost_lookup_bos_batch(struct drm_device *dev,
+			  struct drm_file *file_priv,
+			  u64 bo_handles_ptr, u32 bo_handle_count,
+			  struct panfrost_job *job)
+{
+	struct panfrost_file_priv *priv = file_priv->driver_priv;
+	unsigned int i;
+	int ret;
+
+	job->bo_count = bo_handle_count;
+	if (!job->bo_count)
+		return 0;
+
+	ret = drm_gem_objects_lookup(file_priv,
+				     (void __user *)(uintptr_t)bo_handles_ptr,
+				     job->bo_count, &job->bos);
+	if (ret)
+		return ret;
+
+	job->mappings = kvmalloc_array(job->bo_count,
+				       sizeof(struct panfrost_gem_mapping *),
+				       GFP_KERNEL | __GFP_ZERO);
+	if (!job->mappings)
+		return -ENOMEM;
+
+	for (i = 0; i < job->bo_count; i++) {
+		struct panfrost_gem_object *bo = to_panfrost_bo(job->bos[i]);
+		struct panfrost_gem_mapping *mapping;
+
+		mapping = panfrost_gem_mapping_get(bo, priv);
+		if (!mapping) {
+			dev_dbg(bo->base.base.dev->dev,
+				"lookup_bos EINVAL: bo[%d] handle=%d no mapping\n",
+				i, i);
+			ret = -EINVAL;
+			break;
+		}
+		atomic_inc(&bo->gpu_usecount);
+		job->mappings[i] = mapping;
+	}
+
+	return ret;
+}
+
+static int panfrost_ioctl_submit_batch(struct drm_device *dev, void *data,
+				       struct drm_file *file)
+{
+	struct panfrost_device *pfdev = dev->dev_private;
+	struct panfrost_file_priv *file_priv = file->driver_priv;
+	struct drm_panfrost_submit_batch *args = data;
+	struct drm_panfrost_batch_job user_jobs[3];
+	struct panfrost_job *jobs[3] = {};
+	struct drm_syncobj *sync_outs[3] = {};
+	int ret = 0, i;
+
+	if (!args->job_count || args->job_count > 3)
+		return -EINVAL;
+	if (args->job_stride != sizeof(struct drm_panfrost_batch_job))
+		return -EINVAL;
+	if (args->flags || args->pad)
+		return -EINVAL;
+
+	/* Copy job descriptors from userspace */
+	if (copy_from_user(user_jobs, (void __user *)(uintptr_t)args->jobs,
+			   args->job_count * sizeof(struct drm_panfrost_batch_job)))
+		return -EFAULT;
+
+	/* Validate jobs and resolve sync objects */
+	for (i = 0; i < args->job_count; i++) {
+		if (!user_jobs[i].jc)
+			return -EINVAL;
+		if (user_jobs[i].requirements & ~JOB_REQUIREMENTS)
+			return -EINVAL;
+
+		if (user_jobs[i].out_sync) {
+			sync_outs[i] = drm_syncobj_find(file, user_jobs[i].out_sync);
+			if (!sync_outs[i]) {
+				ret = -ENODEV;
+				goto out_put_syncs;
+			}
+		}
+	}
+
+	/* Heap-allocate jobs -- scheduler runs them asynchronously after
+	 * this ioctl returns, so stack allocation would be use-after-free. */
+	for (i = 0; i < args->job_count; i++) {
+		jobs[i] = kzalloc(sizeof(*jobs[i]), GFP_KERNEL);
+		if (!jobs[i]) {
+			ret = -ENOMEM;
+			goto out_put_jobs;
+		}
+
+		kref_init(&jobs[i]->refcount);
+		jobs[i]->pfdev = pfdev;
+		jobs[i]->jc = user_jobs[i].jc;
+		jobs[i]->requirements = user_jobs[i].requirements;
+		jobs[i]->flush_id = panfrost_gpu_get_latest_flush_id(pfdev);
+		jobs[i]->mmu = file_priv->mmu;
+		jobs[i]->engine_usage = &file_priv->engine_usage;
+	}
+
+	/* Single BO lookup shared across all jobs */
+	ret = panfrost_lookup_bos_batch(dev, file, args->bo_handles,
+					args->bo_handle_count, jobs[0]);
+	if (ret)
+		goto out_put_jobs;
+
+	/* Share BO arrays: secondary jobs reference first job's arrays */
+	for (i = 1; i < args->job_count; i++) {
+		jobs[i]->bos = jobs[0]->bos;
+		jobs[i]->mappings = jobs[0]->mappings;
+		jobs[i]->bo_count = jobs[0]->bo_count;
+		jobs[i]->shared_bos = true;
+		/*
+		 * Pin the owner (and thus the shared bos/mappings arrays) for
+		 * the lifetime of this secondary.  The jobs run asynchronously
+		 * on the scheduler and may complete out of order, so without
+		 * this ref jobs[0] can be cleaned up (freeing the arrays) while
+		 * a secondary is still live -> use-after-free (the GPU-timeout
+		 * core_dump walking job->bos[] is the observed crash). Released
+		 * in panfrost_job_cleanup.
+		 */
+		jobs[i]->shared_owner = jobs[0];
+		kref_get(&jobs[0]->refcount);
+	}
+
+	/* Init scheduler jobs and copy in-syncs (only for first job) */
+	for (i = 0; i < args->job_count; i++) {
+		int slot = panfrost_job_get_slot(jobs[i]);
+
+		ret = drm_sched_job_init(&jobs[i]->base,
+					 &file_priv->sched_entity[slot],
+					 1, NULL, file->client_id);
+		if (ret) {
+			/*
+			 * jobs[i] was not armed (drm_sched_job_init failed).
+			 * On 6.18 drm_sched_job_cleanup() dereferences s_fence
+			 * with no NULL guard, so it must NOT run on jobs[i]
+			 * (s_fence is still NULL from kzalloc). Clean only the
+			 * armed 0..i-1; out_put_jobs frees jobs[i]. Mirrors the
+			 * single-submit out_put_job path.
+			 */
+			while (i > 0)
+				drm_sched_job_cleanup(&jobs[--i]->base);
+			goto out_put_jobs;
+		}
+
+		/* Only first job waits on in_syncs */
+		if (i == 0 && args->in_sync_count) {
+			u32 *in_syncs;
+
+			in_syncs = kvmalloc_array(args->in_sync_count,
+						  sizeof(u32), GFP_KERNEL);
+			if (!in_syncs) {
+				ret = -ENOMEM;
+				goto out_cleanup_jobs;
+			}
+			if (copy_from_user(in_syncs,
+					   (void __user *)(uintptr_t)args->in_syncs,
+					   args->in_sync_count * sizeof(u32))) {
+				kvfree(in_syncs);
+				ret = -EFAULT;
+				goto out_cleanup_jobs;
+			}
+			for (unsigned j = 0; j < args->in_sync_count; j++) {
+				ret = drm_sched_job_add_syncobj_dependency(
+					&jobs[i]->base, file, in_syncs[j], 0);
+				if (ret) {
+					kvfree(in_syncs);
+					goto out_cleanup_jobs;
+				}
+			}
+			kvfree(in_syncs);
+		}
+	}
+
+	/* Push all jobs */
+	for (i = 0; i < args->job_count; i++) {
+		ret = panfrost_job_push(jobs[i]);
+		if (ret)
+			goto out_cleanup_jobs;
+
+		if (sync_outs[i])
+			drm_syncobj_replace_fence(sync_outs[i],
+						  jobs[i]->render_done_fence);
+	}
+
+	/* All jobs pushed successfully */
+	for (i = 0; i < args->job_count; i++)
+		panfrost_job_put(jobs[i]);
+	for (i = 0; i < args->job_count; i++)
+		if (sync_outs[i])
+			drm_syncobj_put(sync_outs[i]);
+	return 0;
+
+out_cleanup_jobs:
+	for (int j = i; j >= 0; j--)
+		drm_sched_job_cleanup(&jobs[j]->base);
+out_put_jobs:
+	for (i = 0; i < args->job_count; i++)
+		panfrost_job_put(jobs[i]);
+out_put_syncs:
+	for (i = 0; i < args->job_count; i++)
+		if (sync_outs[i])
+			drm_syncobj_put(sync_outs[i]);
+	return ret;
+}
+
+static int
 panfrost_ioctl_wait_bo(struct drm_device *dev, void *data,
 		       struct drm_file *file_priv)
 {
@@ -365,6 +574,8 @@ panfrost_ioctl_wait_bo(struct drm_device *dev, void *data,
 				    true, timeout);
 	if (!ret)
 		ret = timeout ? -ETIMEDOUT : -EBUSY;
+	else if (ret > 0)
+		ret = 0;
 
 	drm_gem_object_put(gem_obj);
 
@@ -603,6 +814,7 @@ static const struct drm_ioctl_desc panfrost_drm_driver_ioctls[] = {
 	PANFROST_IOCTL(PERFCNT_DUMP,	perfcnt_dump,	DRM_RENDER_ALLOW),
 	PANFROST_IOCTL(MADVISE,		madvise,	DRM_RENDER_ALLOW),
 	PANFROST_IOCTL(SET_LABEL_BO,	set_label_bo,	DRM_RENDER_ALLOW),
+	PANFROST_IOCTL(SUBMIT_BATCH,	submit_batch,	DRM_RENDER_ALLOW),
 };
 
 static void panfrost_gpu_show_fdinfo(struct panfrost_device *pfdev,
@@ -699,6 +911,7 @@ static void panfrost_debugfs_init(struct drm_minor *minor)
  * - 1.3 - adds JD_REQ_CYCLE_COUNT job requirement for SUBMIT
  *       - adds SYSTEM_TIMESTAMP and SYSTEM_TIMESTAMP_FREQUENCY queries
  * - 1.4 - adds SET_LABEL_BO
+ * - 1.5 - adds SUBMIT_BATCH (multi-job submission with shared BO list)
  */
 static const struct drm_driver panfrost_drm_driver = {
 	.driver_features	= DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ,
@@ -711,7 +924,7 @@ static const struct drm_driver panfrost_drm_driver = {
 	.name			= "panfrost",
 	.desc			= "panfrost DRM",
 	.major			= 1,
-	.minor			= 4,
+	.minor			= 5,
 
 	.gem_create_object	= panfrost_gem_create_object,
 	.gem_prime_import_sg_table = panfrost_gem_prime_import_sg_table,

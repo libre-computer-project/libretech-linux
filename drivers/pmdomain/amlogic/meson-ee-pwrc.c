@@ -199,8 +199,8 @@ static const struct meson_ee_pwrc_mem_domain sm1_pwrc_mem_vpu[] = {
 };
 
 static const struct meson_ee_pwrc_mem_domain sm1_pwrc_mem_nna[] = {
-	{ HHI_NANOQ_MEM_PD_REG0, 0xff },
-	{ HHI_NANOQ_MEM_PD_REG1, 0xff },
+	{ HHI_NANOQ_MEM_PD_REG0, GENMASK(31, 0) },
+	{ HHI_NANOQ_MEM_PD_REG1, GENMASK(31, 0) },
 };
 
 static const struct meson_ee_pwrc_mem_domain sm1_pwrc_mem_usb[] = {
@@ -556,6 +556,19 @@ static int meson_ee_pwrc_probe(struct platform_device *pdev)
 		ret = meson_ee_pwrc_init_domain(pdev, pwrc, dom);
 		if (ret)
 			return ret;
+
+		/*
+		 * The ETH memory power domain feeds the MAC's SRAM, which the
+		 * PMT magic-packet matcher needs. Without ACTIVE_WAKEUP,
+		 * genpd_finish_suspend() gates it at suspend_noirq even when
+		 * the MAC is the declared wake path. G12-wide: the G12A/G12B
+		 * ethmac node (meson-g12.dtsi) sits in PWRC_G12A_ETH_ID and
+		 * the SM1 node (meson-sm1.dtsi) in PWRC_SM1_ETH_ID, both from
+		 * the same unflagged MEM_PD entry.
+		 */
+		if ((match->domains == g12a_pwrc_domains && i == PWRC_G12A_ETH_ID) ||
+		    (match->domains == sm1_pwrc_domains && i == PWRC_SM1_ETH_ID))
+			dom->base.flags |= GENPD_FLAG_ACTIVE_WAKEUP;
 
 		pwrc->xlate.domains[i] = &dom->base;
 	}

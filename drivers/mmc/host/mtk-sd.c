@@ -502,6 +502,8 @@ struct msdc_host {
 	struct clk_bulk_data bulk_clks[MSDC_NR_CLOCKS];
 	u32 mclk;		/* mmc subsystem clock frequency */
 	u32 src_clk_freq;	/* source clock frequency */
+	unsigned long src_clk_ceiling;	/* CRC-ladder rung 0: DT-sanctioned max src rate */
+	u32 crc_storm_cnt;	/* real-I/O data-CRC errors since last ladder step / re-arm */
 	unsigned char timing;
 	bool vqmmc_enabled;
 	u32 latch_ck;
@@ -517,6 +519,7 @@ struct msdc_host {
 	bool internal_cd;	/* Use internal card-detect logic */
 	bool cqhci;		/* support eMMC hw cmdq */
 	bool hsq_en;		/* Host Software Queue is enabled */
+	u32 dma_burst;		/* MSDC_DMA_CTRL_BRUSTSZ value; default MSDC_BURST_64B */
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
 	struct msdc_tune_para saved_tune_para; /* tune result of CMD21/CMD19 */
@@ -835,7 +838,7 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 	sdr_set_field(host->base + MSDC_DMA_CFG, MSDC_DMA_CFG_DECSEN, 1);
 	dma_ctrl = readl_relaxed(host->base + MSDC_DMA_CTRL);
 	dma_ctrl &= ~(MSDC_DMA_CTRL_BRUSTSZ | MSDC_DMA_CTRL_MODE);
-	dma_ctrl |= (MSDC_BURST_64B << 12 | BIT(8));
+	dma_ctrl |= (host->dma_burst << 12 | BIT(8));
 	writel_relaxed(dma_ctrl, host->base + MSDC_DMA_CTRL);
 	if (host->dev_comp->support_64g)
 		sdr_set_field(host->base + DMA_SA_H4BIT, DMA_ADDR_HIGH_4BIT,
@@ -1279,7 +1282,16 @@ static void msdc_track_cmd_data(struct msdc_host *host, struct mmc_command *cmd)
 	if (host->error &&
 	    ((!mmc_op_tuning(cmd->opcode) && !host->hs400_tuning) ||
 	     cmd->error == -ETIMEDOUT))
-		dev_warn(host->dev, "%s: cmd=%d arg=%08X; host->error=0x%08X\n",
+		/*
+		 * Rate-limit: a stalled SDIO slave (e.g. the MT7663 Wi-Fi combo
+		 * on the MT8365/g350 whose CMD53 command engine wedges under a
+		 * sustained TX write-storm, host->error=REQ_CMD_TMO=0x2) makes
+		 * this fire on every request-done, flooding the console at kHz
+		 * and making the serial link unusable. The per-command detail is
+		 * still logged, just bounded.
+		 */
+		dev_warn_ratelimited(host->dev,
+			 "%s: cmd=%d arg=%08X; host->error=0x%08X\n",
 			 __func__, cmd->opcode, cmd->arg, host->error);
 }
 
@@ -1602,8 +1614,17 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 
 			if (events & MSDC_INT_DATTMO)
 				data->error = -ETIMEDOUT;
-			else if (events & MSDC_INT_DATCRCERR)
+			else if (events & MSDC_INT_DATCRCERR) {
 				data->error = -EILSEQ;
+				/*
+				 * Accrue real-I/O data-CRC errors to drive the
+				 * SDR104 clock ladder (msdc_execute_tuning). Ignore
+				 * CRCs raised by retune / init tuning sweeps, where
+				 * bad-tap CRCs are expected.
+				 */
+				if (!mmc_doing_tune(mmc_from_priv(host)))
+					host->crc_storm_cnt++;
+			}
 
 			dev_dbg(host->dev, "%s: cmd=%d; blocks=%d",
 				__func__, mrq->cmd->opcode, data->blocks);
@@ -2153,6 +2174,19 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			regulator_disable(mmc->supply.vqmmc);
 			host->vqmmc_enabled = false;
 		}
+		/*
+		 * Re-arm the CRC-storm clock ladder for the next card: restore the
+		 * source-clock ceiling (rung 0) and clear the storm count, so a
+		 * fresh card starts at full speed (a per-card ladder, not a
+		 * permanent host downgrade).
+		 */
+		if (host->src_clk_ceiling &&
+		    clk_get_rate(host->src_clk) != host->src_clk_ceiling) {
+			clk_set_rate(host->src_clk, host->src_clk_ceiling);
+			host->src_clk_freq = clk_get_rate(host->src_clk);
+			host->mclk = 0;	/* force msdc_set_mclk() to re-apply next card */
+		}
+		host->crc_storm_cnt = 0;
 		break;
 	default:
 		break;
@@ -2543,11 +2577,62 @@ skip_fall:
 	return final_delay == 0xff ? -EIO : 0;
 }
 
+#define MSDC_CRC_STORM_LIMIT	32		/* real-I/O CRC errors that mean "storm" */
+#define MSDC_SDR104_MIN_CLK	156000000	/* lowest useful msdc30_1 SDR104 mux rung */
+
+/*
+ * CRC-storm clock-ladder step. A marginal SD card can tune clean at SDR104's full
+ * source rate yet CRC-storm under sustained load; walk the msdc30_1 mux one real
+ * rung down (208 -> 192 -> 182 -> 156 MHz on MT8188/MT8195) so the wider eye at the
+ * lower clock settles it. The msdc internal SDR divider only offers source/1 or
+ * source/2 (a 2x cliff), so the graceful rungs come from re-rating the mux parent
+ * (clk_set_rate reparents it -- mtk_mux_clr_set_upd_ops determine_rate walks parents).
+ * Mirrors meson_mmc_lower_bus_clock(). Returns 0 if the source was lowered, -ENODEV
+ * at the floor (stop laddering). msdc1 is SD-only, so re-rating its mux is isolated.
+ */
+static int msdc_lower_src_clock(struct msdc_host *host)
+{
+	unsigned long cur = clk_get_rate(host->src_clk);
+	long next;
+
+	/*
+	 * Round DOWN ~3% below the current rate to land on the next lower mux rung.
+	 * The msdc30_1 rungs (208/192/182/156) are spaced 7.7% / 5.2% / 14% apart, so
+	 * the step must be smaller than the tightest gap (192->182) or clk_round_rate
+	 * skips a rung; >>5 (~3.1%) clears the current rung without overshooting.
+	 */
+	next = clk_round_rate(host->src_clk, cur - (cur >> 5));
+	if (next <= 0 || (unsigned long)next >= cur || next < MSDC_SDR104_MIN_CLK)
+		return -ENODEV;			/* at/under the floor: stop laddering */
+
+	clk_set_rate(host->src_clk, next);
+	host->src_clk_freq = clk_get_rate(host->src_clk);
+	dev_warn(host->dev,
+		 "SDR104 CRC storm: lowered SD source clock %lu -> %u Hz\n",
+		 cur, host->src_clk_freq);
+	return 0;
+}
+
 static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 {
 	struct msdc_host *host = mmc_priv(mmc);
 	int ret;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
+
+	/*
+	 * The core drives this retune off a CRC -EILSEQ (core.c mmc_retune_needed).
+	 * If a data-CRC storm accrued during real SDR104 I/O, ratchet the SD source
+	 * clock one rung down (wider eye) and re-tune there rather than re-tuning at
+	 * the same marginal rate. crc_storm_cnt persists across retune cycles and is
+	 * cleared only here (on a ladder step) or on card removal, so a storm can
+	 * accumulate to the limit (mirrors the meson 039863b fix).
+	 */
+	if (mmc->ios.timing == MMC_TIMING_UHS_SDR104 &&
+	    host->crc_storm_cnt > MSDC_CRC_STORM_LIMIT) {
+		if (!msdc_lower_src_clock(host))
+			msdc_set_mclk(host, mmc->ios.timing, mmc->ios.clock);
+		host->crc_storm_cnt = 0;
+	}
 
 	if (host->dev_comp->data_tune && host->dev_comp->async_fifo) {
 		ret = msdc_tune_together(mmc, opcode);
@@ -2582,6 +2667,13 @@ tune_done:
 		host->saved_tune_para.emmc_top_cmd = readl(host->top_base +
 				EMMC_TOP_CMD);
 	}
+	/*
+	 * Discard the CRC pollution from the SD init-time tuning sweep (this runs
+	 * with doing_retune == 0), but preserve crc_storm_cnt across retunes so a
+	 * real storm can accumulate to MSDC_CRC_STORM_LIMIT.
+	 */
+	if (!mmc_doing_retune(mmc))
+		host->crc_storm_cnt = 0;
 	return ret;
 }
 
@@ -2902,6 +2994,20 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 		host->cqhci = true;
 	else
 		host->cqhci = false;
+
+	/*
+	 * MSDC DMA burst size. Absent -> MSDC_BURST_64B (the historical hard-
+	 * coded value; byte-identical behaviour for every board that does not set
+ * the property). A board may lower it (32B/16B/8B) to shrink the DMA read
+ * footprint -- used on the Pumpkin i500 (mt8183-g500) as a §3.1 DRAM-read-
+ * concurrency boot-mitigation (per the internal libdram fix plan). Only the
+ * low 3 bits are valid (GENMASK
+	 * 14:12).
+	 */
+	host->dma_burst = MSDC_BURST_64B;
+	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,dma-max-burst",
+				  &host->dma_burst))
+		host->dma_burst &= 0x7;
 }
 
 static int msdc_of_clock_parse(struct platform_device *pdev,
@@ -3051,6 +3157,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 
 	host->dev = &pdev->dev;
 	host->src_clk_freq = clk_get_rate(host->src_clk);
+	host->src_clk_ceiling = host->src_clk_freq;	/* CRC clock-ladder rung 0 */
 	/* Set host parameters to mmc */
 	mmc->ops = &mt_msdc_ops;
 	if (host->dev_comp->clk_div_bits == 8)
@@ -3194,6 +3301,7 @@ static void msdc_drv_remove(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, NULL);
 	mmc_remove_host(mmc);
+	cancel_delayed_work_sync(&host->req_timeout);
 	msdc_deinit_hw(host);
 	msdc_gate_clock(host);
 

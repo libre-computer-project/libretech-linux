@@ -11,10 +11,12 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
 #include <linux/tty.h>
@@ -40,8 +42,13 @@
 #define AML_UART_TX_RST			BIT(22)
 #define AML_UART_RX_RST			BIT(23)
 #define AML_UART_CLEAR_ERR		BIT(24)
+#define AML_UART_RX_INV			BIT(25)
+#define AML_UART_TX_INV			BIT(26)
 #define AML_UART_RX_INT_EN		BIT(27)
 #define AML_UART_TX_INT_EN		BIT(28)
+#define AML_UART_CTS_INV		BIT(29)
+#define AML_UART_ERR_MASK		BIT(30)
+#define AML_UART_RTS_INV		BIT(31)
 #define AML_UART_DATA_LEN_MASK		(0x03 << 20)
 #define AML_UART_DATA_LEN_8BIT		(0x00 << 20)
 #define AML_UART_DATA_LEN_7BIT		(0x01 << 20)
@@ -93,6 +100,30 @@ static void meson_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
 static unsigned int meson_uart_get_mctrl(struct uart_port *port)
 {
 	return TIOCM_CTS;
+}
+
+static void meson_uart_set_rx_invert(struct uart_port *port, bool invert_rx)
+{
+	u32 val;
+
+	val = readl(port->membase + AML_UART_CONTROL);
+	if (invert_rx)
+		val |= AML_UART_RX_INV;
+	else
+		val &= ~AML_UART_RX_INV;
+	writel(val, port->membase + AML_UART_CONTROL);
+}
+
+static void meson_uart_set_tx_invert(struct uart_port *port, bool invert_tx)
+{
+	u32 val;
+
+	val = readl(port->membase + AML_UART_CONTROL);
+	if (invert_tx)
+		val |= AML_UART_TX_INV;
+	else
+		val &= ~AML_UART_TX_INV;
+	writel(val, port->membase + AML_UART_CONTROL);
 }
 
 static unsigned int meson_uart_tx_empty(struct uart_port *port)
@@ -692,6 +723,53 @@ static struct uart_driver *meson_uart_current(const struct meson_uart_data *pd)
 		pd->uart_driver : &meson_uart_driver_ttyAML;
 }
 
+/*
+ * DT "wakeup-source" (Documentation/devicetree/bindings/power/wakeup-source.txt).
+ * The serial core decides whether a port wakes the system in
+ * uart_suspend_port(), from device_may_wakeup() of the port's tty class
+ * device, and registers that device wakeup-capable but disabled
+ * (serial_core_add_one_port()).  So the property is honoured by enabling
+ * wakeup on the tty device the core registered for this port; userspace can
+ * still turn it off through /sys/class/tty/<port>/power/wakeup.  The tty
+ * device sits below the serial core's controller and port devices, whose type
+ * is private to the core, so it is found by its devt.
+ */
+struct meson_uart_tty_lookup {
+	dev_t devt;
+	struct device *found;
+};
+
+static int meson_uart_find_tty(struct device *dev, void *data)
+{
+	struct meson_uart_tty_lookup *lookup = data;
+
+	if (dev->devt == lookup->devt) {
+		lookup->found = get_device(dev);
+		return 1;
+	}
+
+	return device_for_each_child(dev, lookup, meson_uart_find_tty);
+}
+
+static void meson_uart_init_wakeup(struct uart_driver *drv,
+				   struct uart_port *port)
+{
+	struct tty_driver *tty_drv = drv->tty_driver;
+	struct meson_uart_tty_lookup lookup = {
+		.devt = MKDEV(tty_drv->major, tty_drv->minor_start) + port->line,
+	};
+
+	device_for_each_child(port->dev, &lookup, meson_uart_find_tty);
+	if (!lookup.found) {
+		dev_warn(port->dev, "wakeup-source: no tty device for line %u\n",
+			 port->line);
+		return;
+	}
+
+	device_set_wakeup_enable(lookup.found, true);
+	put_device(lookup.found);
+}
+
 static int meson_uart_probe(struct platform_device *pdev)
 {
 	const struct meson_uart_data *priv_data;
@@ -702,6 +780,7 @@ static int meson_uart_probe(struct platform_device *pdev)
 	int ret = 0;
 	int irq;
 	bool has_rtscts;
+	bool invert_rx, invert_tx, invert_cts, invert_rts;
 
 	if (pdev->dev.of_node)
 		pdev->id = of_alias_get_id(pdev->dev.of_node, "serial");
@@ -730,6 +809,11 @@ static int meson_uart_probe(struct platform_device *pdev)
 
 	of_property_read_u32(pdev->dev.of_node, "fifo-size", &fifosize);
 	has_rtscts = of_property_read_bool(pdev->dev.of_node, "uart-has-rtscts");
+
+	invert_rx = of_property_read_bool(pdev->dev.of_node, "uart-invert-rx");
+	invert_tx = of_property_read_bool(pdev->dev.of_node, "uart-invert-tx");
+	invert_cts = of_property_read_bool(pdev->dev.of_node, "uart-invert-cts");
+	invert_rts = of_property_read_bool(pdev->dev.of_node, "uart-invert-rts");
 
 	if (meson_ports[pdev->id]) {
 		return dev_err_probe(&pdev->dev, -EBUSY,
@@ -783,6 +867,11 @@ static int meson_uart_probe(struct platform_device *pdev)
 	ret = uart_add_one_port(uart_driver, port);
 	if (ret)
 		meson_ports[pdev->id] = NULL;
+	else if (of_property_read_bool(pdev->dev.of_node, "wakeup-source"))
+		meson_uart_init_wakeup(uart_driver, port);
+
+	meson_uart_set_rx_invert(port, invert_rx);
+	meson_uart_set_tx_invert(port, invert_tx);
 
 	return ret;
 }
@@ -840,12 +929,81 @@ static const struct of_device_id meson_uart_dt_match[] = {
 };
 MODULE_DEVICE_TABLE(of, meson_uart_dt_match);
 
+/*
+ * System sleep.  The generic serial core does all the work: for a port whose
+ * tty device has wakeup enabled, uart_suspend_port() calls
+ * enable_irq_wake(uport->irq) and leaves the port completely running, so a
+ * byte arriving on RX while the system is in s2idle raises an armed IRQ and
+ * ends the sleep.  Without a .pm here that path is never entered at all, the
+ * IRQ takes suspend_device_irq()'s non-wakeup branch, and the GIC's
+ * IRQCHIP_MASK_ON_SUSPEND masks it in hardware -- so an RX byte produces
+ * nothing.
+ *
+ * Note /sys/class/tty/<port>/power/wakeup exists and accepts "enabled"
+ * regardless; it is not evidence that the IRQ was armed.
+ *
+ * The port has ONE interrupt for RX and TX, and "completely running" includes
+ * AML_UART_TX_INT_EN: set by meson_uart_startup(), and restored by the console
+ * write path after every printk (it saves and restores AML_UART_CONTROL).  So
+ * while the IRQ is wake-armed, the TX FIFO draining the last suspend-time
+ * printk raises the armed line and ends s2idle a few milliseconds after it
+ * starts, with no byte received.  A wake-armed port must wake on RX only:
+ * mask the TX interrupt for as long as the IRQ is armed.  Output still drains
+ * (the transmitter stays enabled; the console writes by polling), and
+ * meson_uart_start_tx() sets AML_UART_TX_INT_EN again whenever it leaves data
+ * queued, so resume only has to restart a transmission left in the queue.
+ */
+static bool meson_uart_wake_armed(struct uart_port *port)
+{
+	return irqd_is_wakeup_set(irq_get_irq_data(port->irq));
+}
+
+static int meson_uart_suspend(struct device *dev)
+{
+	struct uart_port *port = dev_get_drvdata(dev);
+	unsigned long flags;
+	int ret;
+
+	ret = uart_suspend_port(meson_uart_current(port->private_data), port);
+	if (ret || !meson_uart_wake_armed(port))
+		return ret;
+
+	uart_port_lock_irqsave(port, &flags);
+	meson_uart_stop_tx(port);
+	uart_port_unlock_irqrestore(port, flags);
+
+	return 0;
+}
+
+static int meson_uart_resume(struct device *dev)
+{
+	struct uart_port *port = dev_get_drvdata(dev);
+	bool armed = meson_uart_wake_armed(port);
+	unsigned long flags;
+	int ret;
+
+	ret = uart_resume_port(meson_uart_current(port->private_data), port);
+	if (ret || !armed)
+		return ret;
+
+	uart_port_lock_irqsave(port, &flags);
+	if (!kfifo_is_empty(&port->state->port.xmit_fifo))
+		meson_uart_start_tx(port);
+	uart_port_unlock_irqrestore(port, flags);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(meson_uart_pm_ops, meson_uart_suspend,
+				meson_uart_resume);
+
 static  struct platform_driver meson_uart_platform_driver = {
 	.probe		= meson_uart_probe,
 	.remove		= meson_uart_remove,
 	.driver		= {
 		.name		= "meson_uart",
 		.of_match_table	= meson_uart_dt_match,
+		.pm		= pm_sleep_ptr(&meson_uart_pm_ops),
 	},
 };
 

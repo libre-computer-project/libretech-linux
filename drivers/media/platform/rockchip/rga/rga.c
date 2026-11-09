@@ -146,6 +146,9 @@ static int rga_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_BG_COLOR:
 		ctx->fill_color = ctrl->val;
 		break;
+	case V4L2_CID_ALPHA_COMPONENT:
+		ctx->alpha = ctrl->val;
+		break;
 	}
 	spin_unlock_irqrestore(&ctx->rga->ctrl_lock, flags);
 	return 0;
@@ -159,7 +162,7 @@ static int rga_setup_ctrls(struct rga_ctx *ctx)
 {
 	struct rockchip_rga *rga = ctx->rga;
 
-	v4l2_ctrl_handler_init(&ctx->ctrl_handler, 4);
+	v4l2_ctrl_handler_init(&ctx->ctrl_handler, 5);
 
 	v4l2_ctrl_new_std(&ctx->ctrl_handler, &rga_ctrl_ops,
 			  V4L2_CID_HFLIP, 0, 1, 1, 0);
@@ -172,6 +175,23 @@ static int rga_setup_ctrls(struct rga_ctx *ctx)
 
 	v4l2_ctrl_new_std(&ctx->ctrl_handler, &rga_ctrl_ops,
 			  V4L2_CID_BG_COLOR, 0, 0xffffffff, 1, 0);
+
+	/*
+	 * V4L2_CID_ALPHA_COMPONENT is registered HERE, by b559900e0fd03
+	 * ("media: rockchip: rga: implement global alpha blending").  That
+	 * commit's message says the control "was already registered but its
+	 * value was never read"; that is wrong -- its own diff adds this call
+	 * and bumps the handler hint from 4 to 5.  The message is immutable,
+	 * so the correction lives here.
+	 *
+	 * The default of 255 is what keeps blending off unless userspace asks
+	 * for it: rga-hw.c gates the whole ALPHA_CTRL0/1 block on
+	 * ctx->alpha < 255, and ctx is kzalloc()'d (alpha 0), so the no-op
+	 * default only holds because rga_open() runs
+	 * v4l2_ctrl_handler_setup() afterwards and pushes 255 into ctx->alpha.
+	 */
+	v4l2_ctrl_new_std(&ctx->ctrl_handler, &rga_ctrl_ops,
+			  V4L2_CID_ALPHA_COMPONENT, 0, 255, 1, 255);
 
 	if (ctx->ctrl_handler.error) {
 		int err = ctx->ctrl_handler.error;

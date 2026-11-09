@@ -173,6 +173,10 @@ enum opp_table_access {
  * @shared_opp: OPP is shared between multiple devices.
  * @current_rate_single_clk: Currently configured frequency for single clk.
  * @current_opp: Currently configured OPP for the table.
+ * @volt_gen: Bumped under @lock whenever an OPP's voltages are adjusted.
+ * @current_volt_gen: @volt_gen as sampled by the set that programmed
+ *		@current_opp; a set of the same OPP is skipped only while the two
+ *		are equal.
  * @suspend_opp: Pointer to OPP to be used during device suspend.
  * @required_opp_tables: List of device OPP tables that are required by OPPs in
  *		this table.
@@ -222,6 +226,8 @@ struct opp_table {
 	enum opp_table_access shared_opp;
 	unsigned long current_rate_single_clk;
 	struct dev_pm_opp *current_opp;
+	unsigned int volt_gen;
+	unsigned int current_volt_gen;
 	struct dev_pm_opp *suspend_opp;
 
 	struct opp_table **required_opp_tables;

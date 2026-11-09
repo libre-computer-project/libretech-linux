@@ -37,6 +37,19 @@ struct panfrost_job {
 	bool is_profiled;
 	ktime_t start_time;
 	u64 start_cycles;
+
+	/* SUBMIT_BATCH: if true, bos/mappings are shared with another job in
+	 * the batch (they point at the first job's arrays). This job must NOT
+	 * free bos/mappings in panfrost_job_cleanup; the owning job does.
+	 * The job struct itself is always heap-allocated on 6.18 and is freed
+	 * unconditionally by panfrost_job_cleanup (kfree). */
+	bool shared_bos;
+	/* SUBMIT_BATCH secondary: the primary job that owns the shared
+	 * bos/mappings arrays.  This secondary holds a refcount on it so the
+	 * arrays stay alive until this job completes -- otherwise a secondary
+	 * that outlives the primary dereferences freed bos (e.g. in
+	 * panfrost_core_dump on a GPU timeout). NULL for a non-shared job. */
+	struct panfrost_job *shared_owner;
 };
 
 int panfrost_job_init(struct panfrost_device *pfdev);

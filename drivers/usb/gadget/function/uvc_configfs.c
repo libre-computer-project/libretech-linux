@@ -2135,6 +2135,7 @@ static struct configfs_attribute *uvcg_frame_attrs2[] = {
 	&uvcg_frame_attr_w_height,
 	&uvcg_frame_attr_dw_min_bit_rate,
 	&uvcg_frame_attr_dw_max_bit_rate,
+	&uvcg_frame_attr_dw_max_video_frame_buffer_size,
 	&uvcg_frame_attr_dw_default_frame_interval,
 	&uvcg_frame_attr_dw_frame_interval,
 	&uvcg_frame_attr_dw_bytes_perline,

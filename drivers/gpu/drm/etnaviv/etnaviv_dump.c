@@ -18,6 +18,39 @@
 static bool etnaviv_dump_core = true;
 module_param_named(dump_core, etnaviv_dump_core, bool, 0600);
 
+/*
+ * qi:N1462 -- etnaviv_core_dump() runs on the line immediately BEFORE
+ * etnaviv_gpu_recover_hang() on the timeout path, and reads 37 registers off
+ * the same block whose AXI is wedged, six of them the very registers qi:N1453
+ * removed from recover_hang(). The qi:N1453 fix does not touch it, so "zero
+ * MMIO between the timeout and the reset" is false of the path as a whole.
+ *
+ * qi:N1464/qi:N1465 -- THESE 37 READS ARE NOT THE HAZARD, and this knob is NOT
+ * a workaround for one. Measured on a wedged A311D 0x88 at the only position
+ * where the abort reproduces (the first inference cell after a boot): four
+ * clean cells took all 37 reads off the wedged block -- 148 reads -- with zero
+ * aborts, while a SINGLE gpu_read() issued a few hundred ms later from
+ * etnaviv_gpu_recover_hang() killed the board in 11 armed cells out of 11.
+ * The abort is POSITIONAL, not per-register: VIVS_FE_DMA_ADDRESS is read here
+ * and again by etnaviv_sched_timedout_job() without harm, and fatally on the
+ * third read from inside recover_hang. Turning this knob off does NOT make a
+ * board safer; the only knob that can hurt you is npu_recover_predump.
+ *
+ * So this stays a DIAGNOSTIC LEVER, kept for one open question: what changes
+ * in the ~376 ms between the dump's reads and the predump block. It is the only
+ * way to vary the dump's MMIO, and the exoneration above rests on four cells at
+ * p = 1.0 -- no power at all -- so removing it would close the only channel that
+ * can raise n.
+ *
+ * This knob gates the register read loop only: the dump buffer keeps its shape
+ * and its register addresses, and the values read back as 0 -- so the arm is a
+ * MMIO change, not a layout change.
+ */
+static bool npu_coredump_regs = true;
+module_param_named(npu_coredump_regs, npu_coredump_regs, bool, 0644);
+MODULE_PARM_DESC(npu_coredump_regs,
+	"read the 37 diagnostic registers in the core dump (default 1). 0 = record their addresses with value 0 and do NO MMIO. DIAGNOSTIC ONLY: these reads are measured SAFE on a wedged A311D 0x88 and changing this fixes nothing -- the fatal MMIO is npu_recover_predump's, not this.");
+
 struct core_dump_iterator {
 	void *start;
 	struct etnaviv_dump_object_header *hdr;
@@ -91,8 +124,13 @@ static void etnaviv_core_dump_registers(struct core_dump_iterator *iter,
 		    read_addr <= VIVS_PM_PULSE_EATER)
 			read_addr = gpu_fix_power_address(gpu, read_addr);
 		reg->reg = cpu_to_le32(etnaviv_dump_registers[i]);
-		reg->value = cpu_to_le32(gpu_read(gpu, read_addr));
+		reg->value = npu_coredump_regs ?
+			cpu_to_le32(gpu_read(gpu, read_addr)) : 0;
 	}
+
+	dev_err(gpu->dev, "core dump: %u register read(s)\n",
+		npu_coredump_regs ?
+			(unsigned int)ARRAY_SIZE(etnaviv_dump_registers) : 0u);
 
 	etnaviv_core_dump_header(iter, ETDUMP_BUF_REG, reg);
 }

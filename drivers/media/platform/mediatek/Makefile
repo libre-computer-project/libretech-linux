@@ -4,3 +4,6 @@ obj-y += mdp/
 obj-y += vcodec/
 obj-y += vpu/
 obj-y += mdp3/
+obj-$(CONFIG_VIDEO_MTK_AIE) += aie/
+obj-y += isp/dpe7/
+obj-y += isp/fd/

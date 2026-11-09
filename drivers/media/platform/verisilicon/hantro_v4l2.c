@@ -222,6 +222,7 @@ static int vidioc_enum_fmt(struct file *file, void *priv,
 	unsigned int num_fmts, i, j = 0;
 	bool skip_mode_none, enum_all_formats;
 	u32 index = f->index & ~V4L2_FMTDESC_FLAG_ENUM_ALL;
+	bool need_postproc = ctx->need_postproc;
 
 	/*
 	 * If the V4L2_FMTDESC_FLAG_ENUM_ALL flag is set, we want to enumerate all
@@ -229,6 +230,9 @@ static int vidioc_enum_fmt(struct file *file, void *priv,
 	 */
 	enum_all_formats = !!(f->index & V4L2_FMTDESC_FLAG_ENUM_ALL);
 	f->index = index;
+
+	if (enum_all_formats)
+		need_postproc = HANTRO_AUTO_POSTPROC;
 
 	/*
 	 * When dealing with an encoder:
@@ -242,7 +246,7 @@ static int vidioc_enum_fmt(struct file *file, void *priv,
 	 */
 	skip_mode_none = capture == ctx->is_encoder;
 
-	formats = hantro_get_formats(ctx, &num_fmts, HANTRO_AUTO_POSTPROC);
+	formats = hantro_get_formats(ctx, &num_fmts, need_postproc);
 	for (i = 0; i < num_fmts; i++) {
 		bool mode_none = formats[i].codec_mode == HANTRO_MODE_NONE;
 		fmt = &formats[i];
@@ -443,13 +447,15 @@ hantro_reset_encoded_fmt(struct hantro_ctx *ctx)
 int
 hantro_reset_raw_fmt(struct hantro_ctx *ctx, int bit_depth, bool need_postproc)
 {
-	const struct hantro_fmt *raw_vpu_fmt;
+	const struct hantro_fmt *raw_vpu_fmt, *old_vpu_src_fmt;
 	struct v4l2_pix_format_mplane raw_fmt, *encoded_fmt;
 	int ret;
 
 	raw_vpu_fmt = hantro_get_default_fmt(ctx, false, bit_depth, need_postproc);
 	if (!raw_vpu_fmt)
 		return -EINVAL;
+
+	old_vpu_src_fmt = ctx->vpu_src_fmt;
 
 	if (ctx->is_encoder) {
 		encoded_fmt = &ctx->dst_fmt;
@@ -469,6 +475,28 @@ hantro_reset_raw_fmt(struct hantro_ctx *ctx, int bit_depth, bool need_postproc)
 	if (!ret) {
 		ctx->bit_depth = bit_depth;
 		ctx->need_postproc = need_postproc;
+	} else if (ctx->is_encoder) {
+		/*
+		 * The raw format was NOT reset -- ctx->src_fmt still describes
+		 * whatever the application set. Put ctx->vpu_src_fmt back so it
+		 * keeps describing the same thing.
+		 *
+		 * hantro_set_fmt_out() returns -EBUSY for an encoder once the
+		 * OUTPUT queue has buffers, which is exactly what happens when
+		 * an application re-sets the (unchanged) CAPTURE format after
+		 * REQBUFS -- v4l2-ctl does this on every streaming run. Leaving
+		 * the assignment above committed then desynchronises the two:
+		 * ctx->src_fmt says NV12M (2 planes) while ctx->vpu_src_fmt is
+		 * the default YUV420M, so the encoder programs
+		 * VEPU_REG_IN_IMG_CTRL_FMT = YUV420P and the hardware goes
+		 * looking for a third plane in VEPU_REG_ADDR_IN_PLANE_2, which
+		 * the 2-plane path never wrote. It reads IOVA 0 and the VPU
+		 * IOMMU faults:
+		 *   rk_iommu ff650800.iommu: Page fault at 0x280 of type read
+		 * followed by a watchdog timeout, a stuck stall request and an
+		 * IRQ storm that takes the whole block down.
+		 */
+		ctx->vpu_src_fmt = old_vpu_src_fmt;
 	}
 
 	return ret;
@@ -509,13 +537,20 @@ hantro_update_requires_hold_capture_buf(struct hantro_ctx *ctx, u32 fourcc)
 
 	switch (fourcc) {
 	case V4L2_PIX_FMT_JPEG:
-	case V4L2_PIX_FMT_MPEG2_SLICE:
 	case V4L2_PIX_FMT_VP8_FRAME:
 	case V4L2_PIX_FMT_HEVC_SLICE:
 	case V4L2_PIX_FMT_VP9_FRAME:
 		vq->subsystem_flags &= ~(VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF);
 		break;
 	case V4L2_PIX_FMT_H264_SLICE:
+	case V4L2_PIX_FMT_MPEG2_SLICE:
+		/*
+		 * Field-coded MPEG-2 (every ISO 13818-4 main-profile vector but
+		 * one) is two requests into ONE capture buffer, and the G1 already
+		 * decodes a field picture into its frame buffer (PIC_FIELDMODE_E /
+		 * PIC_TOPFIELD_E in hantro_g1_mpeg2_dec.c); without the hold flag
+		 * the request-API clients refuse the second field.
+		 */
 		vq->subsystem_flags |= VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF;
 		break;
 	default:
@@ -947,6 +982,21 @@ static int hantro_start_streaming(struct vb2_queue *q, unsigned int count)
 			if (ret)
 				goto err_codec_exit;
 		}
+	} else if (ctx->codec_ops && ctx->codec_ops->reset_state) {
+		/*
+		 * The NON-coded queue -- for an encoder, the OUTPUT queue.
+		 * codec_ops->init and ->exit fire only for the coded queue, so
+		 * restarting just this one used to leave the codec's per-session
+		 * sequencing state (frame_num, GOP position, reference-buffer
+		 * index, rate-control accumulator) exactly as the previous run
+		 * left it, and the first frame of the new session came out as a
+		 * P-frame with no SPS/PPS, referencing the old session's
+		 * reconstruction buffer.
+		 *
+		 * codec_ops is NULL if the coded queue has not started yet; that
+		 * case needs nothing, because its .init will do this anyway.
+		 */
+		ctx->codec_ops->reset_state(ctx);
 	}
 	return ret;
 

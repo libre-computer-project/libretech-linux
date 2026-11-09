@@ -22,8 +22,11 @@ extern "C" {
 #define DRM_PANFROST_PERFCNT_DUMP		0x07
 #define DRM_PANFROST_MADVISE			0x08
 #define DRM_PANFROST_SET_LABEL_BO		0x09
+/* 0x0a-0x0d reserved for future ioctls (matching mesa UAPI numbering) */
+#define DRM_PANFROST_SUBMIT_BATCH		0x0e
 
 #define DRM_IOCTL_PANFROST_SUBMIT		DRM_IOW(DRM_COMMAND_BASE + DRM_PANFROST_SUBMIT, struct drm_panfrost_submit)
+#define DRM_IOCTL_PANFROST_SUBMIT_BATCH		DRM_IOW(DRM_COMMAND_BASE + DRM_PANFROST_SUBMIT_BATCH, struct drm_panfrost_submit_batch)
 #define DRM_IOCTL_PANFROST_WAIT_BO		DRM_IOW(DRM_COMMAND_BASE + DRM_PANFROST_WAIT_BO, struct drm_panfrost_wait_bo)
 #define DRM_IOCTL_PANFROST_CREATE_BO		DRM_IOWR(DRM_COMMAND_BASE + DRM_PANFROST_CREATE_BO, struct drm_panfrost_create_bo)
 #define DRM_IOCTL_PANFROST_MMAP_BO		DRM_IOWR(DRM_COMMAND_BASE + DRM_PANFROST_MMAP_BO, struct drm_panfrost_mmap_bo)
@@ -297,6 +300,33 @@ struct panfrost_dump_object_header {
 struct panfrost_dump_registers {
 	__u32 reg;
 	__u32 value;
+};
+
+/**
+ * struct drm_panfrost_batch_job - Per-job descriptor within a batch.
+ */
+struct drm_panfrost_batch_job {
+	__u64 jc;
+	__u32 requirements;
+	__u32 out_sync;
+};
+
+/**
+ * struct drm_panfrost_submit_batch - Submit multiple jobs with shared BO list.
+ *
+ * Shares a single BO handle array across 1..3 jobs, avoiding redundant
+ * BO lookup and mapping operations.
+ */
+struct drm_panfrost_submit_batch {
+	__u64 jobs;
+	__u32 job_count;
+	__u32 job_stride;
+	__u64 bo_handles;
+	__u32 bo_handle_count;
+	__u32 in_sync_count;
+	__u64 in_syncs;
+	__u32 flags;
+	__u32 pad;
 };
 
 #if defined(__cplusplus)

@@ -366,6 +366,21 @@ static int mmc_read_switch(struct mmc_card *card)
 		/* Driver Strengths supported by the card */
 		card->sw_caps.sd3_drv_type = status[9];
 		card->sw_caps.sd3_curr_limit = status[7] | status[6] << 8;
+
+		/*
+		 * SD vendor (Samsung) DDR200 / DDR208 needs two capabilities,
+		 * both outside the standard SDR12..DDR50 functions that
+		 * sd3_bus_mode captures from status[13]:
+		 *  - function-group-1 function 15 (the DDR200 advertisement),
+		 *    status[12] bit 7 -- folded into sd3_bus_mode here.
+		 *  - function-group-2 function 14 (the "Enable DDR200 Bus"
+		 *    command system that actually activates it), status[10]
+		 *    bit 6 -- recorded separately as it lives in a different
+		 *    function group.
+		 */
+		if (status[12] & 0x80)
+			card->sw_caps.sd3_bus_mode |= SD_MODE_UHS_DDR200;
+		card->sw_caps.ddr200_cmdsys = !!(status[10] & 0x40);
 	}
 
 out:
@@ -449,8 +464,78 @@ static int sd_select_driver_type(struct mmc_card *card, u8 *status)
 	return 0;
 }
 
+/*
+ * UHS bus-speed grades ordered fastest -> slowest. The numeric
+ * UHS_*_BUS_SPEED values are CMD6 function numbers, NOT performance-ordered, so
+ * the CRC-storm downgrade ladder walks this explicit order.
+ */
+static const int sd_speed_ladder[] = {
+	UHS_DDR200_BUS_SPEED,
+	UHS_SDR104_BUS_SPEED,
+	UHS_DDR50_BUS_SPEED,
+	UHS_SDR50_BUS_SPEED,
+	UHS_SDR25_BUS_SPEED,
+	UHS_SDR12_BUS_SPEED,
+};
+
+/* Does the card + host support this UHS grade? (mirrors the selection combos) */
+static bool sd_mode_supported(struct mmc_card *card, int bus_speed)
+{
+	struct mmc_host *host = card->host;
+	u32 modes = card->sw_caps.sd3_bus_mode;
+
+	switch (bus_speed) {
+	case UHS_DDR200_BUS_SPEED:
+		/* DDR200 runs on the SDR104 (1.8 V) base, hence the SDR104 cap */
+		return (host->caps2 & MMC_CAP2_SD_DDR200) &&
+		       (host->caps & MMC_CAP_UHS_SDR104) &&
+		       (modes & SD_MODE_UHS_DDR200) &&
+		       card->sw_caps.ddr200_cmdsys;
+	case UHS_SDR104_BUS_SPEED:
+		return (host->caps & MMC_CAP_UHS_SDR104) &&
+		       (modes & SD_MODE_UHS_SDR104);
+	case UHS_DDR50_BUS_SPEED:
+		return (host->caps & MMC_CAP_UHS_DDR50) &&
+		       (modes & SD_MODE_UHS_DDR50);
+	case UHS_SDR50_BUS_SPEED:
+		return (host->caps & (MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_SDR50)) &&
+		       (modes & SD_MODE_UHS_SDR50);
+	case UHS_SDR25_BUS_SPEED:
+		return (host->caps & (MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_SDR50 |
+				      MMC_CAP_UHS_SDR25)) &&
+		       (modes & SD_MODE_UHS_SDR25);
+	case UHS_SDR12_BUS_SPEED:
+		return (host->caps & (MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_SDR50 |
+				      MMC_CAP_UHS_SDR25 | MMC_CAP_UHS_SDR12)) &&
+		       (modes & SD_MODE_UHS_SDR12);
+	}
+	return false;
+}
+
+/* Is a supported grade available below the card's current one on the ladder? */
+static bool sd_has_lower_bus_speed(struct mmc_host *host)
+{
+	struct mmc_card *card = host->card;
+	bool below_cur = false;
+	int i;
+
+	if (!card)
+		return false;
+
+	for (i = 0; i < ARRAY_SIZE(sd_speed_ladder); i++) {
+		if (below_cur && sd_mode_supported(card, sd_speed_ladder[i]))
+			return true;
+		if (sd_speed_ladder[i] == card->sd_bus_speed)
+			below_cur = true;
+	}
+	return false;
+}
+
 static void sd_update_bus_speed_mode(struct mmc_card *card)
 {
+	unsigned int drop = card->host->sd_speed_downgrade;
+	int i;
+
 	/*
 	 * If the host doesn't support any of the UHS-I modes, fallback on
 	 * default speed.
@@ -460,25 +545,20 @@ static void sd_update_bus_speed_mode(struct mmc_card *card)
 		return;
 	}
 
-	if ((card->host->caps & MMC_CAP_UHS_SDR104) &&
-	    (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR104)) {
-			card->sd_bus_speed = UHS_SDR104_BUS_SPEED;
-	} else if ((card->host->caps & MMC_CAP_UHS_DDR50) &&
-		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_DDR50)) {
-			card->sd_bus_speed = UHS_DDR50_BUS_SPEED;
-	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
-		    MMC_CAP_UHS_SDR50)) && (card->sw_caps.sd3_bus_mode &
-		    SD_MODE_UHS_SDR50)) {
-			card->sd_bus_speed = UHS_SDR50_BUS_SPEED;
-	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
-		    MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR25)) &&
-		   (card->sw_caps.sd3_bus_mode & SD_MODE_UHS_SDR25)) {
-			card->sd_bus_speed = UHS_SDR25_BUS_SPEED;
-	} else if ((card->host->caps & (MMC_CAP_UHS_SDR104 |
-		    MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR25 |
-		    MMC_CAP_UHS_SDR12)) && (card->sw_caps.sd3_bus_mode &
-		    SD_MODE_UHS_SDR12)) {
-			card->sd_bus_speed = UHS_SDR12_BUS_SPEED;
+	/*
+	 * Pick the highest supported UHS grade, then apply any CRC-storm
+	 * downgrade by stepping down that many *supported* grades (never below
+	 * the lowest supported one). DDR200 is preferred when the host opted in
+	 * (DT-gated cap) and the card advertises both the group-1 function-15
+	 * capability and the group-2 function-14 command system to activate it.
+	 */
+	for (i = 0; i < ARRAY_SIZE(sd_speed_ladder); i++) {
+		if (!sd_mode_supported(card, sd_speed_ladder[i]))
+			continue;
+		card->sd_bus_speed = sd_speed_ladder[i];
+		if (!drop)
+			break;
+		drop--;
 	}
 }
 
@@ -486,6 +566,54 @@ static int sd_set_bus_speed_mode(struct mmc_card *card, u8 *status)
 {
 	int err;
 	unsigned int timing = 0;
+
+	/*
+	 * Samsung SD DDR200 / DDR208. The DDR200 capability is advertised as
+	 * group-1 (Bus Speed) function 15, which CANNOT be selected by CMD6
+	 * (nibble 0xF means "no influence"). The actual activation is group-2
+	 * (Command System) function 14 -- the "Vendor Specific Command System /
+	 * Enable DDR200 Bus". So select the SDR104 bus-speed base first (DDR200
+	 * is SDR104 timing sampled on both clock edges), then enable group-2
+	 * function 14 and switch the host into DDR timing immediately: the
+	 * group-2 selection reverts on the next normal-speed command, so no data
+	 * command may intervene before the host is in DDR200 timing.
+	 *
+	 * Vendor variance: DDR200 is not in the SD spec, so activation differs by
+	 * card vendor. This path implements the Samsung-class scheme -- group-2
+	 * function 14 plus a host-side RX eye-scan tuning window, with NO DLL. The
+	 * original SanDisk DDR200 instead mandates a DLL/data-strobe like eMMC
+	 * HS400 and has no tuning window; that variant is NOT handled here.
+	 */
+	if (card->sd_bus_speed == UHS_DDR200_BUS_SPEED) {
+		err = mmc_sd_switch(card, SD_SWITCH_SET, 0,
+				    UHS_SDR104_BUS_SPEED, status);
+		if (err)
+			return err;
+		if ((status[16] & 0xF) != UHS_SDR104_BUS_SPEED) {
+			pr_warn("%s: DDR200: SDR104 base switch failed\n",
+				mmc_hostname(card->host));
+			return 0;
+		}
+
+		/* group 2 (index 1) := function 14 (enable DDR200 bus) */
+		err = mmc_sd_switch(card, SD_SWITCH_SET, 1, 14, status);
+		if (err)
+			return err;
+		if (((status[16] >> 4) & 0xF) != 14) {
+			/* fn14 refused -- stay at the SDR104 base selected above */
+			pr_warn("%s: DDR200: group-2 fn14 not accepted, using SDR104\n",
+				mmc_hostname(card->host));
+			card->sw_caps.uhs_max_dtr = UHS_SDR104_MAX_DTR;
+			mmc_set_timing(card->host, MMC_TIMING_UHS_SDR104);
+			mmc_set_clock(card->host, card->sw_caps.uhs_max_dtr);
+			return 0;
+		}
+
+		card->sw_caps.uhs_max_dtr = UHS_DDR200_MAX_DTR;
+		mmc_set_timing(card->host, MMC_TIMING_SD_DDR200);
+		mmc_set_clock(card->host, card->sw_caps.uhs_max_dtr);
+		return 0;
+	}
 
 	switch (card->sd_bus_speed) {
 	case UHS_SDR104_BUS_SPEED:
@@ -632,6 +760,8 @@ static bool mmc_sd_use_tuning(struct mmc_card *card)
 	switch (card->host->ios.timing) {
 	case MMC_TIMING_UHS_SDR50:
 	case MMC_TIMING_UHS_SDR104:
+	case MMC_TIMING_SD_DDR200:
+		/* DDR200 has no data strobe, so it relies on tuning */
 		return true;
 	case MMC_TIMING_UHS_DDR50:
 		return !mmc_card_no_uhs_ddr50_tuning(card);
@@ -697,6 +827,24 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 			pr_warn("%s: ddr50 tuning failed\n",
 				mmc_hostname(card->host));
 			err = 0;
+		}
+
+		/*
+		 * DDR200 tuning failure: clear the host's DDR200 cap so the
+		 * card is brought up without DDR200, and record that we did so
+		 * (sd_ddr200_disabled) so mmc_sd_remove() can re-arm DDR200 for
+		 * the next card. The card has already been switched into the
+		 * vendor DDR200 bus mode (CMD6 group-2 fn14) and a CMD0 does not
+		 * leave that mode -- only a VDD power-cycle -- so mmc_sd_init_card()
+		 * power-cycles the card and retries this init at SDR104. That
+		 * clean fallback matters because this can run on a rootfs SD
+		 * card. The failure is surfaced in dmesg.
+		 */
+		if (err && card->host->ios.timing == MMC_TIMING_SD_DDR200) {
+			pr_warn("%s: ddr200 tuning failed; disabling DDR200\n",
+				mmc_hostname(card->host));
+			card->host->caps2 &= ~MMC_CAP2_SD_DDR200;
+			card->host->sd_ddr200_disabled = 1;
 		}
 	}
 
@@ -1427,6 +1575,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	u32 cid[4];
 	u32 rocr = 0;
 	bool v18_fixup_failed = false;
+	bool ddr200;
 
 	WARN_ON(!host->claimed);
 retry:
@@ -1525,7 +1674,44 @@ retry:
 
 	/* Initialization sequence for UHS-I cards */
 	if (rocr & SD_ROCR_S18A && mmc_host_can_uhs(host)) {
+		ddr200 = host->caps2 & MMC_CAP2_SD_DDR200;
 		err = mmc_sd_init_uhs_card(card);
+		/*
+		 * DDR200 tuning failed and cleared the DDR200 cap: the card is
+		 * now stuck in the vendor DDR200 bus mode (CMD6 group-2 fn14),
+		 * which a CMD0 does not leave -- only a VDD power-cycle. Reset
+		 * the card and retry init at SDR104 (cap now clear). Mirrors the
+		 * v18 fixup above; the cleared cap bounds it to a single retry.
+		 */
+		if (err && ddr200 && !(host->caps2 & MMC_CAP2_SD_DDR200)) {
+			mmc_power_cycle(host, ocr);
+			if (!oldcard)
+				mmc_remove_card(card);
+			goto retry;
+		}
+		/*
+		 * Any other UHS-I init failure -- the CMD6 grade switch, or
+		 * tuning that found no eye at any rung of the host's clock
+		 * ladder -- used to lose the card outright: every retry at a
+		 * lower init frequency re-ran the same 1.8 V sequence and the
+		 * rescan gave up. A card that cannot complete UHS-I init can
+		 * still run 3.3 V High Speed, so bring it up there instead:
+		 * the card is at 1.8 V signalling and only a VDD power-cycle
+		 * takes it back, then re-init with UHS disabled for this card
+		 * (sd_uhs_disabled clears mmc_host_can_uhs(), which drops
+		 * S18R from the ACMD41 argument, so no CMD11 is sent). The
+		 * flag bounds this to a single retry and mmc_sd_remove()
+		 * re-arms UHS for the next card.
+		 */
+		if (err && !host->sd_uhs_disabled) {
+			pr_warn("%s: UHS-I init failed (%d), falling back to 3.3 V High Speed\n",
+				mmc_hostname(host), err);
+			host->sd_uhs_disabled = 1;
+			mmc_power_cycle(host, ocr);
+			if (!oldcard)
+				mmc_remove_card(card);
+			goto retry;
+		}
 		if (err)
 			goto free_card;
 	} else {
@@ -1750,6 +1936,24 @@ static void mmc_sd_remove(struct mmc_host *host)
 
 	put_device(&host->card->dev);
 	host->card = NULL;
+
+	/*
+	 * If this card's DDR200 tuning failed we cleared the host DDR200 cap
+	 * for it (a permanent host downgrade would otherwise deny DDR200 to a
+	 * subsequently inserted, DDR200-capable card until reboot). Re-arm it
+	 * now that the card is gone.
+	 */
+	if (host->sd_ddr200_disabled) {
+		host->caps2 |= MMC_CAP2_SD_DDR200;
+		host->sd_ddr200_disabled = 0;
+	}
+
+	/* Same for a card that fell back to 3.3 V High Speed. */
+	host->sd_uhs_disabled = 0;
+
+	/* Re-arm the CRC-storm speed-downgrade ladder for the next card. */
+	host->sd_speed_downgrade = 0;
+	host->crc_storm_cnt = 0;
 }
 /*
  * Callback for suspend
@@ -1837,9 +2041,33 @@ static int mmc_sd_hw_reset(struct mmc_host *host)
 	return mmc_sd_init_card(host, host->card->ocr, host->card);
 }
 
+/*
+ * A persistent data-CRC storm at the current SD bus speed. First let the host
+ * reduce its clock within the current bus mode (a strobe-less DDR200 card may
+ * CRC-storm at the full rate but run clean slower); only when the host is out of
+ * clock headroom do we drop to the next supported protocol grade. Returning
+ * -EIO fails the re-tune, so the block layer hw-resets and mmc_sd_init_card()
+ * re-selects the lower grade (sd_speed_downgrade, re-armed on removal).
+ */
+static int mmc_sd_crc_downgrade(struct mmc_host *host)
+{
+	if (host->ops->lower_bus_clock &&
+	    host->ops->lower_bus_clock(host) == 0)
+		return 0;			/* re-tune at the reduced clock */
+
+	if (!sd_has_lower_bus_speed(host))
+		return 0;			/* already at the floor grade */
+
+	host->sd_speed_downgrade++;
+	pr_warn("%s: CRC storm persists -- dropping SD bus speed (downgrade level %u)\n",
+		mmc_hostname(host), host->sd_speed_downgrade);
+	return -EIO;
+}
+
 static const struct mmc_bus_ops mmc_sd_ops = {
 	.remove = mmc_sd_remove,
 	.detect = mmc_sd_detect,
+	.crc_downgrade = mmc_sd_crc_downgrade,
 	.runtime_suspend = mmc_sd_runtime_suspend,
 	.runtime_resume = mmc_sd_runtime_resume,
 	.suspend = mmc_sd_suspend,

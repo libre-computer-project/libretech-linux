@@ -439,8 +439,12 @@ int panfrost_mmu_map(struct panfrost_gem_mapping *mapping)
 		prot |= IOMMU_NOEXEC;
 
 	sgt = drm_gem_shmem_get_pages_sgt(shmem);
-	if (WARN_ON(IS_ERR(sgt)))
+	if (IS_ERR(sgt)) {
+		dev_err_ratelimited(pfdev->dev,
+				    "failed to get pages sgt for BO map: %ld\n",
+				    PTR_ERR(sgt));
 		return PTR_ERR(sgt);
+	}
 
 	mmu_map_sg(pfdev, mapping->mmu, mapping->mmnode.start << PAGE_SHIFT,
 		   prot, sgt);
@@ -742,8 +746,33 @@ struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
 	mmu->pfdev = pfdev;
 	spin_lock_init(&mmu->mm_lock);
 
-	/* 4G enough for now. can be 48-bit */
-	drm_mm_init(&mmu->mm, SZ_32M >> PAGE_SHIFT, (SZ_4G - SZ_32M) >> PAGE_SHIFT);
+	/*
+	 * Open the GPU VA window to the HW's full reported VA range
+	 * (MMU_FEATURES.VA_BITS, 48-bit on Valhall/Bifrost) instead of the
+	 * historical hardcoded 4 GiB. The io-pgtable below already uses
+	 * .ias = va_bits, so the page tables span the same range; the old
+	 * 4 GiB drm_mm cap was the only thing keeping large GPU-BO mappings
+	 * (e.g. LLM weights, PanVK's lazy multi-GiB varying/heap BOs) from
+	 * using the address space the HW supports, and it exhausted the VA
+	 * pool with ENOSPC long before RAM ran out.
+	 *
+	 * Executable (shader) BOs stay correctly constrained regardless of
+	 * the window width: panfrost_drm_mm_color_adjust() forbids them from
+	 * starting/ending on or straddling a 4 GiB boundary (the 24-bit
+	 * program counter must not cross a 16 MB boundary, and exec BOs are
+	 * size-aligned in panfrost_gem.c). That callback is relative to each
+	 * 4 GiB segment, not anchored to the low 4 GiB, so widening the
+	 * window does not change exec-BO placement rules.
+	 *
+	 * Clamp to drm_mm's 63-bit node-size limit for safety; va_bits is at
+	 * most 48 on current Mali, so this is a defensive cap.
+	 */
+	{
+		u64 va_size = (va_bits >= 63) ? (~0ULL >> 1) : (1ULL << va_bits);
+
+		drm_mm_init(&mmu->mm, SZ_32M >> PAGE_SHIFT,
+			    (va_size - SZ_32M) >> PAGE_SHIFT);
+	}
 	mmu->mm.color_adjust = panfrost_drm_mm_color_adjust;
 
 	INIT_LIST_HEAD(&mmu->list);

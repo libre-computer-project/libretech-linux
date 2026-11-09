@@ -602,6 +602,12 @@ static int graph_parse_node_multi(struct simple_util_priv *priv,
 	int nm_max = max(dai_link->num_cpus, dai_link->num_codecs);
 
 	/*
+	 * @port is borrowed from the caller, but graph_get_next_multi_ep()
+	 * puts *port. Own a reference of our own to hand to it.
+	 */
+	of_node_get(port);
+
+	/*
 	 * create ch_maps if CPU:Codec = N:M
 	 * DPCM is out of scope
 	 */
@@ -651,6 +657,9 @@ static int graph_parse_node_multi(struct simple_util_priv *priv,
 		ret = -EINVAL;
 
 multi_err:
+	/* NULL after the last graph_get_next_multi_ep(); set on error exits */
+	of_node_put(port);
+
 	return graph_ret(priv, ret);
 }
 
@@ -752,7 +761,7 @@ static void graph_link_init(struct simple_util_priv *priv,
 	int i;
 
 	if (graph_lnk_is_multi(port_cpu)) {
-		multi_cpu_port = port_cpu;
+		multi_cpu_port = of_node_get(port_cpu);
 		ep_cpu = graph_get_next_multi_ep(&multi_cpu_port, multi_cpu_port_idx++);
 		of_node_put(port_cpu);
 		port_cpu = ep_to_port(ep_cpu);
@@ -762,7 +771,7 @@ static void graph_link_init(struct simple_util_priv *priv,
 	struct device_node *ports_cpu __free(device_node) = port_to_ports(port_cpu);
 
 	if (graph_lnk_is_multi(port_codec)) {
-		multi_codec_port = port_codec;
+		multi_codec_port = of_node_get(port_codec);
 		ep_codec = graph_get_next_multi_ep(&multi_codec_port, multi_codec_port_idx++);
 		of_node_put(port_codec);
 		port_codec = ep_to_port(ep_codec);
@@ -806,15 +815,19 @@ static void graph_link_init(struct simple_util_priv *priv,
 	for_each_link_cpus(dai_link, i, dlc) {
 		dlc->ext_fmt = graph_parse_bitframe(ep_cpu);
 
-		if (multi_cpu_port)
+		if (multi_cpu_port) {
+			of_node_put(ep_cpu);
 			ep_cpu = graph_get_next_multi_ep(&multi_cpu_port, multi_cpu_port_idx++);
+		}
 	}
 
 	for_each_link_codecs(dai_link, i, dlc) {
 		dlc->ext_fmt = graph_parse_bitframe(ep_codec);
 
-		if (multi_codec_port)
+		if (multi_codec_port) {
+			of_node_put(ep_codec);
 			ep_codec = graph_get_next_multi_ep(&multi_codec_port, multi_codec_port_idx++);
+		}
 	}
 
 	/*** Don't use port_cpu / port_codec after here ***/

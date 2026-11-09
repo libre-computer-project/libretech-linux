@@ -92,10 +92,7 @@ void dwmac_dma_stop_rx(struct stmmac_priv *priv, void __iomem *ioaddr, u32 chan)
 #ifdef DWMAC_DMA_DEBUG
 static void show_tx_process_state(unsigned int status)
 {
-	unsigned int state;
-	state = (status & DMA_STATUS_TS_MASK) >> DMA_STATUS_TS_SHIFT;
-
-	switch (state) {
+	switch (FIELD_GET(DMA_STATUS_TS_MASK, status)) {
 	case 0:
 		pr_debug("- TX (Stopped): Reset or Stop command\n");
 		break;
@@ -123,10 +120,7 @@ static void show_tx_process_state(unsigned int status)
 
 static void show_rx_process_state(unsigned int status)
 {
-	unsigned int state;
-	state = (status & DMA_STATUS_RS_MASK) >> DMA_STATUS_RS_SHIFT;
-
-	switch (state) {
+	switch (FIELD_GET(DMA_STATUS_RS_MASK, status)) {
 	case 0:
 		pr_debug("- RX (Stopped): Reset or Stop command\n");
 		break;
@@ -277,8 +271,10 @@ void stmmac_set_mac(void __iomem *ioaddr, bool enable)
 	else
 		value &= ~(MAC_ENABLE_TX | MAC_ENABLE_RX);
 
-	if (value != old_val)
+	if (value != old_val) {
+		pr_debug("%s: writing to MAC_CTRL_REG %x\n", __func__, value);
 		writel(value, ioaddr + MAC_CTRL_REG);
+	}
 }
 
 void stmmac_get_mac_addr(void __iomem *ioaddr, unsigned char *addr,

@@ -7,7 +7,8 @@
 #include "lima_device.h"
 #include "lima_ctx.h"
 
-int lima_ctx_create(struct lima_device *dev, struct lima_ctx_mgr *mgr, u32 *id)
+int lima_ctx_create(struct lima_device *dev, struct lima_ctx_mgr *mgr, u32 *id,
+		    u32 priority)
 {
 	struct lima_ctx *ctx;
 	int i, err;
@@ -19,7 +20,8 @@ int lima_ctx_create(struct lima_device *dev, struct lima_ctx_mgr *mgr, u32 *id)
 	kref_init(&ctx->refcnt);
 
 	for (i = 0; i < lima_pipe_num; i++) {
-		err = lima_sched_context_init(dev->pipe + i, ctx->context + i);
+		err = lima_sched_context_init(dev->pipe + i, ctx->context + i,
+					      priority);
 		if (err)
 			goto err_out0;
 	}

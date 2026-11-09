@@ -10,6 +10,7 @@
 #include "meson-gxm.dtsi"
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "khadas,vim2", "amlogic,s912", "amlogic,meson-gxm";

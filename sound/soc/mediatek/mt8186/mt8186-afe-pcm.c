@@ -2567,7 +2567,6 @@ static bool mt8186_is_volatile_reg(struct device *dev, unsigned int reg)
 	case AFE_ASRC_2CH_CON13:
 	case AFE_ADDA_MTKAIF_MON0:
 	case AFE_ADDA_MTKAIF_MON1:
-	case AFE_AUD_PAD_TOP:
 	case AFE_DL_NLE_R_MON0:
 	case AFE_DL_NLE_R_MON1:
 	case AFE_DL_NLE_R_MON2:

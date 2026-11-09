@@ -9,6 +9,7 @@
 #include "meson-gxbb-wetek.dtsi"
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "wetek,play2", "amlogic,meson-gxbb";

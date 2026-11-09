@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2026 Libre Computer
+ *
+ * AML-S805X-AC-V2 on the LIBRE firmware chain (our TF-A, low-16 MiB
+ * block with the optional OP-TEE band at its top): the control and
+ * booted DTB of the libre u-boot target. The vendor chain boots
+ * meson-gxl-s805x-libretech-ac-v2.dts.
+ */
+
+/dts-v1/;
+
+#include "meson-gxl-s805x-libretech-ac-v2.dtsi"
+#include "meson-gx-libre-firmware.dtsi"

@@ -42,7 +42,7 @@ int inet_shutdown(struct socket *sock, int how);
 int inet_listen(struct socket *sock, int backlog);
 int __inet_listen_sk(struct sock *sk, int backlog);
 void inet_sock_destruct(struct sock *sk);
-int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len);
+int inet_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len);
 int inet_bind_sk(struct sock *sk, struct sockaddr *uaddr, int addr_len);
 /* Don't allocate port at this moment, defer to connect. */
 #define BIND_FORCE_ADDRESS_NO_PORT	(1 << 0)
@@ -60,8 +60,7 @@ int inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
 int inet_ctl_sock_create(struct sock **sk, unsigned short family,
 			 unsigned short type, unsigned char protocol,
 			 struct net *net);
-int inet_recv_error(struct sock *sk, struct msghdr *msg, int len,
-		    int *addr_len);
+int inet_recv_error(struct sock *sk, struct msghdr *msg, int len);
 
 struct sk_buff *inet_gro_receive(struct list_head *head, struct sk_buff *skb);
 int inet_gro_complete(struct sk_buff *skb, int nhoff);

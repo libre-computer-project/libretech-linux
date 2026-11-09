@@ -98,6 +98,22 @@ properties:
       [1] Kernel documentation - ARM idle states bindings
         Documentation/devicetree/bindings/cpu/idle-states.yaml
 
+  reset-types:
+    type: object
+    description: |
+      Named reboots the firmware serves through PSCI 1.1 SYSTEM_RESET2 with a
+      vendor-specific reset type: `reboot <name>` issues SYSTEM_RESET2 with the
+      reset_type and cookie of mode-<name>, when the firmware reports
+      SYSTEM_RESET2. What each vendor type does is the firmware's.
+    patternProperties:
+      "^mode-.*$":
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - description: SYSTEM_RESET2 reset_type, bit 31 set (vendor-specific)
+            minimum: 0x80000000
+          - description: SYSTEM_RESET2 cookie
+    additionalProperties: false
+
 patternProperties:
   "^power-domain-":
     $ref: /schemas/power/power-domain.yaml#
@@ -161,6 +177,19 @@ examples:
     psci {
       compatible      = "arm,psci-0.2";
       method          = "smc";
+    };
+
+  - |+
+
+    // Case 2a: PSCI v1.0 with a vendor SYSTEM_RESET2 reset type: `reboot maskrom`
+
+    psci {
+      compatible      = "arm,psci-1.0";
+      method          = "smc";
+
+      reset-types {
+        mode-maskrom = <0x80000001 0>;
+      };
     };
 
 

@@ -21,6 +21,9 @@
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/reset.h>
+#include <linux/pm.h>
+#include <linux/pm_wakeup.h>
+#include <linux/scmi_lc_wake_cfg.h>
 #include <media/cec.h>
 #include <media/cec-notifier.h>
 
@@ -680,6 +683,10 @@ static int meson_ao_cec_probe(struct platform_device *pdev)
 	writel_relaxed(CEC_GEN_CNTL_RESET,
 		       ao_cec->base + CEC_GEN_CNTL_REG);
 
+	/* CEC wakes the board by default where an SC can do it (suspend) */
+	if (IS_REACHABLE(CONFIG_LIBRE_SCMI_WAKE_CFG))
+		device_init_wakeup(&pdev->dev, true);
+
 	return 0;
 
 out_probe_notify:
@@ -695,6 +702,33 @@ out_probe_adapter:
 
 	return ret;
 }
+
+/*
+ * Wake from suspend on CEC, through the SoC's SCMI server (the GXL open SC,
+ * vendor protocol 0x81): this driver leaves the controller running across
+ * the suspend, and the SC reads the frames it receives while the board
+ * sleeps.  Tell the SC whether to wake (this device's power/wakeup) and our
+ * physical address, which it matches Set Stream Path and Routing Change
+ * against.  An SC that does not serve it answers -ENODEV / -EOPNOTSUPP, and
+ * then nothing changes.
+ */
+static int meson_ao_cec_suspend(struct device *dev)
+{
+	struct meson_ao_cec_device *ao_cec = dev_get_drvdata(dev);
+	struct scmi_lc_wake_cfg_cec cfg = {
+		.flags = device_may_wakeup(dev) ? SCMI_LC_WAKE_CFG_CEC_ENABLE : 0,
+		.phys_addr = ao_cec->adap->phys_addr,
+	};
+	int ret;
+
+	ret = lc_scmi_cec_wake_set(&cfg);
+	if (ret && ret != -ENODEV && ret != -EOPNOTSUPP)
+		dev_warn(dev, "CEC wake not configured on the SC: %d\n", ret);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(meson_ao_cec_pm_ops, meson_ao_cec_suspend, NULL);
 
 static void meson_ao_cec_remove(struct platform_device *pdev)
 {
@@ -718,6 +752,7 @@ static struct platform_driver meson_ao_cec_driver = {
 	.driver  = {
 		.name = "meson-ao-cec",
 		.of_match_table = meson_ao_cec_of_match,
+		.pm = pm_sleep_ptr(&meson_ao_cec_pm_ops),
 	},
 };
 

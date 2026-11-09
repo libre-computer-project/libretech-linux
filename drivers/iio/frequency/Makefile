@@ -3,8 +3,13 @@
 # Makefile iio/frequency
 #
 
+# Analog Devices CoreFPGA AXI DDS (ported from adi-6.12.0)
+cf_axi_dds_drv-y := cf_axi_dds.o cf_axi_dds_buffer_stream.o
+obj-$(CONFIG_CF_AXI_DDS) += cf_axi_dds_drv.o
+
 # When adding new entries keep the list in alphabetical order
 obj-$(CONFIG_AD9523) += ad9523.o
+obj-$(CONFIG_AD9528) += ad9528.o
 obj-$(CONFIG_ADF4350) += adf4350.o
 obj-$(CONFIG_ADF4371) += adf4371.o
 obj-$(CONFIG_ADF4377) += adf4377.o

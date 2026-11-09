@@ -87,16 +87,29 @@ static void rk_ahash_reg_init(struct ahash_request *req,
 			      struct rk_crypto_info *dev)
 {
 	struct rk_ahash_rctx *rctx = ahash_request_ctx(req);
-	int reg_status;
 
-	reg_status = CRYPTO_READ(dev, RK_CRYPTO_CTRL) |
-		     RK_CRYPTO_HASH_FLUSH | _SBF(0xffff, 16);
-	CRYPTO_WRITE(dev, RK_CRYPTO_CTRL, reg_status);
-
-	reg_status = CRYPTO_READ(dev, RK_CRYPTO_CTRL);
-	reg_status &= (~RK_CRYPTO_HASH_FLUSH);
-	reg_status |= _SBF(0xffff, 16);
-	CRYPTO_WRITE(dev, RK_CRYPTO_CTRL, reg_status);
+	/*
+	 * Pulse HASH_FLUSH.  RK_CRYPTO_CTRL is hiword-masked -- bit n is only
+	 * written when bit n+16 is set, which is why crypto_ahash_dma_start()
+	 * and crypto_dma_start() write "(BIT << 16) | BIT" -- so the flush bit
+	 * can be set and cleared on its own.
+	 *
+	 * This used to be a read-modify-write under a full _SBF(0xffff, 16)
+	 * write mask, which wrote every other bit of the register back at the
+	 * value it happened to read.  The cipher and hash start bits are safe
+	 * that way because the crypto engine serialises those requests, but
+	 * TRNG_START is not: rk_crypto_trng_read() runs from the hwrng kthread
+	 * outside the engine, so a trigger raised between the read and the
+	 * write was silently dropped.  The TRNG then polled a START bit that
+	 * was already clear, "succeeded" immediately, and read out whatever
+	 * the previous trigger had left in TRNG_DOUT -- a stale value scored
+	 * as fresh entropy.  Touching only HASH_FLUSH removes the window;
+	 * the health test in rk_crypto_trng_read() catches the repeat if any
+	 * comparable path is ever added.
+	 */
+	CRYPTO_WRITE(dev, RK_CRYPTO_CTRL,
+		     RK_CRYPTO_HASH_FLUSH | (RK_CRYPTO_HASH_FLUSH << 16));
+	CRYPTO_WRITE(dev, RK_CRYPTO_CTRL, RK_CRYPTO_HASH_FLUSH << 16);
 
 	memset_io(dev->reg + RK_CRYPTO_HASH_DOUT_0, 0, 32);
 
@@ -324,7 +337,12 @@ static int rk_hash_run(struct crypto_engine *engine, void *breq)
 	 * efficiency, and make it response quickly when dma
 	 * complete.
 	 */
-	readl_poll_timeout(rkc->reg + RK_CRYPTO_HASH_STS, v, v == 0, 10, 1000);
+	err = readl_poll_timeout(rkc->reg + RK_CRYPTO_HASH_STS, v,
+				 v == 0, 10, 1000);
+	if (err) {
+		dev_err(rkc->dev, "HASH idle timeout\n");
+		goto theend;
+	}
 
 	for (i = 0; i < crypto_ahash_digestsize(tfm) / 4; i++) {
 		v = readl(rkc->reg + RK_CRYPTO_HASH_DOUT_0 + i * 4);
@@ -347,17 +365,40 @@ static int rk_hash_init_tfm(struct crypto_ahash *tfm)
 {
 	struct rk_ahash_ctx *tctx = crypto_ahash_ctx(tfm);
 	const char *alg_name = crypto_ahash_alg_name(tfm);
-	struct ahash_alg *alg = crypto_ahash_alg(tfm);
-	struct rk_crypto_tmp *algt = container_of(alg, struct rk_crypto_tmp, alg.hash.base);
 
 	/* for fallback */
 	tctx->fallback_tfm = crypto_alloc_ahash(alg_name, 0,
 						CRYPTO_ALG_NEED_FALLBACK);
 	if (IS_ERR(tctx->fallback_tfm)) {
-		dev_err(algt->dev->dev, "Could not load fallback driver.\n");
+		/*
+		 * rk_crypto_diag_dev(), not a device cached in the alg: the
+		 * algs are registered once for all instances of the IP and
+		 * outlive any one of them, so a cached pointer dangles as soon
+		 * as the instance that registered it is removed while another
+		 * is still up (RK3399 has two crypto nodes).
+		 */
+		dev_err(rk_crypto_diag_dev(),
+			"Could not load fallback driver.\n");
 		return PTR_ERR(tctx->fallback_tfm);
 	}
 
+	/*
+	 * ->export() and ->import() are delegated to the fallback, so the state
+	 * this tfm hands out is the FALLBACK's, and its size is the fallback's
+	 * too.  The static .statesize (sizeof(struct sha1_state) and friends)
+	 * is one byte short of what the 6.18 lib-backed generic hashes export
+	 * (crypto/sha1.c SHA1_SHASH_STATE_SIZE = sizeof(struct sha1_ctx) + 1),
+	 * so every export overran the caller's state buffer by a byte and the
+	 * full self-tests rejected all three rk-* hashes:
+	 *
+	 *   alg: ahash: rk-sha1 export() overran state buffer on test vector 0
+	 *   alg: self-tests for sha1 using rk-sha1 failed (rc=-75)
+	 *
+	 * Take the size from the fallback, as sun8i-ce does; the static value
+	 * only sizes the state before this runs.
+	 */
+	crypto_ahash_set_statesize(tfm,
+				   crypto_ahash_statesize(tctx->fallback_tfm));
 	crypto_ahash_set_reqsize(tfm,
 				 sizeof(struct rk_ahash_rctx) +
 				 crypto_ahash_reqsize(tctx->fallback_tfm));

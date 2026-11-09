@@ -180,6 +180,17 @@ mt7601u_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	if (changed & BSS_CHANGED_ASSOC)
 		mt7601u_phy_recalibrate_after_assoc(dev);
 
+	/* Refresh the beacon template in AP mode. mac80211 signals this whenever
+	 * the beacon contents change -- a TIM update, an IE change, a rate-set
+	 * change -- and the hardware transmits from beacon memory, so a stale slot
+	 * would keep being sent verbatim until something else rewrote it. */
+	if ((changed & BSS_CHANGED_BEACON) && vif->type == NL80211_IFTYPE_AP) {
+		struct sk_buff *skb = ieee80211_beacon_get(dev->hw, vif, 0);
+
+		if (skb)
+			mt7601u_mac_set_beacon(dev, skb);
+	}
+
 	mutex_unlock(&dev->mutex);
 }
 
@@ -405,7 +416,42 @@ out:
 	rcu_read_unlock();
 }
 
+/* AP mode: the wiphy has advertised NL80211_IFTYPE_AP since the fork added it,
+ * but with no .start_ap mac80211 cannot service NL80211_CMD_START_AP and hostapd
+ * fails at "Failed to set beacon parameters". Advertising an iftype is not
+ * implementing it; these two ops are what make the advertisement true.
+ */
+static int mt7601u_start_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			    struct ieee80211_bss_conf *link_conf)
+{
+	struct mt7601u_dev *dev = hw->priv;
+	struct sk_buff *skb;
+
+	skb = ieee80211_beacon_get(hw, vif, 0);
+	if (!skb)
+		return -ENOMEM;
+
+	/* Order matters: load the template before the hardware can fetch it.
+	 * Enabling BEACON_TX with an empty slot would transmit whatever the beacon
+	 * memory happened to contain. */
+	mt7601u_mac_set_beacon(dev, skb);
+	mt7601u_mac_config_tsf(dev, true, link_conf->beacon_int);
+	mt7601u_mac_set_beacon_enable(dev, true);
+
+	return 0;
+}
+
+static void mt7601u_stop_ap(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			    struct ieee80211_bss_conf *link_conf)
+{
+	struct mt7601u_dev *dev = hw->priv;
+
+	mt7601u_mac_set_beacon_enable(dev, false);
+}
+
 const struct ieee80211_ops mt7601u_ops = {
+	.start_ap = mt7601u_start_ap,
+	.stop_ap = mt7601u_stop_ap,
 	.add_chanctx = ieee80211_emulate_add_chanctx,
 	.remove_chanctx = ieee80211_emulate_remove_chanctx,
 	.change_chanctx = ieee80211_emulate_change_chanctx,

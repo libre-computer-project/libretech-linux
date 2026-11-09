@@ -8,6 +8,7 @@
 #include "meson-gxbb.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "friendlyarm,nanopi-k2", "amlogic,meson-gxbb";

@@ -491,6 +491,10 @@ static ssize_t node_show(struct kobject *kobj, struct attribute *attr,
 			      dev->node_props.num_sdma_queues_per_engine);
 	sysfs_show_32bit_prop(buffer, offs, "num_cp_queues",
 			      dev->node_props.num_cp_queues);
+	sysfs_show_32bit_prop(buffer, offs, "cwsr_size",
+			      dev->node_props.cwsr_size);
+	sysfs_show_32bit_prop(buffer, offs, "ctl_stack_size",
+			      dev->node_props.ctl_stack_size);
 
 	if (dev->gpu) {
 		log_max_watch_addr =
@@ -530,7 +534,9 @@ static ssize_t node_show(struct kobject *kobj, struct attribute *attr,
 		sysfs_show_32bit_prop(buffer, offs, "sdma_fw_version",
 				      dev->gpu->kfd->sdma_fw_version);
 		sysfs_show_64bit_prop(buffer, offs, "unique_id",
-				      dev->gpu->xcp ?
+				      dev->gpu->xcp &&
+				      (dev->gpu->xcp->xcp_mgr->mode !=
+				       AMDGPU_SPX_PARTITION_MODE) ?
 				      dev->gpu->xcp->unique_id :
 				      dev->gpu->adev->unique_id);
 		sysfs_show_32bit_prop(buffer, offs, "num_xcc",
@@ -2024,6 +2030,10 @@ static void kfd_topology_set_capabilities(struct kfd_topology_device *dev)
 				HSA_CAP_TRAP_DEBUG_PRECISE_ALU_OPERATIONS_SUPPORTED;
 	}
 
+	/* pipe-reset-port: PER_QUEUE_RESET for gfx11+ */
+	if (KFD_GC_VERSION(dev->gpu) >= IP_VERSION(11, 0, 0))
+		dev->node_props.capability |= HSA_CAP_PER_QUEUE_RESET_SUPPORTED;
+
 	kfd_topology_set_dbg_firmware_support(dev);
 }
 
@@ -2289,6 +2299,17 @@ int kfd_topology_remove_device(struct kfd_node *gpu)
 	return res;
 }
 
+uint32_t kfd_topology_get_num_devices(void)
+{
+	uint32_t num_devices;
+
+	down_read(&topology_lock);
+	num_devices = sys_props.num_devices;
+	up_read(&topology_lock);
+
+	return num_devices;
+}
+
 /* kfd_topology_enum_kfd_devices - Enumerate through all devices in KFD
  *	topology. If GPU device is found @idx, then valid kfd_dev pointer is
  *	returned through @kdev
@@ -2392,6 +2413,32 @@ int kfd_debugfs_rls_by_device(struct seq_file *m, void *data)
 
 		seq_printf(m, "Node %u, gpu_id %x:\n", i++, dev->gpu->id);
 		r = pm_debugfs_runlist(m, &dev->gpu->dqm->packet_mgr);
+		if (r)
+			break;
+	}
+
+	up_read(&topology_lock);
+
+	return r;
+}
+
+int kfd_debugfs_sched_by_device(struct seq_file *m, void *data)
+{
+	struct kfd_topology_device *dev;
+	unsigned int i = 0;
+	int r = 0;
+
+	down_read(&topology_lock);
+
+	list_for_each_entry(dev, &topology_device_list, list) {
+		if (!dev->gpu) {
+			i++;
+			continue;
+		}
+
+		seq_printf(m, "Node %u, gpu_id %x, %s:\n", i++, dev->gpu->id,
+			   dev_name(dev->gpu->adev->dev));
+		r = dqm_debugfs_sched_state(m, dev->gpu->dqm);
 		if (r)
 			break;
 	}

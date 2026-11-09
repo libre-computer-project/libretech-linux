@@ -118,6 +118,7 @@ struct iio_dma_buffer_queue {
 	struct iio_buffer buffer;
 	struct device *dev;
 	const struct iio_dma_buffer_ops *ops;
+	void *driver_data;
 
 	struct mutex lock;
 	spinlock_t list_lock;

@@ -32,6 +32,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/processor.h>
+#include <linux/rcupdate.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
 #include <linux/xarray.h>
@@ -2540,21 +2541,31 @@ static int scmi_handle_put(const struct scmi_handle *handle)
 	return 0;
 }
 
-static void scmi_device_link_add(struct device *consumer,
+static bool scmi_device_link_add(struct device *consumer,
 				 struct device *supplier)
 {
 	struct device_link *link;
 
 	link = device_link_add(consumer, supplier, DL_FLAG_AUTOREMOVE_CONSUMER);
 
-	WARN_ON(!link);
+	return !WARN_ON(!link);
+}
+
+static void scmi_clear_handle(struct scmi_device *scmi_dev)
+{
+	if (!scmi_dev->handle)
+		return;
+
+	scmi_handle_put(scmi_dev->handle);
+	scmi_dev->handle = NULL;
 }
 
 static void scmi_set_handle(struct scmi_device *scmi_dev)
 {
 	scmi_dev->handle = scmi_handle_get(&scmi_dev->dev);
-	if (scmi_dev->handle)
-		scmi_device_link_add(&scmi_dev->dev, scmi_dev->handle->dev);
+	if (scmi_dev->handle &&
+	    !scmi_device_link_add(&scmi_dev->dev, scmi_dev->handle->dev))
+		scmi_clear_handle(scmi_dev);
 }
 
 static int __scmi_xfer_info_init(struct scmi_info *sinfo,
@@ -2663,6 +2674,9 @@ static int scmi_chan_setup(struct scmi_info *info, struct device_node *of_node,
 	idx = tx ? 0 : 1;
 	idr = tx ? &info->tx_idr : &info->rx_idr;
 
+	if (idr_find(idr, prot_id))
+		return -EEXIST;
+
 	if (!info->desc->ops->chan_available(of_node, idx)) {
 		cinfo = idr_find(idr, SCMI_PROTOCOL_BASE);
 		if (unlikely(!cinfo)) /* Possible only if platform has no Rx */
@@ -2679,7 +2693,7 @@ static int scmi_chan_setup(struct scmi_info *info, struct device_node *of_node,
 	cinfo->max_msg_size = info->desc->max_msg_size;
 
 	/* Create a unique name for this transport device */
-	snprintf(name, 32, "__scmi_transport_device_%s_%02X",
+	snprintf(name, sizeof(name), SCMI_TRANSPORT_DEVNAME_PREFIX "_%s_%02X",
 		 idx ? "rx" : "tx", prot_id);
 	/* Create a uniquely named, dedicated transport device for this chan */
 	tdev = scmi_device_create(of_node, info->dev, prot_id, name);
@@ -2689,13 +2703,12 @@ static int scmi_chan_setup(struct scmi_info *info, struct device_node *of_node,
 		devm_kfree(info->dev, cinfo);
 		return -EINVAL;
 	}
-	of_node_get(of_node);
 
 	cinfo->id = prot_id;
 	cinfo->dev = &tdev->dev;
+	cinfo->handle = &info->handle;
 	ret = info->desc->ops->chan_setup(cinfo, info->dev, tx);
 	if (ret) {
-		of_node_put(of_node);
 		scmi_device_destroy(info->dev, prot_id, name);
 		devm_kfree(info->dev, cinfo);
 		return ret;
@@ -2718,14 +2731,13 @@ idr_alloc:
 			"unable to allocate SCMI idr slot err %d\n", ret);
 		/* Destroy channel and device only if created by this call. */
 		if (tdev) {
-			of_node_put(of_node);
+			info->desc->ops->chan_free(prot_id, cinfo, idr);
 			scmi_device_destroy(info->dev, prot_id, name);
 			devm_kfree(info->dev, cinfo);
 		}
 		return ret;
 	}
 
-	cinfo->handle = &info->handle;
 	return 0;
 }
 
@@ -2783,9 +2795,11 @@ static int scmi_channels_setup(struct scmi_info *info)
 		if (of_property_read_u32(child, "reg", &prot_id))
 			continue;
 
-		if (!FIELD_FIT(MSG_PROTOCOL_ID_MASK, prot_id))
+		if (!FIELD_FIT(MSG_PROTOCOL_ID_MASK, prot_id)) {
 			dev_err(info->dev,
 				"Out of range protocol %d\n", prot_id);
+			continue;
+		}
 
 		ret = scmi_txrx_setup(info, child, prot_id);
 		if (ret)
@@ -2795,7 +2809,7 @@ static int scmi_channels_setup(struct scmi_info *info)
 	return 0;
 }
 
-static int scmi_chan_destroy(int id, void *p, void *idr)
+static int scmi_chan_destroy(int id, void *p, void *data)
 {
 	struct scmi_chan_info *cinfo = p;
 
@@ -2803,12 +2817,9 @@ static int scmi_chan_destroy(int id, void *p, void *idr)
 		struct scmi_info *info = handle_to_scmi_info(cinfo->handle);
 		struct scmi_device *sdev = to_scmi_dev(cinfo->dev);
 
-		of_node_put(cinfo->dev->of_node);
-		scmi_device_destroy(info->dev, id, sdev->name);
+		scmi_device_destroy(info->dev, cinfo->id, sdev->name);
 		cinfo->dev = NULL;
 	}
-
-	idr_remove(idr, id);
 
 	return 0;
 }
@@ -2836,6 +2847,7 @@ static int scmi_bus_notifier(struct notifier_block *nb,
 {
 	struct scmi_info *info = bus_nb_to_scmi_info(nb);
 	struct scmi_device *sdev = to_scmi_dev(data);
+	const char *status;
 
 	/* Skip devices of different SCMI instances */
 	if (sdev->dev.parent != info->dev)
@@ -2845,20 +2857,130 @@ static int scmi_bus_notifier(struct notifier_block *nb,
 	case BUS_NOTIFY_BIND_DRIVER:
 		/* setup handle now as the transport is ready */
 		scmi_set_handle(sdev);
+		status = "about to be BOUND.";
+		break;
+	case BUS_NOTIFY_DRIVER_NOT_BOUND:
+		scmi_clear_handle(sdev);
+		status = "NOT BOUND.";
 		break;
 	case BUS_NOTIFY_UNBOUND_DRIVER:
-		scmi_handle_put(sdev->handle);
-		sdev->handle = NULL;
+		scmi_clear_handle(sdev);
+		status = "UNBOUND.";
 		break;
 	default:
 		return NOTIFY_DONE;
 	}
 
 	dev_dbg(info->dev, "Device %s (%s) is now %s\n", dev_name(&sdev->dev),
-		sdev->name, action == BUS_NOTIFY_BIND_DRIVER ?
-		"about to be BOUND." : "UNBOUND.");
+		sdev->name, status);
 
 	return NOTIFY_OK;
+}
+
+/*
+ * Vendor protocols activated with NO device-tree node.
+ *
+ * The SCMI core creates a protocol's devices only for a `protocol@N` child
+ * of the SCMI node, and the arm,scmi binding names no vendor protocol.  A
+ * Libre Computer SCMI server that implements one of the protocols below is
+ * recognised by what it reports in base discovery instead -- its vendor and
+ * sub-vendor strings and the protocol in its list -- so the board's device
+ * tree, which U-Boot and Linux share, carries only upstream bindings.  An
+ * entry stands in for the node with the SCMI node itself, talks on the BASE
+ * protocol's channels (what a protocol node without its own shmem gets), and
+ * creates a device only for the one driver it names -- other vendors' drivers
+ * for the same protocol number (i.MX BBM is also 0x81) never bind to it.  A
+ * DT `protocol@N` for the same id, if a tree has one, is used instead and
+ * this entry skips.
+ */
+static const struct scmi_dtless_protocol {
+	u8 id;
+	const char *vendor_id;
+	const char *sub_vendor_id;
+	const char *driver_name; /* the scmi_device_id name it is for */
+} scmi_dtless_protocols[] = {
+	/* GXL open SC: wake configuration (IR wake list) */
+	{ 0x81, "LibreComputer", "Amlogic", "lc-wake-cfg" },
+};
+
+/* The table entry this instance activated for @prot_id, or NULL. */
+static const struct scmi_dtless_protocol *
+scmi_dtless_active(struct scmi_info *info, int prot_id,
+		   struct device_node *np)
+{
+	int i;
+
+	if (np != info->dev->of_node)
+		return NULL; /* a real protocol@N node */
+
+	for (i = 0; i < ARRAY_SIZE(scmi_dtless_protocols); i++)
+		if (scmi_dtless_protocols[i].id == prot_id)
+			return &scmi_dtless_protocols[i];
+
+	return NULL;
+}
+
+static int scmi_dtless_share_base_chan(struct scmi_info *info, int prot_id)
+{
+	struct scmi_chan_info *cinfo;
+	int ret;
+
+	cinfo = idr_find(&info->tx_idr, SCMI_PROTOCOL_BASE);
+	if (!cinfo)
+		return -EINVAL;
+	if (!idr_find(&info->tx_idr, prot_id)) {
+		ret = idr_alloc(&info->tx_idr, cinfo, prot_id, prot_id + 1,
+				GFP_KERNEL);
+		if (ret != prot_id)
+			return ret < 0 ? ret : -EBUSY;
+	}
+
+	/* A platform may have no P2A channel at all; then neither has this. */
+	cinfo = idr_find(&info->rx_idr, SCMI_PROTOCOL_BASE);
+	if (cinfo && !idr_find(&info->rx_idr, prot_id)) {
+		ret = idr_alloc(&info->rx_idr, cinfo, prot_id, prot_id + 1,
+				GFP_KERNEL);
+		if (ret != prot_id)
+			return ret < 0 ? ret : -EBUSY;
+	}
+
+	return 0;
+}
+
+static void scmi_activate_dtless_protocols(struct scmi_info *info,
+					   struct device_node *np)
+{
+	const struct scmi_dtless_protocol *p;
+	int i, ret;
+
+	for (i = 0; i < ARRAY_SIZE(scmi_dtless_protocols); i++) {
+		p = &scmi_dtless_protocols[i];
+
+		if (strcmp(info->version.vendor_id, p->vendor_id) ||
+		    strcmp(info->version.sub_vendor_id, p->sub_vendor_id))
+			continue;
+		if (!scmi_is_protocol_implemented(&info->handle, p->id))
+			continue;
+		if (idr_find(&info->active_protocols, p->id))
+			continue; /* a DT node already activated it */
+
+		ret = scmi_dtless_share_base_chan(info, p->id);
+		if (ret) {
+			dev_err(info->dev, "SCMI protocol 0x%x: no channel (%d)\n",
+				p->id, ret);
+			continue;
+		}
+
+		ret = idr_alloc(&info->active_protocols, np, p->id, p->id + 1,
+				GFP_KERNEL);
+		if (ret != p->id)
+			continue;
+
+		of_node_get(np); /* put with the other active protocols */
+		dev_info(info->dev, "SCMI protocol 0x%x activated from base discovery (%s/%s)\n",
+			 p->id, p->vendor_id, p->sub_vendor_id);
+		scmi_create_protocol_devices(np, info, p->id, p->driver_name);
+	}
 }
 
 static int scmi_device_request_notifier(struct notifier_block *nb,
@@ -2868,9 +2990,20 @@ static int scmi_device_request_notifier(struct notifier_block *nb,
 	struct scmi_device_id *id_table = data;
 	struct scmi_info *info = req_nb_to_scmi_info(nb);
 
+	rcu_read_lock();
 	np = idr_find(&info->active_protocols, id_table->protocol_id);
+	rcu_read_unlock();
 	if (!np)
 		return NOTIFY_DONE;
+
+	/* A DT-less activation serves only the driver its entry names. */
+	{
+		const struct scmi_dtless_protocol *p =
+			scmi_dtless_active(info, id_table->protocol_id, np);
+
+		if (p && strcmp(id_table->name, p->driver_name))
+			return NOTIFY_DONE;
+	}
 
 	dev_dbg(info->dev, "%sRequested device (%s) for protocol 0x%x\n",
 		action == SCMI_BUS_NOTIFY_DEVICE_REQUEST ? "" : "UN-",
@@ -3171,7 +3304,7 @@ static int scmi_probe(struct platform_device *pdev)
 	ret = scmi_channels_setup(info);
 	if (ret) {
 		err_str = "failed to setup channels\n";
-		goto clear_ida;
+		goto clear_txrx_setup;
 	}
 
 	ret = bus_register_notifier(&scmi_bus_type, &info->bus_nb);
@@ -3233,7 +3366,7 @@ static int scmi_probe(struct platform_device *pdev)
 			dev_err(dev, "%s", err_str);
 			return 0;
 		}
-		goto notification_exit;
+		goto raw_mode_cleanup;
 	}
 
 	mutex_lock(&scmi_list_mutex);
@@ -3248,8 +3381,10 @@ static int scmi_probe(struct platform_device *pdev)
 		if (of_property_read_u32(child, "reg", &prot_id))
 			continue;
 
-		if (!FIELD_FIT(MSG_PROTOCOL_ID_MASK, prot_id))
+		if (!FIELD_FIT(MSG_PROTOCOL_ID_MASK, prot_id)) {
 			dev_err(dev, "Out of range protocol %d\n", prot_id);
+			continue;
+		}
 
 		if (!scmi_is_protocol_implemented(handle, prot_id)) {
 			dev_err(dev, "SCMI protocol %d not implemented\n",
@@ -3273,20 +3408,22 @@ static int scmi_probe(struct platform_device *pdev)
 		scmi_create_protocol_devices(child, info, prot_id, NULL);
 	}
 
+	scmi_activate_dtless_protocols(info, np);
+
 	return 0;
 
-notification_exit:
+raw_mode_cleanup:
 	if (IS_ENABLED(CONFIG_ARM_SCMI_RAW_MODE_SUPPORT))
 		scmi_raw_mode_cleanup(info->raw);
-	scmi_notification_exit(&info->handle);
 clear_dev_req_notifier:
 	blocking_notifier_chain_unregister(&scmi_requested_devices_nh,
 					   &info->dev_req_nb);
 clear_bus_notifier:
 	bus_unregister_notifier(&scmi_bus_type, &info->bus_nb);
 clear_txrx_setup:
+	scmi_notification_quiesce(&info->handle);
 	scmi_cleanup_txrx_channels(info);
-clear_ida:
+	scmi_notification_exit(&info->handle);
 	ida_free(&scmi_id, info->id);
 
 out_err:
@@ -3309,6 +3446,12 @@ static void scmi_remove(struct platform_device *pdev)
 	list_del(&info->node);
 	mutex_unlock(&scmi_list_mutex);
 
+	blocking_notifier_chain_unregister(&scmi_requested_devices_nh,
+					   &info->dev_req_nb);
+
+	/* Stop transport callbacks before tearing down notifications. */
+	scmi_notification_quiesce(&info->handle);
+	scmi_cleanup_txrx_channels(info);
 	scmi_notification_exit(&info->handle);
 
 	mutex_lock(&info->protocols_mtx);
@@ -3319,12 +3462,7 @@ static void scmi_remove(struct platform_device *pdev)
 		of_node_put(child);
 	idr_destroy(&info->active_protocols);
 
-	blocking_notifier_chain_unregister(&scmi_requested_devices_nh,
-					   &info->dev_req_nb);
 	bus_unregister_notifier(&scmi_bus_type, &info->bus_nb);
-
-	/* Safe to free channels since no more users */
-	scmi_cleanup_txrx_channels(info);
 
 	ida_free(&scmi_id, info->id);
 }

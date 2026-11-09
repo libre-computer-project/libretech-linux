@@ -8,7 +8,9 @@
 
 #include <linux/export.h>
 #include <linux/bitfield.h>
+#include <linux/iopoll.h>
 
+#include <drm/drm_color_mgmt.h>
 #include <drm/drm_fourcc.h>
 
 #include "meson_drv.h"
@@ -104,6 +106,91 @@ static void meson_viu_set_g12a_osd1_matrix(struct meson_drm *priv,
 
 	writel_bits_relaxed(BIT(0), csc_on ? BIT(0) : 0,
 		priv->io_base + _REG(VPP_WRAP_OSD1_MATRIX_EN_CTRL));
+}
+
+/*
+ * The G12A VPP WRAP has a SEPARATE per-OSD RGB->YUV output matrix for OSD2
+ * (VPP_WRAP_OSD2_MATRIX_*, 0x3d70..0x3d7d), parallel to OSD1's (0x3d60..0x3d6d).
+ * Upstream only ever programs OSD1's matrix, leaving OSD2's EN_CTRL=0 (CSC
+ * bypassed): OSD2 then feeds RGB into the YUV-expecting downstream pipe and its
+ * colours come out permuted (red->green->blue rotation, white->pink) -- the same
+ * "green/pink distortion" class the OSD1 matrix fixes for OSD1. Program OSD2's
+ * matrix identically so OSD2 renders correct colour for every advertised RGB
+ * fourcc. (Plane-correctness P2: confirmed by HDMI loopback capture on SM1 --
+ * OSD2 four-quadrant R/G/B/W was scrambled with EN_CTRL=0 and correct after this,
+ * matching OSD1 pixel-for-pixel.) Layout is identical to OSD1, +0x10 per register.
+ */
+static void meson_viu_set_g12a_osd2_matrix(struct meson_drm *priv,
+					   int *m, bool csc_on)
+{
+	/* VPP WRAP OSD2 matrix */
+	writel(((m[0] & 0xfff) << 16) | (m[1] & 0xfff),
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_PRE_OFFSET0_1));
+	writel(m[2] & 0xfff,
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_PRE_OFFSET2));
+	writel(((m[3] & 0x1fff) << 16) | (m[4] & 0x1fff),
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_COEF00_01));
+	writel(((m[5] & 0x1fff) << 16) | (m[6] & 0x1fff),
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_COEF02_10));
+	writel(((m[7] & 0x1fff) << 16) | (m[8] & 0x1fff),
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_COEF11_12));
+	writel(((m[9] & 0x1fff) << 16) | (m[10] & 0x1fff),
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_COEF20_21));
+	writel((m[11] & 0x1fff),
+		priv->io_base +	_REG(VPP_WRAP_OSD2_MATRIX_COEF22));
+
+	writel(((m[18] & 0xfff) << 16) | (m[19] & 0xfff),
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_OFFSET0_1));
+	writel(m[20] & 0xfff,
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_OFFSET2));
+
+	writel_bits_relaxed(BIT(0), csc_on ? BIT(0) : 0,
+		priv->io_base + _REG(VPP_WRAP_OSD2_MATRIX_EN_CTRL));
+}
+
+/*
+ * GXL/GXM analog of meson_viu_set_g12a_osd2_matrix. The pre-G12A VIU has a
+ * dedicated OSD2 RGB->YUV output matrix (VIU_OSD2_MATRIX_*, 0x1ab0..0x1ab9),
+ * parallel to OSD1's (VIU_OSD1_MATRIX_*, 0x1a90..). meson_viu_load_matrix only
+ * ever programmed OSD1's, leaving OSD2's CTRL=0 (CSC bypassed): OSD2 then feeds
+ * RGB into the YUV-expecting VPP postblend and its colours come out permuted
+ * (red->green->blue rotation, white->pink) -- the same green/pink class the OSD1
+ * matrix fixes for OSD1, and the same bug the G12A path fixes via VPP_WRAP. The
+ * VIU OSD2 matrix is a plain 3x3 (no HDR 5x3 extension), so only the
+ * pre-offset (m[0..2]), the nine coefficients (m[3..11]) and the post-offset
+ * (m[18..20]) are used; the enable is VIU_OSD2_MATRIX_CTRL BIT(0), same shape as
+ * OSD1's VIU_OSD1_MATRIX_CTRL. (Plane-correctness: confirmed by HDMI loopback on
+ * GXL/S805X -- OSD2 four-quadrant R/G/B/W was scrambled with CTRL=0 and correct
+ * after this, matching OSD1.)
+ */
+static void meson_viu_set_viu_osd2_matrix(struct meson_drm *priv,
+					  int *m, bool csc_on)
+{
+	writel(((m[0] & 0xfff) << 16) | (m[1] & 0xfff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_PRE_OFFSET0_1));
+	writel(m[2] & 0xfff,
+		priv->io_base + _REG(VIU_OSD2_MATRIX_PRE_OFFSET2));
+	writel(((m[3] & 0x1fff) << 16) | (m[4] & 0x1fff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_COEF00_01));
+	writel(((m[5] & 0x1fff) << 16) | (m[6] & 0x1fff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_COEF02_10));
+	writel(((m[7] & 0x1fff) << 16) | (m[8] & 0x1fff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_COEF11_12));
+	writel(((m[9] & 0x1fff) << 16) | (m[10] & 0x1fff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_COEF20_21));
+	writel((m[11] & 0x1fff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_COEF22));
+
+	writel(((m[18] & 0xfff) << 16) | (m[19] & 0xfff),
+		priv->io_base + _REG(VIU_OSD2_MATRIX_OFFSET0_1));
+	writel(m[20] & 0xfff,
+		priv->io_base + _REG(VIU_OSD2_MATRIX_OFFSET2));
+
+	/* CTRL: BIT(0)=matrix enable, BIT(1) cleared (mirrors OSD1 CTRL) */
+	writel_bits_relaxed(BIT(0), csc_on ? BIT(0) : 0,
+		priv->io_base + _REG(VIU_OSD2_MATRIX_CTRL));
+	writel_bits_relaxed(BIT(1), 0,
+		priv->io_base + _REG(VIU_OSD2_MATRIX_CTRL));
 }
 
 static void meson_viu_set_osd_matrix(struct meson_drm *priv,
@@ -309,6 +396,16 @@ static void meson_viu_load_matrix(struct meson_drm *priv)
 	meson_viu_set_osd_matrix(priv, VIU_MATRIX_OSD,
 				 RGB709_to_YUV709l_coeff,
 				 true);
+
+	/*
+	 * Audit #7: this function is also called (via meson_viu_osd1_reset())
+	 * on every OSD1 disable->enable transition, and VIU_SW_RESET_OSD1 does
+	 * not touch OSD2's matrix state. OSD2's VIU_OSD2_MATRIX_* used to be
+	 * re-driven here too -- an unconditional, ungated rewrite of a register
+	 * block that may belong to an actively scanning-out OSD2, triggered
+	 * purely by OSD1's own commit. It only needs programming once, in
+	 * meson_viu_init()'s GXL/GXM branch -- deliberately NOT repeated here.
+	 */
 }
 
 /* VIU OSD1 Reset as workaround for GXL+ Alpha OSD Bug */
@@ -336,6 +433,16 @@ void meson_viu_osd1_reset(struct meson_drm *priv)
 
 	/* Reload the conversion matrix */
 	meson_viu_load_matrix(priv);
+
+	/*
+	 * Audit #6: meson_viu_load_matrix() above unconditionally rewrites the
+	 * EOTF matrix (VIU_MATRIX_OSD_EOTF) to bypass, with no restore -- any
+	 * CTM the user had set via the DRM CTM property (same register block,
+	 * see meson_viu_set_ctm()/meson_viu_apply_ctm()) was silently destroyed
+	 * on every OSD1 re-enable. Re-apply the cached CTM (or bypass, if none
+	 * is active) from the cache meson_crtc_atomic_flush() populates.
+	 */
+	meson_viu_apply_ctm(priv);
 }
 
 #define OSD1_MALI_ORDER_ABGR				\
@@ -411,6 +518,192 @@ void meson_viu_gxm_disable_osd1_afbc(struct meson_drm *priv)
 			    priv->io_base + _REG(VIU_MISC_CTRL1));
 }
 
+static int meson_ctm_s31_32_to_13bit(u64 val)
+{
+	bool negative = !!(val & BIT_ULL(63));
+	u64 mag = val & ~BIT_ULL(63);
+	int coeff;
+
+	/*
+	 * Convert S31.32 sign-magnitude to 13-bit signed (Q1.11).
+	 * Right-shift by 21 (32 fractional - 11 fractional) with rounding.
+	 */
+	coeff = (int)((mag + BIT_ULL(20)) >> 21);
+
+	/* Clamp to 12-bit magnitude (13-bit signed max) */
+	if (coeff > 0xfff)
+		coeff = 0xfff;
+
+	return negative ? -coeff : coeff;
+}
+
+/*
+ * Audit #8: this used to write VIU_MATRIX_OSD_EOTF directly, synchronous MMIO
+ * from meson_crtc_atomic_flush() in the commit tail -- the one remaining
+ * direct-from-atomic_flush register write in this driver, violating its own
+ * deferred/vsync-IRQ discipline (every other register goes through a
+ * priv->viu.*_commit flag consumed by meson_crtc_irq). It now only updates
+ * the cache; meson_viu_apply_ctm() does the actual write, called from the
+ * vsync IRQ and also reused to restore the CTM after meson_viu_osd1_reset()
+ * (#6) and at resume (#10).
+ */
+void meson_viu_set_ctm(struct meson_drm *priv, struct drm_color_ctm *ctm)
+{
+	int i;
+
+	if (!ctm) {
+		priv->viu.cm_ctm_active = false;
+		return;
+	}
+
+	for (i = 0; i < 9; i++)
+		priv->viu.cm_ctm_coeffs[i] =
+			meson_ctm_s31_32_to_13bit(ctm->matrix[i]);
+
+	priv->viu.cm_ctm_coeffs[9] = EOTF_COEFF_RIGHTSHIFT;
+	priv->viu.cm_ctm_active = true;
+}
+
+/* Apply the cached CTM (or bypass) to hardware. Cheap (no polling) -- safe
+ * to call from the vsync IRQ (#8) or from meson_viu_osd1_reset() (#6),
+ * which already runs under priv->drm->event_lock via its plane caller. */
+void meson_viu_apply_ctm(struct meson_drm *priv)
+{
+	if (priv->viu.cm_ctm_active)
+		meson_viu_set_osd_matrix(priv, VIU_MATRIX_OSD_EOTF,
+					 priv->viu.cm_ctm_coeffs, true);
+	else
+		meson_viu_set_osd_matrix(priv, VIU_MATRIX_OSD_EOTF,
+					 eotf_bypass_coeff, false);
+}
+
+/*
+ * The active VPP gamma LUT on all supported meson SoCs (GXBB..SM1, i.e. pre-T7)
+ * is the L_GAMMA block (L_GAMMA_CNTL/DATA/ADDR_PORT, 0x1400/0x1401/0x1402), NOT
+ * the GAMMA_*_PORT block (0x1480-0x1482) this code used to write -- that block is
+ * not in the active pipe, so the DRM GAMMA_LUT property was a silent no-op
+ * (CM-001). The Amlogic BSP (amvecm: vpp_set_lcd_gamma_table /
+ * vpp_enable_lcd_gamma_table) drives L_GAMMA for the whole pre-T7 family and only
+ * switches to LCD_GAMMA_*_PORT0 (0x14b4) on T7+. The L_GAMMA LUT port needs a
+ * ready handshake: poll ADR_RDY before programming the address, WR_RDY before
+ * each data write (the GAMMA_*_PORT path skipped this).
+ */
+/*
+ * Audit #9: each of the 3x256 LUT writes was preceded by a busy-spun (no
+ * delay) poll of up to 10000 readl() calls, with NO error path -- worst
+ * case ~7.7M MMIO reads (~0.8s) in the commit tail if WR_RDY never
+ * asserts, and the code wrote the LUT entry anyway once the poll gave up.
+ * Use the bounded, error-returning poll helper. The ATOMIC variant is
+ * required because meson_viu_apply_gamma() below also runs from the vsync
+ * hard-IRQ (#8); it degrades gracefully (busy-wait, no sleep) when also
+ * called from the process-context resume path (#10).
+ */
+static int meson_viu_lgamma_wait(struct meson_drm *priv, u32 rdy)
+{
+	u32 val;
+
+	return readl_relaxed_poll_timeout_atomic(
+			priv->io_base + _REG(L_GAMMA_CNTL_PORT),
+			val, val & rdy, 10, 10000);
+}
+
+static int meson_viu_lgamma_channel(struct meson_drm *priv, u32 sel,
+				    const u16 *chan, unsigned int size)
+{
+	unsigned int i;
+	int ret;
+
+	ret = meson_viu_lgamma_wait(priv, L_GAMMA_CNTL_PORT_ADR_RDY);
+	if (ret)
+		return ret;
+
+	writel(L_GAMMA_ADDR_PORT_AUTO_INC | sel,
+	       priv->io_base + _REG(L_GAMMA_ADDR_PORT));
+
+	for (i = 0; i < size; i++) {
+		ret = meson_viu_lgamma_wait(priv, L_GAMMA_CNTL_PORT_WR_RDY);
+		if (ret)
+			return ret;
+
+		writel(drm_color_lut_extract(chan[i], 10),
+		       priv->io_base + _REG(L_GAMMA_DATA_PORT));
+	}
+
+	return 0;
+}
+
+/*
+ * Audit #8: this used to write the L_GAMMA_* ports directly, synchronous
+ * MMIO from meson_crtc_atomic_flush() in the commit tail. It now only
+ * copies the LUT into the cache (no MMIO, no polling); meson_viu_apply_gamma()
+ * does the actual hardware load, deferred to the vsync IRQ and also reused
+ * to restore the LUT at resume (#10).
+ */
+void meson_viu_set_gamma_lut(struct meson_drm *priv,
+			     struct drm_color_lut *lut, unsigned int size)
+{
+	unsigned int i;
+
+	if (!lut || !size) {
+		priv->viu.cm_gamma_active = false;
+		return;
+	}
+
+	if (size > 256)
+		size = 256;
+
+	for (i = 0; i < size; i++) {
+		priv->viu.cm_gamma_r[i] = lut[i].red;
+		priv->viu.cm_gamma_g[i] = lut[i].green;
+		priv->viu.cm_gamma_b[i] = lut[i].blue;
+	}
+	priv->viu.cm_gamma_size = size;
+	priv->viu.cm_gamma_active = true;
+}
+
+/*
+ * Apply the cached gamma LUT (or disable) to hardware. May run from the
+ * vsync IRQ (#8) or from process context at resume (#10). Returns
+ * -ETIMEDOUT (propagated from the poll, #9) if the L_GAMMA handshake never
+ * becomes ready -- the LUT is left/forced disabled rather than partially
+ * written; the caller should treat a non-zero return as a logged failure.
+ */
+int meson_viu_apply_gamma(struct meson_drm *priv)
+{
+	int ret;
+
+	if (!priv->viu.cm_gamma_active) {
+		writel_bits_relaxed(L_GAMMA_CNTL_PORT_EN, 0,
+				    priv->io_base + _REG(L_GAMMA_CNTL_PORT));
+		return 0;
+	}
+
+	ret = meson_viu_lgamma_channel(priv, L_GAMMA_ADDR_PORT_SEL_R,
+				       priv->viu.cm_gamma_r,
+				       priv->viu.cm_gamma_size);
+	if (!ret)
+		ret = meson_viu_lgamma_channel(priv, L_GAMMA_ADDR_PORT_SEL_G,
+					       priv->viu.cm_gamma_g,
+					       priv->viu.cm_gamma_size);
+	if (!ret)
+		ret = meson_viu_lgamma_channel(priv, L_GAMMA_ADDR_PORT_SEL_B,
+					       priv->viu.cm_gamma_b,
+					       priv->viu.cm_gamma_size);
+	if (ret) {
+		dev_err(priv->dev,
+			"VIU gamma LUT: L_GAMMA port not ready, aborting LUT load (%d)\n",
+			ret);
+		writel_bits_relaxed(L_GAMMA_CNTL_PORT_EN, 0,
+				    priv->io_base + _REG(L_GAMMA_CNTL_PORT));
+		return ret;
+	}
+
+	/* Enable gamma correction */
+	writel_bits_relaxed(L_GAMMA_CNTL_PORT_EN, L_GAMMA_CNTL_PORT_EN,
+			    priv->io_base + _REG(L_GAMMA_CNTL_PORT));
+	return 0;
+}
+
 void meson_viu_init(struct meson_drm *priv)
 {
 	uint32_t reg;
@@ -423,10 +716,26 @@ void meson_viu_init(struct meson_drm *priv)
 
 	/* On GXL/GXM, Use the 10bit HDR conversion matrix */
 	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXM) ||
-	    meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXL))
+	    meson_vpu_is_compatible(priv, VPU_COMPATIBLE_GXL)) {
 		meson_viu_load_matrix(priv);
-	else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
+		/*
+		 * Audit #7: program OSD2's RGB709->YUV709l output matrix here,
+		 * once, instead of from meson_viu_load_matrix() (which
+		 * meson_viu_osd1_reset() also calls on every OSD1 re-enable --
+		 * see the comment there). OSD2 needs the same output CSC as
+		 * OSD1 or its colours come out permuted (red->green->blue,
+		 * white->pink); GXL/GXM analog of the G12A
+		 * meson_viu_set_g12a_osd2_matrix fix.
+		 */
+		meson_viu_set_viu_osd2_matrix(priv, RGB709_to_YUV709l_coeff,
+					      true);
+	} else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
 		meson_viu_set_g12a_osd1_matrix(priv, RGB709_to_YUV709l_coeff,
+					       true);
+		/* OSD2 needs the same RGB709->YUV709l output CSC as OSD1 --
+		 * upstream never programs it, so OSD2 colours come out permuted
+		 * (red->green->blue, white->pink). Plane-correctness P2. */
+		meson_viu_set_g12a_osd2_matrix(priv, RGB709_to_YUV709l_coeff,
 					       true);
 		/* fix green/pink color distortion from vendor u-boot */
 		writel_bits_relaxed(OSD1_HDR2_CTRL_REG_ONLY_MAT |
@@ -443,7 +752,7 @@ void meson_viu_init(struct meson_drm *priv)
 	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
 		reg |= (VIU_OSD_BURST_LENGTH_32 | VIU_OSD_HOLD_FIFO_LINES(31));
 	else
-		reg |= (VIU_OSD_BURST_LENGTH_64 | VIU_OSD_HOLD_FIFO_LINES(4));
+		reg |= (VIU_OSD_BURST_LENGTH_96 | VIU_OSD_HOLD_FIFO_LINES(31));
 
 	writel_relaxed(reg, priv->io_base + _REG(VIU_OSD1_FIFO_CTRL_STAT));
 	writel_relaxed(reg, priv->io_base + _REG(VIU_OSD2_FIFO_CTRL_STAT));
@@ -491,6 +800,22 @@ void meson_viu_init(struct meson_drm *priv)
 		writel_relaxed(0,
 				priv->io_base + _REG(VIU_OSD_BLEND_DUMMY_ALPHA));
 
+		/* VPU-SWEEP-001: the VPP post-blend background (the full-canvas base
+		 * layer shown wherever no plane covers a pixel) resets to YCbCr
+		 * 0x00008080 -- Y=0, not studio-black Y=16 -- which the output CSC
+		 * turns into a full-screen GREEN field. It is hidden while a
+		 * full-screen plane (VD1) covers the canvas, but shows through in
+		 * VD1-disabled compose states (e.g. VD2-only PiP over a transparent
+		 * OSD1 stage). Upstream never programs it. Set it to studio-black +
+		 * opaque, mirroring the BSP (video_hw.c post_blend_dummy_data_update /
+		 * VPP_POST_BLEND_DUMMY_ALPHA init = 0x7fffffff). Hardware-verified on
+		 * SM1: 0x00008080 -> RGB[~10,87,11] (green); 0x00108080 + opaque
+		 * alpha -> RGB[~9,16,11] (black). */
+		writel_relaxed(VPP_POST_BLEND_DUMMY_YUV_BLACK,
+			       priv->io_base + _REG(VPP_POST_BLEND_BLEND_DUMMY_DATA));
+		writel_relaxed(VPP_POST_BLEND_DUMMY_ALPHA_OPAQUE,
+			       priv->io_base + _REG(VPP_POST_BLEND_DUMMY_ALPHA));
+
 		writel_bits_relaxed(DOLBY_BYPASS_EN(0xc), DOLBY_BYPASS_EN(0xc),
 				    priv->io_base + _REG(DOLBY_PATH_CTRL));
 
@@ -503,4 +828,7 @@ void meson_viu_init(struct meson_drm *priv)
 	priv->viu.osd1_enabled = false;
 	priv->viu.osd1_commit = false;
 	priv->viu.osd1_interlace = false;
+
+	priv->viu.osd2_enabled = false;
+	priv->viu.osd2_commit = false;
 }

@@ -423,12 +423,35 @@ struct xe_device *xe_device_create(struct pci_dev *pdev,
 {
 	struct xe_device *xe;
 	int err;
+	/*
+	 * Compute-only load (probe_display=0 or CONFIG_DRM_XE_DISPLAY=n)
+	 * must leave the firmware/EFI framebuffer alone. aperture_remove
+	 * tears down efifb + deactivates the VGA console; with no xe
+	 * display path to replace it, the panel freezes and GDM/Xorg
+	 * loop forever (no /dev/fb*, no KMS).
+	 *
+	 * Measured 2026-07-18 on ai-aspire-14 (LNL 8086:64a0):
+	 *   fb0: EFI VGA frame buffer device  (1920x1200)
+	 *   xe: nomodeset active; loading compute-only
+	 *   Console: switching to colour dummy device 80x25
+	 *   xe ...: vgaarb: deactivate vga console
+	 *   -> /dev/fb0 gone; GNOME Shell/Xorg fail in a restart storm.
+	 *
+	 * Matches probe_display MODULE_PARM_DESC: display HW "left
+	 * untouched" when not probed. Full KMS path still removes
+	 * conflicting FBs as before.
+	 */
+	bool probe_display = IS_ENABLED(CONFIG_DRM_XE_DISPLAY) &&
+			     xe_modparam.probe_display;
 
 	xe_display_driver_set_hooks(&driver);
 
-	err = aperture_remove_conflicting_pci_devices(pdev, driver.name);
-	if (err)
-		return ERR_PTR(err);
+	if (probe_display) {
+		err = aperture_remove_conflicting_pci_devices(pdev,
+							     driver.name);
+		if (err)
+			return ERR_PTR(err);
+	}
 
 	xe = devm_drm_dev_alloc(&pdev->dev, &driver, struct xe_device, drm);
 	if (IS_ERR(xe))
@@ -487,7 +510,7 @@ struct xe_device *xe_device_create(struct pci_dev *pdev,
 						       WQ_MEM_RECLAIM);
 	xe->ordered_wq = alloc_ordered_workqueue("xe-ordered-wq", 0);
 	xe->unordered_wq = alloc_workqueue("xe-unordered-wq", 0, 0);
-	xe->destroy_wq = alloc_workqueue("xe-destroy-wq", 0, 0);
+	xe->destroy_wq = alloc_workqueue("xe-destroy-wq", WQ_MEM_RECLAIM, 0);
 	if (!xe->ordered_wq || !xe->unordered_wq ||
 	    !xe->preempt_fence_wq || !xe->destroy_wq) {
 		/*
@@ -901,9 +924,16 @@ int xe_device_probe(struct xe_device *xe)
 
 	xe_nvm_init(xe);
 
-	err = xe_heci_gsc_init(xe);
-	if (err)
-		return err;
+	/*
+	 * mei-gscfi aux device is for GSC proxy / PXP. Under compute-only
+	 * (no display) we skip async GSC load; do not publish the HECI aux
+	 * either — same LNL boot hang isolation (ai-aspire-14 2026-07-19).
+	 */
+	if (xe->info.probe_display) {
+		err = xe_heci_gsc_init(xe);
+		if (err)
+			return err;
+	}
 
 	err = xe_late_bind_init(&xe->late_bind);
 	if (err)
@@ -962,10 +992,15 @@ int xe_device_probe(struct xe_device *xe)
 	if (err)
 		goto err_unregister_display;
 
-	return devm_add_action_or_reset(xe->drm.dev, xe_device_sanitize, xe);
+	err = devm_add_action_or_reset(xe->drm.dev, xe_device_sanitize, xe);
+	if (err)
+		goto err_unregister_display;
+
+	return 0;
 
 err_unregister_display:
 	xe_display_unregister(xe);
+	drm_dev_unregister(&xe->drm);
 
 	return err;
 }
@@ -973,8 +1008,6 @@ err_unregister_display:
 void xe_device_remove(struct xe_device *xe)
 {
 	xe_display_unregister(xe);
-
-	xe_nvm_fini(xe);
 
 	drm_dev_unplug(&xe->drm);
 
@@ -1046,7 +1079,7 @@ static void tdf_request_sync(struct xe_device *xe)
 		 * transient and need to be flushed..
 		 */
 		if (xe_mmio_wait32(&gt->mmio, XE2_TDF_CTRL, TRANSIENT_FLUSH_REQUEST, 0,
-				   150, NULL, false))
+				   300, NULL, false))
 			xe_gt_err_once(gt, "TD flush timeout\n");
 
 		xe_force_wake_put(gt_to_fw(gt), fw_ref);

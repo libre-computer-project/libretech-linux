@@ -580,7 +580,12 @@ static struct clk_rcg2 disp_cc_mdss_mdp_clk_src = {
 		.parent_data = disp_cc_parent_data_6,
 		.num_parents = ARRAY_SIZE(disp_cc_parent_data_6),
 		.flags = CLK_SET_RATE_PARENT,
-		.ops = &clk_rcg2_shared_ops,
+		/*
+		 * Use no_init_park ops so the MDP RCG is not parked at 19.2 MHz
+		 * when dispcc binds -- parking kills the EFI GOP framebuffer
+		 * before the msm driver loads (no early-boot display). jg 8c5395f5010c1.
+		 */
+		.ops = &clk_rcg2_shared_no_init_park_ops,
 	},
 };
 

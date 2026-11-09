@@ -369,10 +369,25 @@ static int mtk_ccifreq_probe(struct platform_device *pdev)
 		goto out_remove_opp_table;
 	}
 
+	/*
+	 * Follow OPP enable/disable events. MediaTek SVS pins the CCI to its
+	 * vboot OPP by disabling every other OPP and then reads the shared
+	 * proc buck back; the passive governor only re-targets on a CPU
+	 * frequency change, so without this the CCI stays on a disabled OPP
+	 * (up to 1196 MHz / 1050 mV on MT8183), holding the buck it shares
+	 * with the little cluster above vboot, and SVS fails with -EPERM.
+	 */
+	ret = devm_devfreq_register_opp_notifier(dev, drv->devfreq);
+	if (ret) {
+		dev_err(dev, "failed to register devfreq opp notifier: %d\n", ret);
+		goto out_remove_opp_table;
+	}
+
 	drv->opp_nb.notifier_call = mtk_ccifreq_opp_notifier;
 	ret = dev_pm_opp_register_notifier(dev, &drv->opp_nb);
 	if (ret) {
 		dev_err(dev, "failed to register opp notifier: %d\n", ret);
+		devm_devfreq_unregister_opp_notifier(dev, drv->devfreq);
 		goto out_remove_opp_table;
 	}
 	return 0;
@@ -401,6 +416,8 @@ static void mtk_ccifreq_remove(struct platform_device *pdev)
 	drv = platform_get_drvdata(pdev);
 
 	dev_pm_opp_unregister_notifier(dev, &drv->opp_nb);
+	/* stop devfreq re-targeting on each OPP the table removal deletes */
+	devm_devfreq_unregister_opp_notifier(dev, drv->devfreq);
 	dev_pm_opp_of_remove_table(dev);
 	clk_disable_unprepare(drv->cci_clk);
 	regulator_disable(drv->proc_reg);

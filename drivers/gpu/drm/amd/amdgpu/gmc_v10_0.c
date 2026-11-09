@@ -530,6 +530,25 @@ static void gmc_v10_0_get_vm_pte(struct amdgpu_device *adev,
 		*flags &= ~AMDGPU_PTE_VALID;
 	}
 
+	/*
+	 * gfx10.3 APU (apu_prefer_gtt): the KFD compute ring/IB lives in
+	 * CPU-cached shared system RAM and is fetched by the command processor.
+	 * The PTE must SNOOP the CPU caches or the CP reads stale CPU-written
+	 * bytes and takes intermittent CPF/CPC permission faults, each forcing a
+	 * MODE2 GPU reset. amdgpu_ttm_tt_pde_flags() sets SNOOPED only when the BO
+	 * happens to land ttm_cached, which varies boot-to-boot -- the source of
+	 * the intermittency. 6716a823d18d4 ("drm/amdgpu: rework how PTE flags are
+	 * generated", self-described "only tested on Navi 23") deferred flag
+	 * translation here without re-asserting SNOOPED for the APU. Force it on so
+	 * CP coherence no longer depends on the BO's caching state. gfx10-only
+	 * file: gmc_v9 (gfx9) and gmc_v12 (gfx1201 R9700) are untouched.
+	 */
+	if (adev->apu_prefer_gtt) {
+		*flags |= AMDGPU_PTE_SNOOPED;
+		pr_info_once("amdgpu: gfx10.3 APU KFD PTE coherence fix active (SNOOPED forced), flags=0x%llx\n",
+			     (unsigned long long)*flags);
+	}
+
 	if (bo && bo->flags & (AMDGPU_GEM_CREATE_COHERENT |
 			       AMDGPU_GEM_CREATE_EXT_COHERENT |
 			       AMDGPU_GEM_CREATE_UNCACHED))

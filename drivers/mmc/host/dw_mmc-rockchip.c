@@ -19,6 +19,8 @@
 #define RK3288_CLKGEN_DIV		2
 #define SDMMC_TIMING_CON0		0x130
 #define SDMMC_TIMING_CON1		0x134
+#define SDMMC_MISC_CON			0x138
+#define MEM_CLK_AUTOGATE_ENABLE		BIT(5)
 #define ROCKCHIP_MMC_DELAY_SEL		BIT(10)
 #define ROCKCHIP_MMC_DEGREE_MASK	0x3
 #define ROCKCHIP_MMC_DEGREE_OFFSET	1
@@ -28,13 +30,81 @@
 
 static const unsigned int freqs[] = { 100000, 200000, 300000, 400000 };
 
+/*
+ * Card-clock fallback ladder for the tuned modes (SDR104 / HS200 and, where
+ * the card asks for it, SDR50 / DDR50).
+ *
+ * The top rung is whatever the core asks for -- the DT max-frequency clamps
+ * it through f_max -- and the rungs below are the SD spec's own bands: the
+ * 200 MHz SDR104 rate this clock tree produces exactly (CPLL / 2 / 2), the
+ * 150 MHz Rockchip integration ceiling (rk3399-base.dtsi), SDR50's 100 MHz
+ * and SDR25's 50 MHz. Fixed rates rather than ratios of the top rung because
+ * the CCF picks the parent + divider closest BELOW a request, so a ratio
+ * lands on whatever the tree happens to round to, while these are rates the
+ * card is specified to run at. Two things step the ladder down, both logged
+ * on one line and both re-tuning at the new rung:
+ *
+ *  (a) at tuning time, a passing sample-phase window narrower than
+ *      tuning_min_window degrees -- the eye is what the sweep measures, so
+ *      it is the honest margin reading; a marginal eye that happens to pass
+ *      CMD19 today is exactly the one that CRC-storms tomorrow;
+ *  (b) at run time, a persistent data-CRC storm (the core's
+ *      MMC_CRC_STORM_LIMIT) -- mmc_host_ops->lower_bus_clock.
+ *
+ * The ceiling never climbs back while the card stays powered; a power-off
+ * (card removal, mmc_hw_reset) clears it so the next card starts at the top.
+ * When no rung is left, tuning accepts whatever window the bottom rung shows
+ * (never worse than upstream, which accepted any window at any clock) and
+ * the storm hook reports the ladder exhausted so the core drops the bus
+ * grade instead.
+ */
+static const unsigned int rockchip_mmc_clk_rungs[] = {
+	200000000, 150000000, 100000000, 50000000,
+};
+
+/*
+ * One third of the bit period. Measured on the ROC-RK3399-PC's SD slot with
+ * a Samsung EVO Plus U3: 227 degrees at 148.5 MHz, 162-165 at 200 MHz, so
+ * a healthy eye clears this with margin and a collapsing one (the 35-37
+ * degree side islands the same sweep sees) does not.
+ */
+static unsigned int tuning_min_window = 120;
+module_param(tuning_min_window, uint, 0644);
+MODULE_PARM_DESC(tuning_min_window,
+		 "Minimum passing sample-phase window, in degrees of the card clock period, before a tuned mode's clock is accepted; narrower steps the clock down one rung (default 120)");
+
 struct dw_mci_rockchip_priv_data {
 	struct clk		*drv_clk;
 	struct clk		*sample_clk;
 	int			default_sample_phase;
 	int			num_phases;
 	bool			internal_phase;
+	int                     sample_phase;
+	int                     drv_phase;
+	unsigned int		clk_ceiling;	/* ladder rung in force, 0 = top */
 };
+
+/* The largest rung strictly below @clock, or 0 when the ladder is exhausted */
+static unsigned int rockchip_mmc_next_rung(unsigned int clock)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(rockchip_mmc_clk_rungs); i++)
+		if (rockchip_mmc_clk_rungs[i] < clock)
+			return rockchip_mmc_clk_rungs[i];
+	return 0;
+}
+
+static const char *rockchip_mmc_timing_name(unsigned char timing)
+{
+	switch (timing) {
+	case MMC_TIMING_UHS_SDR50:	return "SDR50";
+	case MMC_TIMING_UHS_SDR104:	return "SDR104";
+	case MMC_TIMING_UHS_DDR50:	return "DDR50";
+	case MMC_TIMING_MMC_HS200:	return "HS200";
+	default:			return "tuned-mode";
+	}
+}
 
 /*
  * Each fine delay is between 44ps-77ps. Assume each fine delay is 60ps to
@@ -176,11 +246,28 @@ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 {
 	struct dw_mci_rockchip_priv_data *priv = host->priv;
 	int ret;
+	unsigned int clock = ios->clock;
 	unsigned int cclkin;
 	u32 bus_hz;
 
-	if (ios->clock == 0)
+	/* A power-off ends the card session: the fallback ladder re-arms */
+	if (ios->power_mode == MMC_POWER_OFF && priv->clk_ceiling) {
+		dev_dbg(host->dev, "power off, clearing the %u Hz clock ceiling\n",
+			priv->clk_ceiling);
+		priv->clk_ceiling = 0;
+	}
+
+	if (clock == 0)
 		return;
+
+	/*
+	 * The fallback ladder's rung in force. The core keeps asking for its
+	 * nominal rate (ios->clock); the CIU runs at the rung, and
+	 * dw_mci_setup_bus() then sees bus_hz below the request and takes
+	 * the bypass divider, so actual_clock reports the rung.
+	 */
+	if (priv->clk_ceiling && clock > priv->clk_ceiling)
+		clock = priv->clk_ceiling;
 
 	/*
 	 * cclkin: source clock of mmc controller
@@ -193,9 +280,9 @@ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 	 */
 	if (ios->bus_width == MMC_BUS_WIDTH_8 &&
 	    ios->timing == MMC_TIMING_MMC_DDR52)
-		cclkin = 2 * ios->clock * RK3288_CLKGEN_DIV;
+		cclkin = 2 * clock * RK3288_CLKGEN_DIV;
 	else
-		cclkin = ios->clock * RK3288_CLKGEN_DIV;
+		cclkin = clock * RK3288_CLKGEN_DIV;
 
 	ret = clk_set_rate(host->ciu_clk, cclkin);
 	if (ret)
@@ -280,7 +367,13 @@ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 #define TUNING_ITERATION_TO_PHASE(i, num_phases) \
 		(DIV_ROUND_UP((i) * 360, num_phases))
 
-static int dw_mci_rk3288_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
+/*
+ * One sweep of the sample phase at the current card clock: pick the middle
+ * of the widest passing range. @window receives that range's width in
+ * degrees (the whole turn when every phase passes).
+ */
+static int dw_mci_rk3288_tuning_sweep(struct dw_mci_slot *slot, u32 opcode,
+				      int *window)
 {
 	struct dw_mci *host = slot->host;
 	struct dw_mci_rockchip_priv_data *priv = host->priv;
@@ -298,6 +391,8 @@ static int dw_mci_rk3288_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 	int longest_range = -1;
 	int middle_phase;
 	int phase;
+
+	*window = 0;
 
 	if (IS_ERR(priv->sample_clk)) {
 		dev_err(host->dev, "Tuning clock (sample_clk) not defined.\n");
@@ -364,6 +459,7 @@ static int dw_mci_rk3288_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 
 		dev_info(host->dev, "All phases work, using default phase %d.",
 			 priv->default_sample_phase);
+		*window = 360;
 		goto free;
 	}
 
@@ -402,10 +498,93 @@ static int dw_mci_rk3288_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 	dev_info(host->dev, "Successfully tuned phase to %d\n", phase);
 
 	rockchip_mmc_set_phase(host, true, phase);
+	*window = TUNING_ITERATION_TO_PHASE(longest_range_len, priv->num_phases);
 
 free:
 	kfree(ranges);
 	return ret;
+}
+
+/*
+ * Tuning with the clock-fallback ladder: sweep at the clock in force; a
+ * closed eye (all phases bad) or one narrower than tuning_min_window steps
+ * the ceiling down one rung, re-rates the CIU clock through the ios and
+ * sweeps again. The bottom rung accepts any open eye.
+ */
+static int dw_mci_rk3288_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
+{
+	struct dw_mci *host = slot->host;
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
+	struct mmc_host *mmc = slot->mmc;
+	unsigned int cur, next;
+	int window, ret;
+
+	if (IS_ERR(priv->sample_clk))
+		return dw_mci_rk3288_tuning_sweep(slot, opcode, &window);
+
+	for (;;) {
+		ret = dw_mci_rk3288_tuning_sweep(slot, opcode, &window);
+		if (ret && ret != -EIO)
+			return ret;
+
+		cur = priv->clk_ceiling ?: mmc->ios.clock;
+		next = rockchip_mmc_next_rung(cur);
+		if (!next) {
+			if (!ret && window < tuning_min_window)
+				dev_warn(host->dev,
+					 "%s tuning eye %d deg < %u deg at %u MHz, no lower rung, accepting\n",
+					 rockchip_mmc_timing_name(mmc->ios.timing),
+					 window, tuning_min_window,
+					 cur / 1000000);
+			return ret;
+		}
+		if (!ret && window >= tuning_min_window)
+			return 0;
+
+		if (ret)
+			dev_warn(host->dev,
+				 "%s tuning: all phases bad at %u MHz, falling back to %u MHz\n",
+				 rockchip_mmc_timing_name(mmc->ios.timing),
+				 cur / 1000000, next / 1000000);
+		else
+			dev_warn(host->dev,
+				 "%s tuning eye %d deg < %u deg at %u MHz, falling back to %u MHz\n",
+				 rockchip_mmc_timing_name(mmc->ios.timing),
+				 window, tuning_min_window, cur / 1000000,
+				 next / 1000000);
+
+		priv->clk_ceiling = next;
+		mmc->ops->set_ios(mmc, &mmc->ios);
+	}
+}
+
+/*
+ * CRC-storm rung (mmc_host_ops->lower_bus_clock via dw_mmc.c): the core
+ * has seen MMC_CRC_STORM_LIMIT data CRCs since the last step at this clock.
+ * Lower the ceiling one rung; dw_mmc.c re-applies the ios and the core
+ * re-tunes at the new rate. -ERANGE when no rung is left, so the core
+ * drops the bus grade instead.
+ */
+static int dw_mci_rockchip_lower_bus_clock(struct dw_mci *host)
+{
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
+	struct mmc_host *mmc = host->slot->mmc;
+	unsigned int cur = priv->clk_ceiling ?: mmc->ios.clock;
+	unsigned int next = rockchip_mmc_next_rung(cur);
+
+	if (!next) {
+		dev_warn(host->dev,
+			 "%s data CRC storm at %u MHz, clock ladder exhausted\n",
+			 rockchip_mmc_timing_name(mmc->ios.timing), cur / 1000000);
+		return -ERANGE;
+	}
+
+	dev_warn(host->dev,
+		 "%s data CRC storm at %u MHz, falling back to %u MHz\n",
+		 rockchip_mmc_timing_name(mmc->ios.timing), cur / 1000000,
+		 next / 1000000);
+	priv->clk_ceiling = next;
+	return 0;
 }
 
 static int dw_mci_common_parse_dt(struct dw_mci *host)
@@ -426,6 +605,22 @@ static int dw_mci_common_parse_dt(struct dw_mci *host)
 		priv->default_sample_phase = 0;
 
 	host->priv = priv;
+
+	return 0;
+}
+
+static int dw_mci_rk2928_parse_dt(struct dw_mci *host)
+{
+	struct dw_mci_rockchip_priv_data *priv;
+	int err;
+
+	err = dw_mci_common_parse_dt(host);
+	if (err)
+		return err;
+
+	priv = host->priv;
+
+	priv->internal_phase = false;
 
 	return 0;
 }
@@ -470,6 +665,7 @@ static int dw_mci_rk3576_parse_dt(struct dw_mci *host)
 
 static int dw_mci_rockchip_init(struct dw_mci *host)
 {
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
 	int ret, i;
 
 	/* It is slot 8 on Rockchip SoCs */
@@ -494,17 +690,22 @@ static int dw_mci_rockchip_init(struct dw_mci *host)
 			dev_warn(host->dev, "no valid minimum freq: %d\n", ret);
 	}
 
+	if (priv->internal_phase)
+		mci_writel(host, MISC_CON, MEM_CLK_AUTOGATE_ENABLE);
+
 	return 0;
 }
 
 static const struct dw_mci_drv_data rk2928_drv_data = {
 	.init			= dw_mci_rockchip_init,
+	.parse_dt		= dw_mci_rk2928_parse_dt,
 };
 
 static const struct dw_mci_drv_data rk3288_drv_data = {
 	.common_caps		= MMC_CAP_CMD23,
 	.set_ios		= dw_mci_rk3288_set_ios,
 	.execute_tuning		= dw_mci_rk3288_execute_tuning,
+	.lower_bus_clock	= dw_mci_rockchip_lower_bus_clock,
 	.parse_dt		= dw_mci_rk3288_parse_dt,
 	.init			= dw_mci_rockchip_init,
 };
@@ -513,6 +714,7 @@ static const struct dw_mci_drv_data rk3576_drv_data = {
 	.common_caps		= MMC_CAP_CMD23,
 	.set_ios		= dw_mci_rk3288_set_ios,
 	.execute_tuning		= dw_mci_rk3288_execute_tuning,
+	.lower_bus_clock	= dw_mci_rockchip_lower_bus_clock,
 	.parse_dt		= dw_mci_rk3576_parse_dt,
 	.init			= dw_mci_rockchip_init,
 };
@@ -568,9 +770,43 @@ static void dw_mci_rockchip_remove(struct platform_device *pdev)
 	dw_mci_pltfm_remove(pdev);
 }
 
+static int dw_mci_rockchip_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct dw_mci *host = platform_get_drvdata(pdev);
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
+
+	if (priv->internal_phase) {
+		priv->sample_phase = rockchip_mmc_get_phase(host, true);
+		priv->drv_phase = rockchip_mmc_get_phase(host, false);
+	}
+
+	return dw_mci_runtime_suspend(dev);
+}
+
+static int dw_mci_rockchip_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct dw_mci *host = platform_get_drvdata(pdev);
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
+	int ret;
+
+	ret = dw_mci_runtime_resume(dev);
+	if (ret)
+		return ret;
+
+	if (priv->internal_phase) {
+		rockchip_mmc_set_phase(host, true, priv->sample_phase);
+		rockchip_mmc_set_phase(host, false, priv->drv_phase);
+		mci_writel(host, MISC_CON, MEM_CLK_AUTOGATE_ENABLE);
+	}
+
+	return ret;
+}
+
 static const struct dev_pm_ops dw_mci_rockchip_dev_pm_ops = {
 	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
-	RUNTIME_PM_OPS(dw_mci_runtime_suspend, dw_mci_runtime_resume, NULL)
+	RUNTIME_PM_OPS(dw_mci_rockchip_runtime_suspend, dw_mci_rockchip_runtime_resume, NULL)
 };
 
 static struct platform_driver dw_mci_rockchip_pltfm_driver = {

@@ -814,6 +814,11 @@
 	};
 };
 
+/* The FD jobs run in the SCP, and this image has the service. */
+&fd {
+	status = "okay";
+};
+
 &mfg_async {
 	domain-supply = <&mt6358_vsram_gpu_reg>;
 };
@@ -955,6 +960,19 @@
 	/delete-property/ interrupts;
 	interrupts-extended = <&sysirq GIC_SPI 92 IRQ_TYPE_LEVEL_LOW>,
 			      <&pio 121 IRQ_TYPE_EDGE_FALLING>;
+	/*
+	 * The QCA6174 runs this port at 3 Mbit/s. In PIO mode a CPU waking
+	 * from cpu-sleep / cluster-sleep (200-400 us exit latency) misses
+	 * the RX FIFO and the HCI stream loses bytes.
+	 */
+	dmas = <&apdma 2>, <&apdma 3>;
+	dma-names = "tx", "rx";
+	/*
+	 * The APDMA RX completion can run ahead of its ring writes while a
+	 * CPU cluster powers down: keep cluster-sleep (400 us exit) off while
+	 * DMA traffic flows; cpu-sleep (200 us) stays allowed.
+	 */
+	mediatek,rx-dma-cpu-latency-us = <200>;
 
 	bluetooth: bluetooth {
 		pinctrl-names = "default";

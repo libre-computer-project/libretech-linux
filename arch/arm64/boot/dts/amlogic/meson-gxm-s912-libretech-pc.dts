@@ -8,6 +8,7 @@
 
 #include "meson-gxm.dtsi"
 #include "meson-gx-libretech-pc.dtsi"
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "libretech,aml-s912-pc", "amlogic,s912",
@@ -63,4 +64,24 @@
 
 &usb2_phy2 {
 	phy-supply = <&typec2_vbus>;
+};
+
+/ {
+	reserved-memory {
+		linux,cma {
+			/*
+			 * 384 MiB. NOT 7/32 of RAM (672 MiB at 3 GiB): more RAM
+			 * does not widen the window CMA must fit. u-boot's
+			 * meson_fixup_cma_size() pins alloc-ranges to the first
+			 * 1 GiB on every boot, so the 3 GiB variant has exactly
+			 * the same 904 MiB run as the 2 GiB boards -- and the
+			 * KASLR'd ~72 MiB kernel image lands inside it, halving
+			 * it to 416 MiB at the worst placement. 672 is the
+			 * furthest past that bound of any board in this family
+			 * and fails on a sizeable minority of boots, silently, to
+			 * the 128 MiB Kconfig default.
+			 */
+			size = <0x0 0x18000000>;
+		};
+	};
 };

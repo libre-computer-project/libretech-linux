@@ -150,9 +150,26 @@ struct amdgpu_mes {
 
 	int				hung_queue_db_array_size;
 	int				hung_queue_hqd_info_offset;
-	struct amdgpu_bo		*hung_queue_db_array_gpu_obj;
+struct amdgpu_bo		*hung_queue_db_array_gpu_obj;
 	uint64_t			hung_queue_db_array_gpu_addr;
 	void				*hung_queue_db_array_cpu_addr;
+
+	/* pipe-reset series: MES MMIO pipe reset capability flags */
+	bool				compute_pipe_reset_enabled;
+	bool				gfx_pipe_reset_enabled;
+};
+
+/* MES hung-queue HQD info (doorbell array second half) */
+struct amdgpu_mes_hung_queue_hqd_info {
+	union {
+		struct {
+			u32 queue_type: 3;
+			u32 pipe_index: 4;
+			u32 queue_index: 8;
+			u32 reserved: 17;
+		};
+		u32 bit0_31;
+	};
 };
 
 struct amdgpu_mes_gang {
@@ -414,6 +431,17 @@ int amdgpu_mes_reset_legacy_queue(struct amdgpu_device *adev,
 				  struct amdgpu_ring *ring,
 				  unsigned int vmid,
 				  bool use_mmio);
+int amdgpu_mes_reset_queue_mmio(struct amdgpu_device *adev,
+				int queue_type,
+				unsigned int vmid,
+				unsigned int me,
+				unsigned int pipe,
+				unsigned int queue,
+				uint32_t xcc_id);
+int amdgpu_mes_reset_user_queue(struct amdgpu_device *adev,
+				int queue_type,
+				unsigned int doorbell_index,
+				unsigned int xcc_id);
 
 int amdgpu_mes_get_hung_queue_db_array_size(struct amdgpu_device *adev);
 int amdgpu_mes_detect_and_reset_hung_queues(struct amdgpu_device *adev,
@@ -501,6 +529,7 @@ static inline void amdgpu_mes_unlock(struct amdgpu_mes *mes)
 }
 
 bool amdgpu_mes_suspend_resume_all_supported(struct amdgpu_device *adev);
+bool amdgpu_mes_queue_reset_by_mes_supported(struct amdgpu_device *adev);
 
 int amdgpu_mes_update_enforce_isolation(struct amdgpu_device *adev);
 

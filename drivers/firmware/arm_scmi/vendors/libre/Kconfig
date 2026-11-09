@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "ARM SCMI Libre Computer Vendor Protocols"
+
+config LIBRE_SCMI_TYPEC
+	tristate "Libre Computer SCMI Type-C (UCSI) protocol"
+	depends on ARM_SCMI_PROTOCOL || (COMPILE_TEST && OF)
+	help
+	  This enables the Libre Computer SCMI vendor protocol 0x80
+	  ("lc-typec"), which carries a UCSI register file between Linux
+	  and an SCMI server that owns a USB Type-C power port, such as
+	  the RK3399 Cortex-M0 firmware on ROC-RK3399-PC. The UCSI client
+	  is UCSI_SCMI.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called lc-typec.
+
+config LIBRE_SCMI_WAKE_CFG
+	tristate "Libre Computer SCMI wake-configuration protocol"
+	depends on ARM_SCMI_PROTOCOL || (COMPILE_TEST && OF)
+	default ARM_SCMI_PROTOCOL if ARCH_MESON
+	help
+	  This enables the Libre Computer SCMI vendor protocol 0x81
+	  ("lc-wake-cfg") served by the Amlogic GXL open SC: the IR remote
+	  wake list the SC matches while the board sleeps. meson-ir sets it
+	  from rc-core's wakeup filter (/sys/class/rc/rcN/wakeup_filter).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called lc-wake-cfg.
+
+endmenu

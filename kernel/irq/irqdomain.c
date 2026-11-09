@@ -970,6 +970,36 @@ out:
 }
 EXPORT_SYMBOL_GPL(irq_create_fwspec_mapping);
 
+/**
+ * irq_find_fwspec_mapping() - Find the Linux IRQ a fwspec is already mapped to
+ * @fwspec: interrupt specifier, as passed to irq_create_fwspec_mapping()
+ *
+ * Unlike irq_create_fwspec_mapping() this never creates a mapping, so a
+ * caller can look up the mapping a consumer left behind and dispose of it.
+ *
+ * Return: the Linux IRQ number, or 0 if @fwspec is not mapped.
+ */
+unsigned int irq_find_fwspec_mapping(struct irq_fwspec *fwspec)
+{
+	struct irq_domain *domain;
+	irq_hw_number_t hwirq;
+	unsigned int type = IRQ_TYPE_NONE;
+
+	if (fwspec->fwnode) {
+		domain = irq_find_matching_fwspec(fwspec, DOMAIN_BUS_WIRED);
+		if (!domain)
+			domain = irq_find_matching_fwspec(fwspec, DOMAIN_BUS_ANY);
+	} else {
+		domain = irq_default_domain;
+	}
+
+	if (!domain || irq_domain_translate(domain, fwspec, &hwirq, &type))
+		return 0;
+
+	return irq_find_mapping(domain, hwirq);
+}
+EXPORT_SYMBOL_GPL(irq_find_fwspec_mapping);
+
 unsigned int irq_create_of_mapping(struct of_phandle_args *irq_data)
 {
 	struct irq_fwspec fwspec;

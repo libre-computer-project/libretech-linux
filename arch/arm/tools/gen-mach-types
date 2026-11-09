@@ -23,8 +23,12 @@ NF == 3 {
 
 
 END	{
+	  # the source path from the tree's arch/ down: FILENAME is absolute in an
+	  # out-of-tree build, and the build directory is no part of the header
+	  src = FILENAME
+	  sub(/^.*\/arch\/arm\/tools\//, "arch/arm/tools/", src)
 	  printf("/*\n");
-	  printf(" * This was automagically generated from %s!\n", FILENAME);
+	  printf(" * This was automagically generated from %s!\n", src);
 	  printf(" * Do NOT edit\n");
 	  printf(" */\n\n");
 	  printf("#ifndef __ASM_ARM_MACH_TYPE_H\n");

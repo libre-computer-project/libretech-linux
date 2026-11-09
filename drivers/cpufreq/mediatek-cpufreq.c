@@ -57,6 +57,8 @@ struct mtk_cpu_dvfs_info {
 	const struct mtk_cpufreq_platform_data *soc_data;
 	int vtrack_max;
 	bool ccifreq_bound;
+	/* the last vote was raised to vproc_on_boot because the CCI was not ready */
+	bool vproc_clamped;
 };
 
 static struct platform_device *cpufreq_pdev;
@@ -208,6 +210,7 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	struct dev_pm_opp *opp;
 	long freq_hz, pre_freq_hz;
 	int vproc, pre_vproc, inter_vproc, target_vproc, ret;
+	bool clamped;
 
 	inter_vproc = info->intermediate_voltage;
 
@@ -243,8 +246,12 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	 * of max(target cpu voltage, booting voltage) to prevent high freqeuncy
 	 * low voltage crash.
 	 */
-	if (info->soc_data->ccifreq_supported && !is_ccifreq_ready(info))
-		vproc = max(vproc, info->vproc_on_boot);
+	clamped = false;
+	if (info->soc_data->ccifreq_supported && !is_ccifreq_ready(info) &&
+	    info->vproc_on_boot > vproc) {
+		vproc = info->vproc_on_boot;
+		clamped = true;
+	}
 
 	/*
 	 * If the new voltage or the intermediate voltage is higher than the
@@ -306,11 +313,43 @@ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
 	}
 
 	info->current_freq = freq_hz;
+	info->vproc_clamped = clamped;
 
 out:
 	mutex_unlock(&info->reg_lock);
 
 	return ret;
+}
+
+/*
+ * A vote raised to vproc_on_boot while the CCI was not ready stays on the
+ * regulator until the next frequency change. Once the CCI is ready, drop it to
+ * the current OPP's own voltage: MediaTek SVS reads the buck back expecting
+ * that voltage, and when the CPU already runs the OPP SVS pins (rated exactly
+ * vboot, so SVS's adjust changes nothing and notifies nothing) no frequency
+ * change ever comes. Called under reg_lock.
+ */
+static void mtk_cpufreq_drop_boot_clamp(struct mtk_cpu_dvfs_info *info)
+{
+	struct dev_pm_opp *opp;
+	int ret;
+
+	lockdep_assert_held(&info->reg_lock);
+
+	if (!info->vproc_clamped || !is_ccifreq_ready(info))
+		return;
+
+	/* A disabled current OPP is handled by the OPP_EVENT_DISABLE retarget. */
+	opp = dev_pm_opp_find_freq_exact(info->cpu_dev, info->current_freq, true);
+	if (IS_ERR(opp))
+		return;
+
+	ret = mtk_cpufreq_set_voltage(info, dev_pm_opp_get_voltage(opp));
+	dev_pm_opp_put(opp);
+	if (ret)
+		dev_err(info->cpu_dev, "failed to drop the boot voltage: %d\n", ret);
+	else
+		info->vproc_clamped = false;
 }
 
 static int mtk_cpufreq_opp_notifier(struct notifier_block *nb,
@@ -328,19 +367,36 @@ static int mtk_cpufreq_opp_notifier(struct notifier_block *nb,
 		freq = dev_pm_opp_get_freq(opp);
 
 		mutex_lock(&info->reg_lock);
+		mtk_cpufreq_drop_boot_clamp(info);
 		if (info->current_freq == freq) {
 			volt = dev_pm_opp_get_voltage(opp);
 			ret = mtk_cpufreq_set_voltage(info, volt);
 			if (ret)
 				dev_err(info->cpu_dev,
 					"failed to scale voltage: %d\n", ret);
+			else
+				info->vproc_clamped = false;
 		}
 		mutex_unlock(&info->reg_lock);
 	} else if (event == OPP_EVENT_DISABLE) {
+		unsigned long cur_freq;
+
 		freq = dev_pm_opp_get_freq(opp);
 
+		/*
+		 * Read current_freq under reg_lock: a transition in flight in
+		 * mtk_cpufreq_set_target() may have looked this OPP up before it
+		 * was disabled and only publishes current_freq when it is done.
+		 * An unlocked read sees the old frequency, skips the retarget,
+		 * and the CPU is left running the OPP that was just disabled.
+		 */
+		mutex_lock(&info->reg_lock);
+		mtk_cpufreq_drop_boot_clamp(info);
+		cur_freq = info->current_freq;
+		mutex_unlock(&info->reg_lock);
+
 		/* case of current opp item is disabled */
-		if (info->current_freq == freq) {
+		if (cur_freq == freq) {
 			freq = 1;
 			new_opp = dev_pm_opp_find_freq_ceil(info->cpu_dev,
 							    &freq);

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MESON_CSI2
+	tristate "Amlogic Meson MIPI CSI-2 Receiver"
+	depends on VIDEO_DEV
+	depends on ARCH_MESON || COMPILE_TEST
+	depends on OF
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  Support for the Amlogic Meson MIPI CSI-2 receiver found in
+	  G12A, G12B, SM1, and A311D SoCs.
+
+config VIDEO_MESON_CSI2_CAPTURE
+	tristate "Amlogic Meson CSI-2 Capture Bridge"
+	depends on VIDEO_MESON_CSI2
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  V4L2 video capture bridge for the Amlogic Meson CSI-2 pipeline.
+	  Creates /dev/videoX and provides the v4l2_device needed by
+	  the CSI-2 receiver async notifier chain.

@@ -1,0 +1,20 @@
+config VIDEO_MTK_AIE
+	tristate "MediaTek AI Engine (AIE) driver"
+	depends on VIDEO_DEV
+	depends on OF
+	select V4L2_MEM2MEM_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	select MEDIA_CONTROLLER
+	help
+	  Enable support for the MediaTek AI Engine (AIE) hardware
+	  accelerator for face detection and analysis.
+
+	  The AIE driver is a V4L2 memory-to-memory device driver that
+	  provides hardware-accelerated face detection, facial landmark
+	  detection, and attribute analysis (age, gender, ethnicity)
+	  functions. It can detect multiple faces of various sizes in
+	  raw image data.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mtk-aie.
+

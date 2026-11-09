@@ -8,6 +8,7 @@
 /* The Amlogic S922X Rev. C supports the same OPPs as the A311D variant */
 #include "meson-g12b-a311d.dtsi"
 #include "meson-g12b-odroid.dtsi"
+#include "meson-g12-vendor-firmware.dtsi"
 
 / {
 	compatible = "hardkernel,odroid-n2l", "amlogic,s922x", "amlogic,g12b";
@@ -46,7 +47,6 @@
 		assigned-clocks = <&clkc CLKID_MPLL2>,
 				  <&clkc CLKID_MPLL0>,
 				  <&clkc CLKID_MPLL1>;
-		assigned-clock-parents = <0>, <0>, <0>;
 		assigned-clock-rates = <294912000>,
 				       <270950400>,
 				       <393216000>;

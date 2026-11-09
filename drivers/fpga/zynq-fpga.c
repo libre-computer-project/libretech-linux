@@ -15,6 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of_address.h>
@@ -550,6 +551,143 @@ static const struct fpga_manager_ops zynq_fpga_ops = {
 	.write_complete = zynq_fpga_ops_write_complete,
 };
 
+/*
+ * LOCAL EXTENSION (not mainline): clear the PL configuration on demand.
+ *
+ * mainline's fpga_manager has no unprogram operation, so the PROG_B pulse that
+ * actually wipes the fabric is only reachable as the FRONT HALF of a
+ * programming cycle (zynq_fpga_ops_write_init). For a board whose PL is
+ * programmed on demand from userspace that is a real gap: an idle-but-still-
+ * configured fabric keeps toggling and stays hot until the next power-on reset,
+ * and removing the fpga-region DT overlay recovers none of it -- the overlay
+ * only detaches drivers, it does not deprogram anything.
+ *
+ * pl_clear runs exactly write_init's clear sequence and stops there, leaving
+ * the AXI interfaces in reset and every level shifter disabled. That is
+ * strictly more defensive than the post-POR state, and it is the state a later
+ * write_init/write_complete pair re-establishes on its own.
+ *
+ * THE CALLER MUST DETACH PL CONSUMERS FIRST. Clearing the fabric while a driver
+ * still holds an AXI mapping wedges the CPU on a transaction that can never
+ * complete -- the same failure class as booting a DT that describes PL IP which
+ * was never programmed. On the ADRV9009 carrier that ordering lives in
+ * adrv9009-fpga-up(8): remove the fpga-region overlay, which unbinds every PL
+ * driver, and only then clear.
+ */
+static int zynq_fpga_clear_pl(struct zynq_fpga_priv *priv)
+{
+	u32 ctrl, status;
+	int err;
+
+	err = clk_enable(priv->clk);
+	if (err)
+		return err;
+
+	/* assert the AXI interface resets and isolate PS from PL */
+	regmap_write(priv->slcr, SLCR_FPGA_RST_CTRL_OFFSET, FPGA_RST_ALL_MASK);
+	regmap_write(priv->slcr, SLCR_LVL_SHFTR_EN_OFFSET,
+		     LVL_SHFTR_DISABLE_ALL_MASK);
+
+	/*
+	 * PCFG_PROG_B is low active and PCFG_INIT follows it, so each edge has
+	 * to be observed before driving the next one. Sequence per UG585 v1.10
+	 * page 211 -- identical to zynq_fpga_ops_write_init().
+	 */
+	ctrl = zynq_fpga_read(priv, CTRL_OFFSET);
+	zynq_fpga_write(priv, CTRL_OFFSET, ctrl | CTRL_PCFG_PROG_B_MASK);
+	err = zynq_fpga_poll_timeout(priv, STATUS_OFFSET, status,
+				     status & STATUS_PCFG_INIT_MASK,
+				     INIT_POLL_DELAY, INIT_POLL_TIMEOUT);
+	if (err)
+		goto out;
+
+	ctrl = zynq_fpga_read(priv, CTRL_OFFSET);
+	zynq_fpga_write(priv, CTRL_OFFSET, ctrl & ~CTRL_PCFG_PROG_B_MASK);
+	err = zynq_fpga_poll_timeout(priv, STATUS_OFFSET, status,
+				     !(status & STATUS_PCFG_INIT_MASK),
+				     INIT_POLL_DELAY, INIT_POLL_TIMEOUT);
+	if (err)
+		goto out;
+
+	ctrl = zynq_fpga_read(priv, CTRL_OFFSET);
+	zynq_fpga_write(priv, CTRL_OFFSET, ctrl | CTRL_PCFG_PROG_B_MASK);
+	err = zynq_fpga_poll_timeout(priv, STATUS_OFFSET, status,
+				     status & STATUS_PCFG_INIT_MASK,
+				     INIT_POLL_DELAY, INIT_POLL_TIMEOUT);
+	if (err)
+		goto out;
+
+	/*
+	 * PCFG_DONE is a sticky interrupt-status bit and is exactly what
+	 * zynq_fpga_ops_state() reports, so it has to be cleared here -- else
+	 * /sys/class/fpga_manager/fpga0/state keeps claiming "operating" for a
+	 * fabric that is now blank.
+	 */
+	zynq_fpga_write(priv, INT_STS_OFFSET, IXR_ALL_MASK);
+
+out:
+	clk_disable(priv->clk);
+	return err;
+}
+
+static ssize_t pl_clear_store(struct device *dev,
+			      struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct fpga_manager *mgr = dev_get_drvdata(dev);
+	bool go;
+	int err;
+
+	/*
+	 * dev_groups attributes are created by the driver core before probe()
+	 * has set drvdata, so a write that races probe can land here first.
+	 */
+	if (!mgr)
+		return -ENODEV;
+
+	err = kstrtobool(buf, &go);
+	if (err)
+		return err;
+	if (!go)
+		return count;
+
+	err = zynq_fpga_clear_pl(mgr->priv);
+	if (err) {
+		dev_err(dev, "PL clear failed (%d)\n", err);
+		return err;
+	}
+
+	/*
+	 * Clearing the sticky PCFG_DONE bit is necessary but NOT sufficient to
+	 * make /sys/class/fpga_manager/fpga0/state honest: fpga-mgr's state_show()
+	 * prints the CACHED mgr->state field, and the ->state() op is consulted
+	 * exactly once, at fpga_mgr_register() time. So after a clear the sysfs
+	 * string keeps reporting "operating" for a blank fabric unless the cached
+	 * value is updated here too.
+	 *
+	 * Measured on silicon 2026-07-26 (HamGeek XC7Z100 + ADRV9009): with only
+	 * the hardware bit cleared, `zynq_fpga_manager f8007000.devcfg: PL
+	 * configuration cleared` was logged and the die cooled 56.3 C -> 46.0 C
+	 * (i.e. the fabric really was deprogrammed), yet state still read
+	 * "operating".
+	 *
+	 * UNKNOWN is what zynq_fpga_ops_state() itself returns for a fabric whose
+	 * PCFG_DONE is clear, so this simply keeps the cache in step with what a
+	 * fresh ->state() call would report.
+	 */
+	mgr->state = FPGA_MGR_STATE_UNKNOWN;
+
+	dev_info(dev, "PL configuration cleared\n");
+	return count;
+}
+static DEVICE_ATTR_WO(pl_clear);
+
+static struct attribute *zynq_fpga_attrs[] = {
+	&dev_attr_pl_clear.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(zynq_fpga);
+
 static int zynq_fpga_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -646,6 +784,7 @@ static struct platform_driver zynq_fpga_driver = {
 	.driver = {
 		.name = "zynq_fpga_manager",
 		.of_match_table = of_match_ptr(zynq_fpga_of_match),
+		.dev_groups = zynq_fpga_groups,
 	},
 };
 

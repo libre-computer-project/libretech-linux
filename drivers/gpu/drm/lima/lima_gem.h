@@ -15,6 +15,11 @@ struct lima_bo {
 	struct mutex lock;
 	struct list_head va;
 
+	/* Fast-path cache: skip mutex+list_search when same VM reuses BO.
+	 * Updated under bo->lock; read locklessly in lima_vm_bo_add. */
+	struct lima_vm *cached_vm;
+	void *cached_bo_va;
+
 	size_t heap_size;
 };
 

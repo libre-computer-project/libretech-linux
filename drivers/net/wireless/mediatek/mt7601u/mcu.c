@@ -65,7 +65,8 @@ static struct sk_buff *mt7601u_mcu_msg_alloc(const void *data, int len)
 	return skb;
 }
 
-static int mt7601u_mcu_wait_resp(struct mt7601u_dev *dev, u8 seq)
+static int mt7601u_mcu_wait_resp(struct mt7601u_dev *dev, u8 seq,
+				 u32 *rx_payload, int rx_words)
 {
 	struct urb *urb = dev->mcu.resp.urb;
 	u32 rxfce;
@@ -81,6 +82,21 @@ static int mt7601u_mcu_wait_resp(struct mt7601u_dev *dev, u8 seq)
 		/* Make copies of important data before reusing the urb */
 		rxfce = get_unaligned_le32(dev->mcu.resp.buf);
 		urb_status = urb->status * mt7601u_urb_has_error(urb);
+
+		/* Snapshot the response payload (feature #10 BBP-block read)
+		 * before the urb is resubmitted and its buffer reused. The
+		 * caller gets the raw le32 words (header + payload) so the
+		 * response framing can be validated on-silicon.
+		 */
+		if (rx_payload && rx_words > 0) {
+			int have = urb->actual_length / 4;
+			int w;
+
+			for (w = 0; w < rx_words; w++)
+				rx_payload[w] = w < have ?
+					get_unaligned_le32(dev->mcu.resp.buf +
+							   w * 4) : 0;
+		}
 
 		ret = mt7601u_usb_submit_buf(dev, USB_DIR_IN, MT_EP_IN_CMD_RESP,
 					     &dev->mcu.resp, GFP_KERNEL,
@@ -108,7 +124,8 @@ static int mt7601u_mcu_wait_resp(struct mt7601u_dev *dev, u8 seq)
 
 static int
 mt7601u_mcu_msg_send(struct mt7601u_dev *dev, struct sk_buff *skb,
-		     enum mcu_cmd cmd, bool wait_resp)
+		     enum mcu_cmd cmd, bool wait_resp,
+		     u32 *rx_payload, int rx_words)
 {
 	struct usb_device *usb_dev = mt7601u_to_usb_dev(dev);
 	unsigned cmd_pipe = usb_sndbulkpipe(usb_dev,
@@ -143,7 +160,7 @@ mt7601u_mcu_msg_send(struct mt7601u_dev *dev, struct sk_buff *skb,
 		dev_err(dev->dev, "Error: %s sent != skb->len\n", __func__);
 
 	if (wait_resp)
-		ret = mt7601u_mcu_wait_resp(dev, seq);
+		ret = mt7601u_mcu_wait_resp(dev, seq, rx_payload, rx_words);
 out:
 	mutex_unlock(&dev->mcu.mutex);
 
@@ -167,7 +184,8 @@ static int mt7601u_mcu_function_select(struct mt7601u_dev *dev,
 	skb = mt7601u_mcu_msg_alloc(&msg, sizeof(msg));
 	if (!skb)
 		return -ENOMEM;
-	return mt7601u_mcu_msg_send(dev, skb, CMD_FUN_SET_OP, func == 5);
+	return mt7601u_mcu_msg_send(dev, skb, CMD_FUN_SET_OP, func == 5,
+				   NULL, 0);
 }
 
 int mt7601u_mcu_tssi_read_kick(struct mt7601u_dev *dev, int use_hvga)
@@ -204,7 +222,41 @@ mt7601u_mcu_calibrate(struct mt7601u_dev *dev, enum mcu_calibrate cal, u32 val)
 	skb = mt7601u_mcu_msg_alloc(&msg, sizeof(msg));
 	if (!skb)
 		return -ENOMEM;
-	return mt7601u_mcu_msg_send(dev, skb, CMD_CALIBRATION_OP, true);
+	return mt7601u_mcu_msg_send(dev, skb, CMD_CALIBRATION_OP, true,
+				   NULL, 0);
+}
+
+/*
+ * Read one 32-bit word from an MCU-decoded memmap address (feature #10,
+ * CSI-feasibility BBP-block probe). Issues CMD_RANDOM_READ against @addr
+ * (e.g. MT_MCU_MEMMAP_BBP | MT_BBP(RXO, n)) -- the read counterpart of the
+ * CMD_RANDOM_WRITE path mt7601u_write_reg_pairs() already uses to program the
+ * BBP internal space. @resp is filled with up to @resp_words raw le32 words of
+ * the MCU response (header + payload) so the response framing can be validated
+ * on-silicon against a known register before the value is trusted.
+ * READ-ONLY: never writes, never emits.
+ */
+int mt7601u_mcu_reg_read(struct mt7601u_dev *dev, u32 addr,
+			 u32 *resp, int resp_words)
+{
+	struct sk_buff *skb;
+	struct {
+		__le32 reg;
+		__le32 pad;
+	} __packed __aligned(4) msg = {
+		.reg = cpu_to_le32(addr),
+		.pad = 0,
+	};
+
+	if (!test_bit(MT7601U_STATE_MCU_RUNNING, &dev->state))
+		return -EAGAIN;
+
+	skb = mt7601u_mcu_msg_alloc(&msg, sizeof(msg));
+	if (!skb)
+		return -ENOMEM;
+
+	return mt7601u_mcu_msg_send(dev, skb, CMD_RANDOM_READ, true,
+				   resp, resp_words);
 }
 
 int mt7601u_write_reg_pairs(struct mt7601u_dev *dev, u32 base,
@@ -229,7 +281,8 @@ int mt7601u_write_reg_pairs(struct mt7601u_dev *dev, u32 base,
 		skb_put_le32(skb, data[i].value);
 	}
 
-	ret = mt7601u_mcu_msg_send(dev, skb, CMD_RANDOM_WRITE, cnt == n);
+	ret = mt7601u_mcu_msg_send(dev, skb, CMD_RANDOM_WRITE, cnt == n,
+				   NULL, 0);
 	if (ret)
 		return ret;
 
@@ -257,7 +310,8 @@ int mt7601u_burst_write_regs(struct mt7601u_dev *dev, u32 offset,
 	for (i = 0; i < cnt; i++)
 		skb_put_le32(skb, data[i]);
 
-	ret = mt7601u_mcu_msg_send(dev, skb, CMD_BURST_WRITE, cnt == n);
+	ret = mt7601u_mcu_msg_send(dev, skb, CMD_BURST_WRITE, cnt == n,
+				   NULL, 0);
 	if (ret)
 		return ret;
 
@@ -413,8 +467,23 @@ static int mt7601u_load_firmware(struct mt7601u_dev *dev)
 	mt7601u_wr(dev, MT_USB_DMA_CFG, (MT_USB_DMA_CFG_RX_BULK_EN |
 					 MT_USB_DMA_CFG_TX_BULK_EN));
 
-	if (firmware_running(dev))
-		return firmware_request_cache(dev->dev, MT7601U_FIRMWARE);
+	if (firmware_running(dev)) {
+		/*
+		 * On a warm reboot the USB dongle keeps VBUS power, so the MCU is
+		 * still running the previous boot's firmware (COM_REG0 == 1) in a
+		 * stale state -- trusting it leaves Wi-Fi wedged. Do NOT trust it:
+		 * force a chip reset and a fresh upload. The full upload path below
+		 * does its own DEV_MODE reset + reprogram (the same path cold boot
+		 * uses), so re-uploading is safe; clear COM_REG0 here so it reflects
+		 * the reset state rather than the stale running firmware. (The
+		 * probe-time usb_reset_device() is only a USB-bus reset and does not
+		 * reset the WLAN MCU when VBUS is retained, and DEV_MODE reset alone
+		 * does not clear COM_REG0.)
+		 */
+		mt7601u_vendor_reset(dev);
+		msleep(5);
+		mt7601u_wr(dev, MT_MCU_COM_REG0, 0);
+	}
 
 	ret = request_firmware(&fw, MT7601U_FIRMWARE, dev->dev);
 	if (ret)

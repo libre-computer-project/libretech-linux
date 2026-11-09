@@ -599,6 +599,15 @@ static int meson_sar_adc_lock(struct iio_dev *indio_dev)
 						      !(val & MESON_SAR_ADC_DELAY_BL30_BUSY),
 						      1, 10000);
 		if (ret) {
+			/*
+			 * Withdraw the claim too. Left set, KERNEL_BUSY keeps
+			 * BL30 off the SAR ADC until the next successful
+			 * conversion here clears it, which may never come; and
+			 * if BL30 is waiting for it while holding BL30_BUSY,
+			 * the two claims deadlock until BL30 gives up.
+			 */
+			regmap_clear_bits(priv->regmap, MESON_SAR_ADC_DELAY,
+					  MESON_SAR_ADC_DELAY_KERNEL_BUSY);
 			mutex_unlock(&priv->lock);
 			return ret;
 		}

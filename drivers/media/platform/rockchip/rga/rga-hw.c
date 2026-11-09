@@ -402,7 +402,29 @@ static void rga_cmd_set_mode(struct rga_ctx *ctx)
 	mode.data.render = RGA_MODE_RENDER_BITBLT;
 	mode.data.bitblt = RGA_MODE_BITBLT_MODE_SRC_TO_DST;
 
-	/* disable alpha blending */
+	if (ctx->alpha < 255) {
+		/*
+		 * Enable global alpha blending.  Program the alpha/ROP block
+		 * to multiply source pixels by the global alpha value.
+		 *
+		 * ALPHA_CTRL0: enable the alpha/ROP block, select alpha mode
+		 * (not ROP), and set the source global alpha value.
+		 *
+		 * ALPHA_CTRL1: configure source channel for global alpha
+		 * blend with color pre-multiplication.  Destination channel
+		 * is unused in SRC_TO_DST bitblt mode.
+		 */
+		alpha_ctrl0.data.rop_en = 1;
+		alpha_ctrl0.data.rop_select = RGA_ALPHA_SELECT_ALPHA;
+		alpha_ctrl0.data.src_fading_val = ctx->alpha;
+
+		alpha_ctrl1.data.src_blend_m0 = RGA_ALPHA_BLEND_GLOBAL;
+		alpha_ctrl1.data.src_alpha_m0 = RGA_ALPHA_NORMAL;
+		alpha_ctrl1.data.src_factor_m0 = RGA_ALPHA_FACTOR_ONE;
+		alpha_ctrl1.data.src_alpha_cal_m0 = RGA_ALPHA_CAL_NORMAL;
+		alpha_ctrl1.data.src_color_m0 = RGA_ALPHA_COLOR_MULTIPLY_CAL;
+	}
+
 	dest[(RGA_ALPHA_CTRL0 - RGA_MODE_BASE_REG) >> 2] = alpha_ctrl0.val;
 	dest[(RGA_ALPHA_CTRL1 - RGA_MODE_BASE_REG) >> 2] = alpha_ctrl1.val;
 
@@ -414,7 +436,7 @@ static void rga_cmd_set(struct rga_ctx *ctx,
 {
 	struct rockchip_rga *rga = ctx->rga;
 
-	memset(rga->cmdbuf_virt, 0, RGA_CMDBUF_SIZE * 4);
+	memset(rga->cmdbuf_virt, 0, RGA_CMDBUF_SIZE);
 
 	rga_cmd_set_src_addr(ctx, src->dma_desc_pa);
 	/*

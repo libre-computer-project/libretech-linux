@@ -6,9 +6,12 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/moduleparam.h>
+#include <linux/slab.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_blend.h>
 #include <drm/drm_device.h>
 #include <drm/drm_fb_dma_helper.h>
@@ -16,6 +19,7 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_property.h>
 
 #include "meson_overlay.h"
 #include "meson_registers.h"
@@ -157,13 +161,158 @@
 /* AFBC_VD_CFMT_H */
 #define AFBC_VD_HEIGHT(value)		FIELD_PREP(GENMASK(12, 0), value)
 
+/*
+ * Phase 3: per-commit interlaced field input mode. Drives the VD1 VFORMATTER
+ * vertical init-phase (VIU_VD1_FMT_CTRL[11:8]): progressive=0xc (default, the
+ * chroma-siting value), top field=0xe, bottom field=0xa (BSP-confirmed). This
+ * is field-phase selection (bob/weave), not motion-adaptive deinterlace (that
+ * stays the DI block's job). Userspace alternates top/bottom per field flip.
+ */
+enum meson_overlay_field {
+	MESON_FIELD_PROGRESSIVE = 0,
+	MESON_FIELD_TOP = 1,
+	MESON_FIELD_BOTTOM = 2,
+};
+
 struct meson_overlay {
 	struct drm_plane base;
 	struct meson_drm *priv;
+	struct drm_property *field_prop;
 };
 #define to_meson_overlay(x) container_of(x, struct meson_overlay, base)
 
+/* Plane state subclass carrying the custom "field" property value. */
+struct meson_overlay_state {
+	struct drm_plane_state base;
+	u32 field;
+};
+#define to_meson_overlay_state(x) \
+	container_of(x, struct meson_overlay_state, base)
+
 #define FRAC_16_16(mult, div)    (((mult) << 16) / (div))
+
+/*
+ * FBC-output compress-header registry (fbc-output-display-impl-plan.md S1/S2).
+ *
+ * For an FBC-output (am21c) decode on use_mmu SoCs (G12A+/SM1), the decoder
+ * writes the compress HEADER to a SEPARATE per-slot buffer mmu_header_paddr[slot]
+ * (codec_hevc.c:1657-1658, HEVC_CM_HEADER_START_ADDR) -- it is NOT inside the
+ * vb2 capture buffer.  The BODY *is* contiguous at offset 0 of the vb2 capture
+ * buffer (vb2_dma_contig).  The VD1 AFBC scatter decoder therefore needs
+ * AFBC_HEAD_BADDR = mmu_header_paddr[slot] and AFBC_BODY_BADDR = vb2 base.
+ * The display side only has a handle to the vb2 buffer (the DRM FB), so
+ * meson-vdec must hand us the per-buffer header phys addr.
+ *
+ * This registry is the channel.  It lives in meson-DRM (built-in =y) and is
+ * written by meson-vdec (=m) via the EXPORT_SYMBOL_GPL'd setter below -- a =m
+ * module may call a symbol exported by =y code, but not the reverse, so the
+ * registry MUST live on the DRM side.  Keyed/looked-up by the body base (the
+ * vb2 capture-buffer dma_addr, which equals gem->dma_addr + offsets[0] on the
+ * display side).  No IOMMU anywhere on this fleet (GXL/G12A/G12B/SM1), so the
+ * addresses are raw phys.  S0 PoC proved head=mmu_header_paddr -> 23.4 dB
+ * (vs 7.7 dB for any vb2-buffer-based head); this supersedes the S0 PoC
+ * debugfs node + fbc_head_override module param.
+ */
+#define MESON_FBC_HDR_REG_SIZE 32
+
+struct meson_fbc_hdr_entry {
+	dma_addr_t body_base;		/* vb2 capture-buffer base (AFBC body) */
+	dma_addr_t header_paddr;	/* mmu_header_paddr[slot] (AFBC head) */
+	u64 seq;			/* insertion order, for oldest-slot evict */
+};
+
+static struct meson_fbc_hdr_entry meson_fbc_hdr_reg[MESON_FBC_HDR_REG_SIZE];
+static u64 meson_fbc_hdr_seq;
+static DEFINE_SPINLOCK(meson_fbc_hdr_lock);
+
+/**
+ * meson_overlay_fbc_set_header - associate an FBC-output body base with its
+ *	compress-header phys addr.
+ * @body_base:   vb2 capture-buffer dma_addr (the contiguous am21c body base).
+ * @header_paddr: mmu_header_paddr[slot] for that frame (the am21c compress
+ *	header the VD1 AFBC scatter HEAD must read).  Pass 0 to clear the entry.
+ *
+ * Called by meson-vdec (codec_hevc_set_sao) per FBC-output frame, right after
+ * the HW is programmed to write the header to mmu_header_paddr[slot].  Replaces
+ * an existing entry for the same body_base; otherwise takes a free slot, or
+ * evicts the oldest.  Strict no-op channel for non-FBC decode (meson-vdec only
+ * calls this for use_mmu && codec_hevc_is_fbc_output).
+ */
+void meson_overlay_fbc_set_header(dma_addr_t body_base, dma_addr_t header_paddr)
+{
+	unsigned long flags;
+	int i, free = -1, oldest = 0;
+	u64 oldest_seq = U64_MAX;
+
+	if (!body_base)
+		return;
+
+	spin_lock_irqsave(&meson_fbc_hdr_lock, flags);
+
+	for (i = 0; i < MESON_FBC_HDR_REG_SIZE; i++) {
+		if (meson_fbc_hdr_reg[i].body_base == body_base) {
+			/* Update in place (header_paddr==0 clears the entry). */
+			if (header_paddr) {
+				meson_fbc_hdr_reg[i].header_paddr = header_paddr;
+				meson_fbc_hdr_reg[i].seq = ++meson_fbc_hdr_seq;
+			} else {
+				meson_fbc_hdr_reg[i].body_base = 0;
+				meson_fbc_hdr_reg[i].header_paddr = 0;
+			}
+			spin_unlock_irqrestore(&meson_fbc_hdr_lock, flags);
+			return;
+		}
+		if (meson_fbc_hdr_reg[i].body_base == 0 && free < 0)
+			free = i;
+		if (meson_fbc_hdr_reg[i].seq < oldest_seq) {
+			oldest_seq = meson_fbc_hdr_reg[i].seq;
+			oldest = i;
+		}
+	}
+
+	if (header_paddr) {
+		/* Insert: prefer a free slot, else evict the oldest. */
+		i = free >= 0 ? free : oldest;
+		meson_fbc_hdr_reg[i].body_base = body_base;
+		meson_fbc_hdr_reg[i].header_paddr = header_paddr;
+		meson_fbc_hdr_reg[i].seq = ++meson_fbc_hdr_seq;
+	}
+
+	spin_unlock_irqrestore(&meson_fbc_hdr_lock, flags);
+}
+EXPORT_SYMBOL_GPL(meson_overlay_fbc_set_header);
+
+/**
+ * meson_overlay_fbc_get_header - look up the compress-header phys addr for
+ *	an FBC-output body base.
+ * @body_base: vb2 capture-buffer dma_addr (the contiguous am21c body base)
+ *	to look up, as registered by meson_overlay_fbc_set_header().
+ *
+ * Returns the registered mmu_header_paddr[slot] for @body_base, or 0 if no
+ * header is registered (caller then falls back to the legacy vb2-buffer-
+ * based head computation -- see the VD1 AFBC path in
+ * meson_overlay_atomic_update() for the canonical caller pattern). Exported
+ * so meson_overlay2.c's VD2 AFBC path can consult the same registry
+ * (hdmi-vpu-gap-review.md finding #2).
+ */
+dma_addr_t meson_overlay_fbc_get_header(dma_addr_t body_base)
+{
+	unsigned long flags;
+	dma_addr_t header = 0;
+	int i;
+
+	spin_lock_irqsave(&meson_fbc_hdr_lock, flags);
+	for (i = 0; i < MESON_FBC_HDR_REG_SIZE; i++) {
+		if (meson_fbc_hdr_reg[i].body_base == body_base) {
+			header = meson_fbc_hdr_reg[i].header_paddr;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&meson_fbc_hdr_lock, flags);
+
+	return header;
+}
+EXPORT_SYMBOL_GPL(meson_overlay_fbc_get_header);
 
 static int meson_overlay_atomic_check(struct drm_plane *plane,
 				      struct drm_atomic_state *state)
@@ -468,6 +617,395 @@ static void meson_overlay_setup_scaler_params(struct meson_drm *priv,
 	priv->viu.vpp_vsc_start_phase_step = ratio_y << 6;
 }
 
+/*
+ * HDR-002 Phase 2/3 bring-up: VD1 HDR2 in matrix-only mode (LUTs bypassed).
+ *   0 = HDR2 off (upstream default)
+ *   1 = identity MATRIXI/MATRIXO -> visually TRANSPARENT (Phase 2 de-risk; md5 a
+ *       captured frame with param 0 vs 1, must match)
+ *   2 = Cb/Cr-swap MATRIXO -> a deterministic, easily-verified colour swap
+ *       (Phase 3: validates the matrix coefficient packing + enable path)
+ *   3 = real BT.2020-YCbCr->RGB (MATRIXI) + RGB->BT.709-YCbCr (MATRIXO) CSC
+ *       coefficients from the BSP (Phase 3: the matrices the full HDR path uses)
+ * The full HDR pipeline (GMUT gamut matrix + EOTF/OOTF/OETF LUTs) is Phase 4 --
+ * it needs the BSP LUT tables and the non-mtx_only dataflow.
+ */
+static int hdr2_bypass;
+module_param(hdr2_bypass, int, 0644);
+MODULE_PARM_DESC(hdr2_bypass,
+		 "VD1 HDR2 matrix-only mode: 0=off 1=identity 2=CbCr-swap 3=BT.2020->709 CSC");
+
+/* 3x3 matrices, row-major, 1.0 = 1024 (13-bit signed); from BSP amvecm set_hdr2_v0.c */
+static const int hdr2_mtx_identity[9]    = {1024, 0, 0,  0, 1024, 0,  0, 0, 1024};
+static const int hdr2_mtxo_cbcr_swap[9]  = {1024, 0, 0,  0, 0, 1024,  0, 1024, 0};
+static const int hdr2_mtxi_yuv2020_rgb[9] = {1196, 0, 1724,  1196, -193, -668,  1196, 2200, 0};
+static const int hdr2_mtxo_rgb_yuv709[9]  = {186, 627, 63,  -103, -345, 448,  448, -407, -41};
+/* MATRIXO that halves channel 0 (Y, since MATRIXI=identity feeds YUV as "RGB"):
+ * a predictable transform -- output luma -> 0.5*input luma, chroma unchanged --
+ * for an unambiguous matrix-packing check (captured mean luma must halve). */
+static const int hdr2_mtxo_luma_half[9] = {512, 0, 0,  0, 1024, 0,  0, 0, 1024};
+static const int hdr2_off_zero[3]  = {0, 0, 0};
+static const int hdr2_ipre_2020[3] = {-64, -512, -512}; /* MATRIXI pre-offset (limited-range in) */
+static const int hdr2_opost_709[3] = {64, 512, 512};    /* MATRIXO post-offset (limited-range out) */
+
+/* Program one HDR2 3x3 matrix: coef0_reg..+4, pre/post offset regs, enable reg. */
+static void meson_hdr2_set_matrix(struct meson_drm *priv, unsigned int coef0_reg,
+				  unsigned int preoff_reg, unsigned int postoff_reg,
+				  unsigned int en_reg, const int c[9],
+				  const int preoff[3], const int postoff[3])
+{
+	writel_relaxed(((c[0] & 0x1fff) << 16) | (c[1] & 0x1fff), priv->io_base + _REG(coef0_reg));
+	writel_relaxed(((c[2] & 0x1fff) << 16) | (c[3] & 0x1fff), priv->io_base + _REG(coef0_reg + 1));
+	writel_relaxed(((c[4] & 0x1fff) << 16) | (c[5] & 0x1fff), priv->io_base + _REG(coef0_reg + 2));
+	writel_relaxed(((c[6] & 0x1fff) << 16) | (c[7] & 0x1fff), priv->io_base + _REG(coef0_reg + 3));
+	writel_relaxed(c[8] & 0x1fff, priv->io_base + _REG(coef0_reg + 4));
+	writel_relaxed(((preoff[0] & 0xfff) << 16) | (preoff[1] & 0xfff), priv->io_base + _REG(preoff_reg));
+	writel_relaxed(preoff[2] & 0xfff, priv->io_base + _REG(preoff_reg + 1));
+	writel_relaxed(((postoff[0] & 0xfff) << 16) | (postoff[1] & 0xfff), priv->io_base + _REG(postoff_reg));
+	writel_relaxed(postoff[2] & 0xfff, priv->io_base + _REG(postoff_reg + 1));
+	writel_relaxed(1, priv->io_base + _REG(en_reg));
+}
+
+/*
+ * #13 fix: frame-dependent HDR2 input size, stashed by
+ * meson_overlay_atomic_update() (src_w/h are only known at plane-commit
+ * time) and consumed by meson_overlay_pq_flush() at the next vsync -- see
+ * that function's comment for the full deferral story.
+ */
+static u32 meson_overlay_pq_hdr2_in_w, meson_overlay_pq_hdr2_in_h;
+
+static void meson_overlay_hdr2_program(struct meson_drm *priv, u32 in_w, u32 in_h)
+{
+	const int *mtxi = hdr2_mtx_identity, *mtxo = hdr2_mtx_identity;
+	const int *ipre = hdr2_off_zero, *opost = hdr2_off_zero;
+
+	if (hdr2_bypass <= 0) {
+		/* disable: master enable off, input size 0 (VD1 bypasses HDR2), gate clk */
+		writel_relaxed(0, priv->io_base + _REG(VD1_HDR2_CTRL));
+		writel_relaxed(0, priv->io_base + _REG(VPP_VD1_HDR_IN_SIZE));
+		writel_relaxed(0, priv->io_base + _REG(VD1_HDR2_CLK_GATE));
+		return;
+	}
+
+	switch (hdr2_bypass) {
+	case 2:
+		mtxo = hdr2_mtxo_cbcr_swap;
+		break;
+	case 3:
+		mtxi = hdr2_mtxi_yuv2020_rgb; ipre = hdr2_ipre_2020;
+		mtxo = hdr2_mtxo_rgb_yuv709;  opost = hdr2_opost_709;
+		break;
+	case 4:
+		mtxo = hdr2_mtxo_luma_half;   /* Y -> 0.5*Y (packing check) */
+		break;
+	default: /* 1: identity */
+		break;
+	}
+
+	/* force the HDR2 clock on before touching the core */
+	writel_relaxed(HDR2_CLK_GATE_FORCE_ON, priv->io_base + _REG(VD1_HDR2_CLK_GATE));
+
+	/* HDR2 input size = (height << 16) | width -- gates the block into the VD1
+	 * datapath (a zero size leaves VD1 bypassing HDR2). */
+	writel_relaxed((in_h << 16) | (in_w & 0xffff),
+		       priv->io_base + _REG(VPP_VD1_HDR_IN_SIZE));
+
+	meson_hdr2_set_matrix(priv, VD1_HDR2_MATRIXI_COEF00_01,
+			      VD1_HDR2_MATRIXI_PRE_OFFSET0_1, VD1_HDR2_MATRIXI_OFFSET0_1,
+			      VD1_HDR2_MATRIXI_EN_CTRL, mtxi, ipre, hdr2_off_zero);
+	meson_hdr2_set_matrix(priv, VD1_HDR2_MATRIXO_COEF00_01,
+			      VD1_HDR2_MATRIXO_PRE_OFFSET0_1, VD1_HDR2_MATRIXO_OFFSET0_1,
+			      VD1_HDR2_MATRIXO_EN_CTRL, mtxo, hdr2_off_zero, opost);
+
+	/* enable the core in matrix-only mode (LUTs bypassed); latch matrices valid */
+	writel_relaxed(HDR2_CTRL_TOP_EN | HDR2_CTRL_ONLY_MAT | HDR2_CTRL_IN_MTX_EN |
+		       HDR2_CTRL_IN_MTX_VALID | HDR2_CTRL_OUT_MTX_VALID,
+		       priv->io_base + _REG(VD1_HDR2_CTRL));
+}
+
+/* PQ-001: VADJ1 post-blend brightness + contrast. The upstream driver only
+ * enables the minus-black-level bit; the brightness/contrast block itself is
+ * never programmed. Expose brightness + contrast and wire them into the G12A+
+ * VADJ1 register bank (this driver only runs on G12A/G12B/SM1; the legacy 0x1d4x
+ * VADJ1 bank is inert on these SoCs).
+ *
+ * VPP_VADJ1_Y_2 (0x3282): bits[18:8] = brightness (11-bit signed, no halving),
+ * bits[7:0] = contrast (NEUTRAL 0x80, range 0..255). VPP_VADJ1_MA_MB_2 (0x3283) +
+ * MC_MD_2 (0x3284): the saturation 2x2 chroma matrix (hue=0 here: ma=md=chroma
+ * gain, mb=mc=0; neutral 256 = 1.0). Block enable lives in VPP_VADJ1_MISC (0x3280)
+ * bit 0. Validated on SM1 by dongle capture: brightness shifts mean-Y (123.7 ->
+ * 183.3 at +400), contrast shifts luma std-dev (44.8 -> 50.3 / 23.8), saturation
+ * scales captured chroma (143.5 neutral -> 75.7 at 0.5x / 155.8 at 1.5x). The
+ * register map + the saturation gain clamp were pinned down with live devmem
+ * before wiring. Applied from the overlay atomic_update path (engages while VD1 is
+ * active -- bring-up scaffolding; post-blend PQ ultimately belongs in the CRTC path).
+ */
+static int pq_brightness;
+module_param(pq_brightness, int, 0644);
+MODULE_PARM_DESC(pq_brightness,
+		 "VADJ1 post-blend brightness offset, signed ~-1024..1023 (0 = neutral)");
+
+static int pq_contrast = 0x80;
+module_param(pq_contrast, int, 0644);
+MODULE_PARM_DESC(pq_contrast,
+		 "VADJ1 post-blend contrast, 0..255 (0x80 = neutral)");
+
+static int pq_saturation;
+module_param(pq_saturation, int, 0644);
+MODULE_PARM_DESC(pq_saturation,
+		 "VADJ1 post-blend saturation, signed -128..127 (0 = neutral; chroma gain capped at 1.5x to avoid the HW overflow-to-black above that)");
+
+/* VADJ2: second post-blend video-adjust stage (GXL/GXM legacy bank). */
+static int pq2_brightness;
+module_param(pq2_brightness, int, 0644);
+MODULE_PARM_DESC(pq2_brightness,
+		 "VADJ2 post-blend brightness offset, signed ~-1024..1023 (0 = neutral)");
+
+static int pq2_contrast = 0x80;
+module_param(pq2_contrast, int, 0644);
+MODULE_PARM_DESC(pq2_contrast,
+		 "VADJ2 post-blend contrast, 0..255 (0x80 = neutral)");
+
+static int pq2_saturation;
+module_param(pq2_saturation, int, 0644);
+MODULE_PARM_DESC(pq2_saturation,
+		 "VADJ2 post-blend saturation, signed -128..127 (0 = neutral; same 1.5x chroma-gain cap as VADJ1)");
+
+/* Black-level extension (dark-detail stretch), default-off. */
+static int pq_blackext_start = -1;
+module_param(pq_blackext_start, int, 0644);
+MODULE_PARM_DESC(pq_blackext_start,
+		 "Black-extension start threshold 0..255 (-1 = disabled)");
+
+static int pq_blackext_slope;
+module_param(pq_blackext_slope, int, 0644);
+MODULE_PARM_DESC(pq_blackext_slope,
+		 "Black-extension slope/gain 0..255");
+
+/* VPP_GAINOFF white-balance: per-channel RGB gain (GXL/GXM legacy bank). */
+static int pq_wb_rgain = 1024;
+module_param(pq_wb_rgain, int, 0644);
+MODULE_PARM_DESC(pq_wb_rgain,
+		 "White-balance R gain 0..2047 (1024 = unity); GXL/GXM");
+
+static int pq_wb_ggain = 1024;
+module_param(pq_wb_ggain, int, 0644);
+MODULE_PARM_DESC(pq_wb_ggain,
+		 "White-balance G gain 0..2047 (1024 = unity); GXL/GXM");
+
+static int pq_wb_bgain = 1024;
+module_param(pq_wb_bgain, int, 0644);
+MODULE_PARM_DESC(pq_wb_bgain,
+		 "White-balance B gain 0..2047 (1024 = unity); GXL/GXM");
+
+static void meson_overlay_vadj1_program(struct meson_drm *priv)
+{
+	bool g12a = meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A);
+	int bri = clamp_t(int, pq_brightness, -1024, 1023);
+	u32 contrast = clamp_t(int, pq_contrast, 0, 255);
+	int sat = clamp_t(int, pq_saturation, -128, 127);
+	/*
+	 * Chroma gain ma = 256*(sat+128) >> 7 (256 = 1.0 at sat=0). Clamp to 384
+	 * (~1.5x): the VADJ matrix-gain datapath overflows to black above that
+	 * (RE 2026-06-07 devmem sweep on SM1). hue=0 -> md=ma, mb=mc=0.
+	 */
+	u32 ma = clamp_t(int, (256 * (sat + 128)) >> 7, 0, 384);
+	bool neutral = (!bri && contrast == 0x80 && ma == 256);
+
+	if (g12a) {
+		/* G12A+ vadj1 _2 bank (0x328x), enable in VPP_VADJ1_MISC. */
+		u32 misc = readl_relaxed(priv->io_base + _REG(VPP_VADJ1_MISC));
+
+		/* Neutral (brightness 0, contrast at the 0x80 midpoint, saturation
+		 * gain 1.0): write neutral values and drop our enable bit. RMW the
+		 * MISC enable to preserve the register's other bits. */
+		if (neutral) {
+			writel_relaxed(0x80, priv->io_base + _REG(VPP_VADJ1_Y_2));
+			writel_relaxed(256 << 16, priv->io_base + _REG(VPP_VADJ1_MA_MB_2));
+			writel_relaxed(256, priv->io_base + _REG(VPP_VADJ1_MC_MD_2));
+			writel_relaxed(misc & ~VPP_VADJ1_MISC_VADJ_EN,
+				       priv->io_base + _REG(VPP_VADJ1_MISC));
+			return;
+		}
+
+		/* bits[18:8] = brightness (11-bit, no halving), bits[7:0] = contrast */
+		writel_relaxed(((bri & 0x7ff) << 8) | contrast,
+			       priv->io_base + _REG(VPP_VADJ1_Y_2));
+		/* saturation chroma matrix (hue=0): MA_MB = ma<<16 (mb=0), MC_MD = ma (md) */
+		writel_relaxed((ma & 0x3ff) << 16, priv->io_base + _REG(VPP_VADJ1_MA_MB_2));
+		writel_relaxed(ma & 0x3ff, priv->io_base + _REG(VPP_VADJ1_MC_MD_2));
+		writel_relaxed(misc | VPP_VADJ1_MISC_VADJ_EN,
+			       priv->io_base + _REG(VPP_VADJ1_MISC));
+	} else {
+		/*
+		 * GXL/GXM legacy vadj1 bank (0x1d4x). Enable is VPP_VADJ_CTRL bit0
+		 * (the pre-G12A path; VPP_VADJ1_MISC is inert here). The brightness
+		 * field in VPP_VADJ1_Y is the narrower [17:8] 10-bit form, so halve
+		 * the input (the >>1 the BSP applies on the pre-G12A path) to match
+		 * the same physical range as the G12A _2 11-bit field. Contrast [7:0]
+		 * and the MA_MB/MC_MD saturation matrix keep the same encoding.
+		 * Preserve VPP_MINUS_BLACK_LVL_VADJ1_ENABLE (bit1) in the ctrl RMW.
+		 */
+		u32 ctrl = readl_relaxed(priv->io_base + _REG(VPP_VADJ_CTRL));
+
+		if (neutral) {
+			writel_relaxed(0x80, priv->io_base + _REG(VPP_VADJ1_Y));
+			writel_relaxed(256 << 16, priv->io_base + _REG(VPP_VADJ1_MA_MB));
+			writel_relaxed(256, priv->io_base + _REG(VPP_VADJ1_MC_MD));
+			writel_relaxed(ctrl & ~VPP_VADJ1_EN,
+				       priv->io_base + _REG(VPP_VADJ_CTRL));
+			return;
+		}
+
+		/* bits[17:8] = brightness (10-bit, halved), bits[7:0] = contrast */
+		writel_relaxed((((bri >> 1) & 0x3ff) << 8) | contrast,
+			       priv->io_base + _REG(VPP_VADJ1_Y));
+		writel_relaxed((ma & 0x3ff) << 16, priv->io_base + _REG(VPP_VADJ1_MA_MB));
+		writel_relaxed(ma & 0x3ff, priv->io_base + _REG(VPP_VADJ1_MC_MD));
+		writel_relaxed(ctrl | VPP_VADJ1_EN,
+			       priv->io_base + _REG(VPP_VADJ_CTRL));
+	}
+}
+
+/*
+ * VADJ2: the second post-blend video-adjust stage. GXL/GXM legacy bank
+ * (VPP_VADJ2_*, 0x1d44-46), enable VPP_VADJ_CTRL bit2 -- identical field
+ * encoding to VADJ1 (brightness [17:8] halved, contrast [7:0], 2x2 chroma
+ * MA_MB/MC_MD). G12A+ uses a separate _2 bank (VPP_VADJ2_MISC) not wired
+ * here, so VADJ2 is GXL/GXM-only for now (returns early on G12A+). A second
+ * independent stage lets userspace split adjustments (e.g. coarse VADJ1 +
+ * fine VADJ2, or brightness on one stage and saturation on the other).
+ */
+static void meson_overlay_vadj2_program(struct meson_drm *priv)
+{
+	int bri = clamp_t(int, pq2_brightness, -1024, 1023);
+	u32 contrast = clamp_t(int, pq2_contrast, 0, 255);
+	int sat = clamp_t(int, pq2_saturation, -128, 127);
+	u32 ma = clamp_t(int, (256 * (sat + 128)) >> 7, 0, 384);
+	bool neutral = (!bri && contrast == 0x80 && ma == 256);
+	u32 ctrl;
+
+	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
+		return;
+
+	ctrl = readl_relaxed(priv->io_base + _REG(VPP_VADJ_CTRL));
+
+	if (neutral) {
+		writel_relaxed(0x80, priv->io_base + _REG(VPP_VADJ2_Y));
+		writel_relaxed(256 << 16, priv->io_base + _REG(VPP_VADJ2_MA_MB));
+		writel_relaxed(256, priv->io_base + _REG(VPP_VADJ2_MC_MD));
+		writel_relaxed(ctrl & ~VPP_VADJ2_EN,
+			       priv->io_base + _REG(VPP_VADJ_CTRL));
+		return;
+	}
+
+	/* bits[17:8] = brightness (10-bit, halved like VADJ1); bits[7:0] = contrast */
+	writel_relaxed((((bri >> 1) & 0x3ff) << 8) | contrast,
+		       priv->io_base + _REG(VPP_VADJ2_Y));
+	writel_relaxed((ma & 0x3ff) << 16, priv->io_base + _REG(VPP_VADJ2_MA_MB));
+	writel_relaxed(ma & 0x3ff, priv->io_base + _REG(VPP_VADJ2_MC_MD));
+	writel_relaxed(ctrl | VPP_VADJ2_EN,
+		       priv->io_base + _REG(VPP_VADJ_CTRL));
+}
+
+/*
+ * Black-level extension: stretches dark detail below a threshold for more
+ * shadow contrast. VPP_BLACKEXT_CTRL packs start[31:24] + slope[23:16]; the
+ * block enable is VPP_VE_ENABLE_CTRL bit3 (RMW to preserve the other VE-enable
+ * bits, e.g. DNLP at bit2). Default-off (pq_blackext_start < 0) so it never
+ * engages unless explicitly set. The VE block is the classic pre-G12A
+ * enhancement path -- GXL/GXM-only (G12A+ has no equivalent
+ * VPP_VE_ENABLE_CTRL/VPP_BLACKEXT_CTRL block wired here): return early there,
+ * mirroring meson_overlay_vadj2_program()/meson_overlay_wb_program() below.
+ */
+static void meson_overlay_blackext_program(struct meson_drm *priv)
+{
+	u32 ve;
+
+	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
+		return;
+
+	ve = readl_relaxed(priv->io_base + _REG(VPP_VE_ENABLE_CTRL));
+
+	if (pq_blackext_start < 0) {
+		writel_relaxed(ve & ~VPP_VE_BEXT_EN,
+			       priv->io_base + _REG(VPP_VE_ENABLE_CTRL));
+		return;
+	}
+
+	writel_relaxed((clamp_t(int, pq_blackext_start, 0, 255) << 24) |
+		       (clamp_t(int, pq_blackext_slope, 0, 255) << 16),
+		       priv->io_base + _REG(VPP_BLACKEXT_CTRL));
+	writel_relaxed(ve | VPP_VE_BEXT_EN,
+		       priv->io_base + _REG(VPP_VE_ENABLE_CTRL));
+}
+
+/*
+ * VPP_GAINOFF white-balance: per-channel RGB gain on the post-blend RGB (the
+ * BSP "txl-and-before" GAINOFF path; the WB sink on GXL since
+ * video_rgb_ogo_xvy_mtx defaults off). CTRL0 packs en[31] + r_gain[26:16] +
+ * g_gain[10:0]; CTRL1 b_gain[26:16] + r_post_offset[10:0]; CTRL2-4 hold the
+ * g/b post-offset and r/g/b pre-offset, all left 0 -- we expose only the gains.
+ * Gains are 11-bit, 1024 = unity; the block is enabled (bit31) only when a gain
+ * is non-unity, otherwise bypassed. GXL/GXM-only (G12A+ uses a different WB
+ * bank): return early there. Mainline never programs GAINOFF, so the bypass we
+ * write when neutral is the existing identity state.
+ */
+static void meson_overlay_wb_program(struct meson_drm *priv)
+{
+	u32 rg = clamp_t(int, pq_wb_rgain, 0, 2047);
+	u32 gg = clamp_t(int, pq_wb_ggain, 0, 2047);
+	u32 bg = clamp_t(int, pq_wb_bgain, 0, 2047);
+	bool en = (rg != 1024 || gg != 1024 || bg != 1024);
+
+	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
+		return;
+
+	writel_relaxed(((en ? 1u : 0u) << 31) |
+		       ((rg & 0x7ff) << 16) | (gg & 0x7ff),
+		       priv->io_base + _REG(VPP_GAINOFF_CTRL0));
+	writel_relaxed((bg & 0x7ff) << 16,
+		       priv->io_base + _REG(VPP_GAINOFF_CTRL1));
+	writel_relaxed(0, priv->io_base + _REG(VPP_GAINOFF_CTRL2));
+	writel_relaxed(0, priv->io_base + _REG(VPP_GAINOFF_CTRL3));
+	writel_relaxed(0, priv->io_base + _REG(VPP_GAINOFF_CTRL4));
+}
+
+/*
+ * #13 fix: single deferred-flush point for every post-blend PQ/HDR2 block in
+ * this file. Previously each ran synchronously from
+ * meson_overlay_atomic_update() (direct MMIO in the commit tail) -- the same
+ * "not RDMA/vsync-deferred" defect class as the colour-management finding in
+ * meson_crtc.c (#8). Register writes here are cheap RMWs against small
+ * fixed blocks (no per-frame buffer geometry), so calling this
+ * unconditionally once per vsync is the same write volume the old
+ * per-VD1-commit call site already produced -- just correctly timed.
+ *
+ * Called from meson_crtc.c's per-vsync commit-tail UNCONDITIONALLY --
+ * deliberately NOT gated on vd1_enabled/vd1_commit, because VADJ1/VADJ2/
+ * blackext/WB are post-blend and must keep working on an OSD-only desktop
+ * (only the HDR2 call inside is VD1-specific, and it already self-gates via
+ * hdr2_bypass<=0). This is what makes the pq_* and hdr2_bypass sysfs
+ * writes take effect with no video plane active -- previously nothing in this file's
+ * call graph ran at all in that case, since this file is only the VD1
+ * plane's ops.
+ *
+ * Residual gap: a compositor that is fully idle (no commit of ANY kind, not
+ * even OSD) still won't see a sysfs write applied until the next commit
+ * happens to occur. Forcing an immediate out-of-band flush from the sysfs
+ * .set path would need a stored `struct meson_drm *` singleton plus a way
+ * to kick a vsync/commit with nothing pending -- flagged, not implemented.
+ */
+void meson_overlay_pq_flush(struct meson_drm *priv)
+{
+	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
+		meson_overlay_hdr2_program(priv, meson_overlay_pq_hdr2_in_w,
+					   meson_overlay_pq_hdr2_in_h);
+	meson_overlay_vadj1_program(priv);
+	meson_overlay_vadj2_program(priv);
+	meson_overlay_blackext_program(priv);
+	meson_overlay_wb_program(priv);
+}
+
 static void meson_overlay_atomic_update(struct drm_plane *plane,
 					struct drm_atomic_state *state)
 {
@@ -483,6 +1021,9 @@ static void meson_overlay_atomic_update(struct drm_plane *plane,
 	DRM_DEBUG_DRIVER("\n");
 
 	interlace_mode = new_state->crtc->mode.flags & DRM_MODE_FLAG_INTERLACE;
+
+	/* Phase 2 stage 2: stash zpos for the VPP post-blend port assignment */
+	priv->viu.vd1_zpos = new_state->zpos;
 
 	spin_lock_irqsave(&priv->drm->event_lock, flags);
 
@@ -562,7 +1103,15 @@ static void meson_overlay_atomic_update(struct drm_plane *plane,
 
 	/* None will match for AFBC Only formats */
 	switch (fb->format->format) {
-	/* TOFIX DRM_FORMAT_RGB888 should be supported */
+	case DRM_FORMAT_RGB888:
+		priv->viu.vd1_if0_gen_reg |= VD_DEMUX_MODE_RGB |
+					     VD_BYTES_PER_PIXEL(2) |
+					     VD_LITTLE_ENDIAN;
+		priv->viu.vd1_if0_canvas0 =
+					CANVAS_ADDR2(priv->canvas_id_vd1_0) |
+					CANVAS_ADDR1(priv->canvas_id_vd1_0) |
+					CANVAS_ADDR0(priv->canvas_id_vd1_0);
+		break;
 	case DRM_FORMAT_YUYV:
 		priv->viu.vd1_if0_gen_reg |= VD_BYTES_PER_PIXEL(1);
 		priv->viu.vd1_if0_canvas0 =
@@ -645,6 +1194,21 @@ static void meson_overlay_atomic_update(struct drm_plane *plane,
 		break;
 	}
 
+	/*
+	 * Phase 3: interlaced field input -- override the VFORMATTER vertical
+	 * init-phase per field (top=0xe, bottom=0xa). Progressive keeps the
+	 * chroma-siting default (0xc) the format switch just set, so the common
+	 * case is byte-identical (no regression).
+	 */
+	if (to_meson_overlay_state(new_state)->field != MESON_FIELD_PROGRESSIVE &&
+	    (priv->viu.viu_vd1_fmt_ctrl & VD_VERT_FMT_EN)) {
+		u32 ph = (to_meson_overlay_state(new_state)->field ==
+			  MESON_FIELD_TOP) ? 0xe : 0xa;
+
+		priv->viu.viu_vd1_fmt_ctrl &= ~VD_VERT_INITIAL_PHASE(0xf);
+		priv->viu.viu_vd1_fmt_ctrl |= VD_VERT_INITIAL_PHASE(ph);
+	}
+
 	/* Update Canvas with buffer address */
 	priv->viu.vd1_planes = fb->format->num_planes;
 
@@ -687,14 +1251,34 @@ static void meson_overlay_atomic_update(struct drm_plane *plane,
 	}
 
 	if (priv->viu.vd1_afbc) {
+		dma_addr_t fbc_header;
+
 		if (priv->viu.vd1_afbc_mode & AFBC_SCATTER_MODE) {
 			/*
-			 * In Scatter mode, the header contains the physical
-			 * body content layout, thus the body content
-			 * size isn't needed.
+			 * Scatter mode STILL needs the body base address. The
+			 * BSP (video_hw.c set_layer_display_canvas) writes BOTH
+			 * AFBC_HEAD_BADDR=compHeadAddr>>4 and
+			 * AFBC_BODY_BADDR=compBodyAddr>>4 for every compressed
+			 * frame -- no scatter exception. Zeroing body_addr made
+			 * the AFBC decoder fetch body superblocks from address 0
+			 * -> garbage on SM1 (10-bit AMSA, confirmed by HDMI
+			 * loopback-dongle capture 2026-06-12, 7.64 dB).
+			 *
+			 * Layout: [body @ offsets[0]][header @ +body_size].
+			 * body_size from the frame WIDTH (the FB pitch is 0 for
+			 * AFBC); 4096 B/superblock, 3072 for 8-bit mem-saving.
 			 */
-			priv->viu.vd1_afbc_head_addr = priv->viu.vd1_addr0 >> 4;
-			priv->viu.vd1_afbc_body_addr = 0;
+			unsigned long block_size =
+				(priv->viu.vd1_afbc_mode & AFBC_BLK_MEM_MODE) ?
+					3072 : 4096;
+			unsigned long body_size =
+				(ALIGN(fb->width, 64) / 64) *
+				(ALIGN(priv->viu.vd1_height0, 32) / 32) *
+				block_size;
+
+			priv->viu.vd1_afbc_body_addr = priv->viu.vd1_addr0 >> 4;
+			priv->viu.vd1_afbc_head_addr =
+				(priv->viu.vd1_addr0 + body_size) >> 4;
 		} else {
 			/* Default mode is 4k per superblock */
 			unsigned long block_size = 4096;
@@ -713,11 +1297,52 @@ static void meson_overlay_atomic_update(struct drm_plane *plane,
 			priv->viu.vd1_afbc_head_addr = (priv->viu.vd1_addr0 +
 							body_size) >> 4;
 		}
+
+		/*
+		 * Decoder FBC-output (am21c) fix (fbc-output-display-impl-plan.md
+		 * S1/S2, PROVEN by the S0 PoC: 7.7 dB garbage -> 23.4 dB picture).
+		 * This branch only runs for AMLOGIC_FBC-modifier FBs, so it is
+		 * already modifier-gated.  For a use_mmu decode (G12A+/SM1) the
+		 * compress HEADER is NOT in the vb2 buffer -- the decoder wrote it
+		 * to a SEPARATE per-slot buffer mmu_header_paddr[slot]
+		 * (codec_hevc.c:1657-1658) and registered the {body base -> header}
+		 * association via meson_overlay_fbc_set_header().  The BODY is
+		 * contiguous at the vb2 base (vd1_addr0).  So if the registry has a
+		 * header for this body base, point the AFBC scatter HEAD at it and
+		 * keep the body at the vb2 base; this supersedes the (wrong) head =
+		 * vb2_base + body_size computation above.  If NOT registered (e.g.
+		 * a non-decoder FBC FB, or a decode path that didn't register),
+		 * fall back to the computed head -- do not crash.
+		 */
+		fbc_header = meson_overlay_fbc_get_header(priv->viu.vd1_addr0);
+		if (fbc_header) {
+			priv->viu.vd1_afbc_body_addr = priv->viu.vd1_addr0 >> 4;
+			priv->viu.vd1_afbc_head_addr = fbc_header >> 4;
+		} else {
+			DRM_DEBUG("AFBC body 0x%x: no registered compress header, using computed head 0x%x\n",
+				  priv->viu.vd1_addr0,
+				  priv->viu.vd1_afbc_head_addr);
+		}
 	}
 
 	priv->viu.vd1_enabled = true;
 
 	spin_unlock_irqrestore(&priv->drm->event_lock, flags);
+
+	/*
+	 * #13 fix: do NOT fire the PQ/HDR2 register writes here anymore. This
+	 * runs from atomic_update (commit tail) against live MMIO -- a write
+	 * here can land mid-raster (tearing) whenever a sysfs pq_* or
+	 * hdr2_bypass write races an in-flight VD1 buffer flip, and it never
+	 * ran at all on an OSD-only desktop (no VD1 commit ever reaches this
+	 * function), so those sysfs params were permanently dead in that case.
+	 * Stash only the frame-dependent HDR2 input size (src_w/h are only
+	 * known at plane-commit time); the actual register programming is
+	 * deferred to meson_overlay_pq_flush() below -- see its comment for
+	 * what still needs to be wired up in meson_crtc.c.
+	 */
+	meson_overlay_pq_hdr2_in_w = new_state->src_w >> 16;
+	meson_overlay_pq_hdr2_in_h = new_state->src_h >> 16;
 
 	DRM_DEBUG_DRIVER("\n");
 }
@@ -732,12 +1357,14 @@ static void meson_overlay_atomic_disable(struct drm_plane *plane,
 
 	priv->viu.vd1_enabled = false;
 
-	/* Disable VD1 */
+	/*
+	 * Disable VD1 only. VD2 is an independent plane (meson_overlay2.c) and
+	 * owns its own teardown -- do not clear VD2_BLEND_SRC_CTRL / VD2 IF0
+	 * here, or disabling VD1 would also kill an active VD2.
+	 */
 	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
 		writel_relaxed(0, priv->io_base + _REG(VD1_BLEND_SRC_CTRL));
-		writel_relaxed(0, priv->io_base + _REG(VD2_BLEND_SRC_CTRL));
 		writel_relaxed(0, priv->io_base + _REG(VD1_IF0_GEN_REG + 0x17b0));
-		writel_relaxed(0, priv->io_base + _REG(VD2_IF0_GEN_REG + 0x17b0));
 	} else
 		writel_bits_relaxed(VPP_VD1_POSTBLEND | VPP_VD1_PREBLEND, 0,
 				    priv->io_base + _REG(VPP_MISC));
@@ -766,6 +1393,14 @@ static bool meson_overlay_format_mod_supported(struct drm_plane *plane,
 		unsigned int options =
 			(modifier >> __fourcc_mod_amlogic_options_shift) &
 			__fourcc_mod_amlogic_options_mask;
+
+		/* The video AFBC decoder (VD1_AFBCD0) is G12A+; pre-G12A SoCs have no
+		 * video FBC decoder and their meson-vdec outputs linear NV12, so gate
+		 * the AMLOGIC_FBC modifiers off -- they were advertised but unusable on
+		 * GXL/GXM (the IN_FORMATS list is filtered by this callback). */
+		if (!meson_vpu_is_compatible(to_meson_overlay(plane)->priv,
+					     VPU_COMPATIBLE_G12A))
+			return false;
 
 		if (format != DRM_FORMAT_YUV420_8BIT &&
 		    format != DRM_FORMAT_YUV420_10BIT) {
@@ -797,13 +1432,90 @@ static bool meson_overlay_format_mod_supported(struct drm_plane *plane,
 	return false;
 }
 
+static const struct drm_prop_enum_list meson_overlay_field_enum[] = {
+	{ MESON_FIELD_PROGRESSIVE, "progressive" },
+	{ MESON_FIELD_TOP,         "top-field" },
+	{ MESON_FIELD_BOTTOM,      "bottom-field" },
+};
+
+/* Custom plane-state lifecycle: carry meson_overlay_state.field through atomic */
+static void meson_overlay_reset(struct drm_plane *plane)
+{
+	struct meson_overlay_state *mos;
+
+	if (plane->state) {
+		__drm_atomic_helper_plane_destroy_state(plane->state);
+		kfree(to_meson_overlay_state(plane->state));
+		plane->state = NULL;
+	}
+
+	mos = kzalloc(sizeof(*mos), GFP_KERNEL);
+	if (!mos)
+		return;
+	__drm_atomic_helper_plane_reset(plane, &mos->base);
+	/* mos->field = MESON_FIELD_PROGRESSIVE (kzalloc) */
+}
+
+static struct drm_plane_state *
+meson_overlay_duplicate_state(struct drm_plane *plane)
+{
+	struct meson_overlay_state *mos;
+
+	if (WARN_ON(!plane->state))
+		return NULL;
+
+	mos = kzalloc(sizeof(*mos), GFP_KERNEL);
+	if (!mos)
+		return NULL;
+	__drm_atomic_helper_plane_duplicate_state(plane, &mos->base);
+	mos->field = to_meson_overlay_state(plane->state)->field;
+	return &mos->base;
+}
+
+static void meson_overlay_destroy_state(struct drm_plane *plane,
+					struct drm_plane_state *state)
+{
+	__drm_atomic_helper_plane_destroy_state(state);
+	kfree(to_meson_overlay_state(state));
+}
+
+static int meson_overlay_set_property(struct drm_plane *plane,
+				      struct drm_plane_state *state,
+				      struct drm_property *property,
+				      uint64_t val)
+{
+	struct meson_overlay *mo = to_meson_overlay(plane);
+
+	if (property == mo->field_prop) {
+		to_meson_overlay_state(state)->field = val;
+		return 0;
+	}
+	return -EINVAL;
+}
+
+static int meson_overlay_get_property(struct drm_plane *plane,
+				      const struct drm_plane_state *state,
+				      struct drm_property *property,
+				      uint64_t *val)
+{
+	struct meson_overlay *mo = to_meson_overlay(plane);
+
+	if (property == mo->field_prop) {
+		*val = to_meson_overlay_state(state)->field;
+		return 0;
+	}
+	return -EINVAL;
+}
+
 static const struct drm_plane_funcs meson_overlay_funcs = {
 	.update_plane		= drm_atomic_helper_update_plane,
 	.disable_plane		= drm_atomic_helper_disable_plane,
 	.destroy		= drm_plane_cleanup,
-	.reset			= drm_atomic_helper_plane_reset,
-	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
-	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
+	.reset			= meson_overlay_reset,
+	.atomic_duplicate_state = meson_overlay_duplicate_state,
+	.atomic_destroy_state	= meson_overlay_destroy_state,
+	.atomic_set_property	= meson_overlay_set_property,
+	.atomic_get_property	= meson_overlay_get_property,
 	.format_mod_supported   = meson_overlay_format_mod_supported,
 };
 
@@ -816,6 +1528,7 @@ static const uint32_t supported_drm_formats[] = {
 	DRM_FORMAT_YUV420,
 	DRM_FORMAT_YUV411,
 	DRM_FORMAT_YUV410,
+	DRM_FORMAT_RGB888,
 	DRM_FORMAT_YUV420_8BIT, /* Amlogic FBC Only */
 	DRM_FORMAT_YUV420_10BIT, /* Amlogic FBC Only */
 };
@@ -855,8 +1568,24 @@ int meson_overlay_create(struct meson_drm *priv)
 
 	drm_plane_helper_add(plane, &meson_overlay_helper_funcs);
 
-	/* For now, VD Overlay plane is always on the back */
-	drm_plane_create_zpos_immutable_property(plane, 0);
+	/* VD1 video plane. On G12A+ the VPP post-blend ports are reassignable,
+	 * so zpos is mutable [0,3] (default 0 = bottom, video below OSD). GXL has
+	 * a fixed post-blend stack -> keep zpos immutable. */
+	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
+		drm_plane_create_zpos_property(plane, 0, 0, 3);
+	else
+		drm_plane_create_zpos_immutable_property(plane, 0);
+
+	/* Phase 3: interlaced field input mode (VFORMATTER vertical phase).
+	 * Default "progressive" is a no-op; opt-in only. Generic VD1 register,
+	 * so available on all SoCs. */
+	meson_overlay->field_prop = drm_property_create_enum(priv->drm, 0,
+				"field", meson_overlay_field_enum,
+				ARRAY_SIZE(meson_overlay_field_enum));
+	if (meson_overlay->field_prop)
+		drm_object_attach_property(&plane->base,
+					   meson_overlay->field_prop,
+					   MESON_FIELD_PROGRESSIVE);
 
 	priv->overlay_plane = plane;
 

@@ -43,6 +43,21 @@
 #define IT66121_AFE_DRV_REG			0x61
 #define IT66121_AFE_DRV_RST			BIT(4)
 #define IT66121_AFE_DRV_PWD			BIT(5)
+#define IT66121_AFE_DRV_TERMON			BIT(1)
+
+/*
+ * TMDS output drive current and termination. Programmed only on the IT66122:
+ * the IT66121 leaves both at their reset defaults.
+ */
+#define IT66122_DRV_ISW_REG			0x63
+#define IT66122_DRV_ISW_MASK			GENMASK(5, 2)
+#define IT66122_DRV_ISW_LOW			0x04
+#define IT66122_DRV_ISW_HIGH			0x20
+
+#define IT66122_DRV_RTERM_REG			0x66
+#define IT66122_DRV_RTERM_MASK			(BIT(7) | GENMASK(4, 0))
+#define IT66122_DRV_RTERM_LOW			0x00
+#define IT66122_DRV_RTERM_HIGH			0x97
 
 #define IT66121_INPUT_MODE_REG			0x70
 #define IT66121_INPUT_MODE_RGB			(0 << 6)
@@ -59,6 +74,14 @@
 #define IT66121_INPUT_CSC_RGB_TO_YUV		0x02
 #define IT66121_INPUT_CSC_YUV_TO_RGB		0x03
 #define IT66121_INPUT_CSC_NO_CONV		0x00
+/*
+ * On the IT66122 (B0 silicon) bits 7:5 of this register are NOT the dither /
+ * up-down-filter controls above: they are the input clock delay field. The
+ * vendor driver clears them when setting the CSC and then programs INCLKDLY=1
+ * from the AFE setup, at every pixel-clock level.
+ */
+#define IT66122_INPUT_CSC_INCLKDLY_MASK		GENMASK(7, 5)
+#define IT66122_INPUT_CSC_INCLKDLY		0x20
 
 #define IT66121_AFE_XP_REG			0x62
 #define IT66121_AFE_XP_GAINBIT			BIT(7)
@@ -287,6 +310,7 @@
 enum chip_id {
 	ID_IT6610,
 	ID_IT66121,
+	ID_IT66122,
 };
 
 struct it66121_chip_info {
@@ -350,6 +374,18 @@ static inline int it66121_preamble_ddc(struct it66121_ctx *ctx)
 
 static inline int it66121_fire_afe(struct it66121_ctx *ctx)
 {
+	/*
+	 * On the IT66122 this must be a read-modify-write: it66121_configure_afe()
+	 * has just programmed AFE_DRV_TERMON in this same register, and a flat
+	 * write of 0 would clear it again. The vendor driver clears only PWD|RST
+	 * here for every part; keep the historic flat write for the other two so
+	 * this change cannot regress them.
+	 */
+	if (ctx->info->id == ID_IT66122)
+		return regmap_write_bits(ctx->regmap, IT66121_AFE_DRV_REG,
+					 IT66121_AFE_DRV_PWD | IT66121_AFE_DRV_RST,
+					 0);
+
 	return regmap_write(ctx->regmap, IT66121_AFE_DRV_REG, 0);
 }
 
@@ -367,6 +403,63 @@ static int it66121_configure_input(struct it66121_ctx *ctx)
 		return ret;
 
 	return regmap_write(ctx->regmap, IT66121_INPUT_CSC_REG, IT66121_INPUT_CSC_NO_CONV);
+}
+
+/**
+ * it66121_configure_afe_drive() - IT66122 TMDS drive/termination tuning
+ * @ctx: it66121_ctx object
+ * @mode: mode to configure
+ *
+ * The IT66121 leaves the TMDS drive current, the output termination and the
+ * input clock delay at their reset values. The IT66122 does not: its vendor
+ * driver programs all four from hdmitx_SetupAFE(), split at an 80 MHz TMDS
+ * clock, and the IT66121 driver "will not correctly initialize the IT66122's
+ * PLL or AFE" without them (ITE IT66122 change note, 2023-03-01).
+ *
+ * The vendor driver's PCLK_MEDIUM (>80 MHz) and PCLK_HIGH (>180 MHz) cases
+ * program byte-identical values, so the two-level split this driver already
+ * uses for the PLL registers is sufficient here as well. PCLK_HIGH is in any
+ * case unreachable: it66121_bridge_mode_valid() caps the pixel clock at
+ * 148.5 MHz.
+ *
+ * DVI mode is unchanged between the two parts; this driver always configures
+ * HDMI mode (IT66121_HDMI_MODE_REG), so only the HDMI path is implemented.
+ *
+ * RETURNS:
+ * zero if success, a negative error code otherwise.
+ */
+static int it66121_configure_afe_drive(struct it66121_ctx *ctx,
+				       const struct drm_display_mode *mode)
+{
+	bool high = mode->clock > IT66121_AFE_CLK_HIGH;
+	int ret;
+
+	ret = regmap_write_bits(ctx->regmap, IT66121_AFE_DRV_REG,
+				IT66121_AFE_DRV_TERMON,
+				high ? IT66121_AFE_DRV_TERMON : 0);
+	if (ret)
+		return ret;
+
+	ret = regmap_write_bits(ctx->regmap, IT66122_DRV_ISW_REG,
+				IT66122_DRV_ISW_MASK,
+				high ? IT66122_DRV_ISW_HIGH : IT66122_DRV_ISW_LOW);
+	if (ret)
+		return ret;
+
+	ret = regmap_write_bits(ctx->regmap, IT66122_DRV_RTERM_REG,
+				IT66122_DRV_RTERM_MASK,
+				high ? IT66122_DRV_RTERM_HIGH : IT66122_DRV_RTERM_LOW);
+	if (ret)
+		return ret;
+
+	/*
+	 * Input clock delay is programmed at every level, including the low one,
+	 * and it66121_configure_input() has just cleared this field by writing
+	 * the CSC register flat.
+	 */
+	return regmap_write_bits(ctx->regmap, IT66121_INPUT_CSC_REG,
+				 IT66122_INPUT_CSC_INCLKDLY_MASK,
+				 IT66122_INPUT_CSC_INCLKDLY);
 }
 
 /**
@@ -402,7 +495,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 		if (ret)
 			return ret;
 
-		if (ctx->info->id == ID_IT66121) {
+		if (ctx->info->id != ID_IT6610) {
 			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
 						IT66121_AFE_IP_EC1, 0);
 			if (ret)
@@ -428,7 +521,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 		if (ret)
 			return ret;
 
-		if (ctx->info->id == ID_IT66121) {
+		if (ctx->info->id != ID_IT6610) {
 			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
 						IT66121_AFE_IP_EC1,
 						IT66121_AFE_IP_EC1);
@@ -441,6 +534,12 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 			if (ret)
 				return ret;
 		}
+	}
+
+	if (ctx->info->id == ID_IT66122) {
+		ret = it66121_configure_afe_drive(ctx, mode);
+		if (ret)
+			return ret;
 	}
 
 	/* Clear reset flags */
@@ -599,7 +698,7 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
 	if (ret)
 		return ret;
 
-	if (ctx->info->id == ID_IT66121) {
+	if (ctx->info->id != ID_IT6610) {
 		ret = regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
 					IT66121_CLK_BANK_PWROFF_RCLK, 0);
 		if (ret)
@@ -626,8 +725,16 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
 	if (ret)
 		return ret;
 
+	/*
+	 * PLL reset release. The IT66121 clears DRV_RST here; the IT66122's
+	 * power-on table SETS it instead -- the one change in the ITE change
+	 * note (2023-02-01) that lands inside this driver's power-on sequence.
+	 * it66121_fire_afe() clears it again once the AFE has been configured.
+	 */
 	ret = regmap_write_bits(ctx->regmap, IT66121_AFE_DRV_REG,
-				IT66121_AFE_DRV_RST, 0);
+				IT66121_AFE_DRV_RST,
+				ctx->info->id == ID_IT66122 ?
+					IT66121_AFE_DRV_RST : 0);
 	if (ret)
 		return ret;
 
@@ -1559,6 +1666,17 @@ static int it66121_probe(struct i2c_client *client)
 		return ret;
 	}
 
+	/*
+	 * reset-gpios is optional: some boards (e.g. OLogic Pumpkin i500,
+	 * MT8183) wire no usable it66121 reset and the chip self-inits from
+	 * power-on -- forcing a reset pulse there leaves it unresponsive on
+	 * i2c. Don't fail probe when the GPIO is absent.
+	 */
+	ctx->gpio_reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->gpio_reset))
+		return dev_err_probe(dev, PTR_ERR(ctx->gpio_reset),
+				     "Failed to get reset GPIO\n");
+
 	it66121_hw_reset(ctx);
 
 	ctx->regmap = devm_regmap_init_i2c(client, &it66121_regmap_config);
@@ -1618,6 +1736,12 @@ static const struct it66121_chip_info it66121_chip_info = {
 	.pid = 0x0612,
 };
 
+static const struct it66121_chip_info it66122_chip_info = {
+	.id = ID_IT66122,
+	.vid = 0x4954,
+	.pid = 0x0622,
+};
+
 static const struct it66121_chip_info it6610_chip_info = {
 	.id = ID_IT6610,
 	.vid = 0xca00,
@@ -1626,6 +1750,7 @@ static const struct it66121_chip_info it6610_chip_info = {
 
 static const struct of_device_id it66121_dt_match[] = {
 	{ .compatible = "ite,it66121", &it66121_chip_info },
+	{ .compatible = "ite,it66122", &it66122_chip_info },
 	{ .compatible = "ite,it6610", &it6610_chip_info },
 	{ }
 };
@@ -1633,6 +1758,7 @@ MODULE_DEVICE_TABLE(of, it66121_dt_match);
 
 static const struct i2c_device_id it66121_id[] = {
 	{ "it66121", (kernel_ulong_t) &it66121_chip_info },
+	{ "it66122", (kernel_ulong_t) &it66122_chip_info },
 	{ "it6610", (kernel_ulong_t) &it6610_chip_info },
 	{ }
 };

@@ -34,7 +34,7 @@ static const struct acpi_device_id fjes_acpi_ids[] = {
 	{ACPI_MOTHERBOARD_RESOURCE_HID, 0},
 	{"", 0},
 };
-MODULE_DEVICE_TABLE(acpi, fjes_acpi_ids);
+/* MODULE_DEVICE_TABLE(acpi, fjes_acpi_ids); */
 
 static bool is_extended_socket_device(struct acpi_device *device)
 {

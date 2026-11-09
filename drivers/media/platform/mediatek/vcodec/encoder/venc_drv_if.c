@@ -32,7 +32,28 @@ int venc_if_init(struct mtk_vcodec_enc_ctx *ctx, unsigned int fourcc)
 	}
 
 	mtk_venc_lock(ctx);
+
+	/*
+	 * The ENC_INIT IPI causes the SCP firmware to touch the VENC
+	 * register banks (MT8188/geralt reads VENC MMIO during venc init),
+	 * so the VENC power domain and clocks must be live before the IPI
+	 * is sent. The per-frame encode path (venc_if_encode) already does
+	 * this, but init ran with the domain powered down -- on MT8188 that
+	 * stalls the SCP and the ENC_INIT IPI times out. Power on/off around
+	 * init, mirroring venc_if_encode; this is balanced and benign on
+	 * MT8195 (which does not read MMIO during init).
+	 */
+	ret = mtk_vcodec_enc_pw_on(&ctx->dev->pm);
+	if (ret)
+		goto venc_if_init_unlock;
+	mtk_vcodec_enc_clock_on(&ctx->dev->pm);
+
 	ret = ctx->enc_if->init(ctx);
+
+	mtk_vcodec_enc_clock_off(&ctx->dev->pm);
+	mtk_vcodec_enc_pw_off(&ctx->dev->pm);
+
+venc_if_init_unlock:
 	mtk_venc_unlock(ctx);
 
 	return ret;
@@ -44,7 +65,26 @@ int venc_if_set_param(struct mtk_vcodec_enc_ctx *ctx,
 	int ret = 0;
 
 	mtk_venc_lock(ctx);
+
+	/*
+	 * Same as venc_if_init: AP_IPIMSG_ENC_SET_PARAM makes the geralt SCP
+	 * firmware touch VENC MMIO to program the engine, so the VENC domain
+	 * and clocks must be live first. Without this the SCP stalls on the
+	 * powered-down VENC bank and its watchdog fires ("SCP watchdog timeout!
+	 * 0x10000") while handling SET_PARAM at start_streaming. Balanced
+	 * power-on/off, benign on MT8195.
+	 */
+	ret = mtk_vcodec_enc_pw_on(&ctx->dev->pm);
+	if (ret)
+		goto venc_if_set_param_unlock;
+	mtk_vcodec_enc_clock_on(&ctx->dev->pm);
+
 	ret = ctx->enc_if->set_param(ctx->drv_handle, type, in);
+
+	mtk_vcodec_enc_clock_off(&ctx->dev->pm);
+	mtk_vcodec_enc_pw_off(&ctx->dev->pm);
+
+venc_if_set_param_unlock:
 	mtk_venc_unlock(ctx);
 
 	return ret;

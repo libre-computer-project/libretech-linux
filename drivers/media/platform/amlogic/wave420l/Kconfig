@@ -1,0 +1,13 @@
+config VIDEO_MESON_WAVE420L
+	tristate "Amlogic Meson Wave420L HEVC Encoder"
+	depends on VIDEO_DEV
+	depends on ARCH_MESON || COMPILE_TEST
+	depends on VIDEO_MESON_VDEC
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  Support for the Chips&Media Wave420L HEVC encoder IP found in
+	  Amlogic SM1 (S905D3) and G12B (A311D) SoCs.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called wave420l.

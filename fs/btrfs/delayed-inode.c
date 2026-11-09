@@ -152,37 +152,39 @@ again:
 		return ERR_PTR(-ENOMEM);
 	btrfs_init_delayed_node(node, root, ino);
 
+	/* Cached in the inode and can be accessed. */
+	refcount_set(&node->refs, 2);
+	btrfs_delayed_node_ref_tracker_alloc(node, tracker, GFP_NOFS);
+	btrfs_delayed_node_ref_tracker_alloc(node, &node->inode_cache_tracker, GFP_NOFS);
+
 	/* Allocate and reserve the slot, from now it can return a NULL from xa_load(). */
 	ret = xa_reserve(&root->delayed_nodes, ino, GFP_NOFS);
-	if (ret == -ENOMEM) {
-		btrfs_delayed_node_ref_tracker_dir_exit(node);
-		kmem_cache_free(delayed_node_cache, node);
-		return ERR_PTR(-ENOMEM);
-	}
+	if (ret == -ENOMEM)
+		goto cleanup;
+
 	xa_lock(&root->delayed_nodes);
 	ptr = xa_load(&root->delayed_nodes, ino);
 	if (ptr) {
 		/* Somebody inserted it, go back and read it. */
 		xa_unlock(&root->delayed_nodes);
-		btrfs_delayed_node_ref_tracker_dir_exit(node);
-		kmem_cache_free(delayed_node_cache, node);
-		node = NULL;
-		goto again;
+		goto cleanup;
 	}
 	ptr = __xa_store(&root->delayed_nodes, ino, node, GFP_ATOMIC);
 	ASSERT(xa_err(ptr) != -EINVAL);
 	ASSERT(xa_err(ptr) != -ENOMEM);
 	ASSERT(ptr == NULL);
-
-	/* Cached in the inode and can be accessed. */
-	refcount_set(&node->refs, 2);
-	btrfs_delayed_node_ref_tracker_alloc(node, tracker, GFP_ATOMIC);
-	btrfs_delayed_node_ref_tracker_alloc(node, &node->inode_cache_tracker, GFP_ATOMIC);
-
 	btrfs_inode->delayed_node = node;
 	xa_unlock(&root->delayed_nodes);
 
 	return node;
+cleanup:
+	btrfs_delayed_node_ref_tracker_free(node, tracker);
+	btrfs_delayed_node_ref_tracker_free(node, &node->inode_cache_tracker);
+	btrfs_delayed_node_ref_tracker_dir_exit(node);
+	kmem_cache_free(delayed_node_cache, node);
+	if (ret)
+		return ERR_PTR(ret);
+	goto again;
 }
 
 /*
@@ -668,7 +670,7 @@ static int btrfs_insert_delayed_item(struct btrfs_trans_handle *trans,
 	struct btrfs_key first_key;
 	const u32 first_data_size = first_item->data_len;
 	int total_size;
-	char *ins_data = NULL;
+	char AUTO_KFREE(ins_data);
 	int ret;
 	bool continuous_keys_only = false;
 
@@ -740,10 +742,8 @@ static int btrfs_insert_delayed_item(struct btrfs_trans_handle *trans,
 
 		ins_data = kmalloc_array(batch.nr,
 					 sizeof(u32) + sizeof(struct btrfs_key), GFP_NOFS);
-		if (!ins_data) {
-			ret = -ENOMEM;
-			goto out;
-		}
+		if (!ins_data)
+			return -ENOMEM;
 		ins_sizes = (u32 *)ins_data;
 		ins_keys = (struct btrfs_key *)(ins_data + batch.nr * sizeof(u32));
 		batch.keys = ins_keys;
@@ -759,7 +759,7 @@ static int btrfs_insert_delayed_item(struct btrfs_trans_handle *trans,
 
 	ret = btrfs_insert_empty_items(trans, root, path, &batch);
 	if (ret)
-		goto out;
+		return ret;
 
 	list_for_each_entry(curr, &item_list, tree_list) {
 		char *data_ptr;
@@ -814,9 +814,8 @@ static int btrfs_insert_delayed_item(struct btrfs_trans_handle *trans,
 		list_del(&curr->tree_list);
 		btrfs_release_delayed_item(curr);
 	}
-out:
-	kfree(ins_data);
-	return ret;
+
+	return 0;
 }
 
 static int btrfs_insert_delayed_items(struct btrfs_trans_handle *trans,
@@ -1138,8 +1137,8 @@ __btrfs_commit_inode_delayed_items(struct btrfs_trans_handle *trans,
 	ret = btrfs_record_root_in_trans(trans, node->root);
 	if (ret)
 		return ret;
-	ret = btrfs_update_delayed_inode(trans, node->root, path, node);
-	return ret;
+
+	return btrfs_update_delayed_inode(trans, node->root, path, node);
 }
 
 /*
@@ -1674,7 +1673,7 @@ int btrfs_delete_delayed_dir_index(struct btrfs_trans_handle *trans,
 	if (unlikely(ret)) {
 		btrfs_err(trans->fs_info,
 "failed to add delayed dir index item, root: %llu, inode: %llu, index: %llu, error: %d",
-			  index, btrfs_root_id(node->root), node->inode_id, ret);
+			  btrfs_root_id(node->root), node->inode_id, index, ret);
 		btrfs_delayed_item_release_metadata(dir->root, item);
 		btrfs_release_delayed_item(item);
 	}

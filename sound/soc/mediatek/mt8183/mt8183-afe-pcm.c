@@ -424,6 +424,16 @@ static const struct snd_soc_dapm_route mt8183_memif_routes[] = {
 
 static const struct snd_soc_component_driver mt8183_afe_pcm_dai_component = {
 	.name = "mt8183-afe-pcm-dai",
+	/*
+	 * This DAI component and mtk_afe_pcm_platform both register on the same
+	 * AFE device, so snd_soc_component_initialize() auto-names both from
+	 * dev_name() (the driver .name is not used for component->name). The two
+	 * identical names collide in the card's debugfs root ("... already
+	 * exists"), also duplicating the DAPM Playback/Capture nodes. Give this
+	 * component a debugfs prefix so its debugfs subtree is distinct, mirroring
+	 * soc-generic-dmaengine-pcm.c (debugfs_prefix = "dma").
+	 */
+	.debugfs_prefix = "cpu-dai",
 };
 
 #define MT8183_MEMIF_BASE(_id, _en_reg, _fs_reg, _mono_reg)    \
@@ -694,9 +704,20 @@ static int mt8183_afe_runtime_suspend(struct device *dev)
 	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CLR, 0xffff, 0xffff);
 	regmap_update_bits(afe->regmap, AFE_IRQ_MCU_CLR, 0xffff, 0xffff);
 
+	/*
+	 * The audiosys clock gates (AUDIO_TOP_CON0/1) are written through this
+	 * same syscon regmap, and those registers are volatile: a gate update
+	 * made while the regmap is cache-only fails with -EBUSY, which the clk
+	 * gate ops do not report. So gate the clocks while the regmap still
+	 * reaches the hardware, and only then go cache-only.
+	 */
+	ret = mt8183_afe_disable_clock(afe);
+
 	/* cache only */
 	regcache_cache_only(afe->regmap, true);
 	regcache_mark_dirty(afe->regmap);
+
+	return ret;
 
 skip_regmap:
 	return mt8183_afe_disable_clock(afe);
@@ -706,16 +727,32 @@ static int mt8183_afe_runtime_resume(struct device *dev)
 {
 	struct mtk_base_afe *afe = dev_get_drvdata(dev);
 	struct mt8183_afe_private *afe_priv = afe->platform_priv;
+	bool reg_ctl = afe->regmap && !afe_priv->pm_runtime_bypass_reg_ctl;
 	int ret;
 
-	ret = mt8183_afe_enable_clock(afe);
-	if (ret)
-		return ret;
+	/*
+	 * Leave cache-only before the clocks are enabled: the aud_afe and
+	 * aud_i2s*_bclk_sw gates are bits of AUDIO_TOP_CON0/1 in this regmap,
+	 * and an enable issued while it is cache-only is dropped (-EBUSY on a
+	 * volatile register) while the clk framework counts the clock as on.
+	 * The I2S bit clocks then never reach the pads, so no I2S codec or
+	 * amplifier is clocked. Nothing touches the hardware between here and
+	 * mt8183_afe_enable_clock(), which turns the bus clocks on before it
+	 * writes any audiosys gate.
+	 */
+	if (reg_ctl)
+		regcache_cache_only(afe->regmap, false);
 
-	if (!afe->regmap || afe_priv->pm_runtime_bypass_reg_ctl)
+	ret = mt8183_afe_enable_clock(afe);
+	if (ret) {
+		if (reg_ctl)
+			regcache_cache_only(afe->regmap, true);
+		return ret;
+	}
+
+	if (!reg_ctl)
 		goto skip_regmap;
 
-	regcache_cache_only(afe->regmap, false);
 	regcache_sync(afe->regmap);
 
 	/* enable audio sys DCM for power saving */
@@ -766,6 +803,11 @@ static const dai_register_cb dai_register_cbs[] = {
 	mt8183_dai_memif_register,
 };
 
+static void mt8183_afe_release_reserved_mem(void *data)
+{
+	of_reserved_mem_device_release(data);
+}
+
 static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 {
 	struct mtk_base_afe *afe;
@@ -794,6 +836,12 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_info(dev, "no reserved memory found, pre-allocating buffers instead\n");
 		afe->preallocate_buffers = true;
+	} else {
+		ret = devm_add_action_or_reset(dev,
+					       mt8183_afe_release_reserved_mem,
+					       dev);
+		if (ret)
+			return ret;
 	}
 
 	/* initial audio related clock */
@@ -833,16 +881,20 @@ static int mt8183_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* enable clock for regcache get default value from hw */
 	afe_priv->pm_runtime_bypass_reg_ctl = true;
-	pm_runtime_get_sync(dev);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret) {
+		afe_priv->pm_runtime_bypass_reg_ctl = false;
+		goto err_pm_disable;
+	}
 
 	ret = regmap_reinit_cache(afe->regmap, &mt8183_afe_regmap_config);
+	pm_runtime_put_sync(dev);
+	afe_priv->pm_runtime_bypass_reg_ctl = false;
+
 	if (ret) {
 		dev_err(dev, "regmap_reinit_cache fail, ret %d\n", ret);
 		goto err_pm_disable;
 	}
-
-	pm_runtime_put_sync(dev);
-	afe_priv->pm_runtime_bypass_reg_ctl = false;
 
 	regcache_cache_only(afe->regmap, true);
 	regcache_mark_dirty(afe->regmap);

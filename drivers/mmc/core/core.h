@@ -32,6 +32,13 @@ struct mmc_bus_ops {
 	bool (*cache_enabled)(struct mmc_host *);
 	int (*flush_cache)(struct mmc_host *);
 	int (*handle_undervoltage)(struct mmc_host *host);
+	/*
+	 * Optional: a persistent data-CRC storm at the current bus speed. The
+	 * bus type decides how to slow down (reduce the host clock in place, or
+	 * drop the protocol grade). Return 0 if handled in place (re-tune and
+	 * carry on) or <0 to fail the re-tune so the card is re-inited slower.
+	 */
+	int (*crc_downgrade)(struct mmc_host *);
 };
 
 void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops);

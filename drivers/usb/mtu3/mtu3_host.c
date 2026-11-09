@@ -189,7 +189,16 @@ static int ssusb_host_enable(struct ssusb_mtk *ssusb)
 			continue;
 
 		value = mtu3_readl(ibase, SSUSB_U2_CTRL(i));
-		value &= ~(SSUSB_U2_PORT_PDN | SSUSB_U2_PORT_DIS);
+		/*
+		 * Also clear OTG_SEL: in dr_mode=otg, ssusb_gadget_init's
+		 * mtu3_device_enable() set SSUSB_U2_PORT_OTG_SEL, and the host
+		 * path otherwise leaves it set -> the U2 port stays OTG-select,
+		 * not pure host, and won't drive a downstream device (e.g. the
+		 * i500's onboard LAN9512 hub). dr_mode=host never sets it, so
+		 * the clear is a no-op there.
+		 */
+		value &= ~(SSUSB_U2_PORT_PDN | SSUSB_U2_PORT_DIS |
+			   SSUSB_U2_PORT_OTG_SEL);
 		value |= SSUSB_U2_PORT_HOST_SEL;
 		mtu3_writel(ibase, SSUSB_U2_CTRL(i), value);
 	}

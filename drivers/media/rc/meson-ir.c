@@ -16,6 +16,7 @@
 #include <linux/bitfield.h>
 #include <linux/regmap.h>
 
+#include <linux/scmi_lc_wake_cfg.h>
 #include <media/rc-core.h>
 
 #define DRIVER_NAME		"meson-ir"
@@ -159,6 +160,12 @@ struct meson_ir_protocol {
 struct meson_ir_param {
 	bool support_hw_decoder;
 	unsigned int max_register;
+	/*
+	 * The wake list lives in the SoC's SCMI server (GXL open SC, vendor
+	 * protocol 0x81), which decodes NEC in hardware while the board
+	 * sleeps; rc-core's wakeup filter is forwarded to it.
+	 */
+	bool scmi_wake;
 };
 
 struct meson_ir {
@@ -184,6 +191,59 @@ static const struct meson_ir_protocol protocol_timings[] = {
 	/* bit0 max/min, bit1 max/min, duration2 max/min, duration3 max/min */
 	72, 40, 134, 90, 0, 0, 0, 0}
 };
+
+/*
+ * rc-core NEC scancode + mask -> the hardware decoder's 32-bit frame + mask,
+ * the inverse of meson_ir_nec_handler()'s ir_nec_bytes_to_scancode() call:
+ * frame bytes 0..3 are address, ~address, command, ~command.  For the plain
+ * and extended forms the complement bytes the scancode omits are derived, and
+ * their mask follows the byte they complement.
+ */
+static int meson_ir_nec_wake_frame(enum rc_proto proto, u32 data, u32 mask,
+				   u32 *frame, u32 *fmask)
+{
+	u8 a, na, c, nc, am, nam, cm, ncm;
+
+	switch (proto) {
+	case RC_PROTO_NEC:
+		a = data >> 8;  na = ~a;  c = data;  nc = ~c;
+		am = mask >> 8; nam = am; cm = mask; ncm = cm;
+		break;
+	case RC_PROTO_NECX:
+		a = data >> 16;  na = data >> 8;  c = data;  nc = ~c;
+		am = mask >> 16; nam = mask >> 8; cm = mask; ncm = cm;
+		break;
+	case RC_PROTO_NEC32:
+		na = data >> 24;  a = data >> 16;  nc = data >> 8;  c = data;
+		nam = mask >> 24; am = mask >> 16; ncm = mask >> 8; cm = mask;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	*frame = a | na << 8 | c << 16 | (u32)nc << 24;
+	*fmask = am | nam << 8 | cm << 16 | (u32)ncm << 24;
+	return 0;
+}
+
+static int meson_ir_s_wakeup_filter(struct rc_dev *dev,
+				    struct rc_scancode_filter *filter)
+{
+	struct scmi_lc_wake_cfg_ir_list list = { };
+	int ret;
+
+	/* "none": IR no longer wakes the board. */
+	if (dev->wakeup_protocol != RC_PROTO_UNKNOWN) {
+		ret = meson_ir_nec_wake_frame(dev->wakeup_protocol, filter->data,
+					      filter->mask, &list.code[0],
+					      &list.mask[0]);
+		if (ret)
+			return ret;
+		list.count = 1;
+	}
+
+	return lc_scmi_ir_wake_set(&list);
+}
 
 static void meson_ir_nec_handler(struct meson_ir *ir)
 {
@@ -497,6 +557,13 @@ static int meson_ir_probe(struct platform_device *pdev)
 		ir->rc->change_protocol = meson_ir_hw_decoder_init;
 	}
 
+	if (IS_REACHABLE(CONFIG_LIBRE_SCMI_WAKE_CFG) && ir->param->scmi_wake) {
+		ir->rc->allowed_wakeup_protocols = RC_PROTO_BIT_NEC |
+						   RC_PROTO_BIT_NECX |
+						   RC_PROTO_BIT_NEC32;
+		ir->rc->s_wakeup_filter = meson_ir_s_wakeup_filter;
+	}
+
 	ir->rc->priv = ir;
 	ir->rc->device_name = DRIVER_NAME;
 	ir->rc->input_phys = DRIVER_NAME "/input0";
@@ -603,6 +670,17 @@ static const struct meson_ir_param meson8b_ir_param = {
 	.max_register = IR_DEC_REG2,
 };
 
+/*
+ * GXBB onwards: the meson8b decoder, plus the SC-held wake list.  Only an SC
+ * that serves protocol 0x81 (the GXL open SC) accepts a list; elsewhere a
+ * wakeup_filter write fails -ENODEV.
+ */
+static const struct meson_ir_param meson_gxbb_ir_param = {
+	.support_hw_decoder = false,
+	.max_register = IR_DEC_REG2,
+	.scmi_wake = true,
+};
+
 static const struct meson_ir_param meson_s4_ir_param = {
 	.support_hw_decoder = true,
 	.max_register = IR_DEC_FRAME1,
@@ -617,7 +695,7 @@ static const struct of_device_id meson_ir_match[] = {
 		.data = &meson8b_ir_param,
 	}, {
 		.compatible = "amlogic,meson-gxbb-ir",
-		.data = &meson8b_ir_param,
+		.data = &meson_gxbb_ir_param,
 	}, {
 		.compatible = "amlogic,meson-s4-ir",
 		.data = &meson_s4_ir_param,

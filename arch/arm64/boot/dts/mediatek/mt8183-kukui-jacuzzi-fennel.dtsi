@@ -28,3 +28,18 @@
 &i2c2 {
 	i2c-scl-internal-delay-ns = <21500>;
 };
+
+/*
+ * Dual Cadence Vision-P6 IPU, for the gaema-engine VP6 backend (the npu-yolo
+ * demo). The nodes, power domains, clocks, SPI 292/293 and the larb2/larb3
+ * M4U ports are in mt8183.dtsi, disabled as SoC bring-up opt-in; Fennel
+ * probed both cores with a hand fdtput of status = "okay" in 2026-07. This
+ * is the source form of that, as mt8183-med-mt83-ace.dts carries for ACE.
+ */
+&vp6_core0 {
+	status = "okay";
+};
+
+&vp6_core1 {
+	status = "okay";
+};

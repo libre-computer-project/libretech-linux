@@ -113,6 +113,7 @@
 			interrupts = <0 7 4>;
 			interrupt-parent = <&intc>;
 			clocks = <&clkc 12>;
+			#thermal-sensor-cells = <0>;
 		};
 
 		can0: can@e0008000 {

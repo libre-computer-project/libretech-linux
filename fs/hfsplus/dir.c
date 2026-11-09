@@ -49,7 +49,7 @@ static struct dentry *hfsplus_lookup(struct inode *dir, struct dentry *dentry,
 	if (unlikely(err < 0))
 		goto fail;
 again:
-	err = hfs_brec_read(&fd, &entry, sizeof(entry));
+	err = hfsplus_brec_read_cat(&fd, &entry);
 	if (err) {
 		if (err == -ENOENT) {
 			hfs_find_exit(&fd);
@@ -185,7 +185,15 @@ static int hfsplus_readdir(struct file *file, struct dir_context *ctx)
 	}
 	if (ctx->pos >= inode->i_size)
 		goto out;
-	err = hfs_brec_goto(&fd, ctx->pos - 1);
+	rd = file->private_data;
+	if (rd && rd->pos == ctx->pos) {
+		memcpy(fd.search_key, &rd->key, sizeof(struct hfsplus_cat_key));
+		err = hfs_brec_find(&fd, hfs_find_rec_by_key);
+		if (err == -ENOENT)
+			err = hfs_brec_goto(&fd, 1);
+	} else {
+		err = hfs_brec_goto(&fd, ctx->pos - 1);
+	}
 	if (err)
 		goto out;
 	for (;;) {
@@ -261,7 +269,6 @@ next:
 		if (err)
 			goto out;
 	}
-	rd = file->private_data;
 	if (!rd) {
 		rd = kmalloc(sizeof(struct hfsplus_readdir_data), GFP_KERNEL);
 		if (!rd) {
@@ -269,15 +276,8 @@ next:
 			goto out;
 		}
 		file->private_data = rd;
-		rd->file = file;
-		spin_lock(&HFSPLUS_I(inode)->open_dir_lock);
-		list_add(&rd->list, &HFSPLUS_I(inode)->open_dir_list);
-		spin_unlock(&HFSPLUS_I(inode)->open_dir_lock);
 	}
-	/*
-	 * Can be done after the list insertion; exclusion with
-	 * hfsplus_delete_cat() is provided by directory lock.
-	 */
+	rd->pos = ctx->pos;
 	memcpy(&rd->key, fd.key, sizeof(struct hfsplus_cat_key));
 out:
 	kfree(strbuf);
@@ -287,13 +287,7 @@ out:
 
 static int hfsplus_dir_release(struct inode *inode, struct file *file)
 {
-	struct hfsplus_readdir_data *rd = file->private_data;
-	if (rd) {
-		spin_lock(&HFSPLUS_I(inode)->open_dir_lock);
-		list_del(&rd->list);
-		spin_unlock(&HFSPLUS_I(inode)->open_dir_lock);
-		kfree(rd);
-	}
+	kfree(file->private_data);
 	return 0;
 }
 
@@ -312,6 +306,9 @@ static int hfsplus_link(struct dentry *src_dentry, struct inode *dst_dir,
 		return -EPERM;
 	if (!S_ISREG(inode->i_mode))
 		return -EPERM;
+
+	hfs_dbg("src_dir->i_ino %lu, dst_dir->i_ino %lu, inode->i_ino %lu\n",
+		src_dir->i_ino, dst_dir->i_ino, inode->i_ino);
 
 	mutex_lock(&sbi->vh_mutex);
 	if (inode->i_ino == (u32)(unsigned long)src_dentry->d_fsdata) {
@@ -332,7 +329,7 @@ static int hfsplus_link(struct dentry *src_dentry, struct inode *dst_dir,
 		cnid = sbi->next_cnid++;
 		src_dentry->d_fsdata = (void *)(unsigned long)cnid;
 		res = hfsplus_create_cat(cnid, src_dir,
-			&src_dentry->d_name, inode);
+					 &src_dentry->d_name, inode);
 		if (res)
 			/* panic? */
 			goto out;
@@ -350,6 +347,21 @@ static int hfsplus_link(struct dentry *src_dentry, struct inode *dst_dir,
 	mark_inode_dirty(inode);
 	sbi->file_count++;
 	hfsplus_mark_mdb_dirty(dst_dir->i_sb);
+
+	res = hfsplus_cat_write_inode(src_dir);
+	if (res)
+		goto out;
+
+	res = hfsplus_cat_write_inode(dst_dir);
+	if (res)
+		goto out;
+
+	res = hfsplus_cat_write_inode(sbi->hidden_dir);
+	if (res)
+		goto out;
+
+	res = hfsplus_cat_write_inode(inode);
+
 out:
 	mutex_unlock(&sbi->vh_mutex);
 	return res;
@@ -366,6 +378,9 @@ static int hfsplus_unlink(struct inode *dir, struct dentry *dentry)
 
 	if (HFSPLUS_IS_RSRC(inode))
 		return -EPERM;
+
+	hfs_dbg("dir->i_ino %lu, inode->i_ino %lu\n",
+		dir->i_ino, inode->i_ino);
 
 	mutex_lock(&sbi->vh_mutex);
 	cnid = (u32)(unsigned long)dentry->d_fsdata;
@@ -408,6 +423,15 @@ static int hfsplus_unlink(struct inode *dir, struct dentry *dentry)
 	inode_set_ctime_current(inode);
 	mark_inode_dirty(inode);
 out:
+	if (!res) {
+		res = hfsplus_cat_write_inode(dir);
+		if (!res) {
+			res = hfsplus_cat_write_inode(sbi->hidden_dir);
+			if (!res)
+				res = hfsplus_cat_write_inode(inode);
+		}
+	}
+
 	mutex_unlock(&sbi->vh_mutex);
 	return res;
 }
@@ -429,6 +453,8 @@ static int hfsplus_rmdir(struct inode *dir, struct dentry *dentry)
 	inode_set_ctime_current(inode);
 	hfsplus_delete_inode(inode);
 	mark_inode_dirty(inode);
+
+	res = hfsplus_cat_write_inode(dir);
 out:
 	mutex_unlock(&sbi->vh_mutex);
 	return res;
@@ -465,6 +491,12 @@ static int hfsplus_symlink(struct mnt_idmap *idmap, struct inode *dir,
 
 	hfsplus_instantiate(dentry, inode, inode->i_ino);
 	mark_inode_dirty(inode);
+
+	res = hfsplus_cat_write_inode(dir);
+	if (res)
+		goto out;
+
+	res = hfsplus_cat_write_inode(inode);
 	goto out;
 
 out_err:
@@ -506,6 +538,12 @@ static int hfsplus_mknod(struct mnt_idmap *idmap, struct inode *dir,
 
 	hfsplus_instantiate(dentry, inode, inode->i_ino);
 	mark_inode_dirty(inode);
+
+	res = hfsplus_cat_write_inode(dir);
+	if (res)
+		goto out;
+
+	res = hfsplus_cat_write_inode(inode);
 	goto out;
 
 failed_mknod:
@@ -552,8 +590,13 @@ static int hfsplus_rename(struct mnt_idmap *idmap,
 	res = hfsplus_rename_cat((u32)(unsigned long)old_dentry->d_fsdata,
 				 old_dir, &old_dentry->d_name,
 				 new_dir, &new_dentry->d_name);
-	if (!res)
+	if (!res) {
 		new_dentry->d_fsdata = old_dentry->d_fsdata;
+
+		res = hfsplus_cat_write_inode(old_dir);
+		if (!res)
+			res = hfsplus_cat_write_inode(new_dir);
+	}
 	return res;
 }
 

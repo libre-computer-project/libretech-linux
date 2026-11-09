@@ -3,3 +3,7 @@ obj-$(CONFIG_MESON_CANVAS) += meson-canvas.o
 obj-$(CONFIG_MESON_CLK_MEASURE) += meson-clk-measure.o
 obj-$(CONFIG_MESON_GX_SOCINFO) += meson-gx-socinfo.o
 obj-$(CONFIG_MESON_MX_SOCINFO) += meson-mx-socinfo.o
+obj-$(CONFIG_MESON_GE2D_API) += meson-ge2d-api.o
+obj-$(CONFIG_MESON_GXL_DDR_PUB_MON) += meson-gxl-ddr-pub-mon.o
+obj-$(CONFIG_MESON_DMC_PORT_PRIORITY) += meson-dmc-port-priority.o
+obj-$(CONFIG_MESON_SC_HEARTBEAT) += meson-sc-heartbeat.o

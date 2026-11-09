@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt8183-vp6.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT8183 VP6 (IPU / Vision-P6 DSP) core
+
+maintainers:
+  - Libre Computer <henryu38@gmail.com>
+
+description: |
+  The MT8183 (Helio-P60 / Genio 500) carries two Cadence Tensilica Vision-P6
+  (VP6) DSP cores -- the "IPU" / "APU 1.0" vision/AI cluster -- exposed as
+  ipu_core0 (@0x19180000) and ipu_core1 (@0x19280000) under the VPU_TOP power
+  domain, fed by the ipu_conn (@0x19000000) and ipu_adl (@0x19010000) syscons.
+
+  Each core has 192 KB instruction RAM + 256 KB data RAM (core-local L1) + an
+  iDMA, and a host<->core mailbox (doorbell + info registers + IRQ). One node
+  describes one core; the two cores load and run independently.
+
+  This binds the mtk-vp6 driver, which stages a VP6 firmware image into a DDR
+  buffer, points the core reset vector at it, releases the core from reset, and
+  exposes a per-core /dev/vp6-N chardev (firmware-load + mailbox + shared-buffer
+  ioctls). The userspace ABI is defined in include/uapi/linux/mtk-vp6.h.
+
+  The core control / mailbox / clock-gate registers live in the core's own
+  ipu_core0/1 syscon (@ 0x1918_0000 / 0x1928_0000, 0x1000); this node is a
+  consumer that reaches them by phandle (mediatek,ipu-core) via regmap -- the
+  same pattern as the ipu_probe node -- so it does not claim the register range
+  itself. The firmware image is DDR-resident (loaded via the DMA/CMA path), so no
+  IRAM/DRAM address window is described here.
+
+properties:
+  compatible:
+    const: mediatek,mt8183-vp6
+
+  interrupts:
+    maxItems: 1
+    description: core->host mailbox interrupt (optional until confirmed)
+
+  clocks:
+    maxItems: 3
+
+  clock-names:
+    items:
+      - const: axi
+      - const: ipu
+      - const: jtag
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 1
+    description: optional M4U/larb stream if the VP6 iDMA is behind the IOMMU
+
+  mediatek,core-index:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1]
+    description: which VP6 core this node describes (0 or 1)
+
+  mediatek,ipu-core:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: phandle to this core's ipu_core0/ipu_core1 syscon (cfg block)
+
+  mediatek,ipu-conn:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: phandle to the shared ipu_conn fabric syscon
+
+required:
+  - compatible
+  - clocks
+  - clock-names
+  - power-domains
+  - mediatek,core-index
+  - mediatek,ipu-core
+  - mediatek,ipu-conn
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mt8183-clk.h>
+    #include <dt-bindings/power/mt8183-power.h>
+
+    vp6_core0 {
+        compatible = "mediatek,mt8183-vp6";
+        clocks = <&ipu_core0 CLK_IPU_CORE0_AXI>,
+                 <&ipu_core0 CLK_IPU_CORE0_IPU>,
+                 <&ipu_core0 CLK_IPU_CORE0_JTAG>;
+        clock-names = "axi", "ipu", "jtag";
+        power-domains = <&spm MT8183_POWER_DOMAIN_VPU_CORE0>;
+        mediatek,core-index = <0>;
+        mediatek,ipu-core = <&ipu_core0>;
+        mediatek,ipu-conn = <&ipu_conn>;
+    };
+
+...

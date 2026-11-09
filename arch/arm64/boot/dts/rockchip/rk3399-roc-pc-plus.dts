@@ -21,6 +21,9 @@
 /delete-node/ &vcc_sys_en;
 /delete-node/ &vcc_vbus_typec0;
 /delete-node/ &yellow_led;
+/delete-node/ &tcphy1_typec_dp;
+/delete-node/ &tcphy1_typec_ss;
+/delete-node/ &u2phy1_typec_hs;
 
 / {
 	model = "Firefly ROC-RK3399-PC-PLUS Board";
@@ -93,8 +96,23 @@
 	};
 };
 
+&cdn_dp {
+	phys = <&tcphy0_dp>;
+};
+
 &fusb0 {
 	vbus-supply = <&vcc_vbus_typec1>;
+};
+
+/*
+ * The shared dtsi names gpio0's lines from the ROC-RK3399-PC schematic. The
+ * Plus is a different board: GPIO0_A2 is the audio amplifier enable (not
+ * YELLOW_LED, which it deletes above) and GPIO0_A5 is the hym8563 interrupt
+ * (not PWR_KEY_L). No Plus schematic is in the tree, so carry no names rather
+ * than another board's.
+ */
+&gpio0 {
+	/delete-property/ gpio-line-names;
 };
 
 &i2c0 {
@@ -123,6 +141,18 @@
 &i2s0_8ch_bus {
 	rockchip,pins =
 		<3 RK_PD0 1 &pcfg_pull_none>,
+		<3 RK_PD1 1 &pcfg_pull_none>,
+		<3 RK_PD2 1 &pcfg_pull_none>,
+		<3 RK_PD3 1 &pcfg_pull_none>,
+		<3 RK_PD4 1 &pcfg_pull_none>,
+		<3 RK_PD5 1 &pcfg_pull_none>,
+		<3 RK_PD6 1 &pcfg_pull_none>,
+		<3 RK_PD7 1 &pcfg_pull_none>;
+};
+
+&i2s0_8ch_bus_bclk_off {
+	rockchip,pins =
+		<3 RK_PD0 RK_FUNC_GPIO &pcfg_pull_none>,
 		<3 RK_PD1 1 &pcfg_pull_none>,
 		<3 RK_PD2 1 &pcfg_pull_none>,
 		<3 RK_PD3 1 &pcfg_pull_none>,

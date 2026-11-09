@@ -9,6 +9,7 @@
 
 #include "meson-gxbb-p20x.dtsi"
 #include <dt-bindings/sound/meson-aiu.h>
+#include "meson-gx-vendor-firmware.dtsi"
 
 / {
 	compatible = "amlogic,p201", "amlogic,meson-gxbb";

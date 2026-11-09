@@ -114,14 +114,6 @@ static struct xe_hw_engine *event_to_hwe(struct perf_event *event)
 	return hwe;
 }
 
-static bool is_engine_event(u64 config)
-{
-	unsigned int event_id = config_to_event_id(config);
-
-	return (event_id == XE_PMU_EVENT_ENGINE_TOTAL_TICKS ||
-		event_id == XE_PMU_EVENT_ENGINE_ACTIVE_TICKS);
-}
-
 static bool is_gt_frequency_event(struct perf_event *event)
 {
 	u32 id = config_to_event_id(event->attr.config);
@@ -130,17 +122,26 @@ static bool is_gt_frequency_event(struct perf_event *event)
 	       id == XE_PMU_EVENT_GT_REQUESTED_FREQUENCY;
 }
 
+/*
+ * Hold forcewake for the lifetime of frequency events only.
+ *
+ * Requested frequency is read under an asserted XE_FW_GT
+ * (xe_guc_pc_get_cur_freq_fw). Engine active/total ticks are read from
+ * GuC-shared activity buffers (xe_guc_engine_activity_*) and never touch
+ * GT MMIO — permanently forcewaking them pins the GT out of RC6, so any
+ * long-lived util sampler (fleet-client, intel_gpu_top, …) burns tens of
+ * watts at idle. GT C6 residency also needs no forcewake.
+ */
 static bool event_gt_forcewake(struct perf_event *event)
 {
 	struct xe_device *xe = container_of(event->pmu, typeof(*xe), pmu.base);
-	u64 config = event->attr.config;
 	struct xe_gt *gt;
 	unsigned int *fw_ref;
 
-	if (!is_engine_event(config) && !is_gt_frequency_event(event))
+	if (!is_gt_frequency_event(event))
 		return true;
 
-	gt = xe_device_get_gt(xe, config_to_gt_id(config));
+	gt = xe_device_get_gt(xe, config_to_gt_id(event->attr.config));
 
 	fw_ref = kzalloc(sizeof(*fw_ref), GFP_KERNEL);
 	if (!fw_ref)

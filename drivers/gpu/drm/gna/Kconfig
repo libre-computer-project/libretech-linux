@@ -1,0 +1,15 @@
+#
+# Intel(R) Gaussian & Neural Accelerator (Intel(R) GNA)
+#
+
+config DRM_GNA
+	tristate "Intel(R) Gaussian & Neural Accelerator (Intel(R) GNA)"
+	depends on X86 && PCI
+	depends on DRM
+	select DRM_GEM_SHMEM_HELPER
+	help
+	  This option enables the Intel(R) Gaussian & Neural Accelerator
+	  (Intel(R) GNA) driver: gna
+	  User space interface is defined in include/uapi/drm/gna_drm.h, while
+	  information about functionality is in
+	  Documentation/gpu/gna.rst

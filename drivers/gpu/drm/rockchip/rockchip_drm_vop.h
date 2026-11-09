@@ -139,6 +139,8 @@ struct vop_intr {
 	struct vop_reg enable;
 	struct vop_reg clear;
 	struct vop_reg status;
+	/* optional: status before the enable mask, for the underrun flags */
+	struct vop_reg raw_status;
 };
 
 struct vop_scl_extension {
@@ -233,6 +235,8 @@ struct vop_data {
 	unsigned int win_size;
 	unsigned int lut_size;
 	struct vop_rect max_output;
+	/* DDR rate floor while the CRTC is on, if the VOP names a DDR devfreq */
+	unsigned int ddr_floor_khz;
 
 #define VOP_FEATURE_OUTPUT_RGB10	BIT(0)
 #define VOP_FEATURE_INTERNAL_RGB	BIT(1)
@@ -247,6 +251,21 @@ struct vop_data {
 
 #define INTR_MASK			(DSP_HOLD_VALID_INTR | FS_INTR | \
 					 LINE_FLAG_INTR | BUS_ERROR_INTR)
+
+/*
+ * FIFO underrun flags. Never enabled as interrupts (an underrunning VOP
+ * raises them many times a frame); read from the raw status once a frame.
+ */
+#define WIN0_EMPTY_INTR			(1 << 4)
+#define WIN1_EMPTY_INTR			(1 << 5)
+#define WIN2_EMPTY_INTR			(1 << 6)
+#define WIN3_EMPTY_INTR			(1 << 7)
+#define HWC_EMPTY_INTR			(1 << 8)
+#define POST_BUF_EMPTY_INTR		(1 << 9)
+#define VOP_UNDERRUN_NUM		6
+#define UNDERRUN_INTR_MASK		(WIN0_EMPTY_INTR | WIN1_EMPTY_INTR | \
+					 WIN2_EMPTY_INTR | WIN3_EMPTY_INTR | \
+					 HWC_EMPTY_INTR | POST_BUF_EMPTY_INTR)
 
 #define DSP_HOLD_VALID_INTR_EN(x)	((x) << 4)
 #define FS_INTR_EN(x)			((x) << 5)

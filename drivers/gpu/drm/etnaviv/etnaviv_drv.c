@@ -765,6 +765,21 @@ static void __exit etnaviv_exit(void)
 }
 module_exit(etnaviv_exit);
 
+/* NEXT-26 (2026-05-25): full cmdbuf word stream dump at submit. Used to
+ * diff mesa's per-op FE LINK chain vs BSP's (BSP capture in an internal
+ * c64a BSP cmdbuf trace).
+ * Off by default; output volume during mn001 is large (~7 KB cmdbuf
+ * per op x 30 ops = ~200 KB of printk per inference).
+ * Output prefix CMDBUF_DUMP_MESA to mirror BSP-side CMDBUF_DUMP format.
+ */
+int etnaviv_dump_cmdbuf;
+EXPORT_SYMBOL_GPL(etnaviv_dump_cmdbuf);
+module_param_named(dump_cmdbuf, etnaviv_dump_cmdbuf, int, 0644);
+MODULE_PARM_DESC(dump_cmdbuf,
+    "Dump every per-op cmdbuf word stream at submit (0=off, 1=on). Output "
+    "prefixed CMDBUF_DUMP_MESA. Use to diff mesa FE LINK chain vs BSP "
+    "(traces/c64a-bsp-hswish-2026-05-05/dmesg.log).");
+
 MODULE_AUTHOR("Christian Gmeiner <christian.gmeiner@gmail.com>");
 MODULE_AUTHOR("Russell King <rmk+kernel@armlinux.org.uk>");
 MODULE_AUTHOR("Lucas Stach <l.stach@pengutronix.de>");
